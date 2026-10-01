@@ -14,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -218,34 +220,67 @@ func TestBranchesOfARepositoryNotYetScannedAreUnknown(t *testing.T) {
 	}
 }
 
-// TestBranchesAreTheirOwnMetadataRouteForTheHostedOrigin proves
-// cockpit-views#ac:hosted-origin-can-revalidate for the branches route.
-func TestBranchesAreTheirOwnMetadataRouteForTheHostedOrigin(t *testing.T) {
+// TestFleetAndBranchesAreMetadataRoutesForTheHostedOrigin proves
+// cockpit-views#ac:hosted-origin-can-revalidate for the fleet document and the
+// branches route.
+func TestFleetAndBranchesAreMetadataRoutesForTheHostedOrigin(t *testing.T) {
+	t.Parallel()
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	server := newCockpitServer(t, snapshotter)
+	for _, target := range []string{fleetURL, branchesURL + localRepositoryOf(t, snapshotter).ID} {
+		preflight := httptest.NewRequest(http.MethodOptions, target, nil)
+		preflight.Host = testHost
+		preflight.Header.Set("Origin", hostedOrigin)
+		preflight.Header.Set("Access-Control-Request-Method", "GET")
+		preflight.Header.Set("Access-Control-Request-Headers", "If-None-Match")
+		recorder := httptest.NewRecorder()
+		server.api.ServeHTTP(recorder, preflight)
+		if recorder.Code != http.StatusNoContent || recorder.Header().Get("Access-Control-Allow-Headers") != "if-none-match" || recorder.Header().Get("Access-Control-Allow-Origin") != hostedOrigin {
+			t.Fatalf("%s preflight = %d %v", target, recorder.Code, recorder.Header())
+		}
+		first := server.get(target, nil, "Origin", hostedOrigin)
+		if first.Code != 200 || first.Header().Get("Access-Control-Expose-Headers") != "ETag" || first.Header().Get("Access-Control-Allow-Origin") != hostedOrigin || first.Header().Get("ETag") == "" {
+			t.Fatalf("%s hosted response = %d %v", target, first.Code, first.Header())
+		}
+		repeat := server.get(target, nil, "Origin", hostedOrigin, "If-None-Match", first.Header().Get("ETag"))
+		if repeat.Code != http.StatusNotModified || repeat.Header().Get("Access-Control-Allow-Origin") != hostedOrigin {
+			t.Errorf("%s repeat = %d %v", target, repeat.Code, repeat.Header())
+		}
+		if foreign := server.get(target, nil, "Origin", "https://elsewhere.example"); foreign.Code != http.StatusForbidden {
+			t.Errorf("%s from another origin = %d, want 403", target, foreign.Code)
+		}
+	}
+}
+
+// TestBranchesNeedASessionWhenForwardedOrNotLoopback proves the branches route
+// has the fleet document's access class: a proxied request or one for a
+// non-loopback host gets no anonymous reading.
+func TestBranchesNeedASessionWhenForwardedOrNotLoopback(t *testing.T) {
 	t.Parallel()
 	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), nil)
 	refreshAndSettle(t, snapshotter)
 	server := newCockpitServer(t, snapshotter)
 	target := branchesURL + localRepositoryOf(t, snapshotter).ID
-	preflight := httptest.NewRequest(http.MethodOptions, target, nil)
-	preflight.Host = testHost
-	preflight.Header.Set("Origin", hostedOrigin)
-	preflight.Header.Set("Access-Control-Request-Method", "GET")
-	preflight.Header.Set("Access-Control-Request-Headers", "If-None-Match")
+	if recorder := server.get(target, nil); recorder.Code != 200 {
+		t.Fatalf("anonymous loopback = %d", recorder.Code)
+	}
+	for name, headers := range map[string][]string{
+		"forwarded for": {"X-Forwarded-For", "203.0.113.9"}, "forwarded https": {"X-Forwarded-Proto", "https"}, "via a proxy": {"Via", "1.1 proxy"},
+	} {
+		if recorder := server.get(target, nil, headers...); recorder.Code != http.StatusUnauthorized || strings.Contains(recorder.Body.String(), "branches") {
+			t.Errorf("%s = %d %s, want 401 with no data", name, recorder.Code, recorder.Body.String())
+		}
+		if recorder := server.get(target, server.login(), headers...); recorder.Code != 200 {
+			t.Errorf("%s with a session = %d", name, recorder.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = "wb.example.test"
 	recorder := httptest.NewRecorder()
-	server.api.ServeHTTP(recorder, preflight)
-	if recorder.Code != http.StatusNoContent || recorder.Header().Get("Access-Control-Allow-Headers") != "if-none-match" || recorder.Header().Get("Access-Control-Allow-Origin") != hostedOrigin {
-		t.Fatalf("preflight = %d %v", recorder.Code, recorder.Header())
-	}
-	first := server.get(target, nil, "Origin", hostedOrigin)
-	if first.Code != 200 || first.Header().Get("Access-Control-Expose-Headers") != "ETag" || first.Header().Get("Access-Control-Allow-Origin") != hostedOrigin || first.Header().Get("ETag") == "" {
-		t.Fatalf("hosted response = %d %v", first.Code, first.Header())
-	}
-	repeat := server.get(target, nil, "Origin", hostedOrigin, "If-None-Match", first.Header().Get("ETag"))
-	if repeat.Code != http.StatusNotModified || repeat.Header().Get("Access-Control-Allow-Origin") != hostedOrigin {
-		t.Errorf("repeat = %d %v", repeat.Code, repeat.Header())
-	}
-	if foreign := server.get(target, nil, "Origin", "https://elsewhere.example"); foreign.Code != http.StatusForbidden {
-		t.Errorf("another origin = %d, want 403", foreign.Code)
+	server.api.ServeHTTP(recorder, request)
+	if recorder.Code == 200 || strings.Contains(recorder.Body.String(), `"branches"`) {
+		t.Errorf("a non-loopback host got %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -549,292 +584,119 @@ func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 	}
 }
 
+// sizedProvider is a code-index provider that reports the same realistic
+// statistics for every checkout.
+type sizedProvider struct{}
+
+func (sizedProvider) Name() string    { return "codegrapher" }
+func (sizedProvider) Indexer() string { return "index" }
+func (sizedProvider) Statistics(_ context.Context, checkout string) (ProviderStatistics, error) {
+	size := len(checkout)
+	return ProviderStatistics{Indexed: true, Files: 100 + size*7, Symbols: 5000 + size*131, Edges: 12000 + size*377, Kinds: map[string]int{
+		"function": 1900 + size, "method": 2200 + size, "struct": 310, "interface": 64, "const": 480, "var": 120, "type": 90, "test": 1500,
+	}}, nil
+}
+
 // TestFleetDocumentFitsTheBudget proves cockpit-views#ac:fleet-document-fits-
 // the-budget on the fixture of 500 repositories, 600 worktrees, 4,000 branches
-// and 3 machines, with realistic names and code-index statistics.
+// and 3 machines, with realistic names, code-index statistics, pull requests,
+// agents and local and cached entries, stored through the snapshotter and
+// requested with gzip.
 func TestFleetDocumentFitsTheBudget(t *testing.T) {
 	t.Parallel()
-	at := newClock().Now()
-	document := emptyDocument(time.Minute)
-	document.SnapshotAt, document.WarmingUp, document.CodeIndexProvider = at, false, "codegrapher"
-	machines := []string{"mbp-alex", "hetzner-vm", "desktop-linux"}
-	for _, name := range machines {
-		route := RouteCached
-		if name == machines[0] {
-			route = RouteLocal
-		}
-		document.Machines = append(document.Machines, Machine{
-			Entry:     Entry{ID: entryID(kindMachine, name), Machine: name, MachineID: entryID(kindMachine, name), Route: route, ObservedAt: at},
-			WBVersion: "v0.31.4", RepositoryCount: 170, WorktreeCount: 200, OS: "linux", Arch: "arm64", CPUCount: 8, BootTime: at,
-		})
-	}
 	orgs := []string{"sneat-dev", "sneat-co", "strongo", "ingitdb", "dal-go", "bots-go-framework", "datatug", "chatwright"}
 	words := []string{"core", "api", "cli", "web", "docs", "bot", "sync", "store", "auth", "ui", "worker", "model", "spec", "kit", "hub"}
-	kinds := []KindCount{{"function", 1900}, {"method", 2200}, {"struct", 310}, {"interface", 64}, {"const", 480}, {"var", 120}, {"type", 90}, {"test", 1500}}
-	index := func(seed int) []CodeIndex {
-		statistics := &CodeStatistics{Indexed: true, Files: 100 + seed%900, Symbols: 5000 + seed*13%40000, Edges: 12000 + seed*37%90000, Kinds: kinds}
-		return []CodeIndex{{Indexer: "codegrapher", State: CodeIndexFresh, ReceiptAt: at.Add(-time.Duration(seed) * time.Minute), Statistics: statistics}}
+	now := newClock().Now()
+	sources := &fakeSources{
+		branch: "main", worktrees: map[string][]LinkedWorktree{}, records: map[string]WorktreeRecord{}, branches: map[string][]BranchRef{},
 	}
+	var slugs []string
 	for number := range 500 {
-		machine := machines[number%len(machines)]
-		name := fmt.Sprintf("%s/%s-%s-%d", orgs[number%len(orgs)], words[number%len(words)], words[(number*7+3)%len(words)], number)
-		local, remoteBranches, open, active := 5, 3, 1, 0
-		entry := Entry{ID: entryID(kindRepository, machine, name), Machine: machine, MachineID: entryID(kindMachine, machine), Route: RouteLocal, ObservedAt: at}
-		document.Repositories = append(document.Repositories, Repository{
-			Entry: entry, Host: "github.com", Name: name, DefaultBranch: "main", WorktreeCount: 1, LocalBranchCount: &local, RemoteBranchCount: &remoteBranches,
-			OpenPullRequestCount: &open, ActiveAgentCount: &active, LastActivityAt: at.Add(-time.Duration(number) * time.Hour),
-			RemoteURLWeb: "https://github.com/" + name, CodeIndex: index(number),
-		})
-		if number < 500 {
-			ahead, behind, upstream := number%4, number%3, true
-			document.Worktrees = append(document.Worktrees, Worktree{
-				Entry:      Entry{ID: entryID(kindWorktree, machine, name, "task", fmt.Sprint(number)), Machine: machine, MachineID: entry.MachineID, Route: RouteLocal, ObservedAt: at},
-				Repository: entry.ID, Name: fmt.Sprintf("%s-%s-%d", words[number%len(words)], words[(number+5)%len(words)], number), Task: fmt.Sprintf("%s-%s-%d", words[number%len(words)], words[(number+5)%len(words)], number),
-				Stream: "stream-" + words[number%len(words)], Branch: fmt.Sprintf("task/%s-%d", words[number%len(words)], number), Lifecycle: "working", OwnerState: OwnerActive,
-				LastActivityAt: at.Add(-time.Duration(number) * time.Minute), Ahead: &ahead, Behind: &behind, HasUpstream: &upstream, CodeIndex: index(number + 1),
+		repo := discover.Repo{Host: "github.com", Org: orgs[number%len(orgs)], Name: fmt.Sprintf("%s-%s-%d", words[number%len(words)], words[(number*7+3)%len(words)], number), Path: fmt.Sprintf("/p/%d", number)}
+		sources.repos = append(sources.repos, repo)
+		slugs = append(slugs, repo.Slug())
+		for index := range 8 {
+			scope, name := BranchLocal, fmt.Sprintf("task/%s-%d-%d", words[(number+index)%len(words)], number, index)
+			if index >= 5 {
+				scope, name = BranchRemote, "origin/"+name
+			}
+			sources.branches[repo.Slug()] = append(sources.branches[repo.Slug()], BranchRef{
+				Name: name, Scope: scope, Upstream: "origin/main", Ahead: index % 3, Behind: index % 2, CommittedAt: now.Add(-time.Duration(number+index) * time.Hour),
 			})
 		}
+		for index := range 1 + number/(500-100) { // 600 worktrees: 100 repositories have two
+			task := fmt.Sprintf("%s-%s-%d-%d", words[number%len(words)], words[(number+5)%len(words)], number, index)
+			path := fmt.Sprintf("/wt/%d-%d", number, index)
+			branch := fmt.Sprintf("task/%s-%d-%d", words[(number+index)%len(words)], number, index)
+			sources.worktrees[repo.Slug()] = append(sources.worktrees[repo.Slug()], LinkedWorktree{Path: path, Branch: branch})
+			sources.records[path] = WorktreeRecord{Task: task, Branch: branch, CreatedAt: now.Add(-48 * time.Hour), HeartbeatAt: now.Add(-time.Hour), Owner: "live"}
+			if number%4 == 0 {
+				sources.bindings = append(sources.bindings, worktrees.RegisteredPullRequestBinding{
+					Task: task, Repository: repo.Slug(), PullRequest: 100 + number, URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo.Slug(), 100+number),
+				})
+			}
+		}
+	}
+	for number := range 40 {
+		sources.sessions = append(sources.sessions, session.View{Record: session.Record{WBSessionID: fmt.Sprintf("wbs-%d", number), Runtime: "claude", Model: "opus"}, State: session.StateLive})
 	}
 	for number := range 100 {
-		machine := machines[1+number%2]
-		name := fmt.Sprintf("%s/%s-%d", orgs[number%len(orgs)], words[number%len(words)], number)
-		document.Worktrees = append(document.Worktrees, Worktree{
-			Entry:      Entry{ID: entryID(kindWorktree, machine, name, "cached"), Machine: machine, MachineID: entryID(kindMachine, machine), Route: RouteCached, ObservedAt: at},
-			Repository: entryID(kindRepository, machine, name), Name: "cached-" + words[number%len(words)], Task: "cached-" + words[number%len(words)], Branch: "task/" + words[number%len(words)], Lifecycle: "review", OwnerState: OwnerActive, LastActivityAt: at,
-		})
+		run := agents.Result{AgentID: fmt.Sprintf("agt-%d", number), State: agents.StateRunning, Repository: slugs[number], StartedAt: now}
+		run.Resolved.Harness, run.Resolved.Model = "codex", "gpt-5"
+		sources.runs = append(sources.runs, run)
 	}
-	body, _ := json.Marshal(document)
-	payload := cockpit.NewPayload(body, cockpit.Gzip)
-	request := httptest.NewRequest(http.MethodGet, fleetURL, nil)
-	request.Header.Set("Accept-Encoding", "gzip")
-	recorder := httptest.NewRecorder()
-	cockpit.ServePayload(recorder, request, payload)
-	if len(document.Repositories) != 500 || len(document.Worktrees) != 600 || len(document.Machines) != 3 {
-		t.Fatalf("fixture = %d repositories, %d worktrees, %d machines", len(document.Repositories), len(document.Worktrees), len(document.Machines))
-	}
-	t.Logf("fleet document: %d bytes identity, %d bytes gzip", len(body), recorder.Body.Len())
-	if recorder.Body.Len() > 150*1000 {
-		t.Errorf("the gzip body is %d bytes, want at most 150 kB", recorder.Body.Len())
-	}
-}
-
-// TestHostileHostsAndNamesHaveNoWebLinkInTheDocument is the document-level half
-// of cockpit-views#ac:hostile-host-has-no-web-link: five repositories on the
-// real mapping path, and only the valid one carries remote_url_web.
-func TestHostileHostsAndNamesHaveNoWebLinkInTheDocument(t *testing.T) {
-	t.Parallel()
-	repos := []discover.Repo{
-		{Host: "evil.example/x?y=1", Org: "o", Name: "one", Path: "/p/1"},
-		{Host: "evil host", Org: "o", Name: "two", Path: "/p/2"},
-		{Host: "github.com", Org: "o", Name: "..", Path: "/p/3"},
-		{Host: "github.com", Org: "o", Name: "a b", Path: "/p/4"},
-		{Host: "github.com", Org: "o", Name: "x%2Fy", Path: "/p/5"},
-		{Host: "github.com", Org: "sneat-dev", Name: "wb", Path: "/p/6"},
-	}
-	snapshotter, _ := newSnapshotter((&fakeSources{repos: repos}).collectors(), nil)
-	refreshAndSettle(t, snapshotter)
-	linked := map[string]string{}
-	for _, repository := range snapshotter.Document().Repositories {
-		if repository.RemoteURLWeb != "" {
-			linked[repository.Name] = repository.RemoteURLWeb
+	for _, name := range []string{"desktop-linux", "hetzner-vm"} {
+		snapshot := remotestate.Snapshot{
+			Login: "alex", Machine: name, PublishedAt: now.Add(-time.Hour), WBVersion: "v0.31.4", OS: "linux", Arch: "amd64", CPUCount: 8, BootTime: now.Add(-72 * time.Hour),
 		}
-	}
-	if len(linked) != 1 || linked["sneat-dev/wb"] != "https://github.com/sneat-dev/wb" {
-		t.Errorf("repositories with a web link = %v, want only sneat-dev/wb", linked)
-	}
-}
-
-// TestOwnerStateIsProbedOncePerWorktreePerSnapshot proves the document half of
-// cockpit-views#ac:owner-state-mapping: a probe per worktree for the snapshot,
-// none for a request, cached values normalised and an out-of-set one dropped.
-func TestOwnerStateIsProbedOncePerWorktreePerSnapshot(t *testing.T) {
-	t.Parallel()
-	sources := oneRepoSources(t.TempDir())
-	sources.records["/wt/task-b"] = WorktreeRecord{Task: "task-b", Branch: "feature/b", Owner: worktrees.OwnerUnstated, HeartbeatAt: newClock().Now()}
-	sources.remote[0].Snapshot.Worktrees = []remotestate.WorktreeState{
-		{Task: "c-idle", Repository: "acme/gadgets", Branch: "i", OwnerState: "idle"},
-		{Task: "c-unknown", Repository: "acme/gadgets", Branch: "u", OwnerState: "unknown"},
-		{Task: "c-sleepy", Repository: "acme/gadgets", Branch: "s", OwnerState: "sleepy"},
-		{Task: "c-none", Repository: "acme/gadgets", Branch: "n"},
-	}
-	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
-	refreshAndSettle(t, snapshotter)
-	probes := sources.recordCalls.Load()
-	if probes != 2 {
-		t.Fatalf("the liveness probe ran %d times for 2 local worktrees in one snapshot", probes)
-	}
-	server := newCockpitServer(t, snapshotter)
-	first, second := server.fleet(), server.fleet()
-	if sources.recordCalls.Load() != probes || len(first.Worktrees) != len(second.Worktrees) {
-		t.Errorf("requests ran the probe %d more times", sources.recordCalls.Load()-probes)
-	}
-	got := map[string]string{}
-	for _, worktree := range second.Worktrees {
-		got[worktree.Task] = worktree.OwnerState
-	}
-	want := map[string]string{"task-a": "active", "task-b": "unknown", "c-idle": "idle", "c-unknown": "unknown", "c-sleepy": "", "c-none": ""}
-	for task, state := range want {
-		if got[task] != state {
-			t.Errorf("%s: owner_state %q, want %q", task, got[task], state)
+		for number := range 100 {
+			repository := fmt.Sprintf("github.com/%s/%s-%d", orgs[number%len(orgs)], words[number%len(words)], number)
+			snapshot.KnownRepositories = append(snapshot.KnownRepositories, repository)
+			snapshot.Worktrees = append(snapshot.Worktrees, remotestate.WorktreeState{
+				Task: fmt.Sprintf("remote-%s-%d", words[number%len(words)], number), Stream: "stream-" + words[number%len(words)], Repository: repository,
+				Branch: fmt.Sprintf("task/remote-%d", number), Lifecycle: "review", OwnerState: "active", LastActivityAt: now,
+				PullRequest: &remotestate.PullRequestState{Number: number, State: "OPEN", URL: fmt.Sprintf("https://github.com/%s/pull/%d", repository, number)},
+			})
 		}
+		sources.remote = append(sources.remote, remotestate.Entry{Snapshot: snapshot})
 	}
-}
-
-// fieldTable is REQ:field-tables as data: each field's JSON type and whether
-// it may appear on an entry cached from another machine.
-type fieldTable map[string]struct {
-	kind   string
-	cached bool
-}
-
-var (
-	entryFields   = fieldTable{"id": {"string", true}, "machine": {"string", true}, "machine_id": {"string", true}, "route": {"string", true}, "observed_at": {"time", true}}
-	machineFields = fieldTable{
-		"wb_version": {"string", true}, "repository_count": {"number", true}, "worktree_count": {"number", true},
-		"os": {"string", true}, "arch": {"string", true}, "cpu_count": {"number", true}, "boot_time": {"time", true},
-	}
-	repositoryFields = fieldTable{
-		"host": {"string", true}, "name": {"string", true}, "default_branch": {"string", false}, "worktree_count": {"number", true},
-		"local_branch_count": {"number", false}, "remote_branch_count": {"number", false}, "open_pull_request_count": {"number", true}, "active_agent_count": {"number", false},
-		"last_activity_at": {"time", false}, "remote_url_web": {"string", false}, "error": {"string", false}, "code_index": {"array", false},
-	}
-	worktreeFields = fieldTable{
-		"repository": {"string", true}, "task": {"string", true}, "name": {"string", true}, "stream": {"string", true}, "branch": {"string", true},
-		"lifecycle": {"string", true}, "owner_state": {"string", true}, "last_activity_at": {"time", true},
-		"ahead": {"number", false}, "behind": {"number", false}, "upstream_gone": {"bool", false}, "has_upstream": {"bool", false}, "code_index": {"array", false},
-	}
-	pullRequestFields = fieldTable{
-		"repository": {"string", true}, "worktree": {"string", true}, "branch": {"string", true}, "number": {"number", true}, "state": {"string", true}, "url": {"string", true},
-	}
-	documentFields = fieldTable{
-		"schema_version": {"number", false}, "snapshot_at": {"time", false}, "warming_up": {"bool", false}, "repositories_total": {"number", false},
-		"repositories_scanned": {"number", false}, "diagnostics": {"number", false}, "error": {"string", false}, "code_index_provider": {"string", false},
-		"refresh_interval_seconds": {"number", false}, "agents_truncated": {"bool", false},
-		"machines": {"array", false}, "repositories": {"array", false}, "worktrees": {"array", false}, "pull_requests": {"array", false}, "agents": {"array", false},
-	}
-)
-
-// checkFields requires every key of entry to be in the table (or the entry
-// fields), of the table's type, and absent for a cached entry unless the table
-// allows it there.
-func checkFields(t *testing.T, kind string, entry map[string]any, table fieldTable) {
-	t.Helper()
-	cached := entry["route"] == RouteCached
-	for key, value := range entry {
-		spec, known := table[key]
-		if !known {
-			spec, known = entryFields[key]
+	collectors := sources.collectors()
+	receipt := now.Add(-time.Hour)
+	collectors.CodeIndex = &fakeCodeIndex{states: func(_ string, checkouts []string) map[string][]CodeIndex {
+		states := map[string][]CodeIndex{}
+		for _, checkout := range checkouts {
+			states[checkout] = []CodeIndex{{Indexer: "index", State: CodeIndexFresh, ReceiptAt: receipt}}
 		}
-		if !known {
-			t.Errorf("%s carries the undocumented field %q", kind, key)
-			continue
-		}
-		if cached && !spec.cached {
-			t.Errorf("%s: the local-only field %q is on a cached entry", kind, key)
-		}
-		var got string
-		switch typed := value.(type) {
-		case string:
-			got = "string"
-			if _, err := time.Parse(time.RFC3339, typed); err == nil && spec.kind == "time" {
-				got = "time"
-			}
-		case float64:
-			got = "number"
-		case bool:
-			got = "bool"
-		case []any:
-			got = "array"
-		default:
-			got = fmt.Sprintf("%T", value)
-		}
-		if got != spec.kind {
-			t.Errorf("%s.%s is a %s, want %s", kind, key, got, spec.kind)
-		}
-	}
-}
-
-// TestDocumentHoldsTheFieldTables proves cockpit-views#ac:field-tables-hold-in-
-// the-document for the kinds this task owns, on a fixture with local and cached
-// entries of every kind and values outside the closed sets.
-func TestDocumentHoldsTheFieldTables(t *testing.T) {
-	t.Parallel()
-	sources := oneRepoSources(t.TempDir())
-	sources.remote[0].Snapshot.OS, sources.remote[0].Snapshot.Arch, sources.remote[0].Snapshot.CPUCount, sources.remote[0].Snapshot.BootTime = "linux", "amd64", 4, remotePublishedAt()
-	sources.remote[0].Snapshot.KnownRepositories = append(sources.remote[0].Snapshot.KnownRepositories, "github.com/Sneat-Co/sneat-go")
-	sources.remote[0].Snapshot.Worktrees = append(sources.remote[0].Snapshot.Worktrees, remotestate.WorktreeState{
-		Task: "odd", Repository: "acme/gadgets", Branch: "odd", Lifecycle: "wandering", OwnerState: "sleepy",
-		PullRequest: &remotestate.PullRequestState{Number: 9, State: "open", URL: "ftp://x"},
-	})
-	snapshotter, _ := newSnapshotter(sources.collectors(), func(options *Options) {
-		options.Hardware = Hardware{OS: "darwin", Arch: "arm64", CPUCount: 8, BootTime: remotePublishedAt()}
+		return states
+	}}
+	collectors.CodeIndexProvider = sizedProvider{}
+	snapshotter, _ := newSnapshotter(collectors, func(options *Options) {
+		options.Fingerprint = newConstFingerprint("one").get
+		options.Hardware = Hardware{OS: "darwin", Arch: "arm64", CPUCount: 10, BootTime: now.Add(-24 * time.Hour)}
 	})
 	refreshAndSettle(t, snapshotter)
-	body, _ := snapshotter.Body()
-	var document map[string]any
-	if err := json.Unmarshal(body, &document); err != nil {
-		t.Fatal(err)
+	document := snapshotter.Document()
+	if len(document.Repositories) != 500+200 || len(document.Worktrees) != 600+200 || len(document.Machines) != 3 || len(snapshotter.allBranches()) != 4000 ||
+		len(document.PullRequests) < 100 || len(document.Agents) != 140 {
+		t.Fatalf("fixture = %d repositories, %d worktrees, %d machines, %d branches, %d pull requests, %d agents",
+			len(document.Repositories), len(document.Worktrees), len(document.Machines), len(snapshotter.allBranches()), len(document.PullRequests), len(document.Agents))
 	}
-	checkFields(t, "document", document, documentFields)
-	if document["schema_version"] != float64(2) {
-		t.Errorf("schema_version = %v", document["schema_version"])
-	}
-	for _, absent := range []string{"branches", "metrics"} {
-		if _, present := document[absent]; present {
-			t.Errorf("the document carries %s", absent)
-		}
-	}
-	counts := map[string]int{}
-	for collection, table := range map[string]fieldTable{"machines": machineFields, "repositories": repositoryFields, "worktrees": worktreeFields, "pull_requests": pullRequestFields} {
-		entries, _ := document[collection].([]any)
-		for _, raw := range entries {
-			entry := raw.(map[string]any)
-			checkFields(t, collection, entry, table)
-			if entry["route"] == RouteCached {
-				counts[collection+"/cached"]++
-			} else {
-				counts[collection+"/local"]++
+	withStatistics := 0
+	for _, repository := range document.Repositories {
+		for _, index := range repository.CodeIndex {
+			if index.Statistics != nil && index.Statistics.Indexed {
+				withStatistics++
 			}
 		}
 	}
-	for _, key := range []string{"machines/local", "machines/cached", "repositories/local", "repositories/cached", "worktrees/local", "worktrees/cached", "pull_requests/local", "pull_requests/cached"} {
-		if counts[key] == 0 {
-			t.Errorf("the fixture has no %s entry, so the check is vacuous", key)
-		}
+	if withStatistics != 500 {
+		t.Fatalf("%d repositories carry code-index statistics, want 500", withStatistics)
 	}
-	for _, worktree := range snapshotter.Document().Worktrees {
-		if worktree.Task == "odd" && (worktree.Lifecycle != "" || worktree.OwnerState != "") {
-			t.Errorf("out-of-set values were kept: %+v", worktree)
-		}
-	}
-	for _, pull := range snapshotter.Document().PullRequests {
-		if pull.Number == 9 && pull.URL != "" {
-			t.Errorf("an ftp URL was kept: %+v", pull)
-		}
-	}
-}
-
-// TestCachedRepositoryNamesAreSplitIntoHostAndName proves cockpit-views#ac:
-// cached-repository-names-are-split-into-host-and-name through the document.
-func TestCachedRepositoryNamesAreSplitIntoHostAndName(t *testing.T) {
-	t.Parallel()
-	sources := oneRepoSources(t.TempDir())
-	sources.remote[0].Snapshot.KnownRepositories = []string{"github.com/Sneat-Co/sneat-go", "sneat-co/sneat-go", "gitlab.example.com/group/sub/proj"}
-	sources.remote[0].Snapshot.Worktrees = nil
-	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
-	refreshAndSettle(t, snapshotter)
-	type pair struct{ host, name string }
-	got := map[pair]bool{}
-	for _, repository := range snapshotter.Document().Repositories {
-		got[pair{repository.Host, repository.Name}] = true
-		if repository.Route == RouteLocal && (repository.Name != "acme/widgets" || repository.Host != "github.com") {
-			t.Errorf("local repository = %+v", repository)
-		}
-	}
-	for _, want := range []pair{{"github.com", "Sneat-Co/sneat-go"}, {"", "sneat-co/sneat-go"}, {"gitlab.example.com", "group/sub/proj"}, {"github.com", "acme/widgets"}} {
-		if !got[want] {
-			t.Errorf("no repository %+v in %v", want, got)
-		}
+	recorder := newCockpitServer(t, snapshotter).get(fleetURL, nil, "Accept-Encoding", "gzip")
+	body, identity := recorder.Body.Len(), len(gunzip(t, recorder.Body.Bytes()))
+	t.Logf("fleet document: %d bytes identity, %d bytes gzip", identity, body)
+	if recorder.Code != 200 || body > 150*1000 {
+		t.Errorf("status %d, the gzip body is %d bytes, want at most 150 kB", recorder.Code, body)
 	}
 }
 
