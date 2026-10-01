@@ -456,13 +456,19 @@ func (s Store) LockLocalWorkLog(directory *os.File) (func(), error) {
 }
 
 func (s Store) RebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
+	return ProjectionFromEvents(events), nil
+}
+
+// ProjectionFromEvents folds local events without I/O or validation. Storage
+// and identity enrichment remain the responsibility of its callers.
+func ProjectionFromEvents(events []LocalWorkLogEvent) LocalWorkLogProjection {
 	projection := LocalWorkLogProjection{
 		Version:   1,
 		Lifecycle: "active",
 		UpdatedAt: time.Now().UTC(),
 	}
 	if len(events) == 0 {
-		return projection, nil
+		return projection
 	}
 	last := events[len(events)-1]
 	projection.LastSeq = last.Seq
@@ -499,7 +505,7 @@ func (s Store) RebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogP
 			projection.Conflict = event.Conflict
 		}
 	}
-	return projection, nil
+	return projection
 }
 
 func (s Store) LocalEventID(existing []LocalWorkLogEvent, event LocalWorkLogEvent) string {

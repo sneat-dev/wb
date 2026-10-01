@@ -14,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreejournal"
 )
 
 // LogVerbResult is the public receipt returned by mutating log verbs.
@@ -607,6 +608,9 @@ type LogRecoverOptions struct {
 	// testBeforeBundleCheck models a ref moving after immutable recovery
 	// coordinates are recorded but before either destructive retirement stage.
 	testBeforeBundleCheck func()
+	// appendRecoveryEvent models a failure after immutable claim publication
+	// and before its local recovery event, without a process-global hook.
+	appendRecoveryEvent func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error)
 }
 
 // LogRecover rebuilds derived state and diagnoses claim/journal disagreement.
@@ -628,10 +632,11 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	} else {
 		diagnosis = append(diagnosis, fmt.Sprintf("local events: %d", len(events)))
 	}
-	projection, projErr := rebuildLocalProjection(events)
-	if projErr != nil {
-		diagnosis = append(diagnosis, "projection rebuild: "+projErr.Error())
+	appendEvent := options.appendRecoveryEvent
+	if appendEvent == nil {
+		appendEvent = appendLocalEvent
 	}
+	projection := worktreejournal.ProjectionFromEvents(events)
 	manifest, manifestErr := ReadManifest(root)
 	if manifestErr != nil {
 		diagnosis = append(diagnosis, "manifest: "+manifestErr.Error())
@@ -674,15 +679,12 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 			result.Notes = []string{"dry-run only; pass --apply to publish the missing private Work Log claim and rebuild derived projections"}
 			return result, nil
 		}
-		home, err := wbhome.Root(options.ProjectsRoot)
-		if err != nil {
-			return LogVerbResult{}, err
-		}
+		// Use the same resolved authority as the claim observation above.
 		outcome, err := recoverBlankManifestClaim(ctx, home, root, manifest)
 		if err != nil {
 			return LogVerbResult{}, err
 		}
-		event, recoveredProjection, err := appendLocalEvent(root, LocalWorkLogEvent{
+		event, recoveredProjection, err := appendEvent(root, LocalWorkLogEvent{
 			Type: LocalEventRecover, Message: "authoritative Work Log claim recovered from immutable campaign manifest",
 			Extra: map[string]any{"claim_id": outcome.ClaimID, "recovery": "blank_manifest_claim"},
 		})
@@ -706,6 +708,9 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	if fence.unlock != nil {
 		defer fence.unlock()
 	}
+	if options.Takeover && strings.TrimSpace(options.Actor) == "" {
+		return LogVerbResult{}, fmt.Errorf("--actor is required with --takeover")
+	}
 	directory, err := openLocalWorkLogDir(root, true)
 	if err != nil {
 		return LogVerbResult{}, err
@@ -716,10 +721,7 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	}
 	result.Applied = true
 	if options.Takeover {
-		if strings.TrimSpace(options.Actor) == "" {
-			return LogVerbResult{}, fmt.Errorf("--actor is required with --takeover")
-		}
-		event, updated, err := appendLocalEvent(root, LocalWorkLogEvent{
+		event, updated, err := appendEvent(root, LocalWorkLogEvent{
 			Type: LocalEventRecover, Message: "explicit takeover after recover diagnosis",
 			Git: &gitEvidence, Extra: map[string]any{"actor": strings.TrimSpace(options.Actor)},
 		})
