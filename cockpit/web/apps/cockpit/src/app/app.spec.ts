@@ -111,7 +111,8 @@ describe('App', () => {
   it('shows fixed-height skeleton rows below what is listed while the daemon warms up, and the scanned count in the chip', async () => {
     store.document.set(fleetDocument({ warming_up: true, repositories_scanned: 120, repositories_total: 438 }))
     const { fixture, root } = await open('/')
-    expect(root.querySelectorAll('app-skeleton-rows .skeleton-row')).toHaveLength(6)
+    expect(root.querySelectorAll('app-skeleton-rows.warming .skeleton-row')).toHaveLength(6)
+    expect(root.querySelector('app-skeleton-rows.loading')).toBeNull()
     expect(root.querySelector('app-freshness-chip')?.textContent).toContain('scanned 120 of 438')
     expect(root.querySelector('main router-outlet')).not.toBeNull()
     store.document.set(fleetDocument())
@@ -123,7 +124,21 @@ describe('App', () => {
     store.loaded.set(false)
     const { root } = await open('/')
     expect(root.querySelector('main router-outlet')).toBeNull()
-    expect(root.querySelector('app-skeleton-rows')).not.toBeNull()
+    expect(root.querySelector('app-skeleton-rows.loading')).not.toBeNull()
+  })
+
+  it('keeps the page hidden, behind skeleton rows, until a page has been routed to, and then swaps them without moving anything', async () => {
+    const fixture = TestBed.createComponent(App)
+    await fixture.whenStable()
+    const root: HTMLElement = fixture.nativeElement
+    // The first read is answered but no route has been activated yet.
+    expect(root.querySelector('.page-slot')?.hasAttribute('hidden')).toBe(true)
+    expect(root.querySelector('app-skeleton-rows.loading')).not.toBeNull()
+    expect(root.querySelector('app-skeleton-rows.warming')).toBeNull()
+    await TestBed.inject(Router).navigateByUrl('/')
+    await fixture.whenStable()
+    expect(root.querySelector('.page-slot')?.hasAttribute('hidden')).toBe(false)
+    expect(root.querySelector('app-skeleton-rows')).toBeNull()
   })
 
   // cockpit-views#ac:client-accepts-only-schema-2, the shell half

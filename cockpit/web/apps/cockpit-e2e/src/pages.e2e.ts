@@ -1,77 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
-import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
+import { fleet, now, stub, watch } from './support'
 
 // The five pages against a stubbed fleet document and session, in the built
 // application served under the daemon's content security policy. Each test
 // ends by checking that no policy violation and no console error occurred,
 // beyond the PrimeUI licence banner this build is known to show.
-
-const observed = new Date(Date.now() - 12 * 60_000).toISOString()
-const now = new Date().toISOString()
-
-const alpha = { machine: 'alpha', machine_id: 'mach-alpha', route: 'local', observed_at: now }
-const beta = { machine: 'beta', machine_id: 'mach-beta', route: 'cached', observed_at: observed }
-
-const fleet = {
-  schema_version: 2,
-  snapshot_at: now,
-  warming_up: false,
-  repositories_total: 3,
-  repositories_scanned: 3,
-  diagnostics: 0,
-  machines: [
-    { id: 'mach-alpha', ...alpha, wb_version: '1.0.0', repository_count: 2, worktree_count: 2 },
-    { id: 'mach-beta', ...beta, repository_count: 1, worktree_count: 1 },
-  ],
-  repositories: [
-    { id: 'repo-cli', ...alpha, host: 'github.com', name: 'specscore/specscore-cli', default_branch: 'main', worktree_count: 2, active_agent_count: 1, code_index: [{ indexer: 'codegrapher', state: 'stale', behind: 3 }] },
-    { id: 'repo-web', ...alpha, host: 'github.com', name: 'acme/web', default_branch: 'main', worktree_count: 0, active_agent_count: 0 },
-    { id: 'repo-far', ...beta, name: 'acme/far', worktree_count: 1 },
-  ],
-  worktrees: [
-    { id: 'wt-1', ...alpha, repository: 'repo-cli', task: 'add-search', branch: 'task/add-search', owner_state: 'active', last_activity_at: now, code_index: [{ indexer: 'codegrapher', state: 'fresh' }] },
-    { id: 'wt-2', ...alpha, repository: 'repo-cli', task: 'fix-index', branch: 'task/fix-index', owner_state: 'idle', last_activity_at: observed },
-    { id: 'wt-3', ...beta, repository: 'repo-far', task: 'far-task', branch: 'task/far-task' },
-  ],
-  pull_requests: [],
-  agents: [
-    { id: 'ag-1', ...alpha, kind: 'session', session_id: 'sess-1', runtime: 'claude', state: 'running', repository: 'repo-cli' },
-    { id: 'ag-2', ...beta, kind: 'run', run_id: 'run-7', state: 'finished', repository: 'repo-far' },
-  ],
-}
-
-async function stub(page: Page, codeBrowserUrl = 'https://codegrapher.dev/') {
-  await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: fleet, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache' } }),
-  )
-  await page.route('**/api/v1/cockpit/session', (route) =>
-    route.fulfill({
-      json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: codeBrowserUrl },
-    }),
-  )
-}
-
-/** Records console errors and policy violations; call `expectClean` last. */
-async function watch(page: Page) {
-  const consoleErrors: string[] = []
-  page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
-  page.on('pageerror', (error) => consoleErrors.push(`page error: ${error.message}`))
-  await page.addInitScript(() => {
-    const store = window as unknown as { __violations: unknown[] }
-    store.__violations = []
-    document.addEventListener('securitypolicyviolation', (event) => {
-      const inLicenseBanner = event.composedPath().some((node) => (node as Element).id === 'p-license-host')
-      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI, inLicenseBanner })
-    })
-  })
-  return async () => {
-    const violations = await page.evaluate(() => (window as unknown as { __violations: unknown[] }).__violations)
-    expect(unexplainedViolations(violations as Violation[])).toEqual([])
-    expect(otherConsoleErrors(consoleErrors)).toEqual([])
-  }
-}
 
 const rows = (page: Page) => page.locator('tbody tr')
 
@@ -80,7 +13,9 @@ test('every page lists its collection, cached rows show route and age, and the m
   const expectClean = await watch(page)
 
   await page.goto('/cockpit/dashboard')
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  // /dashboard is an alias for Home, which has no visible heading of its own.
+  await expect(page).toHaveURL(/\/cockpit\/$/)
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   await expect(page.locator('.tile')).toHaveCount(5)
   await expect(rows(page).filter({ hasText: 'beta' }).first()).toContainText(/cached, 1\d min ago/)
   await expect(page.locator('tbody').nth(1).locator('tr')).toHaveCount(3)
@@ -93,7 +28,7 @@ test('every page lists its collection, cached rows show route and age, and the m
   ]
   for (const list of lists) {
     await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: list.link }).click()
-    await expect(page.getByRole('heading', { name: list.link })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(list.link)
     await expect(rows(page)).toHaveCount(list.rows)
     await expect(rows(page).first()).toContainText(list.first)
     // Every cached row shows its route and age; a local row says local.
@@ -212,7 +147,7 @@ test('no page scrolls sideways at phone width, and the hover card stays on scree
   await page.setViewportSize({ width: 375, height: 812 })
   await stub(page)
   const expectClean = await watch(page)
-  for (const path of ['dashboard', 'repositories', 'worktrees', 'agents', 'machines']) {
+  for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
     await page.goto(`/cockpit/${path}`)
     await expect(rows(page).first()).toBeVisible()
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
@@ -232,7 +167,7 @@ test('the fleet shows while the first scan is still running', async ({ page }) =
   )
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ status: 401, json: { error: 'no' } }))
   await page.goto('/cockpit/repositories')
-  await expect(page.getByText('Scanning repositories: 3 of 40')).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: 'scanned 3 of 40' })).toBeVisible()
   await expect(page.getByText('2 pull requests could not be matched')).toBeVisible()
   await expect(rows(page)).toHaveCount(3)
   await expect(page.getByRole('link', { name: 'Code' })).toHaveCount(0)

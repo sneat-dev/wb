@@ -44,6 +44,12 @@ interface ChipView {
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    /* The text changes with every second and with the warm-up: a fixed width and a fixed start keep the bar from moving. */
+    @media (min-width: 48rem) {
+      .chip {
+        min-width: 9.75rem;
+      }
+    }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

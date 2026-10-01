@@ -8,13 +8,16 @@
     <span class="brand-name">WB Cockpit</span>
   </a>
 
-  <nav class="tabs" aria-label="Pages">
+  <nav class="tabs" aria-label="Pages" #strip>
     @for (link of links; track link.path) {
       <a class="tab" [routerLink]="link.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: link.path === '/' }" ariaCurrentWhenActive="page">
         <span>{{ link.label }}</span>
         @if (badge(link); as badge) {
           <span class="badge tnum" [class.hot]="badge.hot" [attr.data-badge]="link.signal">{{ badge.count }}</span>
           <span class="visually-hidden">{{ badge.hint }}</span>
+        } @else if (link.signal) {
+          <!-- Holds the badge's place until there is data to count, so the tabs do not move when it arrives. -->
+          <span class="badge badge-pending" aria-hidden="true">0</span>
         }
       </a>
     }

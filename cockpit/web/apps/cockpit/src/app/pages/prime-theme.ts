@@ -1,3 +1,4 @@
+import { APP_INITIALIZER, inject, provideEnvironmentInitializer } from '@angular/core'
 import { Routes } from '@angular/router'
 import { definePreset } from '@primeuix/themes'
 import Aura from '@primeuix/themes/aura'
@@ -86,6 +87,7 @@ export const CockpitPreset = definePreset(Aura, {
         color: 'var(--text-2)',
         hoverColor: 'var(--text)',
         padding: '0.375rem 0.75rem',
+        sm: { padding: '0.375rem 0.75rem' },
       },
       columnTitle: { fontWeight: '500', fontSize: '0.75rem' },
       row: {
@@ -97,11 +99,21 @@ export const CockpitPreset = definePreset(Aura, {
         selectedColor: 'var(--text)',
         stripedBackground: 'var(--surface-sunken)',
       },
-      bodyCell: { borderColor: 'var(--border)', padding: '0.375rem 0.75rem', fontSize: '0.8125rem', selectedBorderColor: 'var(--accent-border)' },
+      bodyCell: { borderColor: 'var(--border)', padding: '0.375rem 0.75rem', fontSize: '0.8125rem', selectedBorderColor: 'var(--accent-border)', sm: { padding: '0.375rem 0.75rem' } },
       root: { borderColor: 'var(--border)' },
     },
   },
 })
+
+/**
+ * `providePrimeNG` configures PrimeNG (its theme, its style nonce and its
+ * licence check) in an application initializer, which Angular runs only at
+ * bootstrap. This group is created later, when the first page is routed to, so
+ * its initializers are run here, when the group's injector is created.
+ */
+export function runInitializers(): void {
+  for (const initialize of inject(APP_INITIALIZER, { self: true, optional: true }) ?? []) initialize()
+}
 
 /** The routes of the pages, in a group that provides PrimeNG with the Cockpit theme. */
 export function withPrimeNg(routes: Routes): Routes {
@@ -117,6 +129,7 @@ export function withPrimeNg(routes: Routes): Routes {
             options: { darkModeSelector: 'system' },
           },
         }),
+        provideEnvironmentInitializer(runInitializers),
       ],
       children: routes,
     },

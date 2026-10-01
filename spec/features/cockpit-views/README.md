@@ -629,7 +629,7 @@ message to each button.
 
 #### REQ: new-task-form
 
-Serves J3. The "New task" button MUST open a form with a repository picker that uses the
+Serves J3. The "New task" button MUST open a form, the route `/tasks/new`, with a repository picker that uses the
 wildcard matcher and offers only names that match `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`, a task name,
 a brief (the text of the task prompt, several lines allowed), an optional base branch and a model, and MUST produce the exact command to copy, with the quoting
 and refusal rules of REQ:copy-the-command: `wb worktree create '<task>' '<owner/repository>'...
@@ -648,7 +648,9 @@ Questions).
 
 Serves J5. The palette MUST be visible with no network request and no route navigation before it
 appears, and an action slot MUST open its preview without a route navigation (the preview itself
-is `cockpit-actions`'). Both are measured with a fake registry. Operation feedback and action
+is `cockpit-actions`'). Both are measured with a fake registry. The palette's code is a lazy chunk
+that the shell fetches as soon as it has rendered, not part of the initial script (REQ:initial-script-size),
+so opening the palette makes no request. Operation feedback and action
 results in the palette are specified by `cockpit-actions` (its Task 8).
 
 ### Read-model contract v2

@@ -170,12 +170,13 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
     if (response.status() >= 400 && response.url().startsWith(origin) && !response.url().includes('/readme')) failures.push(`${response.status()} ${response.url()}`)
   })
 
-  // Following the printed URL signs in as owner and lands on the Dashboard.
+  // Following the printed URL signs in as owner and lands on Home.
   await page.goto(loginUrl)
   await expect(page).toHaveURL(new RegExp(`^${origin.replace(/[.]/g, '\\.')}/cockpit/(dashboard)?$`))
   expect(page.url()).not.toContain('code=')
   await page.goto(`${origin}/cockpit/dashboard`)
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  // The old address of Home still works and shows it.
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   const session = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
   expect(session.principal).toBe('owner')
 

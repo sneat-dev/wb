@@ -1,7 +1,8 @@
 import { DOCUMENT } from '@angular/common'
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
-import { RouterLink, RouterLinkActive } from '@angular/router'
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, inject, viewChild } from '@angular/core'
+import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router'
 import { FleetStore } from '@cockpit/fleet-data'
+import { filter } from 'rxjs'
 import { NEW_TASK_PATH, PAGE_LINKS, PageLink, TabSignal } from '../nav'
 import { modifierLabel } from '../shortcuts/platform'
 import { Icon } from '../ui/icon'
@@ -12,6 +13,13 @@ import { ShellState } from './shell-state'
 const BADGE_HINT: Record<TabSignal, string> = {
   'needs-you': 'tasks need you',
   running: 'agents running',
+}
+
+/** Scrolls the tab strip the least that shows `tab`, both measured from the strip's own left edge. */
+export function scrollTabIntoView(strip: Pick<HTMLElement, 'scrollLeft' | 'clientWidth'>, tab: Pick<HTMLElement, 'offsetLeft' | 'offsetWidth'>): void {
+  const margin = 16
+  if (tab.offsetLeft < strip.scrollLeft) strip.scrollLeft = Math.max(0, tab.offsetLeft - margin)
+  else if (tab.offsetLeft + tab.offsetWidth > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = tab.offsetLeft + tab.offsetWidth - strip.clientWidth + margin
 }
 
 /**
@@ -29,6 +37,7 @@ const BADGE_HINT: Record<TabSignal, string> = {
 })
 export class TopBar {
   private readonly store = inject(FleetStore)
+  private readonly strip = viewChild.required<ElementRef<HTMLElement>>('strip')
   protected readonly shell = inject(ShellState)
   protected readonly links = PAGE_LINKS
   protected readonly newTaskPath = NEW_TASK_PATH
@@ -46,6 +55,30 @@ export class TopBar {
     if (link.signal === undefined || counts === undefined) return undefined
     const count = counts[link.signal]
     return { count, hint: BADGE_HINT[link.signal], hot: count > 0 }
+  }
+
+  private timer: ReturnType<typeof setTimeout> | undefined
+
+  constructor() {
+    const destroyed = inject(DestroyRef)
+    // On a phone the strip scrolls: after a navigation the current tab is brought into view,
+    // once the router has told RouterLinkActive which tab it is.
+    const navigated = inject(Router)
+      .events.pipe(filter((event) => event instanceof NavigationEnd))
+      .subscribe(() => {
+        clearTimeout(this.timer)
+        this.timer = setTimeout(() => this.revealCurrentTab())
+      })
+    destroyed.onDestroy(() => {
+      navigated.unsubscribe()
+      clearTimeout(this.timer)
+    })
+  }
+
+  private revealCurrentTab(): void {
+    const strip = this.strip().nativeElement
+    const tab = strip.querySelector<HTMLElement>('.tab.active')
+    if (tab) scrollTabIntoView(strip, tab)
   }
 
   protected readonly session = computed(() => {

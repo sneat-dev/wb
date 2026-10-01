@@ -1,3 +1,4 @@
+import { Component } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { provideRouter } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
@@ -5,7 +6,7 @@ import { FleetStore, Session } from '@cockpit/fleet-data'
 import { agent, fleetDocument, pullRequest, run, worktree } from '@cockpit/fleet-data/testing'
 import { appRoutes } from '../app.routes'
 import { ShellState } from './shell-state'
-import { TopBar } from './top-bar'
+import { TopBar, scrollTabIntoView } from './top-bar'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
 
@@ -73,11 +74,14 @@ describe('TopBar', () => {
     expect(tab('Home').querySelector('.badge')?.classList.contains('hot')).toBe(false)
     store.loaded.set(false)
     await fixture.whenStable()
-    expect(root.querySelectorAll('.badge')).toHaveLength(0)
+    // The two places are held, hidden from everyone, so that the tabs do not move when the numbers arrive.
+    const pending = () => [...root.querySelectorAll('.badge')].filter((badge) => !badge.classList.contains('badge-pending'))
+    expect(pending()).toHaveLength(0)
+    expect(root.querySelectorAll('.badge-pending[aria-hidden="true"]')).toHaveLength(2)
     store.loaded.set(true)
     store.schemaMismatch.set('page-older')
     await fixture.whenStable()
-    expect(root.querySelectorAll('.badge')).toHaveLength(0)
+    expect(pending()).toHaveLength(0)
   })
 
   it('opens the palette from its entry', async () => {
@@ -118,5 +122,52 @@ describe('TopBar', () => {
     await harness.navigateByUrl('/machines/mach-alpha')
     await fixture.whenStable()
     expect(current()).toEqual(['Machines'])
+  })
+
+  it('brings the current tab into view in the scrolling strip after a navigation', async () => {
+    const harness = await RouterTestingHarness.create()
+    const fixture = TestBed.createComponent(TopBar)
+    await fixture.whenStable()
+    const strip = fixture.nativeElement.querySelector('.tabs') as HTMLElement
+    const machines = [...strip.querySelectorAll<HTMLElement>('.tab')].find((tab) => tab.textContent?.includes('Machines')) as HTMLElement
+    Object.defineProperty(strip, 'clientWidth', { value: 200 })
+    Object.defineProperty(strip, 'scrollLeft', { value: 0, writable: true })
+    Object.defineProperty(machines, 'offsetLeft', { value: 500 })
+    Object.defineProperty(machines, 'offsetWidth', { value: 80 })
+    await harness.navigateByUrl('/machines')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(strip.scrollLeft).toBe(500 + 80 - 200 + 16)
+    fixture.destroy()
+  })
+
+  it('leaves the strip where it is after a navigation to somewhere that no tab names', async () => {
+    @Component({ template: '' })
+    class Elsewhere {}
+    TestBed.resetTestingModule()
+    TestBed.configureTestingModule({ providers: [provideRouter([{ path: 'zzz', component: Elsewhere }])] })
+    const store = TestBed.inject(FleetStore)
+    store.loaded.set(true)
+    const harness = await RouterTestingHarness.create()
+    const fixture = TestBed.createComponent(TopBar)
+    await fixture.whenStable()
+    const strip = fixture.nativeElement.querySelector('.tabs') as HTMLElement
+    Object.defineProperty(strip, 'scrollLeft', { value: 7, writable: true })
+    await harness.navigateByUrl('/zzz')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(strip.scrollLeft).toBe(7)
+  })
+})
+
+describe('scrollTabIntoView', () => {
+  it('scrolls left to a tab before the view, right to one after it, and leaves one inside', () => {
+    const strip = { scrollLeft: 300, clientWidth: 200 }
+    scrollTabIntoView(strip, { offsetLeft: 100, offsetWidth: 80 })
+    expect(strip.scrollLeft).toBe(84)
+    scrollTabIntoView(strip, { offsetLeft: 10, offsetWidth: 80 })
+    expect(strip.scrollLeft).toBe(0)
+    scrollTabIntoView(strip, { offsetLeft: 400, offsetWidth: 80 })
+    expect(strip.scrollLeft).toBe(296)
+    scrollTabIntoView(strip, { offsetLeft: 350, offsetWidth: 80 })
+    expect(strip.scrollLeft).toBe(296)
   })
 })

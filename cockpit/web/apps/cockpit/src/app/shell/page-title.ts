@@ -1,4 +1,4 @@
-import { Injectable, Provider, signal } from '@angular/core'
+import { Injectable, Provider, inject, signal } from '@angular/core'
 import { Title } from '@angular/platform-browser'
 import { RouterStateSnapshot, TitleStrategy } from '@angular/router'
 
@@ -18,12 +18,8 @@ export class PageTitle {
  */
 @Injectable()
 export class PageTitleStrategy extends TitleStrategy {
-  constructor(
-    private readonly document: Title,
-    private readonly page: PageTitle,
-  ) {
-    super()
-  }
+  private readonly document = inject(Title)
+  private readonly page = inject(PageTitle)
 
   override updateTitle(snapshot: RouterStateSnapshot): void {
     const title = this.buildTitle(snapshot) ?? DEFAULT_TITLE

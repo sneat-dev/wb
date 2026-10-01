@@ -1,4 +1,5 @@
 import { expect, test, type Response } from '@playwright/test'
+import { fleet, stub, watch } from './support'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 
 test('the built shell loads under /cockpit/ with no console errors and no CSP violations', async ({ page }) => {
@@ -33,7 +34,8 @@ test('the built shell loads under /cockpit/ with no console errors and no CSP vi
   expect(policy).toContain("script-src 'self';")
   expect(policy).not.toContain('unsafe-')
 
-  await expect(page.getByRole('heading', { name: 'WB Cockpit' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'WB Cockpit' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   expect(await page.locator('style').count()).toBeGreaterThan(0)
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
   const violations = await page.evaluate(() => (window as unknown as { __violations: unknown[] }).__violations)
@@ -49,4 +51,164 @@ test('the shell follows the browser colour scheme', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' })
   const light = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
   expect(dark).not.toBe(light)
+})
+
+// The shell against a stubbed fleet: the top bar, the palette, the shortcuts and the sheet.
+test('the top bar shows the tabs, the signals, the freshness and the session, and names the page', async ({ page }) => {
+  await stub(page)
+  const expectClean = await watch(page)
+  await page.goto('/cockpit/')
+  const tabs = page.getByRole('navigation', { name: 'Pages' })
+  await expect(tabs.getByRole('link')).toHaveText([/^Home/, /^Tasks/, /^Repositories/, /^Worktrees/, /^Agents\s*1/, /^Machines/])
+  await expect(tabs.getByRole('link', { name: /^Home/ })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('link', { name: 'New task' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Search' })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: /updated \d+ s ago/ })).toBeVisible()
+  await expect(page.getByText('anonymous', { exact: true })).toBeVisible()
+  await expect(page).toHaveTitle('Home')
+  // No heading on screen repeats the tab.
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
+  expect(await page.getByRole('heading', { level: 1 }).evaluate((h) => h.getBoundingClientRect().width)).toBeLessThanOrEqual(1)
+
+  await tabs.getByRole('link', { name: /^Worktrees/ }).click()
+  await expect(page).toHaveTitle('Worktrees')
+  await expect(tabs.getByRole('link', { name: /^Worktrees/ })).toHaveAttribute('aria-current', 'page')
+  await expect(tabs.getByRole('link', { name: /^Home/ })).not.toHaveAttribute('aria-current', 'page')
+  await expectClean()
+})
+
+test('the palette opens with Control+K, groups what matches and opens the highlighted result with Enter', async ({ page }) => {
+  await stub(page)
+  const expectClean = await watch(page)
+  await page.goto('/cockpit/')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
+  // The overlays are fetched once the shell has rendered; wait for the entry to answer.
+  await expect(page.locator('app-overlays')).toBeAttached()
+  const requestsBefore: string[] = []
+  page.on('request', (request) => requestsBefore.push(request.url()))
+  await page.keyboard.press('Control+k')
+  const dialog = page.getByRole('dialog', { name: 'Search' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('combobox')).toBeFocused()
+  // Opening it needed no request.
+  expect(requestsBefore).toEqual([])
+
+  await dialog.getByRole('combobox').fill('cli')
+  await expect(dialog.getByRole('group').first()).toBeVisible()
+  const options = dialog.getByRole('option')
+  await expect(options.first()).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('ArrowDown')
+  await expect(options.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+
+  await page.keyboard.press('/')
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('combobox').fill('far')
+  await expect(options.first()).toContainText('far-task')
+  await page.keyboard.press('Enter')
+  await expect(dialog).toBeHidden()
+  await expect(page).toHaveURL(/\/cockpit\/tasks\/detail\?task=far-task$/)
+
+  await page.keyboard.press('Control+k')
+  await dialog.getByRole('combobox').fill('acme/far')
+  await dialog.getByRole('group', { name: 'Repositories' }).getByRole('option').first().click()
+  await expect(page).toHaveURL(/\/cockpit\/repositories\/-\/acme\/far$/)
+  await expectClean()
+})
+
+test('g then a letter switches tabs, a typed g w stays text, ? shows the sheet and Esc closes it', async ({ page }) => {
+  await stub(page)
+  const expectClean = await watch(page)
+  await page.goto('/cockpit/')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
+  await page.keyboard.press('g')
+  await page.keyboard.press('w')
+  await expect(page).toHaveURL(/\/cockpit\/worktrees$/)
+  await page.keyboard.press('g')
+  await page.keyboard.press('m')
+  await expect(page).toHaveURL(/\/cockpit\/machines$/)
+  await page.keyboard.press('g')
+  await page.keyboard.press('h')
+  await expect(page).toHaveURL(/\/cockpit\/$/)
+
+  // In an input the keys are text.
+  await page.keyboard.press('/')
+  const search = page.getByRole('dialog', { name: 'Search' }).getByRole('combobox')
+  await search.pressSequentially('g w')
+  await expect(search).toHaveValue('g w')
+  await expect(page).toHaveURL(/\/cockpit\/$/)
+  await page.keyboard.press('Escape')
+
+  await page.keyboard.press('?')
+  const sheet = page.getByRole('dialog', { name: 'Keyboard shortcuts' })
+  await expect(sheet).toBeVisible()
+  await expect(sheet.getByText('Machines')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(sheet).toBeHidden()
+  await expectClean()
+})
+
+test('the schema-mismatch state replaces the data: update wb when the daemon is older, reload when the page is', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { schema_version: 1, warming_up: false, repositories_total: 0, repositories_scanned: 0, diagnostics: 0, machines: [], repositories: [], worktrees: [], pull_requests: [], agents: [] } }))
+  await page.goto('/cockpit/')
+  const alert = page.getByRole('alert')
+  await expect(alert).toContainText('update wb on this machine')
+  await expect(page.locator('tbody tr')).toHaveCount(0)
+  await page.unroute('**/api/v1/cockpit/fleet')
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { schema_version: 3, warming_up: false, repositories_total: 0, repositories_scanned: 0, diagnostics: 0, machines: [], repositories: [], worktrees: [], pull_requests: [], agents: [] } }))
+  await page.reload()
+  await expect(page.getByRole('alert')).toContainText('reload')
+  await expect(page.getByRole('button', { name: 'Reload the page' })).toBeVisible()
+})
+
+// cockpit-views#ac:warming-up-shows-progress: the chip, the skeleton rows, and no layout shift when the complete document arrives.
+test('while the daemon warms up the chip counts the scan and skeleton rows wait, and the complete document shifts nothing', async ({ page }) => {
+  await stub(page)
+  let reads = 0
+  await page.route('**/api/v1/cockpit/fleet', (route) => {
+    reads++
+    const warming = reads <= 2
+    return route.fulfill({
+      json: warming ? { ...fleet, warming_up: true, repositories_total: 438, repositories_scanned: 120, repositories: fleet.repositories.slice(0, 1), worktrees: fleet.worktrees.slice(0, 1) } : fleet,
+      headers: { 'Cache-Control': 'no-cache' },
+    })
+  })
+  await page.addInitScript(() => {
+    const shifts = window as unknown as { __cls: number }
+    shifts.__cls = 0
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries() as unknown as { value: number; hadRecentInput: boolean }[]) if (!entry.hadRecentInput) shifts.__cls += entry.value
+    }).observe({ type: 'layout-shift', buffered: true })
+  })
+  await page.goto('/cockpit/')
+  const chip = page.getByRole('status').filter({ hasText: /scanned|updated/ })
+  await expect(chip).toContainText('scanned 120 of 438')
+  await expect(page.locator('app-skeleton-rows.warming .skeleton-row')).toHaveCount(6)
+  expect(await page.locator('app-skeleton-rows.warming .skeleton-row').first().evaluate((row) => row.getBoundingClientRect().height)).toBe(32)
+
+  await expect(chip).toContainText(/updated \d+ s ago/, { timeout: 15_000 })
+  await expect(page.locator('app-skeleton-rows')).toHaveCount(0)
+  await expect(page.locator('tbody tr').first()).toBeVisible()
+  expect(await page.evaluate(() => (window as unknown as { __cls: number }).__cls)).toBeLessThan(0.01)
+})
+
+// cockpit-views#ac:initial-script-fits-the-budget, the loading half: a page's code is a chunk of its own, fetched only when its route is opened.
+test('a page loads its own script chunk only when it is opened', async ({ page }) => {
+  await stub(page)
+  const scripts = new Set<string>()
+  page.on('request', (request) => {
+    if (request.url().endsWith('.js')) scripts.add(request.url())
+  })
+  await page.goto('/cockpit/')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
+  await expect(page.locator('app-overlays')).toBeAttached()
+  const home = new Set(scripts)
+  expect(home.size).toBeGreaterThan(3)
+
+  await page.goto('/cockpit/worktrees/wt-1')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Worktree')
+  const detailOnly = [...scripts].filter((url) => !home.has(url))
+  expect(detailOnly.length).toBeGreaterThan(0)
 })

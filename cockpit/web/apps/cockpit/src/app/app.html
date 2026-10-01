@@ -7,10 +7,16 @@
     <app-schema-mismatch [mismatch]="mismatch" />
   } @else {
     @if (store.loaded()) {
-      <router-outlet />
+      <!-- Hidden until the first page has been routed to (its code is a lazy chunk), so that nothing that is on screen moves when it arrives. -->
+      <div class="page-slot" [hidden]="!pageShown()">
+        <router-outlet (activate)="pageShown.set(true)" />
+      </div>
+      @if (pageShown() && store.warmingUp()) {
+        <app-skeleton-rows class="warming" [count]="6" />
+      }
     }
-    @if (!store.loaded() || store.warmingUp()) {
-      <app-skeleton-rows class="warming" [count]="6" />
+    @if (!store.loaded() || !pageShown()) {
+      <app-skeleton-rows class="loading" [count]="6" />
     }
   }
 </main>

@@ -1,5 +1,5 @@
 @if (shell.sheetOpen()) {
-  <div class="overlay-backdrop" (click)="shell.closeSheet()"></div>
+  <button type="button" class="overlay-backdrop" tabindex="-1" aria-hidden="true" (click)="shell.closeSheet()"></button>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="shortcut-sheet-title" appOverlayFocus>
     <header class="sheet-head">
       <h2 id="shortcut-sheet-title">Keyboard shortcuts</h2>

@@ -1,5 +1,5 @@
 @if (shell.paletteOpen()) {
-  <div class="overlay-backdrop" (click)="shell.closePalette()"></div>
+  <button type="button" class="overlay-backdrop" tabindex="-1" aria-hidden="true" (click)="shell.closePalette()"></button>
   <div class="palette" role="dialog" aria-modal="true" aria-label="Search" appOverlayFocus>
     <div class="search">
       <app-icon name="search" />
@@ -33,12 +33,16 @@
               [id]="'palette-option-' + result.index"
               [attr.aria-selected]="result.index === active()"
               [class.active]="result.index === active()"
+              tabindex="-1"
               (mousemove)="hover(result.index)"
               (click)="open(result)"
+              (keydown.enter)="open(result)"
             >
               <app-icon [name]="iconOf(result)" />
-              <span class="label">{{ result.label }}</span>
-              <span class="detail">{{ result.detail }}</span>
+              <span class="text">
+                <span class="label">{{ result.label }}</span>
+                <span class="detail">{{ result.detail }}</span>
+              </span>
               @if (result.index === active()) {
                 <app-icon class="enter" name="corner-down-left" />
               }

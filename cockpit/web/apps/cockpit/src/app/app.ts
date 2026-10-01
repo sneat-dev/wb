@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, ViewContainerRef, afterNextRender, inject, viewChild } from '@angular/core'
+import { ChangeDetectionStrategy, Component, DestroyRef, ViewContainerRef, afterNextRender, inject, signal, viewChild } from '@angular/core'
 import { RouterOutlet } from '@angular/router'
 import { FleetStore } from '@cockpit/fleet-data'
 import { FleetBanner } from './fleet-banner/fleet-banner'
@@ -30,6 +30,8 @@ export class App {
   /** The name of the page, which is also the document title (REQ:no-visible-page-heading). */
   protected readonly pageTitle = inject(PageTitle).title
 
+  /** Whether a page has been routed to yet. */
+  protected readonly pageShown = signal(false)
   private readonly overlays = viewChild.required('overlays', { read: ViewContainerRef })
 
   constructor() {

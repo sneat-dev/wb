@@ -1,9 +1,15 @@
 import { TestBed } from '@angular/core/testing'
 import { FleetDocument, FleetStore, hrefOf } from '@cockpit/fleet-data'
 import { agent, fleetDocument, repository, worktree } from '@cockpit/fleet-data/testing'
-import { PALETTE_KINDS, RESULTS_PER_KIND, searchPalette } from './palette-search'
+import { PALETTE_KINDS, PaletteGroup, RESULTS_PER_KIND, searchPalette } from './palette-search'
 
 const NOW = Date.parse('2026-10-01T10:05:00Z')
+
+function groupOf(groups: PaletteGroup[], kind: string): PaletteGroup {
+  const found = groups.find((group) => group.kind === kind)
+  if (found === undefined) throw new Error(`no ${kind} group in ${groups.map((group) => group.kind).join(', ')}`)
+  return found
+}
 
 function model(document: FleetDocument) {
   const store = TestBed.inject(FleetStore)
@@ -27,7 +33,7 @@ describe('searchPalette', () => {
   it('groups results by kind with at most 8 each, and does not search lazily loaded branches', () => {
     const groups = searchPalette(model(goFleet()), 'go', NOW)
     expect(groups.map((group) => group.kind)).toEqual(['task', 'repository', 'worktree', 'branch', 'agent'])
-    const repositories = groups.find((group) => group.kind === 'repository')!
+    const repositories = groupOf(groups, 'repository')
     expect(repositories.results).toHaveLength(RESULTS_PER_KIND)
     expect(repositories.more).toBe(2)
     for (const group of groups) {
@@ -43,7 +49,7 @@ describe('searchPalette', () => {
 
   it('opens the page of each kind', () => {
     const groups = searchPalette(model(goFleet()), 'go', NOW)
-    const first = (kind: string) => groups.find((group) => group.kind === kind)!.results[0]
+    const first = (kind: string) => groupOf(groups, kind).results[0]
     expect(hrefOf(first('task').link)).toBe('/tasks/detail?task=go-live')
     expect(hrefOf(first('repository').link)).toMatch(/^\/repositories\/github\.com\/acme\/go-\d$/)
     expect(hrefOf(first('worktree').link)).toBe('/worktrees/w1')
@@ -61,7 +67,7 @@ describe('searchPalette', () => {
 
   it('finds machines, and says which one is this machine', () => {
     const groups = searchPalette(model(fleetDocument()), 'a', NOW)
-    const machines = groups.find((group) => group.kind === 'machine')!
+    const machines = groupOf(groups, 'machine')
     expect(machines.results.map((result) => [result.label, result.detail])).toEqual([
       ['alpha', 'live, this machine'],
       ['beta', 'cached'],
@@ -98,7 +104,7 @@ describe('searchPalette', () => {
   it('uses the matcher: a glob, an exclusion, a field and an unknown field as plain text', () => {
     const doc = goFleet()
     expect(searchPalette(model(doc), '*go-*', NOW).find((group) => group.kind === 'repository')?.results).toHaveLength(8)
-    const excluded = searchPalette(model(doc), 'go -go-1', NOW).find((group) => group.kind === 'repository')!
+    const excluded = groupOf(searchPalette(model(doc), 'go -go-1', NOW), 'repository')
     expect(excluded.results.map((result) => result.label)).not.toContain('acme/go-1')
     expect(excluded.results.map((result) => result.label)).not.toContain('acme/go-10')
     expect(searchPalette(model(doc), 'repo:plain', NOW).map((group) => group.kind)).toEqual(['repository'])
@@ -121,7 +127,7 @@ describe('searchPalette', () => {
         { ...worktree('w3', 'r1', 'alpha'), branch: '' },
       ],
     })
-    const branches = searchPalette(model(doc), 'shared', NOW).find((group) => group.kind === 'branch')!
+    const branches = groupOf(searchPalette(model(doc), 'shared', NOW), 'branch')
     expect(branches.results).toHaveLength(1)
     expect(searchPalette(model(doc), 'task-w3', NOW).find((group) => group.kind === 'branch')).toBeUndefined()
   })

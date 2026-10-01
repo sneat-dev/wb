@@ -12,7 +12,12 @@
 
 /* Rows that wait for the first scan sit below what has been listed, so what
    arrives above them is never pushed by their going. */
-.warming {
+.page-slot[hidden] {
+  display: none;
+}
+
+.warming,
+.loading {
   display: block;
   margin-top: var(--space-4);
 }

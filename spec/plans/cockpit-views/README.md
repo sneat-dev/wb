@@ -201,7 +201,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-11
 **Verifies:** cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness, cockpit-views#ac:home-route-and-alias, cockpit-views#ac:warming-up-shows-progress, cockpit-views#ac:no-heading-repeats-the-tab, cockpit-views#ac:palette-groups-results, cockpit-views#ac:shortcuts-navigate-and-respect-typing, cockpit-views#ac:initial-script-fits-the-budget, cockpit-views#ac:metrics-poll-only-while-visible
 **Depends-On:** 10
-**Status:** planning
+**Status:** complete
 
 In `cockpit/web`: the application shell (top bar with signal badges, freshness chip, session chip and "New task" button, the hidden `h1`), the palette over the fleet document (navigation results only; action results are `cockpit-actions`), the keyboard shortcuts, the metrics polling service (every 10 seconds only while Home or a Machines page is visible), all routes pre-registered with placeholder pages so later tasks never edit `app.routes.ts` or the tab list, and the JavaScript-only bundle budget in `tools/finish-build.mjs` (at most 350 kB). It uses task 10's library and fixtures and does not edit them.
 

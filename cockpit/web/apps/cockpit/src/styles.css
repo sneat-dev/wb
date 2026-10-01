@@ -100,7 +100,8 @@
   }
 
   .table-scroll td:first-child {
-    overflow-wrap: anywhere;
+    min-width: 7rem;
+    overflow-wrap: break-word;
   }
 
   .table-scroll .route {

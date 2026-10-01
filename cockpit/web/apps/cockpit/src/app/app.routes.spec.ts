@@ -63,7 +63,7 @@ describe('appRoutes', () => {
     expect(appRoutes[0].component).toBeUndefined()
     const children = await (appRoutes[0].loadChildren as () => Promise<Route[]>)()
     expect(children).toHaveLength(1)
-    expect(children[0].providers).toHaveLength(1)
+    expect(children[0].providers).toHaveLength(2)
     expect(children[0].children).toBe(pageRoutes)
   })
 })

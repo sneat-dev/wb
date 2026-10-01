@@ -79,6 +79,14 @@
   color: var(--text);
 }
 
+.text {
+  display: flex;
+  flex: 1;
+  gap: var(--space-3);
+  align-items: center;
+  min-width: 0;
+}
+
 .label {
   flex: none;
   max-width: 55%;

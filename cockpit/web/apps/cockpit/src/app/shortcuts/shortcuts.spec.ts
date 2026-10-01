@@ -136,9 +136,17 @@ describe('Shortcuts', () => {
     shortcuts.registerPanel(older)
     const unregister = shortcuts.registerPanel(newer)
 
+    const search = document.createElement('input')
+    document.body.append(search)
+    search.focus()
     shell.openPalette()
-    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(press('Escape', {}, search).defaultPrevented).toBe(true)
     expect(shell.paletteOpen()).toBe(false)
+    // The input the palette had is not the target of the next key while it is still on the page.
+    expect(document.activeElement).not.toBe(search)
+    expect(press('?').defaultPrevented).toBe(true)
+    expect(shell.sheetOpen()).toBe(true)
+    shell.closeSheet()
     shell.openSheet()
     press('Escape')
     expect(shell.sheetOpen()).toBe(false)

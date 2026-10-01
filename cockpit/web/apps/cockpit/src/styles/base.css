@@ -10,7 +10,11 @@ html {
   text-size-adjust: 100%;
 }
 
-html,
+/* The root keeps the browser's size, so every rem in the tokens is 16 px; the page text is 14 px. */
+html {
+  background: var(--bg);
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -91,8 +95,11 @@ kbd {
   position: fixed;
   z-index: 50;
   inset: 0;
+  border: 0;
+  padding: 0;
   background: var(--overlay);
   backdrop-filter: blur(2px);
+  cursor: default;
 }
 
 /*

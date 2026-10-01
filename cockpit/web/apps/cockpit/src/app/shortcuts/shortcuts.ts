@@ -108,12 +108,12 @@ export class Shortcuts {
 
   /** Esc: the palette, then the sheet, then the focused filter, then the side panel. */
   private escape(): boolean {
-    if (this.shell.paletteOpen()) {
+    if (this.shell.modalOpen()) {
       this.shell.closePalette()
-      return true
-    }
-    if (this.shell.sheetOpen()) {
       this.shell.closeSheet()
+      // The overlay leaves the page on the next render; until then its input would still be
+      // the target of the next key, which is then typed into it instead of being a shortcut.
+      ;(this.doc.activeElement as HTMLElement).blur()
       return true
     }
     if (this.filter && this.doc.activeElement === this.filter.element) {
