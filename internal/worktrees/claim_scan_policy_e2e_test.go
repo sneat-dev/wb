@@ -20,10 +20,25 @@ func TestE2EPrivateClaimReadersKeepDistinctCorruptionAndFirstMatchPolicies(t *te
 	wtLifeCovWriteJSON(t, filepath.Join(claims, claimID+".json"), workLogClaim{
 		Task: "task-one", Worktree: worktree, Lifecycle: "active",
 	})
+	validWorktree := t.TempDir()
+	gitTest(t, validWorktree, "init")
+	valid, err := recordWorkLogWithHooks(home, "task-two", CreateResult{
+		Repository: "acme/app", WorktreeDir: validWorktree, Branch: "wb/task-two", Base: "main",
+		BaseSHA: strings.Repeat("a", 40),
+	}, WorkLogOptions{EffortID: "task-two", RunID: "run-two", AgentID: "codex", Model: "unknown"}, workLogPublicationHooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	visitCount := 0
-	visit := func(_ *os.File, _ string, _ workLogClaim) { visitCount++ }
-	if err := walkActiveWorkLogClaims(home, visit); err != nil || visitCount != 0 {
-		t.Fatalf("tolerant reader accepted incomplete claim: count=%d, err=%v", visitCount, err)
+	visit := func(claims *os.File, id string, claim workLogClaim) {
+		visitCount++
+		var held workLogClaim
+		if err := readJSONAt(claims, id+".json", &held); err != nil || id != valid.ClaimID || claim.Worktree != validWorktree || held.ClaimID != id {
+			t.Fatalf("tolerant reader yielded wrong claim or descriptor: id=%q claim=%#v held=%#v err=%v", id, claim, held, err)
+		}
+	}
+	if err := walkActiveWorkLogClaims(home, visit); err != nil || visitCount != 1 {
+		t.Fatalf("tolerant reader lost later valid claim: count=%d, err=%v", visitCount, err)
 	}
 	unsafeRun := filepath.Join(home, "worklogs", "task-one", "runs", ".earlier")
 	if err := os.Mkdir(unsafeRun, 0o700); err != nil {
@@ -32,8 +47,9 @@ func TestE2EPrivateClaimReadersKeepDistinctCorruptionAndFirstMatchPolicies(t *te
 	if _, err := activeWorkLogClaimAtPath(home, worktree, nil); err == nil || !strings.Contains(err.Error(), "unsafe Work Log run") {
 		t.Fatalf("strict reader skipped earlier unsafe run: %v", err)
 	}
-	if err := walkActiveWorkLogClaims(home, visit); err != nil || visitCount != 0 {
-		t.Fatalf("tolerant reader accepted unsafe run: count=%d, err=%v", visitCount, err)
+	visitCount = 0
+	if err := walkActiveWorkLogClaims(home, visit); err != nil || visitCount != 1 {
+		t.Fatalf("tolerant reader lost valid claim after unsafe run: count=%d, err=%v", visitCount, err)
 	}
 	if err := os.Remove(unsafeRun); err != nil {
 		t.Fatal(err)
@@ -45,8 +61,9 @@ func TestE2EPrivateClaimReadersKeepDistinctCorruptionAndFirstMatchPolicies(t *te
 	if _, err := activeWorkLogClaimAtPath(home, worktree, nil); err == nil {
 		t.Fatal("strict reader followed a run symlink before the matching claim")
 	}
-	if err := walkActiveWorkLogClaims(home, visit); err != nil || visitCount != 0 {
-		t.Fatalf("tolerant reader followed a run symlink: count=%d, err=%v", visitCount, err)
+	visitCount = 0
+	if err := walkActiveWorkLogClaims(home, visit); err != nil || visitCount != 1 {
+		t.Fatalf("tolerant reader lost valid claim after run symlink: count=%d, err=%v", visitCount, err)
 	}
 	if err := os.Remove(linkedRun); err != nil {
 		t.Fatal(err)
