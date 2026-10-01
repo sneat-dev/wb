@@ -35,7 +35,7 @@ func TestProcSourceReadsAllFiveMetrics(t *testing.T) {
 	if first.CPUPercent != nil {
 		t.Error("the first reading has a CPU percent, which needs two readings")
 	}
-	if first.Load1 != 0.52 || first.MemoryTotalBytes != 16000000*1024 || first.MemoryUsedBytes != 12000000*1024 || first.DiskFreeBytes != 40 || first.DiskTotalBytes != 100 {
+	if *first.Load1 != 0.52 || *first.MemoryTotalBytes != 16000000*1024 || *first.MemoryUsedBytes != 12000000*1024 || *first.DiskFreeBytes != 40 || *first.DiskTotalBytes != 100 {
 		t.Errorf("first = %+v", first)
 	}
 	files["/proc/stat"] = statSecond
@@ -49,29 +49,43 @@ func TestProcSourceReadsAllFiveMetrics(t *testing.T) {
 	}
 }
 
-func TestProcSourceFailsOnAnyUnreadableOrMalformedPart(t *testing.T) {
+// TestProcSourceKeepsWhatItCouldReadWhenAPartFails proves each part is read on its
+// own: a failing part is absent and its error returned, and the rest stays.
+func TestProcSourceKeepsWhatItCouldReadWhenAPartFails(t *testing.T) {
 	t.Parallel()
 	good := map[string]string{"/proc/stat": statFirst, "/proc/loadavg": loadText, "/proc/meminfo": memText}
-	for name, change := range map[string]func(map[string]string){
-		"no stat":     func(f map[string]string) { delete(f, "/proc/stat") },
-		"bad stat":    func(f map[string]string) { f["/proc/stat"] = "nothing" },
-		"no loadavg":  func(f map[string]string) { delete(f, "/proc/loadavg") },
-		"bad loadavg": func(f map[string]string) { f["/proc/loadavg"] = "" },
-		"no meminfo":  func(f map[string]string) { delete(f, "/proc/meminfo") },
-		"bad meminfo": func(f map[string]string) { f["/proc/meminfo"] = "MemTotal: 1 kB\n" },
+	for name, test := range map[string]struct {
+		file   string
+		bad    string // "" deletes the file
+		absent func(Sample) bool
+	}{
+		"no stat":     {"/proc/stat", "", func(s Sample) bool { return s.CPUPercent == nil && s.Load1 != nil }},
+		"bad stat":    {"/proc/stat", "nothing", func(s Sample) bool { return s.Load1 != nil }},
+		"no loadavg":  {"/proc/loadavg", "", func(s Sample) bool { return s.Load1 == nil && s.MemoryTotalBytes != nil }},
+		"bad loadavg": {"/proc/loadavg", "nan", func(s Sample) bool { return s.Load1 == nil }},
+		"no meminfo":  {"/proc/meminfo", "", func(s Sample) bool { return s.MemoryUsedBytes == nil && s.Load1 != nil }},
+		"bad meminfo": {"/proc/meminfo", "MemTotal: 1 kB\n", func(s Sample) bool { return s.MemoryTotalBytes == nil }},
 	} {
 		files := map[string]string{}
 		for key, value := range good {
 			files[key] = value
 		}
-		change(files)
-		if _, err := (&procSource{readFile: fakeProc(files), disk: okDisk}).Read(); err == nil {
-			t.Errorf("%s: no error", name)
+		if test.bad == "" {
+			delete(files, test.file)
+		} else {
+			files[test.file] = test.bad
+		}
+		sample, err := (&procSource{readFile: fakeProc(files), disk: okDisk}).Read()
+		if err == nil || !sample.HasData() || !test.absent(sample) {
+			t.Errorf("%s: err %v, sample %+v", name, err, sample)
 		}
 	}
 	failing := &procSource{readFile: fakeProc(good), disk: func() (uint64, uint64, error) { return 0, 0, errors.New("statfs") }}
-	if _, err := failing.Read(); err == nil {
-		t.Error("a failed statfs gave no error")
+	if sample, err := failing.Read(); err == nil || sample.DiskTotalBytes != nil || sample.Load1 == nil {
+		t.Errorf("a failed statfs: %+v, %v", sample, err)
+	}
+	if sample, err := (&procSource{readFile: fakeProc(nil), disk: func() (uint64, uint64, error) { return 0, 0, errors.New("x") }}).Read(); err == nil || sample.HasData() {
+		t.Errorf("nothing readable gave %+v, %v", sample, err)
 	}
 }
 
@@ -85,7 +99,7 @@ func TestParsers(t *testing.T) {
 			t.Errorf("parseCPUTimes(%q) has no error", bad)
 		}
 	}
-	for _, bad := range []string{"", "soon", "-1 0 0"} {
+	for _, bad := range []string{"", "soon", "-1 0 0", "NaN 0 0", "+Inf 0 0"} {
 		if _, err := parseLoad1(bad); err == nil {
 			t.Errorf("parseLoad1(%q) has no error", bad)
 		}

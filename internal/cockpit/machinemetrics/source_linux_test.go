@@ -6,14 +6,8 @@ import "testing"
 func TestRealLinuxSourceReadsThisMachine(t *testing.T) {
 	t.Parallel()
 	source := NewSource(t.TempDir())
-	if _, err := source.Read(); err != nil {
-		t.Fatal(err)
-	}
-	sample, err := source.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sample.MemoryTotalBytes == 0 || sample.MemoryUsedBytes > sample.MemoryTotalBytes || sample.DiskTotalBytes == 0 {
+	sample := readUntilCPU(t, source)
+	if sample.MemoryTotalBytes == nil || *sample.MemoryTotalBytes == 0 || *sample.MemoryUsedBytes > *sample.MemoryTotalBytes || sample.DiskTotalBytes == nil || *sample.DiskTotalBytes == 0 || sample.CPUPercent == nil {
 		t.Errorf("sample = %+v", sample)
 	}
 }

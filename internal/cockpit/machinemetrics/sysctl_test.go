@@ -33,7 +33,7 @@ func TestSysctlSourceReportsEverythingAndDerivesCPUFromTwoReadings(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.CPUPercent != nil || first.Load1 != 3 || first.MemoryUsedBytes != 60 || first.MemoryTotalBytes != 100 || first.DiskFreeBytes != 40 {
+	if first.CPUPercent != nil || *first.Load1 != 3 || *first.MemoryUsedBytes != 60 || *first.MemoryTotalBytes != 100 || *first.DiskFreeBytes != 40 {
 		t.Errorf("first = %+v", first)
 	}
 	source.cpu = func() (float64, float64, error) { return 30, 200, nil }
@@ -43,19 +43,23 @@ func TestSysctlSourceReportsEverythingAndDerivesCPUFromTwoReadings(t *testing.T)
 	}
 }
 
-func TestSysctlSourceFailsOnAnyRefusal(t *testing.T) {
+func TestSysctlSourceKeepsWhatItCouldReadWhenAPartFails(t *testing.T) {
 	t.Parallel()
-	for name, change := range map[string]func(*sysctlSource){
-		"loadavg refused": func(s *sysctlSource) { s.raw = func(string) ([]byte, error) { return nil, errRefused } },
-		"loadavg short":   func(s *sysctlSource) { s.raw = func(string) ([]byte, error) { return []byte{1}, nil } },
-		"cpu":             func(s *sysctlSource) { s.cpu = func() (float64, float64, error) { return 0, 0, errRefused } },
-		"memory":          func(s *sysctlSource) { s.memory = func() (uint64, uint64, error) { return 0, 0, errRefused } },
-		"disk":            func(s *sysctlSource) { s.disk = func() (uint64, uint64, error) { return 0, 0, errRefused } },
+	for name, test := range map[string]struct {
+		change func(*sysctlSource)
+		absent func(Sample) bool
+	}{
+		"loadavg refused": {func(s *sysctlSource) { s.raw = func(string) ([]byte, error) { return nil, errRefused } }, func(s Sample) bool { return s.Load1 == nil && s.DiskTotalBytes != nil }},
+		"loadavg short":   {func(s *sysctlSource) { s.raw = func(string) ([]byte, error) { return []byte{1}, nil } }, func(s Sample) bool { return s.Load1 == nil }},
+		"cpu":             {func(s *sysctlSource) { s.cpu = func() (float64, float64, error) { return 0, 0, errRefused } }, func(s Sample) bool { return s.CPUPercent == nil && s.Load1 != nil }},
+		"memory":          {func(s *sysctlSource) { s.memory = func() (uint64, uint64, error) { return 0, 0, errRefused } }, func(s Sample) bool { return s.MemoryTotalBytes == nil && s.Load1 != nil }},
+		"disk":            {func(s *sysctlSource) { s.disk = func() (uint64, uint64, error) { return 0, 0, errRefused } }, func(s Sample) bool { return s.DiskFreeBytes == nil && s.Load1 != nil }},
 	} {
 		source := goodMac()
-		change(source)
-		if _, err := source.Read(); err == nil {
-			t.Errorf("%s: no error", name)
+		test.change(source)
+		sample, err := source.Read()
+		if err == nil || !sample.HasData() || !test.absent(sample) {
+			t.Errorf("%s: err %v, sample %+v", name, err, sample)
 		}
 	}
 	if _, err := parseLoadavg(loadavgBytes(1, 0)); err == nil {

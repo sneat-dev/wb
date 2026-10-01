@@ -18,36 +18,57 @@ type procSource struct {
 
 var errBadProc = errors.New("unexpected /proc format")
 
-// Read reads /proc/stat, /proc/loadavg and /proc/meminfo and the projects root's disk.
+// Read reads /proc/stat, /proc/loadavg and /proc/meminfo and the projects root's
+// disk, each independently: what could be read is returned with the errors of
+// what could not.
 func (p *procSource) Read() (Sample, error) {
 	var sample Sample
+	var errs []error
+	if busy, all, err := p.cpuTimes(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.CPUPercent = p.cpu.percent(float64(busy), float64(all))
+	}
+	if load, err := p.load(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.Load1 = &load
+	}
+	if used, total, err := p.memory(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.MemoryUsedBytes, sample.MemoryTotalBytes = &used, &total
+	}
+	if free, total, err := p.disk(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.DiskFreeBytes, sample.DiskTotalBytes = &free, &total
+	}
+	return sample, errors.Join(errs...)
+}
+
+func (p *procSource) cpuTimes() (busy, all uint64, err error) {
 	stat, err := p.readFile("/proc/stat")
 	if err != nil {
-		return sample, err
+		return 0, 0, err
 	}
-	busy, all, err := parseCPUTimes(string(stat))
-	if err != nil {
-		return sample, err
-	}
+	return parseCPUTimes(string(stat))
+}
+
+func (p *procSource) load() (float64, error) {
 	loadavg, err := p.readFile("/proc/loadavg")
 	if err != nil {
-		return sample, err
+		return 0, err
 	}
-	if sample.Load1, err = parseLoad1(string(loadavg)); err != nil {
-		return sample, err
-	}
+	return parseLoad1(string(loadavg))
+}
+
+func (p *procSource) memory() (used, total uint64, err error) {
 	meminfo, err := p.readFile("/proc/meminfo")
 	if err != nil {
-		return sample, err
+		return 0, 0, err
 	}
-	if sample.MemoryUsedBytes, sample.MemoryTotalBytes, err = parseMemInfo(string(meminfo)); err != nil {
-		return sample, err
-	}
-	if sample.DiskFreeBytes, sample.DiskTotalBytes, err = p.disk(); err != nil {
-		return sample, err
-	}
-	sample.CPUPercent = p.cpu.percent(float64(busy), float64(all))
-	return sample, nil
+	return parseMemInfo(string(meminfo))
 }
 
 // parseCPUTimes reads the aggregate `cpu` line of /proc/stat: the busy and the
@@ -80,7 +101,7 @@ func parseLoad1(loadavg string) (float64, error) {
 		return 0, errBadProc
 	}
 	load, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil || load < 0 {
+	if err != nil || load < 0 || !finite(load) {
 		return 0, errBadProc
 	}
 	return load, nil

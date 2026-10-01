@@ -117,12 +117,12 @@ type Options struct {
 	// Hardware is this machine's hardware facts for its machine entry; the zero
 	// value omits them. The daemon passes LocalHardware().
 	Hardware Hardware
-	// Sampler is this machine's metrics history, served as the `local` source of
-	// the machine-metrics route; nil means this machine has none (`none`). The
-	// daemon starts and stops it beside the snapshotter.
+	// Sampler is this machine's metrics history. It alone answers for this
+	// machine's id on the machine-metrics route (`local`); nil means this machine
+	// has none (`none`). The snapshotter starts and stops it with itself.
 	Sampler *machinemetrics.Sampler
-	// Metrics are further sources of the machine-metrics route, asked in order
-	// ahead of this machine's own sampler (the live remote and cached sources).
+	// Metrics are the sources of the machine-metrics route for other machines,
+	// asked in order (the live remote, then the cached source).
 	Metrics []MetricsSource
 	// Compress compresses a stored body; nil means cockpit.Gzip. It runs once
 	// for each snapshot stored and once for each repository's branch list that
@@ -236,10 +236,7 @@ func New(options Options) *Snapshotter {
 		repos: map[string]*repoState{}, metricsSources: slices.Clone(options.Metrics),
 		metrics: metricsCache{entries: map[string]cachedMetrics{}},
 	}
-	if options.Sampler != nil {
-		snapshotter.sampler = options.Sampler
-		snapshotter.metricsSources = append(snapshotter.metricsSources, localMetrics{machineID: localMachineID(options.Machine), sampler: options.Sampler})
-	}
+	snapshotter.sampler = options.Sampler
 	if snapshotter.interval <= 0 {
 		snapshotter.interval = DefaultInterval
 	}

@@ -2,9 +2,12 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,8 +27,10 @@ type countingSource struct {
 
 func (c *countingSource) Read() (machinemetrics.Sample, error) {
 	n := c.reads.Add(1)
-	return machinemetrics.Sample{Load1: float64(n), MemoryUsedBytes: 1, MemoryTotalBytes: 2, DiskFreeBytes: 3, DiskTotalBytes: 4}, c.err
+	return machinemetrics.Sample{Load1: ptr(float64(n)), MemoryUsedBytes: ptr(uint64(1)), MemoryTotalBytes: ptr(uint64(2)), DiskFreeBytes: ptr(uint64(3)), DiskTotalBytes: ptr(uint64(4))}, c.err
 }
+
+func ptr[T any](value T) *T { return &value }
 
 // fakeMetrics is a MetricsSource that knows some machines.
 type fakeMetrics struct {
@@ -65,6 +70,7 @@ func (a advancing) Read() (machinemetrics.Sample, error) {
 // filledSampler is a sampler holding n samples read from source, 10 s apart.
 func filledSampler(t *testing.T, source machinemetrics.Source, n int) *machinemetrics.Sampler {
 	clock := newClock()
+	clock.advance(-time.Hour) // the samples are all in the snapshotter's past
 	ticks := make(chan time.Time)
 	sampler := machinemetrics.New(machinemetrics.Options{
 		Source: advancing{source, clock}, Now: clock.Now,
@@ -95,10 +101,11 @@ func TestMetricsRouteServesEachSource(t *testing.T) {
 	refreshAndSettle(t, snapshotter)
 	vm, old := machineIDOf(t, snapshotter, "vm"), machineIDOf(t, snapshotter, "old")
 	remote := &fakeMetrics{answers: map[string]MetricsAnswer{
-		vm:  {Route: RouteLiveRemote, FetchedAt: &fetched, Samples: []machinemetrics.Sample{{Load1: 1, SampledAt: fetched}, {Load1: 2, SampledAt: fetched}}, Version: 1},
-		old: {Route: RouteCached, Samples: []machinemetrics.Sample{{Load1: 9, SampledAt: fetched}}, Version: 1},
+		vm:  {Route: RouteLiveRemote, FetchedAt: &fetched, Samples: []machinemetrics.Sample{{Load1: ptr(1.0), SampledAt: fetched.Add(-10 * time.Second)}, {Load1: ptr(2.0), SampledAt: fetched}}, Version: 1},
+		old: {Route: RouteCached, Samples: []machinemetrics.Sample{{Load1: ptr(9.0), SampledAt: fetched}}, Version: 1},
 	}}
-	snapshotter.metricsSources = []MetricsSource{remote, localMetrics{machineID: localMachineID(testMachine), sampler: sampler}}
+	snapshotter.metricsSources = []MetricsSource{remote}
+	snapshotter.sampler = sampler
 	server := newCockpitServer(t, snapshotter)
 	readsBefore := source.reads.Load()
 
@@ -124,7 +131,7 @@ func TestMetricsRouteServesEachSource(t *testing.T) {
 		t.Error("a local answer carries fetched_at")
 	}
 	for i := 1; i < len(local.Samples); i++ {
-		if local.Samples[i].Load1 <= local.Samples[i-1].Load1 || !local.Samples[i].SampledAt.After(local.Samples[i-1].SampledAt) {
+		if *local.Samples[i].Load1 <= *local.Samples[i-1].Load1 || !local.Samples[i].SampledAt.After(local.Samples[i-1].SampledAt) {
 			t.Errorf("samples are not oldest first: %+v", local.Samples)
 		}
 	}
@@ -218,14 +225,15 @@ func TestMetricsRouteIsCompressedAndRevalidatable(t *testing.T) {
 	}
 }
 
-// TestMetricsBodyIsPreparedAgainWhenTheHistoryChanges proves a new sample (a new
-// version) replaces the prepared body, and that a machine with no sampler is `none`.
+// TestMetricsBodyIsPreparedAgainWhenTheHistoryChanges proves a new sample
+// replaces the served body, and that a machine with no sampler is `none`.
 func TestMetricsBodyIsPreparedAgainWhenTheHistoryChanges(t *testing.T) {
 	t.Parallel()
 	source := &countingSource{}
 	clock := newClock()
+	clock.advance(-time.Hour)
 	ticks := make(chan time.Time)
-	sampler := machinemetrics.New(machinemetrics.Options{Source: source, Now: clock.Now, Tick: func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }})
+	sampler := machinemetrics.New(machinemetrics.Options{Source: advancing{source, clock}, Now: clock.Now, Tick: func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }})
 	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) { options.Sampler = sampler })
 	server := newCockpitServer(t, snapshotter)
 	target := metricsURL + localMachineID(testMachine)
@@ -322,20 +330,220 @@ func TestMetricsNeedASessionWhenForwardedOrNotLoopback(t *testing.T) {
 	}
 }
 
-// TestAnOlderMetricsAnswerNeverReplacesANewerOne covers the race of two requests
-// that built from different versions: the stored body keeps the newest version.
-func TestAnOlderMetricsAnswerNeverReplacesANewerOne(t *testing.T) {
-	t.Parallel()
-	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), nil)
-	id := localMachineID(testMachine)
-	remote := &fakeMetrics{answers: map[string]MetricsAnswer{id: {Route: RouteCached, Version: 5}}}
-	snapshotter.metricsSources = []MetricsSource{remote}
-	if _, found := snapshotter.MachineMetrics(id); !found {
-		t.Fatal("not found")
+// switchable is a MetricsSource whose answer a test changes between requests.
+type switchable struct {
+	mu     sync.Mutex
+	answer *MetricsAnswer
+}
+
+func (s *switchable) set(answer *MetricsAnswer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.answer = answer
+}
+
+func (s *switchable) MachineMetrics(string) (MetricsAnswer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.answer == nil {
+		return MetricsAnswer{}, false
 	}
-	remote.answers[id] = MetricsAnswer{Route: RouteCached, Version: 3} // an older answer arriving late
-	_, _ = snapshotter.MachineMetrics(id)
-	if held := snapshotter.metrics.entries[id]; held.version != 5 {
-		t.Errorf("held version = %d, want 5", held.version)
+	return *s.answer, true
+}
+
+func routeOf(t *testing.T, server *cockpitServer, id string) MetricsResponse {
+	t.Helper()
+	recorder := server.get(metricsURL+id, nil)
+	var response MetricsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || recorder.Code != 200 {
+		t.Fatalf("%s = %d %s %v", id, recorder.Code, recorder.Body.String(), err)
+	}
+	return response
+}
+
+// TestMetricsFallThroughTheSourcesInOrderAndFollowARouteChange proves the order
+// live remote, then cached, then none: when the live source stops knowing a machine
+// the next source answers, even with a lower version number than the live one had,
+// and when both stop the machine has none.
+func TestMetricsFallThroughTheSourcesInOrderAndFollowARouteChange(t *testing.T) {
+	t.Parallel()
+	sources := &fakeSources{remote: []remotestate.Entry{{Snapshot: remotestate.Snapshot{Login: "a", Machine: "vm", PublishedAt: remotePublishedAt()}}}}
+	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	vm := machineIDOf(t, snapshotter, "vm")
+	past := newClock().Now().Add(-time.Hour)
+	live, cached := &switchable{}, &switchable{}
+	snapshotter.metricsSources = []MetricsSource{live, cached}
+	server := newCockpitServer(t, snapshotter)
+
+	live.set(&MetricsAnswer{Route: RouteLiveRemote, FetchedAt: &past, Samples: []machinemetrics.Sample{{Load1: ptr(1.0), SampledAt: past}}, Version: 9})
+	cached.set(&MetricsAnswer{Route: RouteCached, Samples: []machinemetrics.Sample{{Load1: ptr(2.0), SampledAt: past}}, Version: 1})
+	if got := routeOf(t, server, vm); got.Route != RouteLiveRemote || *got.Samples[0].Load1 != 1 {
+		t.Fatalf("both known = %+v, want the live one", got)
+	}
+	live.set(nil)
+	if got := routeOf(t, server, vm); got.Route != RouteCached || *got.Samples[0].Load1 != 2 {
+		t.Errorf("live gone = %+v, want the cached one though its version is lower", got)
+	}
+	cached.set(nil)
+	if got := routeOf(t, server, vm); got.Route != RouteNone || got.Reason != ReasonNoSource {
+		t.Errorf("both gone = %+v, want none", got)
+	}
+}
+
+// TestTheLocalMachineIsAlwaysAnsweredByItsOwnSampler proves no other source can
+// shadow this machine's history, and that with no sampler it has none.
+func TestTheLocalMachineIsAlwaysAnsweredByItsOwnSampler(t *testing.T) {
+	t.Parallel()
+	past := newClock().Now().Add(-time.Hour)
+	shadow := &switchable{}
+	shadow.set(&MetricsAnswer{Route: RouteCached, Samples: []machinemetrics.Sample{{Load1: ptr(99.0), SampledAt: past}}, Version: 1})
+	local := localMachineID(testMachine)
+
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) {
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+		options.Metrics = []MetricsSource{shadow}
+	})
+	if got := routeOf(t, newCockpitServer(t, snapshotter), local); got.Route != RouteLocal || len(got.Samples) != 2 || *got.Samples[0].Load1 == 99 {
+		t.Errorf("with a sampler = %+v", got)
+	}
+	bare, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) { options.Metrics = []MetricsSource{shadow} })
+	if got := routeOf(t, newCockpitServer(t, bare), local); got.Route != RouteNone || got.Reason != ReasonNoSource {
+		t.Errorf("with no sampler = %+v, want none however the other sources answer", got)
+	}
+}
+
+// TestEverySourcesAnswerIsSanitizedBeforeItIsServed proves the answer a source gives
+// is untrusted: a bad route, a missing fetch time, a future or out-of-order sample,
+// numbers out of range and more than 360 samples are all dealt with.
+func TestEverySourcesAnswerIsSanitizedBeforeItIsServed(t *testing.T) {
+	t.Parallel()
+	now := newClock().Now()
+	at := func(seconds int) time.Time { return now.Add(time.Duration(seconds) * time.Second) }
+	fetched, future := at(-5), at(600)
+	nan := math.NaN()
+	many := make([]machinemetrics.Sample, 0, 400)
+	for i := range 400 {
+		many = append(many, machinemetrics.Sample{Load1: ptr(float64(i)), SampledAt: at(-4000 + i)})
+	}
+	for name, test := range map[string]struct {
+		in   MetricsAnswer
+		want func(MetricsAnswer) bool
+	}{
+		"unknown route": {MetricsAnswer{Route: "teleport", Samples: many}, func(a MetricsAnswer) bool {
+			return a.Route == RouteNone && a.Reason == ReasonUnavailable && len(a.Samples) == 0
+		}},
+		"live without fetch time":  {MetricsAnswer{Route: RouteLiveRemote, Samples: many}, func(a MetricsAnswer) bool { return a.Route == RouteNone }},
+		"live fetched in future":   {MetricsAnswer{Route: RouteLiveRemote, FetchedAt: &future}, func(a MetricsAnswer) bool { return a.Route == RouteNone }},
+		"cached drops fetch time":  {MetricsAnswer{Route: RouteCached, FetchedAt: &fetched, Reason: "free text"}, func(a MetricsAnswer) bool { return a.FetchedAt == nil && a.Reason == "" }},
+		"none with free text":      {MetricsAnswer{Route: RouteNone, Reason: "/home/alex/secret", Samples: many}, func(a MetricsAnswer) bool { return a.Reason == ReasonNoSource && len(a.Samples) == 0 }},
+		"none keeps known reasons": {MetricsAnswer{Route: RouteNone, Reason: ReasonUnsupported}, func(a MetricsAnswer) bool { return a.Reason == ReasonUnsupported }},
+		"caps at the newest 360": {MetricsAnswer{Route: RouteLocal, Samples: many}, func(a MetricsAnswer) bool {
+			return len(a.Samples) == 360 && *a.Samples[0].Load1 == 40 && *a.Samples[359].Load1 == 399
+		}},
+		"future and zero times": {MetricsAnswer{Route: RouteLocal, Samples: []machinemetrics.Sample{{SampledAt: future}, {}, {Load1: ptr(1.0), SampledAt: at(-1)}}}, func(a MetricsAnswer) bool { return len(a.Samples) == 1 }},
+		"small skew allowed":    {MetricsAnswer{Route: RouteLocal, Samples: []machinemetrics.Sample{{Load1: ptr(1.0), SampledAt: at(2)}}}, func(a MetricsAnswer) bool { return len(a.Samples) == 1 }},
+		"out of order after a clock step": {MetricsAnswer{Route: RouteLocal, Samples: []machinemetrics.Sample{
+			{Load1: ptr(1.0), SampledAt: at(-30)}, {Load1: ptr(2.0), SampledAt: at(-50)}, {Load1: ptr(3.0), SampledAt: at(-30)}, {Load1: ptr(4.0), SampledAt: at(-20)},
+		}}, func(a MetricsAnswer) bool { return len(a.Samples) == 2 && *a.Samples[1].Load1 == 4 }},
+		"numbers out of range": {MetricsAnswer{Route: RouteLocal, Samples: []machinemetrics.Sample{
+			{CPUPercent: ptr(101.0), Load1: ptr(-1.0), SampledAt: at(-40)},
+			{CPUPercent: ptr(nan), Load1: ptr(nan), SampledAt: at(-30)},
+			{CPUPercent: ptr(-0.5), Load1: ptr(math.Inf(1)), SampledAt: at(-20)},
+			{CPUPercent: ptr(100.0), Load1: ptr(0.0), SampledAt: at(-10)},
+		}}, func(a MetricsAnswer) bool {
+			return a.Samples[0].CPUPercent == nil && a.Samples[0].Load1 == nil && a.Samples[1].CPUPercent == nil && a.Samples[1].Load1 == nil &&
+				a.Samples[2].CPUPercent == nil && a.Samples[2].Load1 == nil && *a.Samples[3].CPUPercent == 100 && *a.Samples[3].Load1 == 0
+		}},
+		"pairs": {MetricsAnswer{Route: RouteLocal, Samples: []machinemetrics.Sample{
+			{MemoryUsedBytes: ptr(uint64(5)), MemoryTotalBytes: ptr(uint64(4)), DiskFreeBytes: ptr(uint64(5)), DiskTotalBytes: ptr(uint64(4)), SampledAt: at(-30)},
+			{MemoryUsedBytes: ptr(uint64(1)), DiskTotalBytes: ptr(uint64(4)), SampledAt: at(-20)},
+			{MemoryUsedBytes: ptr(uint64(4)), MemoryTotalBytes: ptr(uint64(4)), DiskFreeBytes: ptr(uint64(0)), DiskTotalBytes: ptr(uint64(4)), SampledAt: at(-10)},
+		}}, func(a MetricsAnswer) bool {
+			return a.Samples[0].MemoryUsedBytes == nil && a.Samples[0].DiskFreeBytes == nil && a.Samples[1].MemoryUsedBytes == nil && a.Samples[1].DiskTotalBytes == nil &&
+				*a.Samples[2].MemoryUsedBytes == 4 && *a.Samples[2].DiskFreeBytes == 0
+		}},
+	} {
+		if got := sanitizeMetrics(test.in, now); !test.want(got) {
+			t.Errorf("%s: %+v", name, got)
+		}
+	}
+}
+
+// TestAFailingSamplerServesNoneWithAReason covers a sampler whose source has given
+// nothing for the failure limit: the route says none and why.
+func TestAFailingSamplerServesNoneWithAReason(t *testing.T) {
+	t.Parallel()
+	ticks := make(chan time.Time)
+	sampler := machinemetrics.New(machinemetrics.Options{
+		Source: failingSource{},
+		Tick:   func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} },
+	})
+	stop := sampler.Start(t.Context())
+	for range machinemetrics.FailureLimit - 1 {
+		ticks <- time.Time{}
+	}
+	stop()
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) { options.Sampler = sampler })
+	if got := routeOf(t, newCockpitServer(t, snapshotter), localMachineID(testMachine)); got.Route != RouteNone || got.Reason != ReasonUnavailable {
+		t.Errorf("a failing sampler = %+v", got)
+	}
+}
+
+// failingSource reads nothing, with an error.
+type failingSource struct{}
+
+func (failingSource) Read() (machinemetrics.Sample, error) {
+	return machinemetrics.Sample{}, errors.New("boom")
+}
+
+// TestAMarshalFailureServesNone covers the impossible: the body cannot be marshalled.
+func TestAMarshalFailureServesNone(t *testing.T) { //nolint:paralleltest // it replaces a package variable
+	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) {
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+	})
+	server := newCockpitServer(t, snapshotter)
+	marshal := marshalMetrics
+	t.Cleanup(func() { marshalMetrics = marshal })
+	calls := 0
+	marshalMetrics = func(value any) ([]byte, error) {
+		if calls++; calls == 1 {
+			return nil, errors.New("cannot marshal")
+		}
+		return marshal(value)
+	}
+	if got := routeOf(t, server, localMachineID(testMachine)); got.Route != RouteNone || got.Reason != ReasonUnavailable || len(got.Samples) != 0 {
+		t.Errorf("after a marshal failure = %+v", got)
+	}
+}
+
+// TestMetricsBodiesOfMachinesThatLeftTheFleetAreForgotten bounds the prepared bodies
+// to the machines the fleet document lists.
+func TestMetricsBodiesOfMachinesThatLeftTheFleetAreForgotten(t *testing.T) {
+	t.Parallel()
+	sources := &fakeSources{remote: []remotestate.Entry{{Snapshot: remotestate.Snapshot{Login: "a", Machine: "vm", PublishedAt: remotePublishedAt()}}}}
+	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	server := newCockpitServer(t, snapshotter)
+	vm := machineIDOf(t, snapshotter, "vm")
+	routeOf(t, server, vm)
+	routeOf(t, server, localMachineID(testMachine))
+	sources.change(func(f *fakeSources) { f.remote = nil })
+	refreshAndSettle(t, snapshotter)
+	if recorder := server.get(metricsURL+vm, nil); recorder.Code != http.StatusNotFound {
+		t.Fatalf("a machine that left = %d", recorder.Code)
+	}
+	snapshotter.metrics.mu.Lock()
+	snapshotter.metrics.entries["machine-stale"] = cachedMetrics{}
+	snapshotter.metrics.mu.Unlock()
+	routeOf(t, server, localMachineID(testMachine)) // a hit builds nothing...
+	snapshotter.metricsSources = nil
+	snapshotter.sampler = filledSampler(t, &countingSource{}, 2) // ...so a new answer is built to prune
+	routeOf(t, server, localMachineID(testMachine))
+	snapshotter.metrics.mu.Lock()
+	held := len(snapshotter.metrics.entries)
+	snapshotter.metrics.mu.Unlock()
+	if held != 1 {
+		t.Errorf("%d bodies held, want only the local machine's", held)
 	}
 }

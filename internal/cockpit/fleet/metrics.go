@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ const (
 
 	ReasonNoSource    = "no_source"
 	ReasonUnsupported = "unsupported"
+	ReasonUnavailable = "unavailable"
 )
 
 // MetricsResponse is the body of the machine-metrics route
@@ -36,9 +38,7 @@ type MetricsResponse struct {
 	Reason    string                  `json:"reason,omitempty"`
 }
 
-// MetricsAnswer is what one MetricsSource knows of a machine. Version must
-// change whenever anything else in the answer does: the route prepares the body
-// once for each version, never once for each request.
+// MetricsAnswer is what one MetricsSource knows of a machine.
 type MetricsAnswer struct {
 	Route     string
 	FetchedAt *time.Time
@@ -47,30 +47,106 @@ type MetricsAnswer struct {
 	Version   uint64
 }
 
-// MetricsSource answers for the machines it holds metrics of, from memory only:
-// it must never fetch, read a file or start anything. The sources are asked in
-// order, and the first that knows the machine answers; the live remote and
-// cached sources (cockpit-views tasks 5 and 8) plug in here ahead of the local one.
+// MetricsSource answers for the machines it holds metrics of, from memory only: it
+// must never fetch, read a file or start anything. The contract:
+//   - It returns false for a machine it knows nothing of, and the next source is
+//     asked (live remote, then cached, as cockpit-views#req:machine-metrics-route
+//     orders them); the first that returns true answers.
+//   - Staleness is the source's job: a source whose data is too old to serve
+//     returns false rather than an old answer.
+//   - Version must change whenever anything else in the answer does, and must not go
+//     back while the route stays the same: the route prepares the body once for each
+//     (route, version), never once for each request.
+//   - Whatever it returns is untrusted: the route sanitizes every answer (see
+//     sanitizeMetrics) before it is marshalled.
+//
+// This machine's own id is never put to the sources: it is always answered by the
+// local sampler.
 type MetricsSource interface {
 	MachineMetrics(machineID string) (MetricsAnswer, bool)
 }
 
+// maxSkew is how far ahead of the daemon's clock a sample or fetch time may be
+// before it is taken as wrong; it allows for ordinary clock differences between
+// machines.
+const maxSkew = 5 * time.Second
+
+// marshalMetrics marshals a response; a test replaces it.
+var marshalMetrics = json.Marshal
+
 // localMetrics answers for this machine from its sampler: its history as
-// `local`, or `none` with a reason where the platform has no sampler.
+// `local`, or `none` with a reason where the platform has no sampler or the
+// sampler cannot read anything.
 type localMetrics struct {
-	machineID string
-	sampler   *machinemetrics.Sampler
+	sampler *machinemetrics.Sampler
 }
 
-func (l localMetrics) MachineMetrics(machineID string) (MetricsAnswer, bool) {
-	if machineID != l.machineID {
-		return MetricsAnswer{}, false
-	}
+func (l localMetrics) answer() MetricsAnswer {
 	snapshot := l.sampler.Snapshot()
-	if !snapshot.Supported {
-		return MetricsAnswer{Route: RouteNone, Reason: ReasonUnsupported, Version: snapshot.Version}, true
+	switch {
+	case !snapshot.Supported:
+		return MetricsAnswer{Route: RouteNone, Reason: ReasonUnsupported, Version: snapshot.Version}
+	case snapshot.Failing:
+		return MetricsAnswer{Route: RouteNone, Reason: ReasonUnavailable, Version: snapshot.Version}
 	}
-	return MetricsAnswer{Route: RouteLocal, Samples: snapshot.Samples, Version: snapshot.Version}, true
+	return MetricsAnswer{Route: RouteLocal, Samples: snapshot.Samples, Version: snapshot.Version}
+}
+
+// sanitizeMetrics makes an answer fit to serve whatever its source gave: the route
+// is one of the four (and `live-remote` has a fetch time that is not in the future,
+// and only it keeps one), the reason one of the closed set, at most 360 samples, each
+// with its time set and not in the future, in strictly increasing time order (a
+// clock step drops what is out of order), a percent within 0 to 100, no negative or
+// non-finite number, and a memory or disk figure only with its total and not above
+// it. An answer that cannot be made fit becomes `none`.
+func sanitizeMetrics(answer MetricsAnswer, now time.Time) MetricsAnswer {
+	none := func(reason string) MetricsAnswer {
+		return MetricsAnswer{Route: RouteNone, Reason: reason, Version: answer.Version}
+	}
+	switch answer.Route {
+	case RouteLocal, RouteCached:
+		answer.FetchedAt = nil
+	case RouteLiveRemote:
+		if answer.FetchedAt == nil || answer.FetchedAt.After(now.Add(maxSkew)) {
+			return none(ReasonUnavailable)
+		}
+	case RouteNone:
+		if answer.Reason != ReasonUnsupported && answer.Reason != ReasonUnavailable {
+			answer.Reason = ReasonNoSource
+		}
+		return none(answer.Reason)
+	default:
+		return none(ReasonUnavailable)
+	}
+	answer.Reason = ""
+	kept := make([]machinemetrics.Sample, 0, min(len(answer.Samples), machinemetrics.Capacity))
+	var last time.Time
+	for _, sample := range answer.Samples {
+		if sample.SampledAt.IsZero() || sample.SampledAt.After(now.Add(maxSkew)) || !sample.SampledAt.After(last) {
+			continue
+		}
+		last = sample.SampledAt
+		kept = append(kept, cleanSample(sample))
+	}
+	answer.Samples = kept[max(0, len(kept)-machinemetrics.Capacity):]
+	return answer
+}
+
+// cleanSample drops the figures of a sample that are out of range.
+func cleanSample(sample machinemetrics.Sample) machinemetrics.Sample {
+	if sample.CPUPercent != nil && !(*sample.CPUPercent >= 0 && *sample.CPUPercent <= 100) {
+		sample.CPUPercent = nil
+	}
+	if sample.Load1 != nil && !(*sample.Load1 >= 0 && !math.IsInf(*sample.Load1, 0)) {
+		sample.Load1 = nil
+	}
+	if sample.MemoryUsedBytes == nil || sample.MemoryTotalBytes == nil || *sample.MemoryUsedBytes > *sample.MemoryTotalBytes {
+		sample.MemoryUsedBytes, sample.MemoryTotalBytes = nil, nil
+	}
+	if sample.DiskFreeBytes == nil || sample.DiskTotalBytes == nil || *sample.DiskFreeBytes > *sample.DiskTotalBytes {
+		sample.DiskFreeBytes, sample.DiskTotalBytes = nil, nil
+	}
+	return sample
 }
 
 // metricsCache holds the body prepared for each machine's last answer.
@@ -85,53 +161,72 @@ type cachedMetrics struct {
 	payload cockpit.Payload
 }
 
-// hasMachine reports whether id is a machine of the fleet document, or this one.
-func (s *Snapshotter) hasMachine(id string) bool {
+// machineIDs is the ids of the fleet document's machines and this one.
+func (s *Snapshotter) machineIDs() map[string]bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if id == localMachineID(s.machine) {
-		return true
-	}
+	ids := map[string]bool{localMachineID(s.machine): true}
 	for _, machine := range s.doc.Machines {
-		if machine.ID == id {
-			return true
+		ids[machine.ID] = true
+	}
+	return ids
+}
+
+// metricsAnswerFor asks for id's answer: this machine's own id is answered by its
+// sampler (or has no source), any other by the first source that knows it.
+func (s *Snapshotter) metricsAnswerFor(id string) MetricsAnswer {
+	if id == localMachineID(s.machine) {
+		if s.sampler == nil {
+			return MetricsAnswer{Route: RouteNone, Reason: ReasonNoSource}
+		}
+		return localMetrics{sampler: s.sampler}.answer()
+	}
+	for _, source := range s.metricsSources {
+		if known, ok := source.MachineMetrics(id); ok {
+			return known
 		}
 	}
-	return false
+	return MetricsAnswer{Route: RouteNone, Reason: ReasonNoSource}
 }
 
 // MachineMetrics returns the metrics answer for machine id prepared for serving,
-// asking each source in order, and found false for an id that is not in the fleet
-// document. A machine no source knows has `none`. It reads memory only.
+// and found false for an id that is not in the fleet document. It reads memory only.
 func (s *Snapshotter) MachineMetrics(id string) (payload cockpit.Payload, found bool) {
-	if !s.hasMachine(id) {
+	known := s.machineIDs()
+	if !known[id] {
 		return cockpit.Payload{}, false
 	}
-	answer := MetricsAnswer{Route: RouteNone, Reason: ReasonNoSource}
-	for _, source := range s.metricsSources {
-		if known, ok := source.MachineMetrics(id); ok {
-			answer = known
-			break
-		}
-	}
+	answer := s.metricsAnswerFor(id)
 	s.metrics.mu.Lock()
 	held, ok := s.metrics.entries[id]
 	s.metrics.mu.Unlock()
 	if ok && held.route == answer.Route && held.version == answer.Version {
 		return held.payload, true
 	}
-	// Marshal and compress outside the lock, as Branches does: two requests that
-	// race build the same bytes, and an older answer never replaces a newer one.
+	// Sanitize, marshal and compress outside the lock, as Branches does: two requests
+	// that race build the same bytes.
+	answer = sanitizeMetrics(answer, s.now())
 	response := MetricsResponse{Machine: id, Route: answer.Route, FetchedAt: answer.FetchedAt, Samples: answer.Samples, Reason: answer.Reason}
 	if response.Samples == nil {
 		response.Samples = []machinemetrics.Sample{}
 	}
-	body, _ := json.Marshal(response)
+	body, err := marshalMetrics(response)
+	if err != nil {
+		answer = MetricsAnswer{Route: RouteNone, Reason: ReasonUnavailable, Version: answer.Version}
+		body, _ = json.Marshal(MetricsResponse{Machine: id, Route: RouteNone, Samples: []machinemetrics.Sample{}, Reason: ReasonUnavailable})
+	}
 	payload = cockpit.NewPayload(append(body, '\n'), s.compress)
 	s.metrics.mu.Lock()
 	defer s.metrics.mu.Unlock()
-	if current, exists := s.metrics.entries[id]; !exists || current.version <= answer.Version {
+	// Another source's version is not comparable with this one's: a change of route
+	// replaces the body, and within a route an older version never replaces a newer.
+	if current, exists := s.metrics.entries[id]; !exists || current.route != answer.Route || current.version <= answer.Version {
 		s.metrics.entries[id] = cachedMetrics{route: answer.Route, version: answer.Version, payload: payload}
+	}
+	for held := range s.metrics.entries {
+		if !known[held] {
+			delete(s.metrics.entries, held)
+		}
 	}
 	return payload, true
 }

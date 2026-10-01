@@ -14,3 +14,10 @@ func TestDiskUsageOfADirectory(t *testing.T) {
 		t.Error("a missing directory gave no error")
 	}
 }
+
+func TestBlockSizePrefersTheFragmentSize(t *testing.T) {
+	t.Parallel()
+	if blockSize(4096, 65536) != 4096 || blockSize(0, 65536) != 65536 {
+		t.Error("blockSize does not prefer a non-zero fragment size")
+	}
+}

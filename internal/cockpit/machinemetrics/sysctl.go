@@ -23,28 +23,34 @@ type sysctlSource struct {
 
 var errBadSysctl = errors.New("unexpected sysctl value")
 
-// Read reads vm.loadavg, the CPU times, the memory figures and the disk.
+// Read reads vm.loadavg, the CPU times, the memory figures and the disk, each
+// independently: what could be read is returned with the errors of what could not.
 func (s *sysctlSource) Read() (Sample, error) {
 	var sample Sample
-	raw, err := s.raw("vm.loadavg")
-	if err != nil {
-		return sample, err
+	var errs []error
+	if raw, err := s.raw("vm.loadavg"); err != nil {
+		errs = append(errs, err)
+	} else if load, parseErr := parseLoadavg(raw); parseErr != nil {
+		errs = append(errs, parseErr)
+	} else {
+		sample.Load1 = &load
 	}
-	if sample.Load1, err = parseLoadavg(raw); err != nil {
-		return sample, err
+	if busy, all, err := s.cpu(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.CPUPercent = s.meter.percent(busy, all)
 	}
-	busy, all, err := s.cpu()
-	if err != nil {
-		return sample, err
+	if used, total, err := s.memory(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.MemoryUsedBytes, sample.MemoryTotalBytes = &used, &total
 	}
-	if sample.MemoryUsedBytes, sample.MemoryTotalBytes, err = s.memory(); err != nil {
-		return sample, err
+	if free, total, err := s.disk(); err != nil {
+		errs = append(errs, err)
+	} else {
+		sample.DiskFreeBytes, sample.DiskTotalBytes = &free, &total
 	}
-	if sample.DiskFreeBytes, sample.DiskTotalBytes, err = s.disk(); err != nil {
-		return sample, err
-	}
-	sample.CPUPercent = s.meter.percent(busy, all)
-	return sample, nil
+	return sample, errors.Join(errs...)
 }
 
 // parseLoadavg reads the one-minute load of the `struct loadavg` that vm.loadavg

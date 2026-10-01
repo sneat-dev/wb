@@ -41,7 +41,9 @@ func cpuTimes() (busy, all float64, err error) {
 	return total - times[0].Idle, total, nil
 }
 
-// memoryUsage is the used and total bytes of memory as gopsutil reports them.
+// memoryUsage is the used and total bytes of memory as gopsutil reports them:
+// used is the total less what is available without swapping, which on macOS is
+// the free and the inactive pages (the same rule as Linux's MemAvailable).
 func memoryUsage() (used, total uint64, err error) {
 	memory, err := readVirtualMemory()
 	if err != nil {

@@ -2,7 +2,6 @@ package machinemetrics
 
 import (
 	"testing"
-	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
@@ -12,18 +11,11 @@ import (
 func TestRealMacSourceReadsThisMachine(t *testing.T) {
 	t.Parallel()
 	source := NewSource(t.TempDir())
-	if _, err := source.Read(); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-	sample, err := source.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
+	sample := readUntilCPU(t, source)
 	if sample.CPUPercent == nil || *sample.CPUPercent < 0 || *sample.CPUPercent > 100 {
 		t.Errorf("cpu_percent = %v after two readings", sample.CPUPercent)
 	}
-	if sample.MemoryTotalBytes == 0 || sample.MemoryUsedBytes > sample.MemoryTotalBytes || sample.DiskTotalBytes == 0 || sample.Load1 < 0 {
+	if sample.MemoryTotalBytes == nil || *sample.MemoryTotalBytes == 0 || *sample.MemoryUsedBytes > *sample.MemoryTotalBytes || sample.DiskTotalBytes == nil || *sample.DiskTotalBytes == 0 || sample.Load1 == nil || *sample.Load1 < 0 {
 		t.Errorf("sample = %+v", sample)
 	}
 }
