@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core'
-import { CodeIndex, codeIndexText, formatAge } from '@cockpit/fleet-data'
+import { CodeIndex, formatAge } from '@cockpit/fleet-data'
+import { codeIndexText } from '@cockpit/fleet-data/list'
 
 /**
  * The code-index freshness of a checkout: one label per configured indexer,

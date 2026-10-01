@@ -1,6 +1,8 @@
 import { PERF_COUNTS, PERF_NOW, performanceFixture, repeatRows, seeded } from './perf-fixture'
 import { FleetModel } from './fleet-model'
+import { buildRepositories } from './model-repositories'
 import { isFleetDocument } from './fleet-client'
+import { buildCleanup } from './home-details'
 
 describe('the performance fixture', () => {
   const fixture = performanceFixture()
@@ -33,11 +35,40 @@ describe('the performance fixture', () => {
 
   it('merges to about the size of the founder fleet, and every worktree and branch points at a real repository', () => {
     const model = new FleetModel(fixture.document, { now: () => PERF_NOW })
-    expect(model.repositories).toHaveLength(445)
+    expect(buildRepositories(model)).toHaveLength(445)
     expect(model.tasks).toHaveLength(455)
     const ids = new Set(fixture.document.repositories.map((repository) => repository.id))
     expect(fixture.document.worktrees.every((worktree) => ids.has(worktree.repository))).toBe(true)
     expect([...fixture.branches.keys()].every((id) => ids.has(id))).toBe(true)
+  })
+
+  // cockpit-views#ac:needs-you-lists-recent-work-at-risk-only
+  it('looks like a real fleet: a handful of tasks need you, most at-risk work is old, and the badge is not a debt counter', () => {
+    const model = new FleetModel(fixture.document, { now: () => PERF_NOW })
+    const atRisk = model.tasks.filter((task) => task.state === 'at-risk')
+    expect(atRisk.length).toBeGreaterThan(100)
+    expect(model.homeBadge).toBeGreaterThanOrEqual(3)
+    expect(model.homeBadge).toBeLessThanOrEqual(15)
+    expect(model.homeBadgeLabel).toBe(String(model.homeBadge))
+    const recent = atRisk.filter((task) => task.lastActivityAt !== undefined && PERF_NOW - task.lastActivityAt <= 14 * 86_400_000)
+    expect(recent.length).toBeLessThan(atRisk.length / 10)
+    expect(model.needsYou.items.filter((item) => item.kind === 'work-at-risk')).toHaveLength(recent.length)
+    // The old at-risk work is the Cleanup line's.
+    expect(buildCleanup(model).lookCount).toBeGreaterThan(atRisk.length - recent.length)
+  })
+
+  // cockpit-views#ac:worktree-pr-join-is-one
+  it('names most branches after the task and about a third otherwise, as agent/, codex/ or fix/ branches', () => {
+    const { worktrees } = fixture.document
+    const named = worktrees.filter((worktree) => worktree.branch === worktree.task)
+    expect(named.length / worktrees.length).toBeGreaterThan(0.55)
+    expect(named.length / worktrees.length).toBeLessThan(0.75)
+    const others = worktrees.filter((worktree) => worktree.branch !== worktree.task)
+    expect(others.every((worktree) => /^(agent|codex|fix)\/[a-z-]+-[a-z]+-\d+$/.test(worktree.branch))).toBe(true)
+    expect(new Set(others.map((worktree) => worktree.branch.split('/')[0]))).toEqual(new Set(['agent', 'codex', 'fix']))
+    expect(worktrees.some((worktree) => worktree.branch.startsWith('task/'))).toBe(false)
+    // A pull request carries the branch of its worktree.
+    for (const pullRequest of fixture.document.pull_requests) expect(worktrees.find((worktree) => worktree.id === pullRequest.worktree)?.branch).toBe(pullRequest.branch)
   })
 
   it('serves metrics in each route', () => {

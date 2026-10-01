@@ -203,7 +203,7 @@ is this closed set of fields:
   its totals of files, symbols and edges, the symbols per kind (each kind a short
   lower-case word, at most 32 kinds), and a short failure code when the provider
   could not answer;
-- the read model's own `error` code and `agents_truncated` flag;
+- the read model's own `error` code and `agents_truncated` flag and `pull_requests_throttled` flag;
 - the configured code browser base (`cockpit.code_browser_url`), on the session response.
 - NOT in this list, and never sent to `anonymous-local`: the session response's field
   `machine_routes` (per machine with an SSH route, its `machine_id` and the `host`, optional

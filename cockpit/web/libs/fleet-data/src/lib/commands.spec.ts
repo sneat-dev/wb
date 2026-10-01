@@ -1,7 +1,9 @@
 /// <reference types="node" />
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  CommandTarget,
   CopyCommand,
   PICKABLE_REPOSITORY,
   PLACEHOLDERS,
@@ -188,12 +190,12 @@ describe('Copy command texts', () => {
   // cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers
   it('are exactly the commands of REQ:copy-the-command, values single-quoted and flags --flag=value', () => {
     expect(text(worktreeList('fix-ci'))).toBe("wb worktree list 'fix-ci'")
-    expect(text(pullRequestCreate('fix-ci'))).toBe("wb pr create 'fix-ci' --commit-all --message=<message>")
+    expect(text(pullRequestCreate('fix-ci'))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
     expect(text(pullRequestCreate('fix-ci', 'ship it'))).toBe("wb pr create 'fix-ci' --commit-all --message='ship it'")
     expect(text(worktreeCleanup('fix-ci'))).toBe("wb worktree cleanup 'fix-ci'")
     expect(text(pullRequestLand('sneat-dev/wb', 12))).toBe("wb pr land 'sneat-dev/wb#12'")
     expect(text(worktreeCreate(PLACEHOLDERS.task, ['<owner/repository>']))).toBe(
-      "wb worktree create <task> '<owner/repository>' --model=<model> --original-prompt-file=<file>",
+      "wb worktree create <<<edit:task>>> '<owner/repository>' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>",
     )
     expect(text(branchList('sneat-dev/wb'))).toBe("wb branch list --repo='sneat-dev/wb'")
     expect(text(branchList('sneat-dev/wb', 'topic'))).toBe("wb branch list --repo='sneat-dev/wb' --branch='topic'")
@@ -202,20 +204,20 @@ describe('Copy command texts', () => {
     expect(text(agentStatus('run-1'))).toBe("wb agent status 'run-1'")
     expect(text(agentLogs('run-1'))).toBe("wb agent logs 'run-1'")
     expect(text(agentStop('run-1'))).toBe("wb agent stop 'run-1'")
-    expect(text(sessionSend('s-1'))).toBe("wb session send 's-1' --message=<message>")
+    expect(text(sessionSend('s-1'))).toBe("wb session send 's-1' --message=<<<edit:message>>>")
     expect(text(sessionSend('s-1', 'hi'))).toBe("wb session send 's-1' --message='hi'")
     expect(text(remotePublish())).toBe('wb remote publish')
     expect(text(selfUpdate())).toBe('wb self-update')
     expect(text(daemonStart())).toBe('wb daemon start')
-    expect(text(remoteEnroll())).toBe('wb remote enroll --url=<hub-url> --token-stdin')
+    expect(text(remoteEnroll())).toBe('wb remote enroll --url=<<<edit:hub-url>>> --token-stdin')
     expect(text(remoteEnroll('https://hub.example'))).toBe("wb remote enroll --url='https://hub.example' --token-stdin")
     expect(text(cockpitExport())).toBe("wb cockpit export --format='json'")
-    expect(PLACEHOLDERS.promptFile).toBe('<file>')
+    expect(PLACEHOLDERS.promptFile).toBe('<<<edit:file>>>')
   })
 
   // cockpit-views#ac:copy-command-refuses-hostile-values
   it('leaves a placeholder bare and flags the entry needsEdit, so an unedited paste fails in the shell', () => {
-    expect(pullRequestCreate('t')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message=<message>", needsEdit: true })
+    expect(pullRequestCreate('t')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message=<<<edit:message>>>", needsEdit: true })
     expect(pullRequestCreate('t', 'done')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message='done'", needsEdit: false })
     expect(worktreeList('t')).toMatchObject({ needsEdit: false })
     expect(worktreeCreate('t', ['o/r'])).toMatchObject({ needsEdit: true })
@@ -223,7 +225,7 @@ describe('Copy command texts', () => {
     expect(agentDispatch('o/r', 't', { brief: 'do it' })).toMatchObject({ needsEdit: true })
     expect(text(agentDispatch('o/r', 't', { profile: 'deep', brief: 'do it' }))).toBe("wb agent dispatch --repo='o/r' --task='do it' --profile='deep' --new-worktree='t'")
     // Also through ssh: a bare placeholder is a redirection in the remote shell, which fails.
-    expect(text(sessionSend('s-1', undefined, { ssh: { host: 'h', user: 'u' } }))).toBe("ssh u@h wb session send 's-1' --message=<message>")
+    expect(text(sessionSend('s-1', undefined, { ssh: { host: 'h', user: 'u' } }))).toBe("ssh u@h wb session send 's-1' --message=<<<edit:message>>>")
     expect(sessionSend('s-1', undefined, { ssh: { host: 'h' } })).toMatchObject({ needsEdit: true })
   })
 
@@ -295,19 +297,19 @@ describe('the New task form', () => {
     const brief = 'Fix the flaky CI.\nIt\'s the go-ci test job.'
     const commands = newTaskCommands({ task: 'fix-ci', brief, repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], base: 'main', model: 'opus' })
     expect(text(commands.create)).toBe(
-      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<file> --base='main'",
+      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'",
     )
     expect(commands.create).toMatchObject({ needsEdit: true })
     expect(commands.dispatch.map(text)).toEqual([
-      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<profile> --new-worktree='fix-ci' --base='main'",
-      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<profile> --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
     ])
     // --task carries the brief, and the task name goes to the worktree.
     expect(commands.dispatch.map(text).join('')).not.toContain("--task='fix-ci'")
     expect(commands.dispatch.map(text).join('')).not.toContain('--model')
     expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'unknown' }).create)).not.toContain('--base')
     // No brief yet: a placeholder to fill in.
-    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0])).toContain('--task=<brief>')
+    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0])).toContain('--task=<<<edit:brief>>>')
   })
 
   it('accepts a multi-line brief but refuses control characters and a leading dash in it', () => {
@@ -335,5 +337,87 @@ describe('the New task form', () => {
     const hostileTask = newTaskCommands({ task: '-x', brief: 'b', repositories: ['o/r'], model: 'opus' })
     expect(hostileTask.create.ok).toBe(false)
     expect(hostileTask.dispatch[0].ok).toBe(false)
+  })
+})
+
+describe('placeholders and the shell (REQ:copy-the-command)', () => {
+  /** The exit code of `<shell> -n` (parse only, nothing runs) over the text, or undefined when the shell is absent. */
+  function parseExit(shell: string, line: string): number | undefined {
+    const result = spawnSync(shell, ['-n', '-c', line], { encoding: 'utf8' })
+    if (result.error !== undefined) return undefined
+    return result.status ?? 1
+  }
+  const SHELLS = ['bash', 'zsh', 'dash']
+  const present = SHELLS.filter((shell) => parseExit(shell, 'true') === 0)
+
+  const target = { machine: 'vm', ssh: { host: 'h', user: 'u' } }
+  const SSH: CommandTarget[] = [{}, { machine: 'vm' }, target]
+  /** Every template, rendered with its placeholders (when it has any) and again with benign values. */
+  const templates = (to: CommandTarget): { name: string; open: CopyCommand; filled: CopyCommand }[] => [
+    { name: 'worktreeList', open: worktreeList('t', to), filled: worktreeList('t', to) },
+    { name: 'pullRequestCreate', open: pullRequestCreate('t', undefined, to), filled: pullRequestCreate('t', 'done', to) },
+    { name: 'worktreeCleanup', open: worktreeCleanup('t', to), filled: worktreeCleanup('t', to) },
+    { name: 'pullRequestLand', open: pullRequestLand('o/r', 1, to), filled: pullRequestLand('o/r', 1, to) },
+    { name: 'worktreeCreate', open: worktreeCreate('t', ['o/r', 'o/s'], {}, to), filled: worktreeCreate('t', ['o/r', 'o/s'], { model: 'opus', promptFile: 'p.md', base: 'main' }, to) },
+    { name: 'worktreeCreate with base', open: worktreeCreate('t', ['o/r'], { base: 'main' }, to), filled: worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f', base: 'main' }, to) },
+    { name: 'branchList', open: branchList('o/r', 'b', to), filled: branchList('o/r', 'b', to) },
+    { name: 'fleetStatus', open: fleetStatus('o/r', to), filled: fleetStatus('o/r', to) },
+    { name: 'branchCleanup', open: branchCleanup('o/r', 'b', to), filled: branchCleanup('o/r', 'b', to) },
+    { name: 'agentStatus', open: agentStatus('a', to), filled: agentStatus('a', to) },
+    { name: 'agentLogs', open: agentLogs('a', to), filled: agentLogs('a', to) },
+    { name: 'agentStop', open: agentStop('a', to), filled: agentStop('a', to) },
+    { name: 'sessionSend', open: sessionSend('s', undefined, to), filled: sessionSend('s', 'hello there', to) },
+    { name: 'agentDispatch', open: agentDispatch('o/r', 't', { base: 'main' }, to), filled: agentDispatch('o/r', 't', { profile: 'deep', brief: "do it\nit's fine", base: 'main' }, to) },
+    { name: 'agentDispatch no base', open: agentDispatch('o/r', 't', {}, to), filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
+    { name: 'remotePublish', open: remotePublish(to), filled: remotePublish(to) },
+    { name: 'selfUpdate', open: selfUpdate(to), filled: selfUpdate(to) },
+    { name: 'daemonStart', open: daemonStart(to), filled: daemonStart(to) },
+    { name: 'remoteEnroll', open: remoteEnroll(undefined, to), filled: remoteEnroll('https://hub.example', to) },
+    { name: 'cockpitExport', open: cockpitExport(to), filled: cockpitExport(to) },
+    { name: 'newTask create', open: newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).create, filled: worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f' }, to) },
+    { name: 'newTask dispatch', open: newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0], filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
+  ]
+
+  // cockpit-views#ac:copy-command-placeholders-are-syntax-errors
+  it('has at least one shell to check against', () => {
+    expect(present.length).toBeGreaterThan(0)
+  })
+
+  it('makes every template with a placeholder a shell syntax error, and every other one parse', () => {
+    let checked = 0
+    for (const to of SSH) {
+      for (const { name, open, filled } of templates(to)) {
+        const needs = open.ok && open.needsEdit
+        for (const shell of present) {
+          if (open.ok) {
+            const code = parseExit(shell, open.text)
+            if (needs) expect(code, `${shell} must refuse ${name}: ${open.text}`).not.toBe(0)
+            else expect(code, `${shell} must parse ${name}: ${open.text}`).toBe(0)
+            checked++
+          }
+          if (filled.ok) {
+            expect(filled.needsEdit, name).toBe(false)
+            expect(parseExit(shell, filled.text), `${shell} must parse ${name} once filled: ${filled.text}`).toBe(0)
+            checked++
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(100)
+  })
+
+  it('refuses a placeholder wherever it stands: first, last, after --flag=, before a word, before another placeholder', () => {
+    const values = Object.values(PLACEHOLDERS)
+    for (const shell of present) {
+      for (const value of values) {
+        for (const line of [`wb x ${value}`, `wb x ${value} y`, `wb x --f=${value}`, `wb x --f=${value} --g='h'`, `wb x --f=${value} --g=${value}`, `wb x ${value}\nwb y`, `ssh h wb x --f=${value} z`]) {
+          expect(parseExit(shell, line), `${shell}: ${line}`).not.toBe(0)
+        }
+      }
+    }
+  })
+
+  it('keeps PLACEHOLDERS in the <<<edit:name>>> form the UI marks', () => {
+    for (const value of Object.values(PLACEHOLDERS)) expect(value).toMatch(/^<<<edit:[a-z-]+>>>$/)
   })
 })

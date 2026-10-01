@@ -106,7 +106,7 @@ Serves J1 to J7. The application MUST show a top bar with the brand; the tabs
 Home, Tasks, Repositories, Worktrees, Agents and Machines; the palette entry; a
 "New task" button; the snapshot freshness chip; and the session chip (`anonymous` or
 `owner`). A tab badge is shown only for a signal: Home shows the number of tasks in
-"Needs you" (REQ:home-needs-you) and Agents the number of running agents (REQ:field-tables
+"Needs you" (REQ:home-needs-you), written `99+` above 99 with the whole number in its tooltip, and Agents the number of running agents (REQ:field-tables
 defines "running"), highlighted when above zero. No tab shows a badge for a static count.
 The freshness chip reads "updated N s ago" with the age of the snapshot, turns amber when
 the snapshot is older than two refresh intervals (the document's
@@ -203,7 +203,9 @@ quick-filter chips MUST use only that vocabulary. It is this table.
 | Machines | machine name | `stale`, `outdated` | `live`, `cached`, `stale` | `machine` | the machine entry id | `machine`, `state`, `version` |
 
 `needs-you` on Tasks is the tasks that REQ:home-needs-you lists (the same set, not a
-second definition). `age:` terms apply to last activity and are exactly `age:<1d`,
+second definition: an at-risk task older than the Needs you window is not in it). Every chip
+carries, in the vocabulary itself, an id, a label (the words on the chip) and a one-sentence
+hint (its tooltip), so a list renders its chips from the page's vocabulary alone. `age:` terms apply to last activity and are exactly `age:<1d`,
 `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`; there is no `day:` term. The chip
 `idle30` is `age:>30d`. The Worktrees chips `safe` and `look` are the two cleanup counts of
 REQ:home-cleanup, `stale` on Machines is a state older than 24 hours and `outdated` a WB
@@ -357,7 +359,16 @@ agents, ending with the "Raw data" block.
 Serves J1 and J4. Home's first section, "Needs you", MUST show one row per task, at most 5
 rows, each task for its worst kind and with exactly one primary action, then "+n more" that
 opens Tasks with chip `needs-you` (the same set); when there are none it shows one line saying
-nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. Rows
+nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. "Needs
+you" is a signal, not a debt counter: a task whose state is `at-risk`, and a task of the kind
+Agent finished, is listed (and counted) only when its last activity, the newest `last_activity_at`
+of its worktrees, is within the last 14 days; no recorded activity is not recent. An at-risk task
+older than that is not a row and is not in the badge: its worktrees are counted by the Cleanup
+line's "need a look" (REQ:home-cleanup). Such a task that also has failed checks, a blocked agent
+or a pull request that needs the operator still has that row, which is not age-limited, like
+Agent blocked and Run failed. A pull request link of a row is the pull request's `url` only when
+it is an `https` address with a plain host (the check the daemon applies, applied again here);
+otherwise the row names the pull request and has no link. Rows
 are ordered by the rank of the kind (the order below, which follows REQ:task-state), then by
 last activity, newest first. Items disappear when their state changes; there is no acknowledge
 or snooze. After the task rows, blocked agents that have no task are one row, "n blocked agents
@@ -413,7 +424,8 @@ Serves J6. The fifth section, "Cleanup", MUST be one line, "N safe to remove; M 
 with a "Review & clean" action. N counts the worktrees of tasks in state `landed` whose `ahead`
 is present and equal to 0 and whose `owner_state` is not `active` (chip `safe`); M counts the
 other worktrees whose `owner_state` is `orphaned` or `unknown`, or that are idle for more than
-30 days (chip `look`). The counts are indicative: the authoritative safe set is computed by the
+30 days, or that are at risk in a task that "Needs you" no longer lists because its last
+activity is older than 14 days (REQ:home-needs-you) (chip `look`). The counts are indicative: the authoritative safe set is computed by the
 cleanup operation that `cockpit-actions` specifies, and the line says so. "Review & clean"
 opens Worktrees with the chip `safe`. The line expands to the Worktree age chart and the
 summary: bars for today (`age:<1d`), 1 to 7 days, 8 to 30 days, 31 to 90 days and older
@@ -503,7 +515,11 @@ is no separate Task, Source or Lifecycle column (the route is in the machine chi
 the lifecycle in the panel), and a column that is empty or uniform for every
 visible row, such as Machine on a fleet of one machine, is hidden. The sync badges and the chips
 `unpushed` and `gone` and their counts concern this machine only and say so. The
-quick filters are those of REQ:filter-vocabulary.
+quick filters are those of REQ:filter-vocabulary. The PR cell, the chip `pr`, the
+worktree's side panel and the pull requests listed on its page all read one worktree-to-pull-request
+join: a pull request that names a worktree of the snapshot belongs to that worktree and to no
+other, and one that names none (or one that is not in the snapshot) belongs to the worktrees
+that have its repository entry and its branch.
 
 ### Agents
 
@@ -604,15 +620,18 @@ unit test parses every template against that manifest:
   --message='<message>'`; no entry for any other session.
 
 Every interpolated value is POSIX single-quoted (an embedded `'` is written `'\''`), and flags
-are written `--flag=value`. A placeholder in angle brackets (`<message>`, `<model>`, `<file>`,
-`<profile>`, `<task>`, `<brief>`, `<hub-url>`) is written bare and never quoted, for example
-`--message=<message>`, so that pasting an entry unedited fails in the shell instead of running,
-and the entry is flagged as needing an edit for the interface to say so; the `'<...>'` forms in
-the list above stand for a quoted value or, until the operator supplies it, a bare placeholder.
-A value that contains a control character (including U+061C, U+200B to U+200F, U+2028, U+2029,
+are written `--flag=value`. A placeholder is written `<<<edit:name>>>` (`<<<edit:message>>>`, `<<<edit:model>>>`,
+`<<<edit:file>>>`, `<<<edit:profile>>>`, `<<<edit:task>>>`, `<<<edit:brief>>>`,
+`<<<edit:hub-url>>>`), bare and never quoted, for example `--message=<<<edit:message>>>`. It is a
+shell syntax error wherever it stands (first word, after `--flag=`, between two words, last, in
+bash, zsh and POSIX sh): `<<<` opens a here-string and `>>>` is a redirection with no target. The
+shorter `<<edit:name>>` is not enough, because `>>` takes the next word as its file and the line
+parses. Pasting an entry unedited therefore fails to parse and never runs, and the entry is
+flagged as needing an edit for the interface to say so and to mark exactly these tokens; the
+`'<...>'` forms in the list above stand for a quoted value or, until the operator supplies it, a
+bare placeholder. A value that contains a control character (including U+061C, U+200B to U+200F, U+2028, U+2029,
 the bidirectional controls and U+FEFF), or that starts with `-`, is never interpolated: the
-entry is refused and says why (a brief may hold line breaks and tabs, nothing else of that). The commands are the vocabulary's own
-placeholders in angle brackets for what the operator supplies. For an entity on a machine that
+entry is refused and says why (a brief may hold line breaks and tabs, nothing else of that). For an entity on a machine that
 has an SSH route (REQ:remote-ssh-fetch) the copied text is `ssh <user>@<host> <wb_path>
 <command>` (just the host when the configuration has no user), built from the same configuration with each token shell-quoted as one argument; for
 an entity on any other machine the command is labelled "run on <machine>". The SSH routes come
@@ -642,7 +661,7 @@ and refusal rules of REQ:copy-the-command: `wb worktree create '<task>' '<owner/
 --model='<model>' --original-prompt-file='<file>'` (both flags are required by that verb, so the
 model is required in the form, `unknown` being the verb's explicit value, and the prompt file is a
 placeholder for the operator) with `--base='<branch>'` when given, and the dispatch form `wb agent
-dispatch --repo='<owner/repository>' --task='<brief>' --profile=<profile>
+dispatch --repo='<owner/repository>' --task='<brief>' --profile=<<<edit:profile>>>
 --new-worktree='<task>'` (`--task` is the text of the task prompt, not the task name, which is the
 worktree) with `--base='<branch>'` when given; the model is not passed to dispatch,
 which has no such flag, and the profile is a placeholder because profiles are named in `wb.yaml`,
@@ -684,7 +703,7 @@ live-remote entry). Both.
 **Document**: `schema_version` int (2); `snapshot_at` time; `warming_up` bool;
 `repositories_total` int; `repositories_scanned` int; `diagnostics` int; `error` string opt.
 (a code); `code_index_provider` string opt.; `refresh_interval_seconds` int; `throughput`
-object opt. (below); `agents_truncated` bool opt.; the collections `machines`, `repositories`,
+object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` bool opt.; the collections `machines`, `repositories`,
 `worktrees`, `pull_requests` and `agents`. There is no `branches` collection and no `metrics`.
 
 | Machine field | Type | Opt. | Source | Local/cached |
@@ -846,9 +865,30 @@ characters, with control and bidirectional characters removed, and rendered only
 and hyphens, no port and no user information. They come from the daemon's snapshotter, which runs
 the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) on its own ticker for
 the pull requests that `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials
-WB already uses. At most `cockpit.pull_request_limit` pull requests are observed per tick, the
-oldest `checked_at` first; a merged pull request leaves the watch set after one confirmed
-observation; an observation that fails leaves the previous values and `checked_at` in place, so the
+WB already uses. Each pull request has its own cadence: one never observed is observed on the next pass (those of a
+worktree this machine has before the others); one whose checks are pending, or which has no check
+yet, after 90 seconds, stretched to `waiting x 3600 / (budget x 0.7)` seconds when that is longer, so
+that the pending ones use at most 70% of the budget and the settled ones keep their share; one whose
+mergeability is `unknown` likewise, until it has been unknown 5 observations in a row, after which it
+is settled; one whose verdict is known (green, failed, blocked on a missing required check, draft)
+after 10 minutes; one whose read failed after a backoff doubling from 2 to 30 minutes; one closed
+without merging after 60 minutes, in case it is reopened. A pass starts on a refresh, once the
+worktrees are known, and observes the pull requests that are due, at most `cockpit.pull_request_limit`
+of them (default 10, 1 to 200), the longest due first; each observation is bounded to 30 seconds, at
+most 4 run at once, a pass whose context ends records nothing for what it did not observe and gives
+its budget back, and a pass never delays the publication of the local snapshot. The observation is the
+lean one (`prsnapshot.ObserveLean`: it does not read the annotations that explain a red head). It
+reads the pull request once and, only if it is open, its check runs, its Actions workflow runs, its
+commit statuses and the target's branch policy and active rules: 6 GitHub reads for an open pull
+request (also when a required check is missing, which reuses those reads) and 1 for a merged or
+closed one; both numbers are tested. The reads are conditional (ETag), and a 304 answer is not charged
+to the rate limit. At most `cockpit.pull_request_hourly_budget` observations are made in any rolling
+hour (default 120, 10 to 400): with the defaults that is at most 120 x 6 = 720 reads an hour in the
+worst case (a seventh of the 5,000 an authenticated token has), the ceiling of 400 at most 2,400, and
+about 360 for 10 settled pull requests (6 observations an hour each). When the budget cuts a pass
+short, passes stop until the window frees, the document keeps the last values with their `checked_at`
+and carries `pull_requests_throttled` so the application says how old the state is. A merged pull
+request leaves the watch set after one confirmed observation; an observation that fails leaves the previous values and `checked_at` in place, so the
 age shows. No request reads GitHub. When no observation has ever succeeded for a pull request, the
 fields other than `number`, `repository` and `url` are omitted and the application says the state
 is not reported. A pull request of another machine carries only what its snapshot published
@@ -1050,7 +1090,7 @@ names. The client calls `GET /v0/workbench/machines/export` with `Authorization:
 no redirect, caps the response at 8 MiB, uses a 3 second connect timeout and a 10 second total
 timeout, and sends the bearer only to the configured host. A machine with no `remote.provider: hub`
 match, no `http` section or no readable token file has no HTTP route. The credential is installed by
-the existing `wb remote enroll --url=<hub-url> --token-stdin` (it verifies a one-time machine
+the existing `wb remote enroll --url=<<<edit:hub-url>>> --token-stdin` (it verifies a one-time machine
 credential, stores it privately and updates the hub-owned `remote` settings); for a per-machine
 `http` section the operator places the token file by the same enrolment against that machine's hub
 URL.
@@ -1118,7 +1158,7 @@ login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit exp
 codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
-<hub-url> --token-stdin`; `wb daemon start` for `daemon_not_running`; `wb self-update` for
+<<<edit:hub-url>>> --token-stdin`; `wb daemon start` for `daemon_not_running`; `wb self-update` for
 `wb_too_old` and `http_unavailable` caused by 404; and for the others the `ssh <user>@<host>
 <wb_path> cockpit export --format json` command to try. The stderr or response body behind
 it is not shown.
@@ -1127,7 +1167,10 @@ it is not shown.
 
 These budgets are tested on a fixture of 500 repositories, 600 worktrees,
 4,000 branches and 3 machines, with realistic names and `code_index` entries that
-carry statistics.
+carry statistics, and a realistic activity: most worktrees are old (about 2 in 100 were
+touched in the last two weeks), so about 300 tasks are at risk and only a handful need the
+operator, and most worktrees have the branch of their task while about a third have an
+`agent/`, `codex/` or `fix/` branch.
 
 #### REQ: fleet-document-size
 
@@ -1352,7 +1395,7 @@ Then it returns no match and the steps counted are at most a constant times the 
 Scenario: Every generated link parses
 Given Home, its "Needs you", "Ready to land", "Cleanup" and "Fleet health" rows, the Repositories sort presets and every page's chips and count cells
 When every link target is collected
-Then each is an address on one of the pages whose chips, `state:` values, `age:` terms, sort column ids and `sel` keys are all in the vocabulary table, the `age:` terms are exactly `age:<1d`, `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`, and no `day:` term exists
+Then each is an address on one of the pages whose chips, `state:` values, `age:` terms, sort column ids and `sel` keys are all in the vocabulary table, the `age:` terms are exactly `age:<1d`, `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`, and no `day:` term exists, and every chip of the vocabulary carries a non-empty label and hint
 
 ### AC: filter-state-lives-in-the-address
 
@@ -1633,6 +1676,60 @@ Given 7 tasks in "Needs you" (one with two kinds of need), including a task `old
 When Home is opened, "+2 more" is activated, and later every state has changed
 Then 5 task rows are shown, one per task and for its worst kind, ordered by kind rank and then by last activity newest first (`new` before `old`), the Home badge reads 7, after them one row says "3 blocked agents with no task" and opens Agents with chip `blocked`, "+2 more" opens Tasks with chip `needs-you` showing exactly the 7 tasks, and afterwards one line says nothing needs the operator and no row remains, with no acknowledge or snooze control anywhere
 
+### AC: needs-you-lists-recent-work-at-risk-only
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
+
+Scenario: A debt of old work is not a signal
+Given tasks at risk last active 0, 14, 15 and 200 days ago and with no recorded activity, one of them at risk and 90 days old with failed checks, one with a blocked agent, one with a pull request that needs a merge resolution, a task whose agent finished with work not pushed 14 and 15 days ago, and the performance fixture of 600 worktrees of which about 300 tasks are at risk and nearly all of them old
+When Home is opened
+Then only the at-risk tasks last active 0 and 14 days ago have the "Work at risk" row, the old one with failed checks, the one with the blocked agent and the one with the pull request that needs the operator keep their own rows, the task that finished 14 days ago has an "Agent finished" row and the one that finished 15 days ago has none, the badge counts the rows and, on the fixture, reads a handful and not about 300
+
+### AC: cleanup-counts-older-at-risk-work
+
+**Requirements:** cockpit-views#req:home-cleanup, cockpit-views#req:home-needs-you
+
+Scenario: The old at-risk work moves to the Cleanup line
+Given an at-risk task last active 3 days ago, one 20 days ago and one 40 days ago, none idle for 30 days, and an owner that is not orphaned
+When Home is opened and the chip `look` is toggled on Worktrees
+Then the Cleanup line counts the worktrees of the tasks last active 20 and 40 days ago and not the one of the task last active 3 days ago (which has its "Needs you" row), and the chip `look` shows exactly those worktrees
+
+### AC: needs-you-chip-is-the-home-set
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:filter-vocabulary
+
+Scenario: The chip and Home list the same tasks
+Given tasks at risk last active 2 and 30 days ago and a calm task
+When Tasks is opened with the chip `needs-you`
+Then it shows exactly the tasks Home lists under "Needs you" (the one last active 2 days ago), in the same order, and its hint says so
+
+### AC: home-badge-is-capped
+
+**Requirements:** cockpit-views#req:top-bar, cockpit-views#req:home-needs-you
+
+Scenario: 294 tasks need the operator
+Given 99 tasks that need the operator, then 100, then 294
+When the application is opened for each
+Then the Home badge reads `99`, `99+` and `99+`, the model exposes the number and the label, and the last two badges carry the whole number in their tooltip
+
+### AC: worktree-pr-join-is-one
+
+**Requirements:** cockpit-views#req:worktrees-list, cockpit-views#req:side-panel
+
+Scenario: A pull request found by branch
+Given worktrees `w1` (branch `agent/a`) and `w2`, a pull request that names `w2`, and one that names no worktree but has the repository entry and branch of `w1`
+When Worktrees is opened with the chip `pr` and the panel of each worktree is opened
+Then the chip leaves exactly `w1` and `w2`, the PR cell of each row names its pull request, and the panel of each lists the same pull request
+
+### AC: web-addresses-are-checked
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:worktrees-list, cockpit-views#req:side-panel
+
+Scenario: A hostile address from another machine
+Given pull requests whose `url` is `javascript:alert(1)`, `http://plain.example/1`, `https://user@github.com/a`, `https://github.com:8443/a` and `https://github.com/a b`, and a repository whose `remote_url_web` is `javascript:alert(1)`
+When Home, a pull request panel, a worktree panel and a repository page are shown
+Then none of them binds such an address to a link, each names the pull request or repository in plain text, and the Raw data block still shows the entry as received
+
 ### AC: ready-to-land-groups-by-task
 
 **Requirements:** cockpit-views#req:home-ready-to-land, cockpit-views#req:field-tables
@@ -1894,6 +1991,15 @@ Given every command template of the requirement and `ai/capabilities.json`
 When a test parses each template
 Then each command path exists in the manifest, every flag used exists on that command, and every flag the command requires is present in the template
 
+### AC: copy-command-placeholders-are-syntax-errors
+
+**Requirements:** cockpit-views#req:copy-the-command, cockpit-views#req:new-task-form
+
+Scenario: Every template through the shell parser
+Given every command template of the requirement rendered with its placeholders (here, with an SSH route and labelled "run on"), and again with benign values, and each placeholder placed first, last, after `--flag=`, before a word and before another placeholder
+When `bash -n` and `zsh -n` (and `dash -n`, a shell that is absent being skipped) parse each text
+Then every text with a `<<<edit:name>>>` placeholder, and each placeholder in each position, makes the shell exit non-zero with a syntax error, every template without a placeholder exits 0, and each is flagged needing an edit exactly when it holds a placeholder
+
 ### AC: copy-command-refuses-hostile-values
 
 **Requirements:** cockpit-views#req:copy-the-command, cockpit-views#req:new-task-form
@@ -1919,7 +2025,7 @@ Then the actions are disabled with one consistent explanation, the session chip 
 Scenario: The form
 Given repositories `sneat-co/sneat-go` and `sneat-co/bots-go`
 When "New task" is opened, `sneat-*/*-go` is typed in the picker, both are chosen, the task `fix-ci`, the brief `Fix the flaky CI.`, base `main` and model `opus` are entered
-Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<file> --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<profile> --new-worktree='fix-ci' --base='main'` (one per repository), each flagged as needing an edit because its placeholders are written bare, the form refuses to produce a command until a model is entered, and nothing is run
+Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'` (one per repository), each flagged as needing an edit because its placeholders are written bare and are a shell syntax error (`bash -n` and `zsh -n` exit non-zero), the form refuses to produce a command until a model is entered, and nothing is run
 
 ### AC: intent-to-done-budgets-hold
 
@@ -2018,7 +2124,7 @@ Then the first has `ahead` 2, `behind` 1 and `has_upstream` true, the second `up
 Scenario: Observed, failed read, merged, and over the bound
 Given a fake observer returning for pull request 12 state open with 3 passed, 1 skipped, 1 failed named `go-ci / test` and 1 pending check and `mergeable` `blocked`, for pull request 13 a successful then a failing read, for pull request 14 state merged, and 5 bound pull requests with `cockpit.pull_request_limit` 3
 When the snapshotter ticks three times with the second tick failing for 13, and the fleet document is requested with a counter on GitHub reads
-Then entry 12 carries `state` `open`, `checks_total` 6, `checks_passed` 3, `checks_skipped` 1, `checks_failed` 1, `checks_pending` 1, `failed_check` `go-ci / test`, `mergeable`, `checks_green` false and `checked_at`, entry 13 keeps its first values and `checked_at`, entry 14 is not observed again after one confirmed merged observation, no more than 3 pull requests are observed per tick, the oldest `checked_at` first, and no request caused a GitHub read
+Then entry 12 carries `state` `open`, `checks_total` 6, `checks_passed` 3, `checks_skipped` 1, `checks_failed` 1, `checks_pending` 1, `failed_check` `go-ci / test`, `mergeable`, `checks_green` false and `checked_at`, entry 13 keeps its first values and `checked_at`, entry 14 is not observed again after one confirmed merged observation, no more than 3 pull requests are observed per tick, the longest due first, and no request caused a GitHub read
 
 ### AC: pull-request-state-absent-until-observed
 

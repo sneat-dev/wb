@@ -5,6 +5,10 @@ import { resolve } from 'node:path'
 // The more specific name comes first. A page that needs one component imports its own
 // entry (`@cockpit/ui/count`), not the barrel, so it does not pull in the PrimeNG ones.
 export const workspaceAliases = [
+  { find: '@cockpit/fleet-data/home-details', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/home-details.ts') },
+  { find: '@cockpit/fleet-data/panel', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/panel.ts') },
+  { find: '@cockpit/fleet-data/commands', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/commands.ts') },
+  { find: '@cockpit/fleet-data/list', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/list.ts') },
   { find: '@cockpit/fleet-data/testing', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/testing.ts') },
   { find: '@cockpit/fleet-data', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/index.ts') },
   { find: '@cockpit/ui/count', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/count/count.ts') },

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +20,11 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/prsnapshot"
+	"github.com/sneat-dev/wb/internal/prwatch"
 	"github.com/sneat-dev/wb/internal/wbconfig"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub serves the real daemon
@@ -316,6 +321,53 @@ func TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed(t *testin
 	provider := named.Collectors.CodeIndexProvider
 	if provider == nil || provider.Name() != "codegrapher" || provider.Indexer() != "code-graph" {
 		t.Errorf("the configured provider = %+v", provider)
+	}
+}
+
+// TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit
+// pins that the daemon hands the snapshotter the production watcher and
+// cockpit.pull_request_limit. Nothing here observes a pull request.
+func TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit(t *testing.T) {
+	t.Parallel()
+	config := wbconfig.DefaultCockpitConfig()
+	config.PullRequestLimit, config.PullRequestHourlyBudget = 7, 55
+	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), config, io.Discard, func() (string, error) { return "h", nil })
+	watcher, ok := options.PullRequests.(*prwatch.Watcher)
+	if !ok || options.PullRequestLimit != 7 || options.PullRequestHourlyBudget != 55 {
+		t.Fatalf("pull request observer = %T limit %d budget %d, want a *prwatch.Watcher, 7 and 55", options.PullRequests, options.PullRequestLimit, options.PullRequestHourlyBudget)
+	}
+	// The observation is the lean one, shown by what a red head costs: the
+	// reads of any open pull request and not one run of `gh` to explain it.
+	var reads, executions atomic.Int64
+	watcher.Reader = &githubobserver.Reader{
+		Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+			reads.Add(1)
+			body := "{}"
+			switch {
+			case strings.HasSuffix(request.Endpoint, "/pulls/5"):
+				body = `{"number":5,"state":"open","head":{"sha":"abc"},"base":{"ref":"main"}}`
+			case strings.Contains(request.Endpoint, "/check-runs"):
+				body = `{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"failure","app":{"id":1,"slug":"gh"}}]}`
+			case strings.Contains(request.Endpoint, "/actions/runs"):
+				body = `{"total_count":0,"workflow_runs":[]}`
+			case strings.Contains(request.Endpoint, "/status"):
+				body = `{"state":"success","statuses":[]}`
+			case strings.HasSuffix(request.Endpoint, "/branches/main"):
+				body = `{"protected":false,"protection":{}}`
+			case strings.Contains(request.Endpoint, "/rules/"):
+				body = `[]`
+			}
+			return githubobserver.Response{Body: []byte(body), StatusCode: 200}, nil
+		},
+		Execute: func(context.Context, string, ...string) githubobserver.CommandResponse {
+			executions.Add(1)
+			return githubobserver.CommandResponse{ExitCode: 1}
+		},
+	}
+	outcome, err := watcher.Evaluate(context.Background(), worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/app", PullRequest: 5})
+	snapshot := outcome.Snapshot
+	if err != nil || snapshot.Err != nil || len(snapshot.Failed) != 1 || reads.Load() != prsnapshot.ReadsPerObservation || executions.Load() != 0 || len(snapshot.Failures) != 0 {
+		t.Errorf("a red head cost %d reads and %d executions: %+v", reads.Load(), executions.Load(), snapshot)
 	}
 }
 

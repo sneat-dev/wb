@@ -28,6 +28,14 @@ func TestCockpitSectionOverridesEachKey(t *testing.T) {
 	}
 }
 
+func TestCockpitPullRequestLimitIsConfigured(t *testing.T) {
+	t.Parallel()
+	got, err := parseCockpit([]byte("cockpit:\n  pull_request_limit: 25\n  pull_request_hourly_budget: 300\n"))
+	if err != nil || got.PullRequestLimit != 25 || got.PullRequestHourlyBudget != 300 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
 func TestCockpitCodeIndexProviderIsConfiguredWithItsIndexer(t *testing.T) {
 	t.Parallel()
 	got, err := parseCockpit([]byte("cockpit:\n  code_index_provider: codegrapher\n"))
@@ -58,6 +66,10 @@ func TestCockpitSectionRejectsInvalidValues(t *testing.T) {
 		"cockpit:\n  refresh_interval: soon\n":                     "cockpit.refresh_interval",
 		"cockpit:\n  refresh_interval: -5s\n":                      "cockpit.refresh_interval",
 		"cockpit:\n  refresh_interval: 0s\n":                       "cockpit.refresh_interval",
+		"cockpit:\n  pull_request_limit: 0\n":                      "cockpit.pull_request_limit",
+		"cockpit:\n  pull_request_limit: 201\n":                    "cockpit.pull_request_limit",
+		"cockpit:\n  pull_request_hourly_budget: 9\n":              "cockpit.pull_request_hourly_budget",
+		"cockpit:\n  pull_request_hourly_budget: 401\n":            "cockpit.pull_request_hourly_budget",
 		"cockpit:\n  anonymous_metadata: maybe\n":                  "parse cockpit section",
 		"cockpit: [unterminated\n":                                 "parse config",
 		"cockpit: just text\n":                                     "parse cockpit section",

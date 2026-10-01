@@ -1,18 +1,5 @@
-import {
-  AGE_TERMS,
-  MAX_QUERY_LENGTH,
-  MAX_TERMS,
-  MatchEnv,
-  StepCounter,
-  Subject,
-  ageTermOf,
-  globMatch,
-  hasWildcard,
-  idleOver30Days,
-  matchesTerms,
-  parseQuery,
-  wholeDays,
-} from './matcher'
+import { MatchEnv, StepCounter, Subject, ageTermOf, globMatch, hasWildcard, idleOver30Days, matchesTerms, wholeDays } from './match'
+import { AGE_TERMS, MAX_QUERY_LENGTH, MAX_TERMS, parseQuery } from './matcher'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const DAY = 86_400_000
