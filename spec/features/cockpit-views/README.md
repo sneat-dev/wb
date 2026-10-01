@@ -170,11 +170,19 @@ global search use one pure matcher with this grammar:
   that includes a field term, so `-machine:vm` excludes rows on machine `vm`;
 - a term `field:value` restricts the match to one field where the page
   declares that field (the fields of REQ:filter-vocabulary) and a term whose
-  field name the page does not declare is plain text;
+  field name the page does not declare is plain text; a quoted field value
+  (`repo:"sneat-co/sneat-go"`) is an exact, whole-value, case-insensitive match
+  in which `*` and `?` are ordinary characters, so it does not match
+  `sneat-co/sneat-go-backend`, while an unquoted value stays a substring or a glob;
+  every link that carries a field term writes the value quoted, so that a count
+  cell opens exactly the rows it counted; a value that holds a double quote, or
+  one whose term would pass the 256-character cap, cannot be written as a link;
+- double quotes protect what they enclose: a quoted leading `-` is text, not an
+  exclusion, and a quoted `:` does not make a field term;
 - a bare term is matched against the fields the page declares as searched by
   default (REQ:filter-vocabulary); a repository's value is its `owner/name`
   without the host;
-- matching is case-insensitive;
+- matching is case-insensitive, and `?` matches exactly one code point;
 - the filter text is capped at 256 characters and 16 terms, and what exceeds
   either cap is ignored;
 - there are no regular expressions, and globs are matched by an algorithm whose
@@ -260,7 +268,10 @@ These are declared non-linking, each with its reason: the branch counts on Repos
 (there is no branches list page), the throughput charts and their numbers (they come from
 sealed terminal records that have no entries in the fleet document, so no list can reproduce
 them), and the checks passed over total of a pull request (it is a fact of one pull request,
-whose link is its `url`). Hover cards are not required.
+whose link is its `url`). A count whose name cannot be written as a link (it holds a double
+quote or is too long for the filter) is shown as plain text with the reason in its `title`.
+The links carry quoted field terms (REQ:list-filter-and-matcher), so each opens exactly the
+rows it counted. Hover cards are not required.
 
 ### Progressive exposure
 
@@ -303,18 +314,18 @@ of the fleet document in the fleet-data library, evaluated top to bottom, the fi
 matches winning, which makes the order worst first. A pull request, agent or worktree "of
 the task" is one whose task name equals the task's. A pull request is open when its `state`
 is `open` or `draft`. Rows 2, 4 and 5 consider only pull requests that carry `checked_at`; a
-task whose open pull requests are all unobserved has no reported pull request input, and the
-side panel says how many are unobserved. The fields are those of REQ:field-tables.
+task with an open pull request that is unobserved is never `ready`, and the side panel says how
+many pull requests are unobserved. The fields are those of REQ:field-tables.
 
 | # | State id | Label | The task has |
 |---|---|---|---|
 | 1 | `at-risk` | at risk | a worktree on this machine whose `owner_state` is not `active` and which has `ahead` above zero or `has_upstream` false (the interim rule, below) |
 | 2 | `checks-failed` | checks failed | an open pull request with `checks_failed` above zero |
-| 3 | `blocked` | blocked | an agent whose `activity` is `blocked`, or whose most recent dispatched run ended `failed` or `timeout` less than 24 hours ago with no later run or session for the task |
-| 4 | `ready` | ready to land | at least one open pull request, and every open pull request has `state` `open` (not a draft), `checks_green` true and `mergeable` equal to `clean` or `has_hooks` |
-| 5 | `not-ready` | not ready | an open pull request that rows 2 and 4 did not take; the side panel says why: draft, checks pending, not mergeable, behind, or review |
+| 3 | `blocked` | blocked | an agent whose `activity` is `blocked`, or whose most recent dispatched run ended `failed` or `timeout` strictly less than 24 hours ago (counted from `finished_at`, else `started_at`; a run with neither is not reported as blocking) with no later run or session for the task |
+| 4 | `ready` | ready to land | at least one open pull request, and every open pull request (observed or not) carries `checked_at`, has `state` `open` (not a draft), `checks_green` true and `mergeable` equal to `clean` or `has_hooks` |
+| 5 | `not-ready` | not ready | an open pull request that rows 2 and 4 did not take (an unobserved one included); the side panel says why, only from: draft, checks failed, checks pending, review, checks not reported, not mergeable, behind, unstable, merge state not reported, pull request not yet checked |
 | 6 | `working` | working | an agent whose `activity` is `working`, a dispatched run in state `running`, or a worktree whose `owner_state` is `active` |
-| 7 | `landed` | landed | no open pull request, and at least one pull request with `state` `merged`, or, where the worktree's `lifecycle` is populated, every worktree with `lifecycle` `merged` |
+| 7 | `landed` | landed | no open pull request and no worktree of the task with unpushed work (`ahead` above zero, or `has_upstream` false), and at least one pull request with `state` `merged`, or, where the worktree's `lifecycle` is populated, every worktree with `lifecycle` `merged` |
 | 8 | `idle` | idle | none of the above, and at least one of: a worktree `owner_state`, a pull request `state` or an agent `activity` reported |
 | 9 | `not-reported` | state not reported | none of the above because no worktree `owner_state`, no pull request `state` and no agent `activity` is reported |
 
@@ -587,12 +598,22 @@ unit test parses every template against that manifest:
   --message='<message>'`; no entry for any other session.
 
 Every interpolated value is POSIX single-quoted (an embedded `'` is written `'\''`), and flags
-are written `--flag=value`. A value that contains a control character, or that starts with `-`,
-is never interpolated: the entry is refused and says why. The commands are the vocabulary's own
+are written `--flag=value`. A placeholder in angle brackets (`<message>`, `<model>`, `<file>`,
+`<profile>`, `<task>`, `<brief>`, `<hub-url>`) is written bare and never quoted, for example
+`--message=<message>`, so that pasting an entry unedited fails in the shell instead of running,
+and the entry is flagged as needing an edit for the interface to say so; the `'<...>'` forms in
+the list above stand for a quoted value or, until the operator supplies it, a bare placeholder.
+A value that contains a control character (including U+061C, U+200B to U+200F, U+2028, U+2029,
+the bidirectional controls and U+FEFF), or that starts with `-`, is never interpolated: the
+entry is refused and says why (a brief may hold line breaks and tabs, nothing else of that). The commands are the vocabulary's own
 placeholders in angle brackets for what the operator supplies. For an entity on a machine that
 has an SSH route (REQ:remote-ssh-fetch) the copied text is `ssh <user>@<host> <wb_path>
-<command>`, built from the same configuration with each token shell-quoted as one argument; for
-an entity on any other machine the command is labelled "run on <machine>". Machines and the
+<command>` (just the host when the configuration has no user), built from the same configuration with each token shell-quoted as one argument; for
+an entity on any other machine the command is labelled "run on <machine>". The SSH routes come
+from the session response's owner-only field `machine_routes` (a list of `machine_id` and `ssh`
+with `host`, an optional `user` and `wb_path`), which the daemon emits only to an owner session
+([cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only never includes it); an
+anonymous reader has no route, so every entity on another machine is labelled "run on <machine>". Machines and the
 code-index refresh have no entry because the manifest has no command for them that the read
 model's identifiers can fill, and no entry gets a worktree into its location, because the
 manifest has no verb that prints or opens a worktree's location from a task name
@@ -610,13 +631,14 @@ message to each button.
 
 Serves J3. The "New task" button MUST open a form with a repository picker that uses the
 wildcard matcher and offers only names that match `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`, a task name,
-an optional base branch and a model, and MUST produce the exact command to copy, with the quoting
+a brief (the text of the task prompt, several lines allowed), an optional base branch and a model, and MUST produce the exact command to copy, with the quoting
 and refusal rules of REQ:copy-the-command: `wb worktree create '<task>' '<owner/repository>'...
 --model='<model>' --original-prompt-file='<file>'` (both flags are required by that verb, so the
 model is required in the form, `unknown` being the verb's explicit value, and the prompt file is a
 placeholder for the operator) with `--base='<branch>'` when given, and the dispatch form `wb agent
-dispatch --repo='<owner/repository>' --task='<task>' --profile='<profile>'
---new-worktree='<task>'` with `--base='<branch>'` when given; the model is not passed to dispatch,
+dispatch --repo='<owner/repository>' --task='<brief>' --profile=<profile>
+--new-worktree='<task>'` (`--task` is the text of the task prompt, not the task name, which is the
+worktree) with `--base='<branch>'` when given; the model is not passed to dispatch,
 which has no such flag, and the profile is a placeholder because profiles are named in `wb.yaml`,
 not in the read model. The form runs nothing. Running it from the Cockpit, Stop, Log and Reply on a
 run, and the cleanup flow are follow-ups to be specified in `cockpit-actions` (see Open
@@ -1246,7 +1268,7 @@ Then Worktrees opens, the filter box has the focus, the typed `g w` stays as tex
 **Requirements:** cockpit-views#req:schema-version-2
 
 Scenario: Version mismatch in both directions
-Given a daemon answering `schema_version` 1, a page that expects 3 against a daemon answering 2, and a daemon answering 2 for a page that expects 2
+Given a page that expects schema version 2 and a daemon answering `schema_version` 1, one answering 3, and one answering 2
 When the application loads from each
 Then the first shows "update wb on this machine" and no data, the second shows "reload" and no data, the third renders normally, and the daemon's fleet document carries `schema_version` 2
 
@@ -1257,7 +1279,7 @@ Then the first shows "update wb on this machine" and no data, the second shows "
 Scenario: Terms, glob, exclusion, field and quotes
 Given rows `sneat-co/bots-go` on machine `mac`, `sneat-co/sneat-go` on machine `vm`, `sneat-dev/wb` on `mac` and `Strongo/Dalgo` on `vm`, with a task `fix ci` on `sneat-dev/wb`
 When the matcher is applied with `sneat-*/*-go`, with `WB`, with `sneat -wb`, with `machine:vm go`, with `-machine:vm`, with `task:"fix ci"`, with `colour:red` on a page that does not declare `colour`, and with `a.*`
-Then the results are the two `-go` repositories, `sneat-dev/wb`, the two sneat-co rows, `sneat-co/sneat-go` and `Strongo/Dalgo`, the two rows on `mac`, `sneat-dev/wb`, no row (the text `colour:red` matches nothing), and no row (the dot and star are a glob with a literal dot, never a regular expression)
+Then the results are the two `-go` repositories, `sneat-dev/wb`, the two sneat-co rows, `sneat-co/sneat-go` and `Strongo/Dalgo`, the two rows on `mac`, `sneat-dev/wb`, no row (the text `colour:red` matches nothing), and no row (the dot and star are a glob with a literal dot, never a regular expression); and given also `sneat-co/sneat-go-backend`, `repo:"sneat-co/sneat-go"` matches `sneat-co/sneat-go` and not `sneat-co/sneat-go-backend`, `repo:sneat-co/sneat-go` matches both, and `repo:"sneat-co/*"` matches only a row whose repository is literally `sneat-co/*`
 
 ### AC: matcher-limits-and-bare-fields
 
@@ -1408,9 +1430,9 @@ Then the first is `checks-failed`, not `blocked` or `ready`, and the second has 
 **Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
 Scenario: Blocked agent, failed run, a later run, and 24 hours
-Given a task with an agent whose `activity` is `blocked`, a task whose latest dispatched run ended `timeout` 2 hours ago, a task whose latest run ended `failed` 2 hours ago but has a later session, and a task whose latest run ended `failed` 25 hours ago
+Given a task with an agent whose `activity` is `blocked`, a task whose latest dispatched run ended `timeout` 2 hours ago, a task whose latest run ended `failed` 2 hours ago but has a later session, a task whose latest run ended `failed` 25 hours ago or exactly 24 hours ago, and a task whose latest run ended `failed` with no `finished_at` and no `started_at`
 When the task state is computed
-Then the first two are `blocked` and the other two are not
+Then the first two are `blocked` and the others are not
 
 ### AC: task-state-ready-to-land
 
@@ -1428,7 +1450,7 @@ Then the first is `ready` and the other two are `not-ready`
 Scenario: Why a task is not ready
 Given a task with a draft pull request, a task whose pull request has `checks_pending` 2, a task whose green pull request has `mergeable` `dirty`, a task whose green pull request has `mergeable` `behind`, and a task whose pull request has no failed and no pending check but `checks_green` false
 When the task state is computed and the side panel is opened
-Then all five are `not-ready` and the panel says draft, checks pending, not mergeable, behind and review respectively
+Then all five are `not-ready` and the panel says draft, checks pending, not mergeable, behind and review respectively; a green pull request whose `mergeable` is absent says "merge state not reported", one whose `checks_green` is absent says "checks not reported" (never "review"), and a task with no reasons at all is never listed as waiting on checks
 
 ### AC: task-state-working
 
@@ -1480,9 +1502,9 @@ Then they are in the order at risk, checks failed, blocked, ready to land, not r
 **Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
 Scenario: Observed and unobserved pull requests
-Given a task with one observed open pull request that is ready and one open pull request with no `checked_at`, and a task whose only open pull request has no `checked_at` and whose worktree `owner_state` is `idle`
+Given a task with one observed open pull request that is ready and one open pull request (`state` `open`) with no `checked_at`, and a task whose only pull request has no `state` and no `checked_at` and whose worktree `owner_state` is `idle`
 When the task state is computed and the side panel is opened
-Then the first is `ready` and its panel says one pull request is not yet observed, and the second is `idle` with no reported pull request input
+Then the first is `not-ready` and its panel says "pull request not yet checked" and counts one pull request as not yet observed, and the second is `idle` with no reported pull request input
 
 ### AC: tasks-list-aggregates-worktrees
 
@@ -1832,8 +1854,8 @@ Then each command path exists in the manifest, every flag used exists on that co
 
 Scenario: Quotes, control characters, a leading dash, and the picker
 Given a task named `a'; rm -rf ~; '`, one named `-x`, one containing a newline, a branch named `--upstream`, and repositories named `owner/na me` and `owner/ok.name`
-When "Copy command" entries and the "New task" picker are used on each
-Then the value with a quote is copied single-quoted with the embedded quote escaped, the values starting with `-` or containing a control character are refused with an explanation and nothing is copied, the picker offers `owner/ok.name` and not `owner/na me`, and no refused value reaches the clipboard
+When "Copy command" entries and the "New task" picker are used on each, and on a value with a zero-width space, a U+2028 or a U+FEFF
+Then the value with a quote is copied single-quoted with the embedded quote escaped, the values starting with `-` or containing a control, invisible or line-separator character are refused with an explanation and nothing is copied, the picker offers `owner/ok.name` and not `owner/na me`, and no refused value reaches the clipboard
 
 ### AC: owner-gating-is-one-affordance
 
@@ -1850,8 +1872,8 @@ Then the actions are disabled with one consistent explanation, the session chip 
 
 Scenario: The form
 Given repositories `sneat-co/sneat-go` and `sneat-co/bots-go`
-When "New task" is opened, `sneat-*/*-go` is typed in the picker, both are chosen, the task `fix-ci`, base `main` and model `opus` are entered
-Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file='<file>' --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='fix-ci' --profile='<profile>' --new-worktree='fix-ci' --base='main'` (one per repository), the form refuses to produce a command until a model is entered, and nothing is run
+When "New task" is opened, `sneat-*/*-go` is typed in the picker, both are chosen, the task `fix-ci`, the brief `Fix the flaky CI.`, base `main` and model `opus` are entered
+Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<file> --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<profile> --new-worktree='fix-ci' --base='main'` (one per repository), each flagged as needing an edit because its placeholders are written bare, the form refuses to produce a command until a model is entered, and nothing is run
 
 ### AC: intent-to-done-budgets-hold
 
@@ -2366,10 +2388,6 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 - The local `owner_state` of REQ:owner-state-vocabulary is the owner-process liveness, which the
   current local mapper does not read (it reads only the heartbeat). The contract task caches it per
   snapshot and reports the measured cost; the heartbeat fallback is not part of this Feature.
-- Rows 2, 4 and 5 of REQ:task-state ignore a pull request that has no `checked_at`, so a task with
-  one observed ready pull request and one unobserved open one reads as ready; the side panel says
-  how many pull requests are not yet observed. Whether `ready` should require every open pull
-  request to be observed is left for review.
 - Elapsed pending time of a pull request's checks is not available (the observation
   carries no start time), so Home shows how long ago the checks were read.
 

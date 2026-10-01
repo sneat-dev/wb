@@ -25,7 +25,7 @@ function fleet(files: number, provider: string | null = 'codegrapher') {
   // A daemon with no provider configured reports no statistics at all.
   const withStats = (statistics: object) => (provider ? { statistics } : {})
   return {
-    schema_version: 1,
+    schema_version: 2,
     snapshot_at: now,
     warming_up: false,
     repositories_total: 1,
@@ -49,7 +49,6 @@ function fleet(files: number, provider: string | null = 'codegrapher') {
       { id: 'wt-indexed', ...alpha, repository: 'repo-cli', task: 'add-search', branch: 'task/add-search', code_index: [{ indexer: 'codegrapher', state: 'fresh', receipt_at: now, ...withStats(stats(files)) }] },
       { id: 'wt-bare', ...alpha, repository: 'repo-cli', task: 'fix-index', branch: 'task/fix-index', code_index: [{ indexer: 'codegrapher', state: 'never', ...withStats(notIndexed) }] },
     ],
-    branches: [],
     pull_requests: [],
     agents: [],
   }
