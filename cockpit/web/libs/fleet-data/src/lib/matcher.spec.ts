@@ -55,7 +55,7 @@ describe('parseQuery', () => {
   it('splits on whitespace, keeps a quoted value whole and removes the quotes', () => {
     expect(parseQuery('  a   b  ').map((term) => term.raw)).toEqual(['a', 'b'])
     expect(parseQuery('task:"fix ci" go')).toEqual([
-      { negate: false, field: 'task', value: 'fix ci', raw: 'task:fix ci' },
+      { negate: false, field: 'task', value: 'fix ci', raw: 'task:fix ci', exact: true },
       { negate: false, value: 'go', raw: 'go' },
     ])
     expect(parseQuery('"two words"')[0].value).toBe('two words')
@@ -65,7 +65,7 @@ describe('parseQuery', () => {
 
   it('reads a leading dash as exclusion, also on a field term, and a lone dash as text', () => {
     expect(parseQuery('-wb')[0]).toEqual({ negate: true, value: 'wb', raw: 'wb' })
-    expect(parseQuery('-machine:vm')[0]).toEqual({ negate: true, field: 'machine', value: 'vm', raw: 'machine:vm' })
+    expect(parseQuery('-machine:vm')[0]).toEqual({ negate: true, field: 'machine', value: 'vm', raw: 'machine:vm', exact: false })
     expect(parseQuery('-')[0]).toEqual({ negate: false, value: '-', raw: '-' })
   })
 
@@ -76,6 +76,15 @@ describe('parseQuery', () => {
     }
     expect(parseQuery('')).toEqual([])
     expect(parseQuery('""')).toEqual([])
+  })
+
+  it('lets quotes protect a leading dash and a field prefix', () => {
+    expect(parseQuery('"-x"')[0]).toEqual({ negate: false, value: '-x', raw: '-x' })
+    expect(parseQuery('"a:b"')[0]).toEqual({ negate: false, value: 'a:b', raw: 'a:b' })
+    expect(parseQuery('-"a b"')[0]).toEqual({ negate: true, value: 'a b', raw: 'a b' })
+    expect(parseQuery('"task":x')[0].field).toBeUndefined()
+    expect(parseQuery('task:""')[0].field).toBeUndefined()
+    expect(parseQuery('task:x')[0].exact).toBe(false)
   })
 
   // cockpit-views#ac:matcher-limits-and-bare-fields
@@ -134,6 +143,12 @@ describe('globMatch', () => {
     }
   })
 
+  it('lets ? match one code point, not one UTF-16 unit', () => {
+    expect(globMatch('a?b', 'a\u{1F600}b')).toBe(true)
+    expect(globMatch('a??b', 'a\u{1F600}b')).toBe(false)
+    expect(globMatch('*\u{1F600}', 'x\u{1F600}')).toBe(true)
+  })
+
   it('counts the steps of trailing stars too', () => {
     const counter: StepCounter = { steps: 0 }
     expect(globMatch('a**', 'a', counter)).toBe(true)
@@ -182,6 +197,24 @@ describe('matchesTerms', () => {
     const padded = `${'topic '.repeat(43)}zzz`
     expect(padded.length).toBeGreaterThan(MAX_QUERY_LENGTH)
     expect(matchesTerms(parseQuery(padded), subject, env)).toBe(true)
+  })
+
+  // cockpit-views#ac:matcher-grammar
+  it('matches a quoted field value exactly: whole-value, case-insensitive, with no wildcards, so a count cell opens what it counted', () => {
+    const rows: Row[] = [
+      { repo: 'sneat-co/sneat-go', machine: 'mac' },
+      { repo: 'sneat-co/sneat-go-backend', machine: 'mac' },
+      { repo: 'Sneat-Co/Sneat-Go', machine: 'vm' },
+      { repo: 'sneat-co/*', machine: 'vm' },
+    ]
+    expect(run('repo:"sneat-co/sneat-go"', rows)).toEqual(['sneat-co/sneat-go', 'Sneat-Co/Sneat-Go'])
+    // Unquoted stays a substring, and a glob.
+    expect(run('repo:sneat-co/sneat-go', rows)).toHaveLength(3)
+    expect(run('repo:sneat-co/sneat-g?', rows)).toEqual(['sneat-co/sneat-go', 'Sneat-Co/Sneat-Go'])
+    // In exact mode * and ? are literal.
+    expect(run('repo:"sneat-co/*"', rows)).toEqual(['sneat-co/*'])
+    expect(run('-repo:"sneat-co/sneat-go"', rows)).toEqual(['sneat-co/sneat-go-backend', 'sneat-co/*'])
+    expect(run('repo:"nope"', rows)).toEqual([])
   })
 
   it('matches a field exactly when it is declared exact, and a glob over it', () => {

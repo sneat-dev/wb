@@ -65,16 +65,30 @@ function shellWords(line: string): string[] {
 }
 
 interface Manifest {
-  capabilities: { surfaces: { runtime?: { commands?: { path: string; flags?: string[] }[] } } }[]
+  capabilities: { surfaces: { runtime?: { commands?: { path: string; flags?: string[]; modes?: string[] }[] } } }[]
 }
 
 const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../../../../../ai/capabilities.json'), 'utf8')) as Manifest
 const commands = new Map<string, Set<string>>()
+/** The flags the manifest's own text says a verb requires: a clause that ends "<flag> is required". */
+const derivedRequired = new Map<string, Set<string>>()
 for (const capability of manifest.capabilities) {
-  for (const command of capability.surfaces.runtime?.commands ?? []) commands.set(command.path, new Set(command.flags ?? []))
+  for (const command of capability.surfaces.runtime?.commands ?? []) {
+    commands.set(command.path, new Set(command.flags ?? []))
+    for (const mode of command.modes ?? []) {
+      for (const clause of mode.split(/[;,]/)) {
+        const match = /(--[a-z][a-z-]*) is required(?: with any one)?$/.exec(clause.trim())
+        if (match) derivedRequired.set(command.path, (derivedRequired.get(command.path) ?? new Set()).add(match[1]))
+      }
+    }
+  }
 }
 
-/** The flags a verb requires, which the manifest does not record: from REQ:copy-the-command. */
+/**
+ * The flags a verb requires where the manifest does not say so (from
+ * REQ:copy-the-command); where it does, the test below derives them and checks
+ * this table agrees.
+ */
 const REQUIRED_FLAGS: Record<string, string[]> = {
   'wb worktree create': ['--model', '--original-prompt-file'],
   'wb pr create': ['--commit-all', '--message'],
@@ -111,7 +125,8 @@ const TEMPLATES: Record<string, CopyCommand> = {
   agentStop: agentStop('run-1'),
   sessionSend: sessionSend('wb-session-1'),
   agentDispatch: agentDispatch('sneat-dev/wb', 'fix-ci'),
-  agentDispatchBase: agentDispatch('sneat-dev/wb', 'fix-ci', { base: 'main', profile: 'deep' }),
+  agentDispatchBase: agentDispatch('sneat-dev/wb', 'fix-ci', { base: 'main', profile: 'deep', brief: 'do it' }),
+  worktreeListSsh: worktreeList('fix-ci', { ssh: { host: 'h', user: 'u' } }),
   remotePublish: remotePublish(),
   selfUpdate: selfUpdate(),
   daemonStart: daemonStart(),
@@ -122,17 +137,29 @@ const TEMPLATES: Record<string, CopyCommand> = {
 describe('Copy command templates against the command manifest', () => {
   // cockpit-views#ac:copy-command-templates-match-the-manifest
   it.each(Object.entries(TEMPLATES))('%s: its verb and every flag exist, and the flags it requires are present', (_name, command) => {
-    const words = shellWords(text(command))
+    const parsed = shellWords(text(command))
+    // The ssh form runs the same verb on the remote: judge what follows the destination and the executable.
+    const words = parsed[0] === 'ssh' ? ['wb', ...parsed.slice(3)] : parsed
     const verb = verbOf(words)
     expect(verb, `no manifest command for: ${text(command)}`).toBeDefined()
     const flags = words.filter((word) => word.startsWith('--')).map((word) => word.split('=')[0])
     if (verb !== undefined && commands.has(verb)) {
       for (const flag of flags) expect(commands.get(verb)?.has(flag), `${verb} has no ${flag}`).toBe(true)
     }
-    for (const required of REQUIRED_FLAGS[verb ?? ''] ?? []) expect(flags).toContain(required)
+    for (const required of [...(REQUIRED_FLAGS[verb ?? ''] ?? []), ...(derivedRequired.get(verb ?? '') ?? [])]) expect(flags).toContain(required)
     // Never the destructive form, and never a filesystem path.
     expect(text(command)).not.toContain('--apply')
     expect(text(command)).not.toMatch(/(^| )(\/|~|\.\.?\/)/)
+  })
+
+  it('derives required flags from the manifest where it states them, and the table agrees', () => {
+    expect([...(derivedRequired.get('wb pr create') ?? [])]).toEqual(['--message'])
+    for (const [verb, flags] of derivedRequired) {
+      for (const flag of flags) expect(commands.get(verb)?.has(flag), `${verb} ${flag}`).toBe(true)
+      // Conditional wording ("--apply is required for every deletion") is not an unconditional requirement.
+      expect(flags.has('--apply')).toBe(false)
+    }
+    expect(REQUIRED_FLAGS['wb pr create']).toContain('--message')
   })
 
   it('requires the flags it names to exist in the manifest too', () => {
@@ -158,12 +185,12 @@ describe('Copy command texts', () => {
   // cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers
   it('are exactly the commands of REQ:copy-the-command, values single-quoted and flags --flag=value', () => {
     expect(text(worktreeList('fix-ci'))).toBe("wb worktree list 'fix-ci'")
-    expect(text(pullRequestCreate('fix-ci'))).toBe("wb pr create 'fix-ci' --commit-all --message='<message>'")
+    expect(text(pullRequestCreate('fix-ci'))).toBe("wb pr create 'fix-ci' --commit-all --message=<message>")
     expect(text(pullRequestCreate('fix-ci', 'ship it'))).toBe("wb pr create 'fix-ci' --commit-all --message='ship it'")
     expect(text(worktreeCleanup('fix-ci'))).toBe("wb worktree cleanup 'fix-ci'")
     expect(text(pullRequestLand('sneat-dev/wb', 12))).toBe("wb pr land 'sneat-dev/wb#12'")
-    expect(text(worktreeCreate('<task>', ['<owner/repository>']))).toBe(
-      "wb worktree create '<task>' '<owner/repository>' --model='<model>' --original-prompt-file='<file>'",
+    expect(text(worktreeCreate(PLACEHOLDERS.task, ['<owner/repository>']))).toBe(
+      "wb worktree create <task> '<owner/repository>' --model=<model> --original-prompt-file=<file>",
     )
     expect(text(branchList('sneat-dev/wb'))).toBe("wb branch list --repo='sneat-dev/wb'")
     expect(text(branchList('sneat-dev/wb', 'topic'))).toBe("wb branch list --repo='sneat-dev/wb' --branch='topic'")
@@ -172,20 +199,34 @@ describe('Copy command texts', () => {
     expect(text(agentStatus('run-1'))).toBe("wb agent status 'run-1'")
     expect(text(agentLogs('run-1'))).toBe("wb agent logs 'run-1'")
     expect(text(agentStop('run-1'))).toBe("wb agent stop 'run-1'")
-    expect(text(sessionSend('s-1'))).toBe("wb session send 's-1' --message='<message>'")
+    expect(text(sessionSend('s-1'))).toBe("wb session send 's-1' --message=<message>")
     expect(text(sessionSend('s-1', 'hi'))).toBe("wb session send 's-1' --message='hi'")
     expect(text(remotePublish())).toBe('wb remote publish')
     expect(text(selfUpdate())).toBe('wb self-update')
     expect(text(daemonStart())).toBe('wb daemon start')
-    expect(text(remoteEnroll())).toBe("wb remote enroll --url='<hub-url>' --token-stdin")
+    expect(text(remoteEnroll())).toBe('wb remote enroll --url=<hub-url> --token-stdin')
     expect(text(remoteEnroll('https://hub.example'))).toBe("wb remote enroll --url='https://hub.example' --token-stdin")
     expect(text(cockpitExport())).toBe("wb cockpit export --format='json'")
     expect(PLACEHOLDERS.promptFile).toBe('<file>')
   })
 
+  // cockpit-views#ac:copy-command-refuses-hostile-values
+  it('leaves a placeholder bare and flags the entry needsEdit, so an unedited paste fails in the shell', () => {
+    expect(pullRequestCreate('t')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message=<message>", needsEdit: true })
+    expect(pullRequestCreate('t', 'done')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message='done'", needsEdit: false })
+    expect(worktreeList('t')).toMatchObject({ needsEdit: false })
+    expect(worktreeCreate('t', ['o/r'])).toMatchObject({ needsEdit: true })
+    expect(worktreeCreate('t', ['o/r'], { model: 'opus', promptFile: 'p.md' })).toMatchObject({ needsEdit: false })
+    expect(agentDispatch('o/r', 't', { brief: 'do it' })).toMatchObject({ needsEdit: true })
+    expect(text(agentDispatch('o/r', 't', { profile: 'deep', brief: 'do it' }))).toBe("wb agent dispatch --repo='o/r' --task='do it' --profile='deep' --new-worktree='t'")
+    // Also through ssh: a bare placeholder is a redirection in the remote shell, which fails.
+    expect(text(sessionSend('s-1', undefined, { ssh: { host: 'h', user: 'u' } }))).toBe("ssh u@h wb session send 's-1' --message=<message>")
+    expect(sessionSend('s-1', undefined, { ssh: { host: 'h' } })).toMatchObject({ needsEdit: true })
+  })
+
   it('label the command for a machine without an SSH route "run on <machine>", and not for this one', () => {
-    expect(worktreeList('fix-ci', { machine: 'old' })).toEqual({ ok: true, text: "wb worktree list 'fix-ci'", label: 'run on old' })
-    expect(worktreeList('fix-ci', {})).toEqual({ ok: true, text: "wb worktree list 'fix-ci'" })
+    expect(worktreeList('fix-ci', { machine: 'old' })).toEqual({ ok: true, text: "wb worktree list 'fix-ci'", label: 'run on old', needsEdit: false })
+    expect(worktreeList('fix-ci', {})).toEqual({ ok: true, text: "wb worktree list 'fix-ci'", needsEdit: false })
   })
 
   // cockpit-views#ac:copy-command-for-an-ssh-machine
@@ -197,6 +238,11 @@ describe('Copy command texts', () => {
     expect(text(pullRequestCreate('fix ci', 'a b', { ssh: { host: 'h', user: 'u' } }))).toBe(
       "ssh u@h wb pr create ''\\''fix ci'\\''' --commit-all --message=''\\''a b'\\'''",
     )
+    // The user may be empty: the destination is then just the host.
+    expect(text(worktreeList('x', { ssh: { host: 'vm.example', user: '' } }))).toBe("ssh vm.example wb worktree list 'x'")
+    expect(text(worktreeList('x', { ssh: { host: 'vm.example', user: undefined, wbPath: '' } }))).toBe("ssh vm.example wb worktree list 'x'")
+    // A value that could be read as a bare =-word is quoted for the remote shell too.
+    expect(text(worktreeList('=x', { ssh: { host: 'h', user: 'u' } }))).toBe("ssh u@h wb worktree list ''\\''=x'\\'''")
     expect(shellWords(text(worktreeList("it's", { ssh: { host: 'h', user: 'u' } }))).slice(0, 4)).toEqual(['ssh', 'u@h', 'wb', 'worktree'])
     expect(text(worktreeList('x', { ssh: { host: 'h h', user: 'u', wbPath: '/opt/my wb' } }))).toBe("ssh 'u@h h' ''\\''/opt/my wb'\\''' worktree list 'x'")
   })
@@ -218,7 +264,7 @@ describe('Copy command texts', () => {
   })
 
   it('refuses a value that starts with a dash or holds a control character, saying why, and copies nothing', () => {
-    for (const value of ['-x', '--upstream', 'a\nb', 'a\u0000b', 'a\u007fb', 'a\u202eb', 'a\u200fb']) {
+    for (const value of ['-x', '--upstream', 'a\nb', 'a\u0000b', 'a\u007fb', 'a\u202eb', 'a\u200fb', 'a\u061cb', 'a\u200bb', 'a\u200cb', 'a\u200db', 'a\ufeffb', 'a\u2028b', 'a\u2029b']) {
       for (const command of [worktreeList(value), branchList('o/r', value), pullRequestCreate('t', value), agentStop(value), worktreeCreate('t', ['o/r'], { model: value })]) {
         expect(command.ok).toBe(false)
         expect(command.ok ? '' : command.reason.length).toBeGreaterThan(10)
@@ -242,17 +288,33 @@ describe('the New task form', () => {
   })
 
   // cockpit-views#ac:new-task-form-produces-commands
-  it('produces the creation command and one dispatch command per repository', () => {
-    const commands = newTaskCommands({ task: 'fix-ci', repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], base: 'main', model: 'opus' })
+  it('produces the creation command with the task name, and a dispatch command per repository with the brief as the task text', () => {
+    const brief = 'Fix the flaky CI.\nIt\'s the go-ci test job.'
+    const commands = newTaskCommands({ task: 'fix-ci', brief, repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], base: 'main', model: 'opus' })
     expect(text(commands.create)).toBe(
-      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file='<file>' --base='main'",
+      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<file> --base='main'",
     )
+    expect(commands.create).toMatchObject({ needsEdit: true })
     expect(commands.dispatch.map(text)).toEqual([
-      "wb agent dispatch --repo='sneat-co/sneat-go' --task='fix-ci' --profile='<profile>' --new-worktree='fix-ci' --base='main'",
-      "wb agent dispatch --repo='sneat-co/bots-go' --task='fix-ci' --profile='<profile>' --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<profile> --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<profile> --new-worktree='fix-ci' --base='main'",
     ])
+    // --task carries the brief, and the task name goes to the worktree.
+    expect(commands.dispatch.map(text).join('')).not.toContain("--task='fix-ci'")
     expect(commands.dispatch.map(text).join('')).not.toContain('--model')
-    expect(text(newTaskCommands({ task: 't', repositories: ['o/r'], model: 'unknown' }).create)).not.toContain('--base')
+    expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'unknown' }).create)).not.toContain('--base')
+    // No brief yet: a placeholder to fill in.
+    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0])).toContain('--task=<brief>')
+  })
+
+  it('accepts a multi-line brief but refuses control characters and a leading dash in it', () => {
+    const refused = (brief: string) => agentDispatch('o/r', 't', { brief }).ok
+    expect(refused('line one\nline two\tindented')).toBe(true)
+    expect(refused('-x')).toBe(false)
+    expect(refused('bad\u0000')).toBe(false)
+    expect(refused('bad\u2028')).toBe(false)
+    expect(valueProblem('a\nb', true)).toBeUndefined()
+    expect(valueProblem('a\nb')).toMatch(/control/)
   })
 
   it('refuses to produce a command until a model is entered, a repository is chosen and every value is safe', () => {
@@ -262,12 +324,12 @@ describe('the New task form', () => {
       expect(commands.dispatch.every((command) => !command.ok)).toBe(true)
       return commands.create.ok ? '' : commands.create.reason
     }
-    expect(refusal({ task: 'fix-ci', repositories: ['o/r'], model: '' })).toMatch(/model is required/)
-    expect(refusal({ task: 'fix-ci', repositories: ['o/r'], model: '  ' })).toMatch(/model is required/)
-    expect(refusal({ task: 'fix-ci', repositories: [], model: 'opus' })).toMatch(/at least one repository/)
-    expect(refusal({ task: 'fix-ci', repositories: ['owner/na me'], model: 'opus' })).toMatch(/not an owner\/name/)
+    expect(refusal({ task: 'fix-ci', brief: 'b', repositories: ['o/r'], model: '' })).toMatch(/model is required/)
+    expect(refusal({ task: 'fix-ci', brief: 'b', repositories: ['o/r'], model: '  ' })).toMatch(/model is required/)
+    expect(refusal({ task: 'fix-ci', brief: 'b', repositories: [], model: 'opus' })).toMatch(/at least one repository/)
+    expect(refusal({ task: 'fix-ci', brief: 'b', repositories: ['owner/na me'], model: 'opus' })).toMatch(/not an owner\/name/)
     // A refused task value is refused by the command itself.
-    const hostileTask = newTaskCommands({ task: '-x', repositories: ['o/r'], model: 'opus' })
+    const hostileTask = newTaskCommands({ task: '-x', brief: 'b', repositories: ['o/r'], model: 'opus' })
     expect(hostileTask.create.ok).toBe(false)
     expect(hostileTask.dispatch[0].ok).toBe(false)
   })

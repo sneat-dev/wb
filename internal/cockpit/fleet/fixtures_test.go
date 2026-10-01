@@ -241,7 +241,7 @@ func (f *constFingerprint) get(string) (string, error) {
 const passCalls = 10
 
 // oneRepoSources is a fake with one repository holding two worktrees (the
-// first active, the second idle), their branches, a pull request recorded for
+// first with a live owner process, the second with a gone one), their branches, a pull request recorded for
 // the first, a session and a second machine's snapshot.
 func oneRepoSources(path string) *fakeSources {
 	repo := discover.Repo{Host: "github.com", Org: "acme", Name: "widgets", Path: path}
@@ -255,8 +255,8 @@ func oneRepoSources(path string) *fakeSources {
 			{Path: "/wt/task-a", Branch: "feature/a"}, {Path: "/wt/task-b", Branch: "feature/b"},
 		}},
 		records: map[string]WorktreeRecord{
-			"/wt/task-a": {Task: "task-a", Branch: "feature/a", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-time.Hour)},
-			"/wt/task-b": {Task: "task-b", Branch: "feature/b", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-48 * time.Hour)},
+			"/wt/task-a": {Task: "task-a", Branch: "feature/a", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-time.Hour), Owner: worktrees.OwnerLive},
+			"/wt/task-b": {Task: "task-b", Branch: "feature/b", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-48 * time.Hour), Owner: worktrees.OwnerGone},
 		},
 		branches: map[string][]BranchRef{"acme/widgets": {
 			{Name: "feature/a", Scope: BranchLocal, Upstream: "origin/feature/a", Ahead: 2},
@@ -507,4 +507,35 @@ func (g *fakeGate) GitUsable(context.Context) bool {
 		panic("a gate panicked")
 	}
 	return g.usable
+}
+
+// Body is the last published document as marshalled JSON, and its strong ETag,
+// as a request without Accept-Encoding receives them; a test-only view.
+func (s *Snapshotter) Body() (body []byte, etag string) {
+	recorder := httptest.NewRecorder()
+	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), s.Payload())
+	return recorder.Body.Bytes(), recorder.Header().Get("ETag")
+}
+
+// allBranches is every branch the daemon holds, in the order the branches route
+// would list them within a repository and by repository id across them; a
+// test-only view, as the document no longer carries them.
+func (s *Snapshotter) allBranches() []Branch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var ids []string
+	for id := range s.repos {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	var branches []Branch
+	for _, id := range ids {
+		branches = append(branches, s.repos[id].entries.branches...)
+	}
+	return branches
+}
+
+// mapRemoteForTest is mapRemote for this machine and the fixtures' clock.
+func mapRemoteForTest(login, projectsRoot string, entries []remotestate.Entry) remoteView {
+	return mapRemote(testMachine, login, projectsRoot, entries, newClock().Now())
 }

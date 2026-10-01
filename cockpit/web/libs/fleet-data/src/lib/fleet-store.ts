@@ -49,9 +49,11 @@ export class FleetStore {
 
   readonly document = signal<FleetDocument>(emptyDocument())
   /** Set while the daemon speaks another schema version: no data is shown, and what to do about it. */
+  /** How many entries of the last document were dropped for lacking a required field: for a diagnostic line. */
+  readonly droppedEntries = signal(0)
   readonly schemaMismatch = signal<SchemaMismatch | null>(null)
   /** The view model of the current document: derived collections are computed once per document. */
-  readonly model = computed<FleetModel>(() => this.models.forDocument(this.document()))
+  readonly model = computed<FleetModel>(() => this.models.forDocument(this.document(), this.now(), this.session()?.machine_routes))
   readonly session = signal<Session | null>(null)
   /** Whether the session read is still going ('loading'), answered ('ready') or failed and will be retried ('failed'). */
   readonly sessionStatus = signal<SessionStatus>('loading')
@@ -101,7 +103,10 @@ export class FleetStore {
       if (read.kind === 'changed') {
         this.etag = read.etag
         // A body identical to the last one keeps the document, so nothing downstream recomputes.
-        if (read.digest !== this.digest) this.document.set(read.document)
+        if (read.digest !== this.digest) {
+          this.document.set(read.document)
+          this.droppedEntries.set(read.dropped ?? 0)
+        }
         this.digest = read.digest
       }
       this.schemaMismatch.set(null)
@@ -114,6 +119,7 @@ export class FleetStore {
         this.digest = undefined
         this.schemaMismatch.set(error.mismatch)
         this.document.set({ ...emptyDocument(), warming_up: false })
+        this.droppedEntries.set(0)
       }
       this.error.set(error instanceof Error ? error.message : String(error))
       this.failures++

@@ -10,10 +10,11 @@ import {
   ReadmeRequestError,
   UPDATE_WB_MESSAGE,
   digestOf,
+  dropBadEntries,
   hasFleetShape,
   isFleetDocument,
 } from './fleet-client'
-import { fleetDocument } from './test-data'
+import { fleetDocument, pullRequest } from './test-data'
 
 function respond(status: number, body: unknown, etag?: string): Response {
   return new Response(status === 304 ? null : JSON.stringify(body), {
@@ -32,7 +33,7 @@ describe('FleetClient', () => {
   it('reads the document and its ETag, sending no validator the first time', async () => {
     const fetcher = vi.fn(async () => respond(200, fleetDocument(), '"v1"'))
     const read = await clientWith(fetcher).readFleet()
-    expect(read).toEqual({ kind: 'changed', document: fleetDocument(), etag: '"v1"', digest: digestOf(JSON.stringify(fleetDocument())) })
+    expect(read).toEqual({ kind: 'changed', document: fleetDocument(), dropped: 0, etag: '"v1"', digest: digestOf(JSON.stringify(fleetDocument())) })
     expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/fleet', {
       headers: { Accept: 'application/json' },
       credentials: 'same-origin',
@@ -96,6 +97,33 @@ describe('FleetClient', () => {
     // A page built for 3 against a daemon answering 2 is the older daemon.
     const expectsThree = await clientWith(async () => respond(200, fleetDocument())).readFleet(undefined, 3).catch((error: unknown) => error)
     expect((expectsThree as FleetSchemaError).mismatch).toBe('daemon-older')
+  })
+
+  it('drops an entry that lacks a required field instead of throwing, and counts it, keeping unknown enum values', async () => {
+    const good = fleetDocument()
+    const bad = {
+      ...good,
+      machines: [...good.machines, { id: 'm' }, null, 'x'],
+      repositories: [...good.repositories, { ...good.repositories[0], name: 7 }],
+      worktrees: [...good.worktrees, { ...good.worktrees[0], branch: undefined }],
+      pull_requests: [{ ...pullRequest('p', 'r1', undefined), number: 'x' }, { ...pullRequest('p2', 'r1', undefined), state: 'futuristic', mergeable: 'newvalue' }],
+      agents: [...good.agents, { ...good.agents[0], state: 5 }, { ...good.agents[0], id: 'a9', kind: 'future-kind' }],
+    }
+    const read = (await clientWith(async () => respond(200, bad)).readFleet()) as Extract<FleetRead, { kind: 'changed' }>
+    expect(read.dropped).toBe(7)
+    expect(read.document.machines).toEqual(good.machines)
+    expect(read.document.pull_requests.map((p) => p.id)).toEqual(['p2'])
+    expect(read.document.agents.map((a) => a.id)).toEqual([...good.agents.map((a) => a.id), 'a9'])
+    expect(read.document.worktrees).toEqual(good.worktrees)
+  })
+
+  it('keeps the same document object when nothing is dropped, and rejects a document with no document-level facts', async () => {
+    const document = fleetDocument()
+    expect(dropBadEntries(document)).toEqual({ document, dropped: 0 })
+    expect(dropBadEntries(document).document).toBe(document)
+    for (const broken of [{ warming_up: 'no' }, { repositories_total: 'x' }, { repositories_scanned: undefined }, { diagnostics: null }]) {
+      await expect(clientWith(async () => respond(200, { ...document, ...broken })).readFleet()).rejects.toBeInstanceOf(FleetFormatError)
+    }
   })
 
   it('gives an identical body an identical digest and a different one another', () => {

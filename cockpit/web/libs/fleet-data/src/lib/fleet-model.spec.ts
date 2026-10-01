@@ -97,8 +97,8 @@ describe('tasks', () => {
     expect(fixCi?.openPullRequests.map((p) => p.id)).toEqual(['p1'])
     expect(fixCi?.unobservedPullRequests).toBe(1)
     expect(fixCi?.agents.map((a) => a.id)).toEqual(['a1'])
-    // The unobserved one takes no part in the state: the observed one is ready.
-    expect(fixCi?.state).toBe('ready')
+    // An unobserved open pull request keeps the task from being ready.
+    expect(fixCi?.state).toBe('not-ready')
     const ghost = model.taskNamed('ghost')
     expect(ghost?.worktrees).toEqual([])
     expect(ghost?.state).toBe('blocked')
@@ -126,7 +126,7 @@ describe('Needs you', () => {
       ],
     })
     const noUpstream = modelOf({ worktrees: [wt('w1', 't', { owner_state: 'unknown', has_upstream: false })] })
-    expect(item(noUpstream, 'work-at-risk')).toMatchObject({ reason: 'a branch with no upstream and it has no running owner' })
+    expect(item(noUpstream, 'work-at-risk')).toMatchObject({ reason: 'a branch with no upstream and no owner process is recorded' })
     const one = modelOf({ worktrees: [wt('w1', 't', { owner_state: 'idle', ahead: 1 })] })
     expect(item(one, 'work-at-risk')).toMatchObject({ reason: '1 unpushed commit and it has no running owner' })
   })
@@ -218,7 +218,9 @@ describe('Needs you', () => {
     expect(modelOf({ ...base, worktrees: [wt('w1', 'a', { ahead: 0, has_upstream: true })] }).needsYou.items).toEqual([])
     expect(item(modelOf({ ...base, worktrees: [wt('w1', 'a', { has_upstream: false })] }), 'agent-finished')).toBeDefined()
     expect(modelOf({ ...base, pull_requests: [pr('p1', 'w1')] }).needsYou.items.map((i) => i.kind)).not.toContain('agent-finished')
-    expect(modelOf({ ...base, pull_requests: [pr('p1', 'w1', { state: 'merged' })] }).needsYou.items).toEqual([])
+    // Merged and pushed: landed, nothing to do. Merged with work still unpushed is not landed: the finished agent is the lead.
+    expect(modelOf({ ...base, worktrees: [wt('w1', 'a', { ahead: 0, has_upstream: true })], pull_requests: [pr('p1', 'w1', { state: 'merged' })] }).needsYou.items).toEqual([])
+    expect(item(modelOf({ ...base, pull_requests: [pr('p1', 'w1', { state: 'merged' })] }), 'agent-finished')).toBeDefined()
   })
 
   // cockpit-views#ac:needs-you-is-capped-and-empty-line
@@ -370,7 +372,9 @@ describe('In flight', () => {
 
   it('lists a ready task whose checks counts are not reported as 0 of 0', () => {
     const model = modelOf({ worktrees: [wt('w1', 'a')], pull_requests: [pr('p1', 'w1', { checks_passed: undefined, checks_total: undefined })] })
-    expect(model.readyToLand.ready[0]).toMatchObject({ checksPassed: 0, checksTotal: 0 })
+    expect(model.readyToLand.ready[0].checksPassed).toBeUndefined()
+    expect(model.readyToLand.ready[0].checksTotal).toBeUndefined()
+    expect(model.readyToLand.ready[0].pullRequests[0].checksTotal).toBeUndefined()
   })
 
   it('breaks ties by id and puts an unknown start last', () => {
@@ -462,7 +466,6 @@ describe('Resume and Cleanup', () => {
 })
 
 describe('machines and Fleet health', () => {
-  const m = (name: string, extra: Record<string, unknown> = {}) => ({ ...machine(name), ...extra })
 
   it('says live, cached or stale, the age, the version mark, the running agents and the uptime', () => {
     const model = modelOf({
@@ -504,10 +507,10 @@ describe('machines and Fleet health', () => {
     const { ok, staleMachines, olderWb, scanErrors } = model.health
     expect(ok).toBe(false)
     expect(staleMachines).toEqual([
-      { machine: 'vm', machineId: 'mach-vm', text: 'vm has not published for over 24 hours', command: { text: 'wb remote publish', label: 'run on vm' }, link: { path: '/machines', query: { chips: 'stale' } } },
+      { machine: 'vm', machineId: 'mach-vm', text: 'vm has not published for over 24 hours', command: { text: 'wb remote publish', label: 'run on vm', needsEdit: false }, link: { path: '/machines', query: { chips: 'stale' } } },
     ])
     expect(olderWb).toEqual([
-      { machine: 'vm', machineId: 'mach-vm', text: 'vm runs an older WB (0.170.0)', command: { text: 'wb self-update', label: 'run on vm' }, link: { path: '/machines', query: { chips: 'outdated' } } },
+      { machine: 'vm', machineId: 'mach-vm', text: 'vm runs an older WB (0.170.0)', command: { text: 'wb self-update', label: 'run on vm', needsEdit: false }, link: { path: '/machines', query: { chips: 'outdated' } } },
     ])
     expect(scanErrors).toEqual([{ repository: 'sneat-dev/wb', command: { text: "wb fleet status --filter='sneat-dev/wb'" }, link: { path: '/repositories', query: { chips: 'errors' } } }])
   })
@@ -527,10 +530,10 @@ describe('machines and Fleet health', () => {
     })
     const byCode = Object.fromEntries(model.health.remoteErrors.map((item, index) => [codes[index], item]))
     expect(model.health.ok).toBe(false)
-    expect(byCode['http_auth_failed'].command).toEqual({ text: "wb remote enroll --url='<hub-url>' --token-stdin", label: 'run on vm1' })
-    expect(byCode['daemon_not_running'].command).toEqual({ text: 'wb daemon start', label: 'run on vm7' })
-    expect(byCode['wb_too_old'].command).toEqual({ text: 'wb self-update', label: 'run on vm6' })
-    expect(byCode['ssh_unavailable'].command).toEqual({ text: "ssh alex@vm.example /usr/local/bin/wb cockpit export --format='json'", label: 'run on vm2' })
+    expect(byCode['http_auth_failed'].command).toEqual({ text: 'wb remote enroll --url=<hub-url> --token-stdin', label: 'run here', needsEdit: true })
+    expect(byCode['daemon_not_running'].command).toEqual({ text: 'wb daemon start', label: 'run on vm7', needsEdit: false })
+    expect(byCode['wb_too_old'].command).toEqual({ text: 'wb self-update', label: 'run on vm6', needsEdit: false })
+    expect(byCode['ssh_unavailable'].command).toEqual({ text: "ssh alex@vm.example /usr/local/bin/wb cockpit export --format='json'", label: 'run here', needsEdit: false })
     for (const code of ['http_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'export_refused', 'bad_payload']) {
       expect(byCode[code].command).toMatchObject({ text: "wb cockpit export --format='json'" })
     }
@@ -663,3 +666,130 @@ describe('the model as a memo', () => {
     for (const link of links) expect(linkProblems(link as NonNullable<typeof link>)).toEqual([])
   })
 })
+
+describe('review fixes', () => {
+  // A task is listed as waiting on checks only for a real, non-empty reason that is pending checks.
+  it('never lists a not-ready task as waiting on checks without a reason, or when anything else is wrong with it', () => {
+    const model = modelOf({
+      repositories: REPOS,
+      worktrees: [wt('w1', 'pending'), wt('w2', 'unobserved'), wt('w3', 'nomerge')],
+      pull_requests: [
+        pr('p1', 'w1', { checks_pending: 1, checks_green: false }),
+        pr('p2', 'w2', { checks_pending: 1, checks_green: false }),
+        pr('p3', 'w2', { checked_at: undefined }),
+        pr('p4', 'w3', { checks_pending: 1, checks_green: false, mergeable: 'unknown' }),
+      ],
+    })
+    expect(model.readyToLand.notReady.map((row) => row.task)).toEqual(['pending'])
+    // A not-ready task with no reasons at all (no open pull request in the list) is not shown either.
+    const tasks = model.tasks
+    expect(tasks.find((task) => task.name === 'unobserved')?.state).toBe('not-ready')
+  })
+
+  it('says the owner of an at-risk worktree in words, and "owner state not reported" for a value it does not know', () => {
+    const reasonOf = (owner: string) => {
+      const model = modelOf({ worktrees: [wt('w1', 't', { owner_state: owner as never, ahead: 1 })] })
+      return (model.needsYou.items[0] as { reason: string }).reason
+    }
+    expect(reasonOf('orphaned')).toBe('1 unpushed commit and its owner process is gone')
+    expect(reasonOf('idle')).toBe('1 unpushed commit and it has no running owner')
+    expect(reasonOf('unknown')).toBe('1 unpushed commit and no owner process is recorded')
+    expect(reasonOf('zombie')).toBe('1 unpushed commit and owner state not reported')
+  })
+
+  it('keeps an unobserved count on the ready row, and labels a land command for a pull request on another machine', () => {
+    const model = modelOf({
+      repositories: REPOS,
+      worktrees: [wt('w1', 'a')],
+      pull_requests: [{ ...pr('p1', 'w1'), route: 'cached', machine: 'vm', machine_id: 'mach-vm' }, pr('p2', 'w1', { checked_at: undefined, state: undefined })],
+    })
+    const row = model.readyToLand.ready[0]
+    expect(row.unobservedPullRequests).toBe(1)
+    expect(row.pullRequests[0]).toMatchObject({ landCommand: "wb pr land 'sneat-dev/wb#1'", landLabel: 'run on vm' })
+    expect(modelOf({ worktrees: [wt('w1', 'a')], pull_requests: [pr('p1', 'w1')] }).readyToLand.ready[0].pullRequests[0].landLabel).toBeUndefined()
+  })
+
+  it('is never safe to clean up a task while a sibling worktree has unpushed work', () => {
+    const model = modelOf({ worktrees: [wt('a', 'done', { lifecycle: 'merged', ahead: 0 }), wt('b', 'done', { lifecycle: 'merged', ahead: 3 }), wt('c', 'other', { lifecycle: 'merged', ahead: 0 })] })
+    expect([...model.cleanup.safeIds]).toEqual(['c'])
+  })
+
+  it('reads the clock itself when made without a time or options', () => {
+    expect(new FleetModel(fleetDocument()).now).toBeGreaterThan(0)
+  })
+
+  it('gives the Home badge, the running-agent count and tasks by name from a map', () => {
+    const model = modelOf({ worktrees: [wt('w1', 'a', { owner_state: 'idle', ahead: 1 })], agents: [agent('s', undefined, 'live'), agent('p', undefined, 'parked')] })
+    expect(model.homeBadge).toBe(1)
+    expect(model.runningAgentCount).toBe(1)
+    expect(model.taskNamed('a')).toBe(model.taskMap.get('a'))
+  })
+
+  // cockpit-views#ac:unchanged-snapshot-does-nothing
+  it('keys time-dependent derivations on the document and a 60 second clock bucket, and on the session routes', () => {
+    const derived: string[] = []
+    const models = new FleetModels({ onDerive: (name) => derived.push(name) })
+    const document = fleetDocument()
+    const t0 = Date.parse('2026-10-01T10:00:10Z')
+    const first = models.forDocument(document, t0)
+    void first.tasks
+    expect(models.forDocument(document, t0 + 30_000)).toBe(first)
+    void models.forDocument(document, t0 + 30_000).tasks
+    expect(derived.filter((name) => name === 'tasks')).toHaveLength(1)
+    // The next minute derives again, with a model whose clock is the one asked for.
+    const later = models.forDocument(document, t0 + 61_000)
+    expect(later).not.toBe(first)
+    expect(later.now).toBe(t0 + 61_000)
+    void later.tasks
+    expect(derived.filter((name) => name === 'tasks')).toHaveLength(2)
+    // New routes (the session arrived) give a model that carries them; the same array does not.
+    const routes = [{ machine_id: 'mach-beta', ssh: { host: 'h' } }]
+    const withRoutes = models.forDocument(document, t0 + 61_000, routes)
+    expect(withRoutes).not.toBe(later)
+    expect(withRoutes.machineRoutes).toBe(routes)
+    expect(models.forDocument(document, t0 + 62_000, routes)).toBe(withRoutes)
+  })
+
+  it('does not rethrow a throwing derivation on every render: it shows its empty value and reports once', () => {
+    const errors: string[] = []
+    const derived: string[] = []
+    const broken = { ...fleetDocument(), agents: null } as unknown as FleetDocument
+    const model = new FleetModel(broken, { now: () => NOW, onDerive: (name) => derived.push(name), onError: (name) => errors.push(name) })
+    for (let render = 0; render < 3; render++) {
+      expect(model.inFlight).toEqual([])
+      expect(model.tasks).toEqual([])
+      expect(model.needsYou.items).toEqual([])
+      expect(model.cleanup.safeCount).toBe(0)
+      expect(model.health.ok).toBe(true)
+      expect(model.readyToLand).toEqual({ ready: [], notReady: [] })
+      expect(model.throughput).toBeUndefined()
+    }
+    expect(model.failedDerivations).toContain('inFlight')
+    expect(derived.filter((name) => name === 'inFlight')).toHaveLength(1)
+    expect(errors.filter((name) => name === 'inFlight')).toHaveLength(1)
+    // Another model of a healthy document has no failures.
+    expect(new FleetModel(fleetDocument(), { now: () => NOW }).failedDerivations).toEqual([])
+    // Without an error hook the failure is still contained.
+    const quiet = new FleetModel(broken, { now: () => NOW })
+    expect(quiet.inFlight).toEqual([])
+  })
+
+  it('labels a health command "run here" for the ssh form and enrolling, and "run on <machine>" otherwise, using the session routes', () => {
+    const machines = [
+      m('alpha', { wb_version: '0.176.0' }),
+      m('vm', { route: 'cached', wb_version: '0.170.0', observed_at: ago(25 * HOUR) }),
+      m('old', { route: 'cached', wb_version: '0.170.0', observed_at: ago(25 * HOUR), remote_error: 'wb_too_old' }),
+    ]
+    const routes = [{ machine_id: 'mach-vm', ssh: { host: 'vm.example', user: '', wb_path: '' } }]
+    const model = new FleetModel(fleetDocument({ machines, repositories: [], worktrees: [], agents: [], pull_requests: [] }), { now: () => NOW, machineRoutes: routes })
+    const stale = model.health.staleMachines
+    expect(stale.find((item) => item.machine === 'vm')?.command).toEqual({ text: 'ssh vm.example wb remote publish', label: 'run here', needsEdit: false })
+    expect(stale.find((item) => item.machine === 'old')?.command).toEqual({ text: 'wb remote publish', label: 'run on old', needsEdit: false })
+    expect(model.health.olderWb.find((item) => item.machine === 'vm')?.command).toMatchObject({ text: 'ssh vm.example wb self-update', label: 'run here' })
+    expect(model.health.remoteErrors[0].command).toEqual({ text: 'wb self-update', label: 'run on old', needsEdit: false })
+  })
+})
+
+function m(name: string, extra: Record<string, unknown> = {}) {
+  return { ...machine(name), ...extra }
+}

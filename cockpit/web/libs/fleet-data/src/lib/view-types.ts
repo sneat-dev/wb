@@ -86,20 +86,25 @@ export interface ReadyPullRequest {
   repository?: string
   number: number
   url?: string
-  checksPassed: number
-  checksTotal: number
+  /** Absent when the daemon did not report them. */
+  checksPassed?: number
+  checksTotal?: number
   /** When its checks were observed, in milliseconds. */
   checkedAt?: number
-  /** `wb pr land <owner/repository>#<number>`, absent without a repository. */
+  /** `wb pr land '<owner/repository>#<number>'`, absent without a repository. */
   landCommand?: string
+  /** "run on <machine>" when the pull request is on another machine without an SSH route. */
+  landLabel?: string
 }
 
 export interface ReadyToLandRow {
   task: string
   repositories: string[]
   pullRequests: ReadyPullRequest[]
-  checksPassed: number
-  checksTotal: number
+  checksPassed?: number
+  checksTotal?: number
+  /** Its pull requests with no observation yet (never more than 0 for a ready task). */
+  unobservedPullRequests: number
   /** The oldest observation among its pull requests, in milliseconds. */
   checkedAt?: number
   lastActivityAt?: number
@@ -173,7 +178,7 @@ export interface HealthItem {
   /** What is wrong, in words. */
   text: string
   /** The command to copy to fix it, with its "run on <machine>" label. */
-  command: { text: string; label: string } | { reason: string }
+  command: { text: string; label: string; needsEdit: boolean } | { reason: string }
   link: AppLink
 }
 

@@ -48,12 +48,15 @@ type BranchRef struct {
 }
 
 // WorktreeRecord is what a WB worktree records about itself locally: its
-// manifest and its heartbeat.
+// manifest, its heartbeat and the liveness of its declared owner process.
+// Owner is worktrees.OwnerLive, worktrees.OwnerGone or worktrees.OwnerUnstated
+// (no owner process recorded).
 type WorktreeRecord struct {
 	Task        string
 	Branch      string
 	CreatedAt   time.Time
 	HeartbeatAt time.Time
+	Owner       string
 }
 
 // GitGate says whether Git is new enough to be run against untrusted
@@ -173,6 +176,11 @@ type LocalCollectors struct {
 	// Runner runs the Git commands; nil means the real runner. A test supplies
 	// a fake, so the unit tier starts no process.
 	Runner runner.Runner
+	// DeclaredOwner reads a worktree's declared owner process liveness
+	// (worktrees.OwnerLive, OwnerGone or OwnerUnstated); nil means the Work Log
+	// journal's, read without writing (worktrees.DeclaredOwnerReadOnly): one
+	// file read and a signal-zero check of each recorded process id.
+	DeclaredOwner func(worktree string) string
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
@@ -445,15 +453,29 @@ func parseTrack(track string) (ahead, behind int, gone bool) {
 	return ahead, behind, gone
 }
 
-// Record reads the worktree's manifest and heartbeat. Both reads only open
-// files; a directory with no valid manifest is not a WB task worktree.
+// Record reads the worktree's manifest, heartbeat and declared owner process.
+// The reads only open files and probe a process id; a directory with no valid
+// manifest is not a WB task worktree.
 func (c LocalCollectors) Record(worktree string) (WorktreeRecord, bool) {
 	manifest, err := worktrees.ReadManifest(worktree)
 	if err != nil {
 		return WorktreeRecord{}, false
 	}
-	return WorktreeRecord{Task: manifest.EffortID, Branch: manifest.Branch, CreatedAt: manifest.CreatedAt, HeartbeatAt: worktrees.HeartbeatAt(worktree)}, true
+	owner := declaredOwner
+	if c.DeclaredOwner != nil {
+		owner = c.DeclaredOwner
+	}
+	return WorktreeRecord{
+		Task: manifest.EffortID, Branch: manifest.Branch, CreatedAt: manifest.CreatedAt,
+		HeartbeatAt: worktrees.HeartbeatAt(worktree), Owner: owner(worktree),
+	}, true
 }
+
+// declaredOwner is the liveness of the owner process the worktree's journal
+// records, read without writing anything (worktrees.DeclaredOwner opens the
+// journal as a writer does, which may add an exclude rule to the repository, and
+// the snapshotter never writes inside a repository).
+func declaredOwner(worktree string) string { return worktrees.DeclaredOwnerReadOnly(worktree) }
 
 // PullRequests lists the pull requests `wb pr create` recorded beside active
 // Work Log claims. It reads local files and calls no forge.

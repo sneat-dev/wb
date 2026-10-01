@@ -70,7 +70,7 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 		local.CodeIndexProvider = cockpitfleet.CodeGrapherProvider{IndexerName: config.CodeIndexIndexer}
 	}
 	return cockpitfleet.Options{
-		Machine: machine, Version: collectVersion().Version, ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
+		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot, Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
 		Logf: logf,
 	}
 }

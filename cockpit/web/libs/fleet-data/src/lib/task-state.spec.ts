@@ -1,6 +1,8 @@
 import { Agent, PullRequest, Worktree } from './fleet.types'
 import {
   BLOCKED_RUN_EXPIRY_MS,
+  NOT_READY_REASONS,
+  hasUnpushedWork,
   TASK_STATES,
   TASK_STATE_IDS,
   TaskInputs,
@@ -92,9 +94,10 @@ describe('task state: row 3, blocked', () => {
     expect(state({ agents: [failed, agent('s', 'r1', 'parked', { started_at: at(1) })] })).not.toBe('blocked')
     // An agent that started earlier does not.
     expect(state({ agents: [failed, agent('s', 'r1', 'live', { started_at: at(5) })] })).toBe('blocked')
-    // Without start times the order is not guessed: no later agent.
-    expect(state({ agents: [run('r', 'failed'), agent('s', 'r1', 'live')] })).toBe('blocked')
+    // Without a start time on the session the order is not guessed: no later agent.
     expect(state({ agents: [failed, agent('s', 'r1', 'live')] })).toBe('blocked')
+    // A failed run with no time at all is not reported as blocking.
+    expect(state({ agents: [run('r', 'failed'), agent('s', 'r1', 'live')] })).not.toBe('blocked')
   })
 
   it('stops blocking 24 hours after the run ended, counting from finished_at, else from started_at', () => {
@@ -102,7 +105,9 @@ describe('task state: row 3, blocked', () => {
     expect(state({ agents: [run('r', 'failed', { started_at: at(30), finished_at: at(25) })] })).not.toBe('blocked')
     expect(state({ agents: [run('r', 'failed', { started_at: at(25) })] })).not.toBe('blocked')
     expect(state({ agents: [run('r', 'failed', { started_at: at(23) })] })).toBe('blocked')
-    expect(state({ agents: [run('r', 'failed', { finished_at: 'not a time' })] })).toBe('blocked')
+    // Strictly less than 24 hours: exactly 24 hours is over.
+    expect(state({ agents: [run('r', 'failed', { started_at: at(24) })] })).not.toBe('blocked')
+    expect(state({ agents: [run('r', 'failed', { finished_at: 'not a time' })] })).not.toBe('blocked')
     expect(BLOCKED_RUN_EXPIRY_MS).toBe(24 * HOUR)
   })
 
@@ -146,37 +151,52 @@ describe('task state: rows 4 and 5, ready and not ready', () => {
     expect(isOpenPullRequest(pr({ state: undefined }))).toBe(false)
   })
 
-  it('treats a pull request with no checked_at as never observed: it takes no part in rows 2, 4 and 5', () => {
+  it('treats a pull request with no checked_at as never observed: it takes no part in row 2', () => {
     const unobserved = pr({ checked_at: undefined })
     expect(isObserved(unobserved)).toBe(false)
     expect(isObserved(pr())).toBe(true)
     expect(openObserved([unobserved, pr({ id: 'q' })]).map((p) => p.id)).toEqual(['q'])
-    // Only unobserved pull requests: the PR input is "not reported".
-    expect(state({ pullRequests: [unobserved], worktrees: [wt()] })).toBe('not-reported')
+    expect(state({ pullRequests: [pr({ checks_failed: 2, checked_at: undefined })] })).toBe('not-ready')
+    // With no state either (never observed at all) it is not an open pull request: the PR input is not reported.
+    const nothing = pr({ checked_at: undefined, state: undefined })
+    expect(state({ pullRequests: [nothing], worktrees: [wt()] })).toBe('not-reported')
     expect(state({ pullRequests: [pr({ checked_at: undefined, state: 'merged' })], worktrees: [wt()] })).toBe('not-reported')
   })
 
   // cockpit-views#ac:task-state-ignores-unobserved-pull-requests
-  it('is ready with one observed ready pull request beside an unobserved one, and idle when the only open one is unobserved', () => {
-    const unobserved = pr({ id: 'u', checked_at: undefined, checks_green: false })
-    expect(state({ pullRequests: [pr({ id: 'a' }), unobserved] })).toBe('ready')
-    expect(state({ pullRequests: [unobserved], worktrees: [wt({ owner_state: 'idle' })] })).toBe('idle')
+  it('is not ready while one open pull request is unobserved, and idle when the only one has no state', () => {
+    const unobserved = pr({ id: 'u', checked_at: undefined })
+    expect(state({ pullRequests: [pr({ id: 'a' }), unobserved] })).toBe('not-ready')
+    expect(notReadyReasons(unobserved)).toEqual(['pull request not yet checked'])
+    expect(state({ pullRequests: [pr({ id: 'a' })] })).toBe('ready')
+    expect(state({ pullRequests: [pr({ id: 'n', checked_at: undefined, state: undefined })], worktrees: [wt({ owner_state: 'idle' })] })).toBe('idle')
   })
 
-  it('says why a pull request is not ready, in words', () => {
+  it('says why a pull request is not ready, only from the list of reasons, and never nothing for a not-ready one', () => {
     expect(notReadyReasons(pr())).toEqual([])
+    expect(notReadyReasons(pr({ mergeable: 'has_hooks' }))).toEqual([])
     expect(notReadyReasons(pr({ state: 'draft', mergeable: 'draft' }))).toEqual(['draft'])
+    expect(notReadyReasons(pr({ mergeable: 'draft' }))).toEqual(['draft'])
     expect(notReadyReasons(pr({ checks_failed: 1, checks_green: false }))).toEqual(['checks failed'])
     expect(notReadyReasons(pr({ checks_pending: 2, checks_green: false }))).toEqual(['checks pending'])
-    // Green or not, no failed and no pending check and no verdict: a review is waited for.
+    // A verdict reported as not green, with nothing failed or pending, is a review.
     expect(notReadyReasons(pr({ checks_green: false }))).toEqual(['review'])
+    // An absent verdict is not a review: it is not reported.
+    expect(notReadyReasons(pr({ checks_green: undefined }))).toEqual(['checks not reported'])
     expect(notReadyReasons(pr({ mergeable: 'dirty' }))).toEqual(['not mergeable'])
     expect(notReadyReasons(pr({ mergeable: 'behind' }))).toEqual(['behind'])
     expect(notReadyReasons(pr({ mergeable: 'blocked' }))).toEqual(['review'])
     expect(notReadyReasons(pr({ mergeable: 'unstable' }))).toEqual(['unstable'])
-    expect(notReadyReasons(pr({ mergeable: 'unknown' }))).toEqual([])
-    // The same reason is said once.
+    // An unknown or absent merge state is said to be not reported.
+    expect(notReadyReasons(pr({ mergeable: 'unknown' }))).toEqual(['merge state not reported'])
+    expect(notReadyReasons(pr({ mergeable: undefined }))).toEqual(['merge state not reported'])
     expect(notReadyReasons(pr({ checks_green: false, mergeable: 'blocked' }))).toEqual(['review'])
+    for (const mergeable of [undefined, 'unknown', 'blocked', 'dirty', 'behind', 'unstable', 'draft'] as const) {
+      const one = pr({ mergeable })
+      expect(state({ pullRequests: [one] })).toBe('not-ready')
+      expect(notReadyReasons(one).length).toBeGreaterThan(0)
+      for (const reason of notReadyReasons(one)) expect(NOT_READY_REASONS as readonly string[]).toContain(reason)
+    }
   })
 })
 
@@ -197,6 +217,15 @@ describe('task state: rows 6 to 9', () => {
     expect(state({ worktrees: [wt({ lifecycle: 'merged' }), wt({ id: 'w2', lifecycle: 'in_progress' })] })).not.toBe('landed')
     expect(state({ pullRequests: [pr({ id: 'a', state: 'merged' }), pr({ id: 'b' })] })).not.toBe('landed')
     expect(state({})).not.toBe('landed')
+  })
+
+  it('is not landed while a worktree of the task holds unpushed work', () => {
+    const merged = wt({ lifecycle: 'merged' })
+    expect(state({ worktrees: [merged, wt({ id: 'w2', lifecycle: 'merged', ahead: 1 })] })).not.toBe('landed')
+    expect(state({ worktrees: [merged, wt({ id: 'w3', lifecycle: 'merged', has_upstream: false })] })).not.toBe('landed')
+    expect(state({ pullRequests: [pr({ state: 'merged' })], worktrees: [wt({ ahead: 2 })] })).not.toBe('landed')
+    expect(state({ pullRequests: [pr({ state: 'merged' })], worktrees: [wt({ ahead: 0, has_upstream: true })] })).toBe('landed')
+    expect(hasUnpushedWork(wt({ ahead: 0 }))).toBe(false)
   })
 
   // cockpit-views#ac:task-state-idle

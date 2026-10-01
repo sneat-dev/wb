@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -260,6 +261,9 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if bare.Machine != "the-host" || bare.Collectors.Remote != nil || bare.Interval != 90*time.Second || bare.Collectors.Repositories == nil || bare.Collectors.CodeIndex == nil {
 		t.Errorf("options with no remote section = %+v", bare)
 	}
+	if hardware := bare.Hardware; hardware.OS != runtime.GOOS || hardware.Arch != runtime.GOARCH || hardware.CPUCount != runtime.NumCPU() {
+		t.Errorf("hardware = %+v, want this machine's", hardware)
+	}
 	bare.Logf("refresh failed: %v", "boom")
 	if got := logs.String(); got != "wb: refresh failed: boom\n" {
 		t.Errorf("log = %q", got)
@@ -331,7 +335,7 @@ func TestCockpitRegisterFleetServesTheWarmingDocumentBeforeTheFirstSnapshot(t *t
 			t.Errorf("%s = %d %s, want %d", target, recorder.Code, recorder.Body.String(), want)
 		}
 	}
-	if body, _ := snapshotter.Body(); !strings.Contains(string(body), `"warming_up":true`) {
+	if body := fleetBody(snapshotter); !strings.Contains(string(body), `"warming_up":true`) {
 		t.Error("a snapshotter that has not started is not warming up")
 	}
 }
@@ -412,4 +416,12 @@ func TestCockpitLoginCodeRouteIsRefusedByTheFileBridge(t *testing.T) {
 			t.Errorf("the file bridge prepared %s: %v", procedure, err)
 		}
 	}
+}
+
+// fleetBody is the fleet document as a request without Accept-Encoding would
+// receive it, from the snapshotter's prepared bytes.
+func fleetBody(snapshotter *cockpitfleet.Snapshotter) []byte {
+	recorder := httptest.NewRecorder()
+	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), snapshotter.Payload())
+	return recorder.Body.Bytes()
 }

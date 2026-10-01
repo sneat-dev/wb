@@ -262,6 +262,17 @@ export interface Session {
   principal: string
   capabilities: string[]
   code_browser_url: string
+  /**
+   * OWNER-ONLY: how to reach the machines that have an SSH route, for the copied
+   * `ssh ...` commands. Anonymous readers never receive it.
+   */
+  machine_routes?: MachineRoute[]
+}
+
+/** One machine's SSH route from the session response; `user` and `wb_path` may be empty or absent. */
+export interface MachineRoute {
+  machine_id: string
+  ssh: { host: string; user?: string; wb_path?: string }
 }
 
 /** The document error code for a Git older than the oldest safe version. */

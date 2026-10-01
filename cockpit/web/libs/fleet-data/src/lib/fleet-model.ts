@@ -3,8 +3,23 @@
 // and kept for the document's identity, so a poll that returns 304 or an
 // identical document recomputes nothing and a render reads the same arrays.
 
-import { Agent, FleetDocument, Machine, MachineMetrics, PullRequest, Repository, Worktree, isRunning } from './fleet.types'
-import { CopyCommand, SshRoute, cockpitExport, daemonStart, fleetStatus, pullRequestLand, remoteEnroll, remotePublish, selfUpdate } from './commands'
+import { Agent, FleetDocument, Machine, MachineMetrics, MachineRoute, PullRequest, Repository, Worktree, isRunning } from './fleet.types'
+import { CommandTarget, CopyCommand, SshRoute, cockpitExport, commandTarget, sshRouteOf, daemonStart, fleetStatus, pullRequestLand, remoteEnroll, remotePublish, selfUpdate } from './commands'
+import {
+  AgentPanel,
+  MachinePanel,
+  PullRequestPanel,
+  RepositoryPanel,
+  TaskPanel,
+  WorktreePanel,
+  buildAgentPanel,
+  buildMachinePanel,
+  buildPullRequestPanel,
+  buildRepositoryPanel,
+  buildTaskPanel,
+  buildWorktreePanel,
+} from './entity-views'
+import { agentTitle } from './fleet-view'
 import { AGE_TERMS, ageTermOf, idleOver30Days, wholeDays } from './matcher'
 import {
   AgentRowContext,
@@ -21,7 +36,9 @@ import {
   TaskInputs,
   blockingRuns,
   failedChecks,
+  hasUnpushedWork,
   interimAtRiskWorktrees,
+  isOpenPullRequest,
   isObserved,
   notReadyReasons,
   openObserved,
@@ -55,6 +72,7 @@ export type Derivation =
   | 'index'
   | 'repositories'
   | 'tasks'
+  | 'taskMap'
   | 'needsYou'
   | 'readyToLand'
   | 'inFlight'
@@ -70,13 +88,27 @@ export type Derivation =
   | 'rows:machines'
 
 export interface ModelOptions {
-  /** The clock; the model reads it once, when it is created. */
+  /** The clock used when a model is made without a time. */
   now?: () => number
   /** Called each time a derivation actually runs. */
   onDerive?: (derivation: Derivation) => void
+  /** Called when a derivation throws; it is not tried again for the model, which shows its empty value. */
+  onError?: (derivation: Derivation, error: unknown) => void
   /** The SSH route of a machine, when it has one, for the commands of Fleet health. */
   sshRoute?: (machine: Machine) => SshRoute | undefined
+  /** The routes of the session response (owner-only); with none, commands for other machines are labelled "run on <machine>". */
+  machineRoutes?: readonly MachineRoute[]
 }
+
+const EMPTY_LINK = { path: '/', query: {} }
+const EMPTY_NEEDS_YOU: NeedsYou = { items: [], shown: [], more: 0, moreLink: EMPTY_LINK }
+const EMPTY_CLEANUP: Cleanup = { safeCount: 0, lookCount: 0, safeIds: new Set(), lookIds: new Set(), indicative: true, reviewLink: EMPTY_LINK, bars: [], unknownAge: 0 }
+const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], scanErrors: [] }
+
+/** The clock bucket of derivations that depend on time: ages, expiries and staleness are re-derived once a minute. */
+export const CLOCK_BUCKET_MS = 60_000
+
+export { agentTitle }
 
 /** How many tasks Resume lists. */
 export const RESUME_COUNT = 5
@@ -99,6 +131,21 @@ function newestFirst(a: number | undefined, b: number | undefined): number {
 /** Orders oldest first, a missing time last. */
 function oldestFirst(a: number | undefined, b: number | undefined): number {
   return (a ?? Infinity) - (b ?? Infinity) || 0
+}
+
+/** The state of the owners of the at-risk worktrees in words; a value this page does not know is "owner state not reported". */
+function ownerWords(risky: readonly Worktree[]): string {
+  const states = new Set(risky.map((worktree) => worktree.owner_state))
+  if (states.has('orphaned')) return 'its owner process is gone'
+  if (states.has('idle')) return 'it has no running owner'
+  if (states.has('unknown')) return 'no owner process is recorded'
+  return 'owner state not reported'
+}
+
+/** The sum of the counts that are reported; undefined when none is. */
+function sumReported(values: (number | undefined)[]): number | undefined {
+  const known = values.filter((value): value is number => value !== undefined)
+  return known.length === 0 ? undefined : known.reduce((total, value) => total + value, 0)
 }
 
 function oldestCheck(pullRequests: readonly PullRequest[]): number | undefined {
@@ -130,11 +177,6 @@ export function compareVersions(a: number[], b: number[]): number {
   return 0
 }
 
-/** The agent's runtime and model, or "agent" for neither. */
-export function agentTitle(agent: Agent): string {
-  return [agent.runtime, agent.model].filter((part) => part).join(' ') || 'agent'
-}
-
 /** The latest sample's verdict: free below 70 percent CPU and 80 percent memory, busy otherwise. */
 export function machineLoad(metrics: MachineMetrics | undefined): MachineLoad {
   const sample = metrics?.samples[metrics.samples.length - 1]
@@ -152,20 +194,44 @@ export function machineLoad(metrics: MachineMetrics | undefined): MachineLoad {
 export class FleetModel {
   readonly now: number
   private readonly cache = new Map<string, unknown>()
+  private readonly failed: Derivation[] = []
 
   constructor(
     readonly document: FleetDocument,
     private readonly options: ModelOptions = {},
+    now?: number,
   ) {
-    this.now = (options.now ?? Date.now)()
+    this.now = now ?? (options.now ?? Date.now)()
   }
 
-  private memo<T>(name: Derivation, derive: () => T): T {
+  /** The derivations that threw: each shows its empty value and is not tried again for this model. */
+  get failedDerivations(): readonly Derivation[] {
+    return this.failed
+  }
+
+  private memo<T>(name: Derivation, fallback: T, derive: () => T): T {
     if (!this.cache.has(name)) {
       this.options.onDerive?.(name)
-      this.cache.set(name, derive())
+      try {
+        this.cache.set(name, derive())
+      } catch (error) {
+        // A throwing derivation must not throw again on every render.
+        this.failed.push(name)
+        this.options.onError?.(name, error)
+        this.cache.set(name, fallback)
+      }
     }
     return this.cache.get(name) as T
+  }
+
+  /** The routes of the session, for the commands of entities on other machines. */
+  get machineRoutes(): readonly MachineRoute[] | undefined {
+    return this.options.machineRoutes
+  }
+
+  /** Where a command for an entry runs: here, through the machine's SSH route, or labelled "run on <machine>". */
+  targetOf(entry: { route: string; machine: string; machine_id: string }): CommandTarget {
+    return commandTarget(entry, this.options.machineRoutes)
   }
 
   // ---- lookups ----
@@ -173,9 +239,22 @@ export class FleetModel {
   private get index(): {
     repositoryById: Map<string, Repository>
     worktreeById: Map<string, Worktree>
+    pullRequestById: Map<string, PullRequest>
+    agentById: Map<string, Agent>
+    machineById: Map<string, Machine>
     taskOfPullRequest: Map<string, string>
   } {
-    return this.memo('index', () => {
+    return this.memo(
+      'index',
+      {
+        repositoryById: new Map<string, Repository>(),
+        worktreeById: new Map<string, Worktree>(),
+        pullRequestById: new Map<string, PullRequest>(),
+        agentById: new Map<string, Agent>(),
+        machineById: new Map<string, Machine>(),
+        taskOfPullRequest: new Map<string, string>(),
+      },
+      () => {
       const repositoryById = new Map(this.document.repositories.map((repository) => [repository.id, repository]))
       const worktreeById = new Map(this.document.worktrees.map((worktree) => [worktree.id, worktree]))
       const byBranch = new Map(this.document.worktrees.map((worktree) => [`${worktree.repository}\u0000${worktree.branch}`, worktree.task]))
@@ -186,8 +265,55 @@ export class FleetModel {
           (pullRequest.repository !== undefined && pullRequest.branch !== undefined ? byBranch.get(`${pullRequest.repository}\u0000${pullRequest.branch}`) : undefined)
         if (task !== undefined) taskOfPullRequest.set(pullRequest.id, task)
       }
-      return { repositoryById, worktreeById, taskOfPullRequest }
-    })
+      const pullRequestById = new Map(this.document.pull_requests.map((pullRequest) => [pullRequest.id, pullRequest]))
+      const agentById = new Map(this.document.agents.map((agent) => [agent.id, agent]))
+      const machineById = new Map(this.document.machines.map((machine) => [machine.id, machine]))
+      return { repositoryById, worktreeById, pullRequestById, agentById, machineById, taskOfPullRequest }
+    },
+    )
+  }
+
+  worktreeById(id: string): Worktree | undefined {
+    return this.index.worktreeById.get(id)
+  }
+
+  agentById(id: string): Agent | undefined {
+    return this.index.agentById.get(id)
+  }
+
+  pullRequestById(id: string): PullRequest | undefined {
+    return this.index.pullRequestById.get(id)
+  }
+
+  machineById(id: string): Machine | undefined {
+    return this.index.machineById.get(id)
+  }
+
+  // ---- per-entity panels ----
+
+  worktreeView(id: string): WorktreePanel | undefined {
+    return buildWorktreePanel(this, id)
+  }
+
+  taskView(name: string): TaskPanel | undefined {
+    return buildTaskPanel(this, name)
+  }
+
+  /** `key` is the merged repository's key (its lower-cased `owner/name`). */
+  repositoryView(key: string): RepositoryPanel | undefined {
+    return buildRepositoryPanel(this, key)
+  }
+
+  agentView(id: string): AgentPanel | undefined {
+    return buildAgentPanel(this, id)
+  }
+
+  machineView(id: string): MachinePanel | undefined {
+    return buildMachinePanel(this, id)
+  }
+
+  pullRequestView(id: string): PullRequestPanel | undefined {
+    return buildPullRequestPanel(this, id)
   }
 
   /** A repository's `owner/name` for its id, or the id when the document does not list it. */
@@ -212,12 +338,12 @@ export class FleetModel {
 
   /** Repositories merged by identity across machines. */
   get repositories(): MergedRepository[] {
-    return this.memo('repositories', () => mergeRepositories(this.document.repositories, this.now))
+    return this.memo('repositories', [], () => mergeRepositories(this.document.repositories, this.now, { pullRequests: this.document.pull_requests, agents: this.document.agents }))
   }
 
   /** One task per name, with its state. */
   get tasks(): TaskView[] {
-    return this.memo('tasks', () => {
+    return this.memo('tasks', [], () => {
       const worktreesByTask = new Map<string, Worktree[]>()
       for (const worktree of this.document.worktrees) worktreesByTask.set(worktree.task, [...(worktreesByTask.get(worktree.task) ?? []), worktree])
       const pullRequestsByTask = new Map<string, PullRequest[]>()
@@ -256,13 +382,28 @@ export class FleetModel {
     })
   }
 
+  /** Tasks by name. */
+  get taskMap(): Map<string, TaskView> {
+    return this.memo('taskMap', new Map<string, TaskView>(), () => new Map(this.tasks.map((task) => [task.name, task])))
+  }
+
   taskNamed(name: string): TaskView | undefined {
-    return this.tasks.find((task) => task.name === name)
+    return this.taskMap.get(name)
+  }
+
+  /** The Home badge: the number of tasks that need the operator. */
+  get homeBadge(): number {
+    return this.needsYou.items.length
+  }
+
+  /** The Agents tab badge: the running agents on every machine. */
+  get runningAgentCount(): number {
+    return this.inFlight.length
   }
 
   /** Home "Needs you": one row per task, its worst kind; blocked agents with no task are one row after them. */
   get needsYou(): NeedsYou {
-    return this.memo('needsYou', () => {
+    return this.memo('needsYou', EMPTY_NEEDS_YOU, () => {
       const items: NeedsYouItem[] = []
       for (const task of this.tasks) {
         const item = this.needsYouItem(task)
@@ -286,7 +427,7 @@ export class FleetModel {
       case 'at-risk': {
         const risky = interimAtRiskWorktrees(task.worktrees)
         const ahead = risky.reduce((total, worktree) => total + (worktree.ahead ?? 0), 0)
-        const owner = risky.some((worktree) => worktree.owner_state === 'orphaned') ? 'its owner process is gone' : 'it has no running owner'
+        const owner = ownerWords(risky)
         const unpushed = ahead > 0 ? `${ahead} unpushed commit${ahead === 1 ? '' : 's'}` : 'a branch with no upstream'
         return {
           ...base,
@@ -352,7 +493,7 @@ export class FleetModel {
       }
     }
     const finished = task.agents.find((agent) => agent.activity === 'done' || agent.activity === 'idle')
-    const unpushed = task.worktrees.some((worktree) => (worktree.ahead ?? 0) > 0 || worktree.has_upstream === false)
+    const unpushed = task.worktrees.some(hasUnpushedWork)
     if (finished && task.openPullRequests.length === 0 && task.state !== 'landed' && unpushed) {
       return { ...base, id: `agent-finished:${task.name}`, kind: 'agent-finished', rank: 4, agentId: finished.id, machine: finished.machine }
     }
@@ -365,15 +506,16 @@ export class FleetModel {
 
   /** Home "Ready to land": the tasks that are ready, and the tasks whose checks are not all in, muted. */
   get readyToLand(): ReadyToLand {
-    return this.memo('readyToLand', () => {
+    return this.memo('readyToLand', { ready: [], notReady: [] }, () => {
       const ready: ReadyToLandRow[] = []
       const notReady: NotReadyRow[] = []
       for (const task of this.tasks) {
         if (task.state === 'ready') ready.push(this.readyRow(task))
         else if (task.state === 'not-ready') {
           // Only the tasks that wait on checks alone are listed, muted.
-          const reasons = [...new Set(task.openPullRequests.flatMap(notReadyReasons))]
-          if (reasons.every((reason) => reason === 'checks pending')) {
+          const reasons = [...new Set(task.pullRequests.filter(isOpenPullRequest).flatMap(notReadyReasons))]
+          // Never vacuously: a task with no reason at all is not shown as waiting.
+          if (reasons.length > 0 && reasons.every((reason) => reason === 'checks pending')) {
             notReady.push({ task: task.name, checkedAt: oldestCheck(task.openPullRequests), reasons, link: selectionLink('tasks', task.name) })
           }
         }
@@ -390,16 +532,18 @@ export class FleetModel {
   private readyRow(task: TaskView): ReadyToLandRow {
     const pullRequests = task.openPullRequests.map((pullRequest): ReadyPullRequest => {
       const repository = pullRequest.repository === undefined ? undefined : this.repositoryName(pullRequest.repository)
-      const command: CopyCommand | undefined = repository === undefined ? undefined : pullRequestLand(repository, pullRequest.number)
+      const command: CopyCommand | undefined = repository === undefined ? undefined : pullRequestLand(repository, pullRequest.number, this.targetOf(pullRequest))
       return {
         id: pullRequest.id,
         repository,
         number: pullRequest.number,
         url: pullRequest.url,
-        checksPassed: pullRequest.checks_passed ?? 0,
-        checksTotal: pullRequest.checks_total ?? 0,
+        // A count the daemon did not report stays absent: never 0 of 0.
+        checksPassed: pullRequest.checks_passed,
+        checksTotal: pullRequest.checks_total,
         checkedAt: toTime(pullRequest.checked_at),
         landCommand: command?.ok ? command.text : undefined,
+        landLabel: command?.ok ? command.label : undefined,
       }
     })
     const repositories = [...new Set(pullRequests.flatMap((pullRequest) => (pullRequest.repository === undefined ? [] : [pullRequest.repository])))]
@@ -408,8 +552,9 @@ export class FleetModel {
       repositories,
       pullRequests,
       checkedAt: oldestCheck(task.openPullRequests),
-      checksPassed: pullRequests.reduce((total, pullRequest) => total + pullRequest.checksPassed, 0),
-      checksTotal: pullRequests.reduce((total, pullRequest) => total + pullRequest.checksTotal, 0),
+      checksPassed: sumReported(pullRequests.map((pullRequest) => pullRequest.checksPassed)),
+      checksTotal: sumReported(pullRequests.map((pullRequest) => pullRequest.checksTotal)),
+      unobservedPullRequests: task.unobservedPullRequests,
       lastActivityAt: task.lastActivityAt,
       link: selectionLink('tasks', task.name),
     }
@@ -417,7 +562,7 @@ export class FleetModel {
 
   /** Home "In flight": the running agents on every machine that publishes them. */
   get inFlight(): InFlightAgent[] {
-    return this.memo('inFlight', () =>
+    return this.memo('inFlight', [], () =>
       this.document.agents
         .filter(isRunning)
         .map((agent): InFlightAgent => ({
@@ -439,14 +584,14 @@ export class FleetModel {
 
   /** Home "Resume": the last five tasks by last activity. */
   get resume(): TaskView[] {
-    return this.memo('resume', () =>
+    return this.memo('resume', [], () =>
       [...this.tasks].sort((a, b) => newestFirst(a.lastActivityAt, b.lastActivityAt) || a.name.localeCompare(b.name)).slice(0, RESUME_COUNT),
     )
   }
 
   /** Home "Cleanup": the indicative safe and look counts, the sets behind them, and the age bars. */
   get cleanup(): Cleanup {
-    return this.memo('cleanup', () => {
+    return this.memo('cleanup', EMPTY_CLEANUP, () => {
       const landed = new Set(this.tasks.filter((task) => task.state === 'landed').map((task) => task.name))
       const safeIds = new Set<string>()
       const lookIds = new Set<string>()
@@ -476,7 +621,7 @@ export class FleetModel {
 
   /** The machines with their state, and the newest WB version in the fleet. */
   get machines(): MachineView[] {
-    return this.memo('machines', () => {
+    return this.memo('machines', [], () => {
       const newest = this.newestVersion
       const running = new Map<string, number>()
       for (const agent of this.document.agents) if (isRunning(agent)) running.set(agent.machine_id, (running.get(agent.machine_id) ?? 0) + 1)
@@ -509,21 +654,26 @@ export class FleetModel {
 
   /** Home "Fleet health": shown only when `ok` is false. */
   get health(): FleetHealth {
-    return this.memo('health', () => {
+    return this.memo('health', EMPTY_HEALTH, () => {
       const staleMachines: HealthItem[] = []
       const olderWb: HealthItem[] = []
       const remoteErrors: HealthItem[] = []
       for (const view of this.machines) {
         const machine = view.machine
         const base = { machine: machine.machine, machineId: machine.id, link: machineLink('machines', machine.id) }
+        // With an SSH route the command is the ssh form, run from here; without one it runs on the machine.
+        const ssh = this.options.sshRoute?.(machine) ?? sshRouteOf(this.options.machineRoutes, machine.id)
+        const target: CommandTarget = ssh === undefined ? {} : { ssh }
         if (view.state === 'stale') {
-          staleMachines.push({ ...base, text: `${machine.machine} has not published for over 24 hours`, command: healthCommand(remotePublish(), machine.machine), link: chipLink('machines', 'stale') })
+          staleMachines.push({ ...base, text: `${machine.machine} has not published for over 24 hours`, command: healthCommand(remotePublish(target), machine.machine, ssh !== undefined), link: chipLink('machines', 'stale') })
         }
         if (view.outdated) {
-          olderWb.push({ ...base, text: `${machine.machine} runs an older WB (${machine.wb_version})`, command: healthCommand(selfUpdate(), machine.machine), link: chipLink('machines', 'outdated') })
+          olderWb.push({ ...base, text: `${machine.machine} runs an older WB (${machine.wb_version})`, command: healthCommand(selfUpdate(target), machine.machine, ssh !== undefined), link: chipLink('machines', 'outdated') })
         }
         if (machine.remote_error !== undefined) {
-          remoteErrors.push({ ...base, text: `${machine.machine}: ${remoteErrorText(machine.remote_error)}`, command: healthCommand(remoteFix(machine.remote_error, this.options.sshRoute?.(machine)), machine.machine) })
+          // Enrolling configures this machine, so it runs here whatever the route.
+          const here = ssh !== undefined || machine.remote_error === 'http_auth_failed'
+          remoteErrors.push({ ...base, text: `${machine.machine}: ${remoteErrorText(machine.remote_error)}`, command: healthCommand(remoteFix(machine.remote_error, ssh), machine.machine, here) })
         }
       }
       const scanErrors: ScanErrorItem[] = this.repositories
@@ -538,7 +688,7 @@ export class FleetModel {
 
   /** The two Home charts' numbers; undefined when the document has no throughput block. */
   get throughput(): ThroughputSeries | undefined {
-    return this.memo('throughput', () => {
+    return this.memo('throughput', undefined, () => {
       const block = this.document.throughput
       if (block === undefined) return undefined
       const landed = new Map(block.per_day.map((day) => [day.date, day.landed]))
@@ -565,15 +715,15 @@ export class FleetModel {
   }
 
   get taskRows(): ListRow<TaskView>[] {
-    return this.memo('rows:tasks', () => taskRows(this.tasks, this.needsYouTasks))
+    return this.memo('rows:tasks', [], () => taskRows(this.tasks, this.needsYouTasks))
   }
 
   get repositoryRows(): ListRow<MergedRepository>[] {
-    return this.memo('rows:repositories', () => repositoryRows(this.repositories))
+    return this.memo('rows:repositories', [], () => repositoryRows(this.repositories))
   }
 
   get worktreeRows(): ListRow<Worktree>[] {
-    return this.memo('rows:worktrees', () => {
+    return this.memo('rows:worktrees', [], () => {
       const withPullRequest = new Set<string>()
       for (const pullRequest of this.document.pull_requests) {
         if (pullRequest.worktree !== undefined) withPullRequest.add(pullRequest.worktree)
@@ -595,14 +745,14 @@ export class FleetModel {
   }
 
   get agentRows(): ListRow<Agent>[] {
-    return this.memo('rows:agents', () => {
+    return this.memo('rows:agents', [], () => {
       const context: AgentRowContext = { taskOf: (agent) => this.tasksOfAgent(agent)[0], repositoryName: (id) => this.repositoryName(id) }
       return agentRows(this.document.agents, context)
     })
   }
 
   get machineRows(): ListRow<MachineView>[] {
-    return this.memo('rows:machines', () => machineRows(this.machines, (machine) => versionKey(machine.wb_version)))
+    return this.memo('rows:machines', [], () => machineRows(this.machines, (machine) => versionKey(machine.wb_version)))
   }
 }
 
@@ -610,8 +760,9 @@ function isoDay(date: Date): string {
   return date.toISOString().slice(0, 10)
 }
 
-function healthCommand(command: CopyCommand, machine: string): HealthItem['command'] {
-  return command.ok ? { text: command.text, label: `run on ${machine}` } : { reason: command.reason }
+/** The command of a health line, labelled where it runs: "run here" for the ssh form and enrolling, "run on <machine>" otherwise. */
+function healthCommand(command: CopyCommand, machine: string, here: boolean): HealthItem['command'] {
+  return command.ok ? { text: command.text, label: here ? 'run here' : `run on ${machine}`, needsEdit: command.needsEdit } : { reason: command.reason }
 }
 
 /** A `remote_error` in words; a code this page does not know is an unknown error. */
@@ -648,23 +799,30 @@ export function remoteErrorText(code: string): string {
  */
 export function remoteFix(code: string, ssh: SshRoute | undefined): CopyCommand {
   if (code === 'http_auth_failed') return remoteEnroll()
-  if (code === 'daemon_not_running') return daemonStart()
-  if (code === 'wb_too_old') return selfUpdate()
-  return cockpitExport(ssh === undefined ? {} : { ssh })
+  const target: CommandTarget = ssh === undefined ? {} : { ssh }
+  if (code === 'daemon_not_running') return daemonStart(target)
+  if (code === 'wb_too_old') return selfUpdate(target)
+  return cockpitExport(target)
 }
 
-/** Models by document identity: the same document gives the same model, so nothing is derived twice. */
+/**
+ * Models by document identity and clock bucket: the same document within the
+ * same minute (and with the same session routes) gives the same model, so a
+ * poll that changes nothing derives nothing; a later minute re-derives what
+ * depends on the clock.
+ */
 export class FleetModels {
-  private readonly models = new WeakMap<FleetDocument, FleetModel>()
+  private readonly models = new WeakMap<FleetDocument, { bucket: number; routes: readonly MachineRoute[] | undefined; model: FleetModel }>()
 
   constructor(private readonly options: ModelOptions = {}) {}
 
-  forDocument(document: FleetDocument): FleetModel {
-    let model = this.models.get(document)
-    if (model === undefined) {
-      model = new FleetModel(document, this.options)
-      this.models.set(document, model)
-    }
+  forDocument(document: FleetDocument, now?: number, routes?: readonly MachineRoute[]): FleetModel {
+    const time = now ?? (this.options.now ?? Date.now)()
+    const bucket = Math.floor(time / CLOCK_BUCKET_MS)
+    const held = this.models.get(document)
+    if (held !== undefined && held.bucket === bucket && held.routes === routes) return held.model
+    const model = new FleetModel(document, routes === undefined ? this.options : { ...this.options, machineRoutes: routes }, time)
+    this.models.set(document, { bucket, routes, model })
     return model
   }
 }

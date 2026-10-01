@@ -126,6 +126,11 @@ export function worktreeLabel(worktree: Worktree): string {
   return `${worktree.task} (${worktree.branch})`
 }
 
+/** The agent's runtime and model, or "agent" for neither. */
+export function agentTitle(agent: Agent): string {
+  return [agent.runtime, agent.model].filter((part) => part).join(' ') || 'agent'
+}
+
 export function agentLabel(agent: Agent): string {
   const identity = agent.session_id ?? agent.run_id ?? agent.id
   return agent.runtime ? `${agent.runtime} ${agent.kind} ${identity}` : `${agent.kind} ${identity}`

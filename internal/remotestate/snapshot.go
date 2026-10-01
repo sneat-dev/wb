@@ -45,8 +45,15 @@ type Snapshot struct {
 	// via a claim mutation (claim, refresh, release, take-over); it is
 	// stamped by the provider, never by Build. Zero means no claim activity
 	// has been recorded. See Heartbeat.
-	LastSeenAt          time.Time         `yaml:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
-	WBVersion           string            `yaml:"wb_version" json:"wb_version"`
+	LastSeenAt time.Time `yaml:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
+	WBVersion  string    `yaml:"wb_version" json:"wb_version"`
+	// OS, Arch, CPUCount and BootTime are the publishing machine's optional
+	// hardware facts (cockpit-views#req:machine-fields). They are additive:
+	// schema_version does not change and an older reader ignores them.
+	OS                  string            `yaml:"os,omitempty" json:"os,omitempty"`
+	Arch                string            `yaml:"arch,omitempty" json:"arch,omitempty"`
+	CPUCount            int               `yaml:"cpu_count,omitempty" json:"cpu_count,omitempty"`
+	BootTime            time.Time         `yaml:"boot_time,omitempty" json:"boot_time,omitzero"`
 	RemoteStore         string            `yaml:"remote_store,omitempty" json:"remote_store,omitempty"`
 	ProjectsRoot        string            `yaml:"projects_root" json:"projects_root"`
 	RepositoriesScanned int               `yaml:"repositories_scanned" json:"repositories_scanned"`

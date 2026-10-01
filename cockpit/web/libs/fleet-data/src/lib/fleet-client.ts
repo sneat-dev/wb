@@ -96,8 +96,54 @@ export function digestOf(text: string): string {
   return `${text.length}:${hash.toString(16)}`
 }
 
+const isText = (value: unknown): boolean => typeof value === 'string'
+const isCount = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value)
+
+function isEntry(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false
+  const entry = value as Record<string, unknown>
+  return isText(entry['id']) && isText(entry['machine']) && isText(entry['machine_id']) && isText(entry['route'])
+}
+
+/** The fields each kind must carry to be shown at all; unknown enum values are tolerated. */
+const ENTRY_CHECKS: Record<(typeof COLLECTIONS)[number], (entry: Record<string, unknown>) => boolean> = {
+  machines: (e) => isCount(e['repository_count']) && isCount(e['worktree_count']),
+  repositories: (e) => isText(e['name']) && isCount(e['worktree_count']),
+  worktrees: (e) => isText(e['repository']) && isText(e['task']) && isText(e['branch']),
+  pull_requests: (e) => isCount(e['number']),
+  agents: (e) => isText(e['kind']) && isText(e['state']),
+}
+
+/**
+ * Keeps the entries that carry their required fields, and counts the rest: a
+ * bad entry is dropped, not thrown. The same document object comes back when
+ * nothing was dropped.
+ */
+export function dropBadEntries(document: FleetDocument): { document: FleetDocument; dropped: number } {
+  let dropped = 0
+  const cleaned: Record<string, unknown> = {}
+  for (const name of COLLECTIONS) {
+    const rows = document[name] as unknown[]
+    const kept = rows.filter((row) => isEntry(row) && ENTRY_CHECKS[name](row))
+    dropped += rows.length - kept.length
+    cleaned[name] = kept
+  }
+  return dropped === 0 ? { document, dropped } : { document: { ...document, ...cleaned }, dropped }
+}
+
+/** The document-level facts every schema 2 document carries. */
+function hasDocumentFacts(document: FleetDocument): boolean {
+  return (
+    typeof document.warming_up === 'boolean' &&
+    isCount(document.repositories_total) &&
+    isCount(document.repositories_scanned) &&
+    isCount(document.diagnostics)
+  )
+}
+
 export type FleetRead =
-  | { kind: 'changed'; document: FleetDocument; etag: string; digest: string }
+  /** `dropped` counts the entries left out for lacking a required field. */
+  | { kind: 'changed'; document: FleetDocument; etag: string; digest: string; dropped?: number }
   | { kind: 'unchanged' }
 
 @Injectable({ providedIn: 'root' })
@@ -125,8 +171,9 @@ export class FleetClient {
     const version = typeof document === 'object' && document !== null ? (document as Record<string, unknown>)['schema_version'] : undefined
     if (typeof version !== 'number') throw new FleetFormatError()
     if (version !== expected) throw new FleetSchemaError(version < expected ? 'daemon-older' : 'page-older', version, expected)
-    if (!hasFleetShape(document)) throw new FleetFormatError()
-    return { kind: 'changed', document, etag: response.headers.get('ETag') ?? '', digest: digestOf(text) }
+    if (!hasFleetShape(document) || !hasDocumentFacts(document)) throw new FleetFormatError()
+    const cleaned = dropBadEntries(document)
+    return { kind: 'changed', document: cleaned.document, dropped: cleaned.dropped, etag: response.headers.get('ETag') ?? '', digest: digestOf(text) }
   }
 
   /** The branches of one repository checkout, read lazily when a repository page or panel opens. */

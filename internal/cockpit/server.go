@@ -230,8 +230,10 @@ func writeAPIError(writer http.ResponseWriter, status int, message string) {
 // everywhere but on a metadata route.
 func (server *Server) serveAPI(writer http.ResponseWriter, request *http.Request) {
 	setAPIHeaders(writer)
-	// Every answer depends on the Origin header, whoever asks.
-	writer.Header().Set("Vary", "Origin")
+	// Every answer depends on the Origin header, whoever asks, and a body
+	// served through ServePayload on the encodings the caller accepts. It is set
+	// to the whole value here, once, so no later Set can shorten it.
+	writer.Header().Set("Vary", varyHeader)
 	from := server.originKindOf(request)
 	metadata, isMetadata := server.metadata[strings.TrimPrefix(request.URL.Path, APIPrefix)]
 	if from == originForeign || (from == originHosted && !isMetadata) {
@@ -323,7 +325,7 @@ func (server *Server) serveSession(writer http.ResponseWriter, _ *http.Request, 
 // owner routes there and the application. No foreign origin, the hosted one
 // included, may address a page route.
 func (server *Server) servePage(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Vary", "Origin")
+	writer.Header().Set("Vary", varyHeader)
 	from := server.originKindOf(request)
 	if from == originForeign || from == originHosted {
 		writer.Header().Set("Cache-Control", "no-store")

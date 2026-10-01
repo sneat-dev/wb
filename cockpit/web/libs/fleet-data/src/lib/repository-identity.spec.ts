@@ -8,7 +8,7 @@ import {
   splitRepositoryName,
   worstCodeIndex,
 } from './repository-identity'
-import { OBSERVED, repository } from './test-data'
+import { OBSERVED, agent, pullRequest, repository } from './test-data'
 
 const NOW = Date.parse('2026-10-01T10:00:00Z')
 
@@ -108,6 +108,33 @@ describe('mergeRepositories', () => {
     expect(row.codeIndexStates).toEqual(['fresh', 'stale'])
     expect(row.errors).toEqual(['scan_failed'])
     expect(row.webUrl).toBe('https://github.com/acme/x')
+  })
+
+  it('takes the web address only from a local checkout, never from another machine\'s snapshot', () => {
+    const cached = repo('c', 'beta', 'acme/x', { route: 'cached', remote_url_web: 'https://evil.example/acme/x' })
+    expect(mergeRepositories([cached], NOW)[0].webUrl).toBeUndefined()
+    const local = repo('l', 'alpha', 'acme/x', { remote_url_web: 'https://github.com/acme/x' })
+    expect(mergeRepositories([cached, local], NOW)[0].webUrl).toBe('https://github.com/acme/x')
+    expect(mergeRepositories([cached, repo('l', 'alpha', 'acme/x')], NOW)[0].webUrl).toBeUndefined()
+  })
+
+  it('counts a pull request or agent that several machines report once', () => {
+    const rows = [
+      repo('l', 'alpha', 'acme/x', { open_pull_request_count: 1, active_agent_count: 1 }),
+      repo('c', 'beta', 'acme/x', { route: 'cached', open_pull_request_count: 1, active_agent_count: 1 }),
+    ]
+    const lists = {
+      pullRequests: [pullRequest('p1', 'l', undefined, { number: 7 }), pullRequest('p2', 'c', undefined, { number: 7 }), pullRequest('p3', 'c', undefined, { number: 8 }), pullRequest('p4', 'c', undefined, { number: 9, state: 'merged' }), pullRequest('p5', 'other', undefined, { number: 10 }), pullRequest('p6', 'l', undefined, { number: 11, repository: undefined })],
+      agents: [agent('a1', 'l', 'live'), agent('a1', 'c', 'live'), agent('a2', 'c', 'parked'), agent('a3', 'l', 'live')],
+    }
+    const [row] = mergeRepositories(rows, NOW, lists)
+    // Open pull requests 7 and 8, once each; running agents a1 and a3, once each.
+    expect([row.openPullRequestCount, row.activeAgentCount]).toEqual([2, 2])
+    // With nothing in the lists for it, the entries' own counts are summed.
+    const [plain] = mergeRepositories(rows, NOW, { pullRequests: [], agents: [] })
+    expect([plain.openPullRequestCount, plain.activeAgentCount]).toEqual([2, 2])
+    const [unreported] = mergeRepositories([repo('z', 'alpha', 'acme/y', { active_agent_count: undefined })], NOW, lists)
+    expect([unreported.openPullRequestCount, unreported.activeAgentCount]).toEqual([undefined, undefined])
   })
 
   it('takes the newest activity among the checkouts', () => {

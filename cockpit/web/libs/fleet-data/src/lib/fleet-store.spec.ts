@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing'
 import { FleetClient, FleetRead, FleetSchemaError } from './fleet-client'
 import { EXPECTED_SCHEMA, FleetStore, MODEL_OPTIONS, POLL_INTERVALS } from './fleet-store'
 import { Session } from './fleet.types'
-import { fleetDocument } from './test-data'
+import { fleetDocument, worktree } from './test-data'
 
 const session: Session = { principal: 'anonymous-local', capabilities: [], code_browser_url: 'https://c.test/' }
 
@@ -48,6 +48,7 @@ describe('FleetStore', () => {
   })
 
   it('exposes the configured provider and whether the session may read content', async () => {
+    const remoteRead: FleetRead = { ...changed(false, '"a"'), document: fleetDocument({ worktrees: [{ ...worktree('w3', 'r2', 'beta'), route: 'cached' }] }) }
     const owner: Session = { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: '' }
     const withProvider: FleetRead = { kind: 'changed', etag: '"p"', digest: 'p', document: fleetDocument({ code_index_provider: 'codegrapher' }) }
     const store = storeWith({ readFleet: async () => withProvider, readSession: async () => owner })
@@ -222,6 +223,7 @@ describe('FleetStore', () => {
 
   // cockpit-views#ac:unchanged-snapshot-does-nothing, cockpit-views#ac:derived-collections-computed-once
   it('derives each collection once per document: a 304, an identical body and a clock tick recompute nothing', async () => {
+    vi.setSystemTime(Date.parse('2026-10-01T10:00:05Z'))
     const derived: string[] = []
     const same = changed(false, '"a"')
     const readFleet = vi
@@ -254,6 +256,8 @@ describe('FleetStore', () => {
     store.now.set(store.now() + 5000)
     render()
     expect(store.model()).toBe(first)
+    // The store's clock and the model's agree to the bucket: the model is made from the store's clock.
+    expect(Math.floor(store.model().now / 60_000)).toBe(Math.floor(store.now() / 60_000))
     await vi.advanceTimersByTimeAsync(100)
     expect(readFleet).toHaveBeenCalledTimes(3)
     expect(store.model()).toBe(first)
@@ -265,6 +269,42 @@ describe('FleetStore', () => {
     expect(derived.filter((name) => name === 'tasks')).toHaveLength(2)
     expect(derived.filter((name) => name === 'repositories')).toHaveLength(2)
     store.stop()
+  })
+
+  it('exposes how many entries were dropped for the diagnostic line, and resets it for another schema', async () => {
+    const readFleet = vi
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
+      .mockResolvedValueOnce({ ...changed(false, '"a"'), dropped: 3 })
+      .mockResolvedValueOnce({ ...changed(false, '"b"') })
+      .mockRejectedValueOnce(new FleetSchemaError('page-older', 3, 2))
+    const store = storeWith({ readFleet, readSession: async () => session })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.droppedEntries()).toBe(3)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.droppedEntries()).toBe(0)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.schemaMismatch()).toBe('page-older')
+    expect(store.droppedEntries()).toBe(0)
+    store.stop()
+  })
+
+  it('threads the owner-only machine routes of the session into the model, and none for an anonymous reader', async () => {
+    const remoteRead: FleetRead = { ...changed(false, '"a"'), document: fleetDocument({ worktrees: [{ ...worktree('w3', 'r2', 'beta'), route: 'cached' }] }) }
+    const owner: Session = { principal: 'owner', capabilities: [], code_browser_url: '', machine_routes: [{ machine_id: 'mach-beta', ssh: { host: 'beta.example', user: 'alex', wb_path: 'wb' } }] }
+    const store = storeWith({ readFleet: async () => remoteRead, readSession: async () => owner })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.model().machineRoutes).toBe(owner.machine_routes)
+    expect(store.model().worktreeView('w3')?.commands[0].command).toMatchObject({ text: expect.stringContaining('ssh alex@beta.example') })
+    store.stop()
+    TestBed.resetTestingModule()
+    const anonymous = storeWith({ readFleet: async () => remoteRead, readSession: async () => session })
+    anonymous.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(anonymous.model().machineRoutes).toBeUndefined()
+    expect(anonymous.model().worktreeView('w3')?.commands[0].command).toMatchObject({ label: 'run on beta' })
+    anonymous.stop()
   })
 
   it('has real default intervals', () => {
