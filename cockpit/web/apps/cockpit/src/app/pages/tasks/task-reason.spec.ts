@@ -65,6 +65,11 @@ describe('taskReason', () => {
     expect(reasonOf({ ...base, pull_requests: [pending, unobserved, ready, merged] }).reason).toBe('Not ready: wb#131 checks pending; sneat-go#12 pull request not yet checked')
   })
 
+  it('says that another machine\'s ready pull request cannot make a task of this machine ready', () => {
+    const remote = { ...pullRequest('p1', 'r1', 'w1', { number: 5 }), route: 'cached' as const }
+    expect(reasonOf({ worktrees: [wt('w1', 'r1', { owner_state: 'idle', ahead: 0, has_upstream: true })], pull_requests: [remote] }).reason).toBe('Not ready: no open pull request is on this machine, and only this machine can make the task ready')
+  })
+
   it('names at most three parts, then +n more', () => {
     const many = Array.from({ length: REASON_PARTS_SHOWN + 2 }, (_, index) => pullRequest(`p${index}`, 'r1', 'w1', { number: index + 1, checks_pending: 1, checks_green: false }))
     const { reason } = reasonOf({ worktrees: [wt('w1', 'r1', { owner_state: 'idle', ahead: 0, has_upstream: true })], pull_requests: many })

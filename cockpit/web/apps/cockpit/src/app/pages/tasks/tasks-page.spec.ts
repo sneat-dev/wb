@@ -191,6 +191,16 @@ describe('TasksPage', () => {
     expect(cell(root, 'zeta', 'State').querySelector('svg')).not.toBeNull()
   })
 
+  // cockpit-views#ac:task-state-ready-to-land
+  it('marks a task that only another machine reports as via that machine, in the row and with its machine chip, and not a task decided here', async () => {
+    const { root } = await openPage('/tasks', TasksPage, tasksDocument())
+    expect(text(cell(root, 'far', 'State'))).toContain('via beta')
+    expect(cell(root, 'far', 'State').querySelector('.via')?.getAttribute('title')).toBe('As reported by beta, not by this machine')
+    expect(text(cell(root, 'far', 'Machines'))).toBe('beta2 d · stale · ssh')
+    expect(cell(root, 'fix-ci', 'State').querySelector('.via')).toBeNull()
+    expect(cell(root, 'zeta', 'State').querySelector('.via')).toBeNull()
+  })
+
   // cockpit-views#ac:copy-buttons-copy-the-full-value
   it('copies the full task name from the row', async () => {
     const long = tasksDocument()
