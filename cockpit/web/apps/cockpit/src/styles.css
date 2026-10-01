@@ -1,25 +1,20 @@
-html,
-body {
-  margin: 0;
-  background: var(--p-content-background, #fff);
-  color: var(--p-text-color, #111);
-  font-family: system-ui, sans-serif;
-}
-
-/* Shared by every page. */
+/* Shared by every page. A page has no visible heading of its own: the active
+   tab names it (cockpit-views REQ:no-visible-page-heading). */
 .page-title {
-  margin: 0 0 0.5rem;
-  font-size: 1.25rem;
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
 }
 
 .section-title {
-  margin: 1rem 0 0.25rem;
-  font-size: 1rem;
+  margin: var(--space-4) 0 var(--space-1);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
 }
 
 .state-filter {
   margin: 0.5rem 0 0;
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
   font-size: 0.875rem;
 }
 
@@ -36,17 +31,17 @@ body {
 }
 
 .unknown {
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
 }
 
 .row-error {
   display: block;
-  color: var(--p-red-500, #b91c1c);
+  color: var(--bad);
   font-size: 0.8125rem;
 }
 
 .code-link {
-  color: var(--p-primary-color);
+  color: var(--accent);
 }
 
 .tiles {
@@ -60,12 +55,12 @@ body {
   flex-direction: column;
   gap: 0.125rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-content-border-radius, 6px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
 .tile-title {
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
   font-size: 0.8125rem;
 }
 
@@ -79,7 +74,7 @@ body {
 }
 
 .machine-sub {
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
   font-size: 0.75rem;
 }
 
@@ -121,7 +116,7 @@ body {
 
 .back a,
 .row-link {
-  color: var(--p-primary-color);
+  color: var(--accent);
 }
 
 .detail {
@@ -132,7 +127,7 @@ body {
 }
 
 .detail dt {
-  color: var(--p-text-muted-color);
+  color: var(--text-3);
 }
 
 .detail dd {
@@ -143,5 +138,12 @@ body {
 .detail-section {
   margin-top: 1.25rem;
   padding-top: 0.5rem;
-  border-top: 1px solid var(--p-content-border-color);
+  border-top: 1px solid var(--border);
+}
+
+/* A page that is registered but not built yet. */
+.placeholder {
+  margin: var(--space-7) 0;
+  color: var(--text-3);
+  text-align: center;
 }

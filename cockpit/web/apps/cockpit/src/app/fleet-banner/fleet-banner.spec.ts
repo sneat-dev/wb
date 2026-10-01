@@ -14,20 +14,6 @@ async function render(setup: (store: FleetStore) => void): Promise<HTMLElement> 
 const text = (root: HTMLElement) => (root.textContent ?? '').replace(/\s+/g, ' ').trim()
 
 describe('FleetBanner', () => {
-  it('says the fleet is loading until the first read is answered', async () => {
-    expect(text(await render(() => undefined))).toBe('Loading the fleet…')
-  })
-
-  it('shows the scan progress while warming up, without hiding what is listed', async () => {
-    const root = await render((store) => {
-      store.loaded.set(true)
-      store.document.set(fleetDocument({ warming_up: true, repositories_scanned: 3, repositories_total: 12 }))
-    })
-    expect(text(root)).toContain('Scanning repositories: 3 of 12')
-    const progress = root.querySelector('progress') as HTMLProgressElement
-    expect([progress.value, progress.max]).toEqual([3, 12])
-  })
-
   it('is silent for a complete document', async () => {
     expect(text(await render((store) => { store.loaded.set(true); store.document.set(fleetDocument()) }))).toBe('')
   })
@@ -59,5 +45,21 @@ describe('FleetBanner', () => {
   it('shows a failed read as an alert', async () => {
     const root = await render((store) => { store.loaded.set(true); store.error.set('down') })
     expect(root.querySelector('[role=alert]')?.textContent).toBe('down')
+  })
+
+  it('says nothing of a warming-up scan, which the freshness chip and the skeleton rows show', async () => {
+    const root = await render((store) => {
+      store.document.set(fleetDocument({ warming_up: true, repositories_scanned: 3, repositories_total: 12 }))
+    })
+    expect(text(root)).toBe('')
+  })
+
+  it('leaves a schema mismatch to its own state instead of repeating its message', async () => {
+    const root = await render((store) => {
+      store.loaded.set(true)
+      store.error.set('reload')
+      store.schemaMismatch.set('page-older')
+    })
+    expect(root.querySelector('[role=alert]')).toBeNull()
   })
 })

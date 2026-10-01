@@ -1,0 +1,33 @@
+@if (shell.sheetOpen()) {
+  <div class="overlay-backdrop" (click)="shell.closeSheet()"></div>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="shortcut-sheet-title" appOverlayFocus>
+    <header class="sheet-head">
+      <h2 id="shortcut-sheet-title">Keyboard shortcuts</h2>
+      <button type="button" class="icon-button" aria-label="Close" data-autofocus (click)="shell.closeSheet()">
+        <app-icon name="x" />
+      </button>
+    </header>
+    <div class="sheet-body">
+      @for (group of groups(); track group.title) {
+        <section class="group">
+          <h3>{{ group.title }}</h3>
+          <dl>
+            @for (row of group.rows; track row.label) {
+              <div class="row">
+                <dt>
+                  @for (key of row.keys; track $index) {
+                    @if ($index > 0 && row.keys[0] === 'g') {
+                      <span class="then">then</span>
+                    }
+                    <kbd>{{ key }}</kbd>
+                  }
+                </dt>
+                <dd>{{ row.label }}</dd>
+              </div>
+            }
+          </dl>
+        </section>
+      }
+    </div>
+  </div>
+}

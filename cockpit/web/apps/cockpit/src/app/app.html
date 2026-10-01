@@ -1,12 +1,18 @@
-<header class="shell-header">
-  <h1 class="shell-title">WB Cockpit</h1>
-  <nav class="shell-nav" aria-label="Pages">
-    @for (link of links; track link.path) {
-      <a [routerLink]="link.path" routerLinkActive="active" ariaCurrentWhenActive="page">{{ link.label }}</a>
-    }
-  </nav>
-</header>
-<main class="shell-main">
+<a class="skip-link" href="#main" (click)="$event.preventDefault(); main.focus()">Skip to the page</a>
+<app-top-bar />
+<main id="main" class="shell-main" tabindex="-1" #main>
+  <h1 class="visually-hidden">{{ pageTitle() }}</h1>
   <app-fleet-banner />
-  <router-outlet />
+  @if (store.schemaMismatch(); as mismatch) {
+    <app-schema-mismatch [mismatch]="mismatch" />
+  } @else {
+    @if (store.loaded()) {
+      <router-outlet />
+    }
+    @if (!store.loaded() || store.warmingUp()) {
+      <app-skeleton-rows class="warming" [count]="6" />
+    }
+  }
 </main>
+<app-command-palette />
+<app-shortcut-sheet />

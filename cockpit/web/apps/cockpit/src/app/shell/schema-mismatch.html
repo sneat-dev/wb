@@ -1,0 +1,12 @@
+<section class="mismatch" role="alert">
+  <app-icon class="mismatch-icon" name="alert" />
+  @if (daemonOlder()) {
+    <h2>The daemon on this machine is older than this page</h2>
+    <p>The Cockpit reads one version of the fleet document and shows no data from any other. <strong>{{ updateMessage }}</strong>, then reload.</p>
+    <p class="command"><code>{{ command }}</code></p>
+  } @else {
+    <h2>This page is older than the daemon</h2>
+    <p>The daemon sends a newer fleet document than this page can read. <strong>{{ reloadMessage }}</strong> to load the current page.</p>
+  }
+  <button type="button" class="reload" (click)="reload()">Reload the page</button>
+</section>

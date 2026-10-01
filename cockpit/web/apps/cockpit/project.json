@@ -24,7 +24,11 @@
             "input": "apps/cockpit/public"
           }
         ],
-        "styles": ["apps/cockpit/src/styles.css"]
+        "styles": [
+          "apps/cockpit/src/styles/tokens.css",
+          "apps/cockpit/src/styles/base.css",
+          "apps/cockpit/src/styles.css"
+        ]
       },
       "configurations": {
         "production": {
