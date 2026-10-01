@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -29,6 +30,11 @@ type parkedSessionCaptureMember struct {
 	// and keeps using listed.WorktreeDir, since at park time listed IS the
 	// live List() result, not a possibly-stale recorded one.
 	resolvedWorktreeDir string
+	// Invocation-local fault seams; production members leave them nil and use
+	// the descriptor-anchored openers and secure Git helper below.
+	openCanonical func(string) (*canonicalRepository, error)
+	openWorktree  func(string) (*cleanupWorktreeHandle, error)
+	query         func(context.Context, []string, func() (string, error)) (string, error)
 
 	branch, head, status, fetchRemote, pushRemote, workLogReference, ownerEventID string
 }
@@ -104,6 +110,21 @@ func CaptureParkedSessionAggregate(ctx context.Context, projectsRoot string, lis
 }
 
 func (member *parkedSessionCaptureMember) acquire(ctx context.Context, projectsRoot string) error {
+	if err := member.acquireParkedCaptureGit(ctx, projectsRoot); err != nil {
+		return err
+	}
+	var err error
+	member.journal, err = openJournalSubdirectory(member.guard.Path, worklogDirectory, false)
+	if err != nil {
+		return fmt.Errorf("open parked source Work Log journal: %w", err)
+	}
+	member.unlock, err = lockLocalWorkLog(member.journal)
+	return err
+}
+
+// acquireParkedCaptureGit leaves every successfully opened descriptor on the
+// member; both callers release partial acquisition through the same closer.
+func (member *parkedSessionCaptureMember) acquireParkedCaptureGit(ctx context.Context, projectsRoot string) error {
 	guard, err := Guard(ctx, member.listed.WorktreeDir, GuardOptions{ProjectsRoot: projectsRoot, Admission: AdmissionEnforce})
 	if err != nil {
 		return fmt.Errorf("park requires a managed source worktree: %w", err)
@@ -117,28 +138,45 @@ func (member *parkedSessionCaptureMember) acquire(ctx context.Context, projectsR
 		return fmt.Errorf("parked worktree inventory changed before capture at %s", member.listed.WorktreeDir)
 	}
 	member.guard = guard
-	member.canonical, err = openCanonicalRepository(guard.CanonicalDir)
+	openCanonical := openCanonicalRepository
+	if member.openCanonical != nil {
+		openCanonical = member.openCanonical
+	}
+	member.canonical, err = openCanonical(guard.CanonicalDir)
 	if err != nil {
 		return fmt.Errorf("open parked canonical repository: %w", err)
 	}
-	member.worktree, err = openAdoptedCleanupWorktree(guard.Path)
+	openWorktree := openAdoptedCleanupWorktree
+	if member.openWorktree != nil {
+		openWorktree = member.openWorktree
+	}
+	member.worktree, err = openWorktree(guard.Path)
 	if err != nil {
 		return fmt.Errorf("hold parked source worktree: %w", err)
 	}
-	member.journal, err = openJournalSubdirectory(guard.Path, worklogDirectory, false)
-	if err != nil {
-		return fmt.Errorf("open parked source Work Log journal: %w", err)
-	}
-	member.unlock, err = lockLocalWorkLog(member.journal)
-	return err
+	return nil
 }
 
 func (member *parkedSessionCaptureMember) queryWorktree(ctx context.Context, arguments ...string) (string, error) {
-	raw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, member.guard.CanonicalDir, member.guard.WorktreesRoot, member.guard.Path, member.worktree.worktree, arguments...)
-	return strings.TrimSpace(string(raw)), err
+	run := func() (string, error) {
+		raw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, member.guard.CanonicalDir, member.guard.WorktreesRoot, member.guard.Path, member.worktree.worktree, arguments...)
+		return strings.TrimSpace(string(raw)), err
+	}
+	if member.query != nil {
+		return member.query(ctx, arguments, run)
+	}
+	return run()
 }
 
 func (member *parkedSessionCaptureMember) capture(ctx context.Context, projectsRoot string, source session.Record) error {
+	return member.captureParkedObservation(ctx, func() (string, string, error) {
+		return parkedSessionWorkLogSnapshotUnderLock(projectsRoot, member.guard.Path, source, member.journal)
+	})
+}
+
+// captureParkedObservation observes Git once and delegates only the distinct
+// single versus aggregate Work Log authority read to the caller.
+func (member *parkedSessionCaptureMember) captureParkedObservation(ctx context.Context, readWorkLog func() (string, string, error)) error {
 	var err error
 	member.branch, err = member.queryWorktree(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil || member.branch == "" || member.branch != member.guard.Branch {
@@ -152,7 +190,7 @@ func (member *parkedSessionCaptureMember) capture(ctx context.Context, projectsR
 	if err != nil {
 		return fmt.Errorf("inspect parked source status: %w", err)
 	}
-	member.workLogReference, member.ownerEventID, err = parkedSessionWorkLogSnapshotUnderLock(projectsRoot, member.guard.Path, source, member.journal)
+	member.workLogReference, member.ownerEventID, err = readWorkLog()
 	if err != nil {
 		return err
 	}
@@ -193,6 +231,12 @@ func (member *parkedSessionCaptureMember) capture(ctx context.Context, projectsR
 }
 
 func (member *parkedSessionCaptureMember) validate(ctx context.Context, projectsRoot string, source session.Record) error {
+	return member.revalidateParkedObservation(ctx, func() (string, string, error) {
+		return parkedSessionWorkLogSnapshotUnderLock(projectsRoot, member.guard.Path, source, member.journal)
+	}, "parked source Git, remote, Work Log, or owner evidence changed during aggregate capture")
+}
+
+func (member *parkedSessionCaptureMember) revalidateParkedObservation(ctx context.Context, readWorkLog func() (string, string, error), driftMessage string) error {
 	if err := member.canonical.validate(); err != nil {
 		return fmt.Errorf("parked canonical repository changed during capture: %w", err)
 	}
@@ -204,11 +248,11 @@ func (member *parkedSessionCaptureMember) validate(ctx context.Context, projects
 	status, statusErr := member.queryWorktree(ctx, "status", "--porcelain=v1", "--untracked-files=all")
 	fetch, fetchErr := readCanonicalOriginRemote(ctx, member.canonical, false)
 	push, pushErr := readCanonicalOriginRemote(ctx, member.canonical, true)
-	reference, owner, workLogErr := parkedSessionWorkLogSnapshotUnderLock(projectsRoot, member.guard.Path, source, member.journal)
+	reference, owner, workLogErr := readWorkLog()
 	if branchErr != nil || headErr != nil || statusErr != nil || fetchErr != nil || pushErr != nil || workLogErr != nil ||
 		branch != member.branch || head != member.head || status != member.status || fetch != member.fetchRemote || push != member.pushRemote ||
 		reference != member.workLogReference || owner != member.ownerEventID {
-		return fmt.Errorf("parked source Git, remote, Work Log, or owner evidence changed during aggregate capture")
+		return errors.New(driftMessage)
 	}
 	return nil
 }
