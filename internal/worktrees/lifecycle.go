@@ -1565,6 +1565,22 @@ func listClaimedRegistryWorktrees(
 	reporter *listProgressReporter,
 	policy inspectPolicy,
 ) ([]ListResult, []ListDiagnostic) {
+	return listClaimedRegistryWorktreesWithClaimReader(ctx, projectsRoot, home, known, tasks, base, filter, absorbedBy,
+		withGitHub, workers, reporter, policy, activeWorkLogClaim)
+}
+
+func listClaimedRegistryWorktreesWithClaimReader(
+	ctx context.Context,
+	projectsRoot, home string,
+	known map[string]bool,
+	tasks map[string]bool,
+	base, filter, absorbedBy string,
+	withGitHub bool,
+	workers int,
+	reporter *listProgressReporter,
+	policy inspectPolicy,
+	readClaim func(string, string) (workLogClaim, workLogProjection, string, error),
+) ([]ListResult, []ListDiagnostic) {
 	if len(tasks) > 0 {
 		return listTaskScopedClaimedRegistryWorktrees(ctx, projectsRoot, home, known, tasks, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
 	}
@@ -1605,7 +1621,7 @@ func listClaimedRegistryWorktrees(
 			if known[path] {
 				continue
 			}
-			claim, _, _, claimErr := activeWorkLogClaim(home, path)
+			claim, _, _, claimErr := readClaim(home, path)
 			if claimErr != nil {
 				// Most Git worktrees are not WB-managed. A real local manifest
 				// makes a claim failure material evidence rather than absence.
@@ -1646,7 +1662,7 @@ func listClaimedRegistryWorktrees(
 	// a time. This retains the normal per-canonical serialization while not
 	// treating the currently configured shared root as an ownership oracle.
 	for _, pendingEntry := range pending {
-		claim, _, _, err := activeWorkLogClaim(home, pendingEntry.path)
+		claim, _, _, err := readClaim(home, pendingEntry.path)
 		if err != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", pendingEntry.task, pendingEntry.path, fmt.Sprintf("re-read managed registry claim: %v", err)))
 			continue
@@ -1747,6 +1763,12 @@ func listTaskScopedClaimedRegistryWorktrees(
 // longer be read. It is deliberately task-scoped before opening private claim
 // runs: one named cleanup must neither report nor act on another task.
 func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*workLogClaim, error) {
+	return activeWorkLogClaimAtPathWithReadNames(home, worktree, tasks,
+		func(directory *os.File) ([]string, error) { return directory.Readdirnames(-1) })
+}
+
+func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[string]bool,
+	readNames func(*os.File) ([]string, error)) (*workLogClaim, error) {
 	worklogs, err := openAbsoluteDirectoryNoFollow(filepath.Join(home, "worklogs"), false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -1755,7 +1777,7 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 		return nil, err
 	}
 	defer func() { _ = worklogs.Close() }()
-	efforts, err := worklogs.Readdirnames(-1)
+	efforts, err := readNames(worklogs)
 	if err != nil {
 		return nil, err
 	}
@@ -1773,7 +1795,7 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 		if runErr != nil {
 			return nil, runErr
 		}
-		runNames, readErr := runs.Readdirnames(-1)
+		runNames, readErr := readNames(runs)
 		if readErr != nil {
 			_ = runs.Close()
 			return nil, readErr
@@ -1795,7 +1817,7 @@ func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*wo
 				_ = runs.Close()
 				return nil, claimsErr
 			}
-			claimNames, namesErr := claims.Readdirnames(-1)
+			claimNames, namesErr := readNames(claims)
 			if namesErr != nil {
 				_ = claims.Close()
 				_ = runs.Close()

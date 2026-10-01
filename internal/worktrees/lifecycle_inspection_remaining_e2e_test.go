@@ -167,14 +167,20 @@ func TestE2ETaskScopedClaimScanRefusesMisboundAndSymlinkedRecords(t *testing.T) 
 	home := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "task", "acme", "app")
 	claims := filepath.Join(home, "worklogs", "task", "runs", "run", "claims")
-	claimID := strings.Repeat("a", 64)
+	root := workLogClaim{Version: 2, EffortID: "task", RunID: "run", Task: "task", Repository: "acme/app",
+		Worktree: worktree, Branch: "task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+		Lifecycle: "active", Model: "unknown", ModelProvenance: modelProvenanceUnknown}
+	var err error
+	root.ClaimID, err = expectedWorkLogClaimID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	outside := filepath.Join(t.TempDir(), "outside.json")
-	wtLifeCovWriteJSON(t, outside, workLogClaim{EffortID: "task", RunID: "run", ClaimID: claimID,
-		Task: "task", Repository: "acme/app", Worktree: worktree, Lifecycle: "active"})
+	wtLifeCovWriteJSON(t, outside, root)
 	if err := os.MkdirAll(claims, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	entry := filepath.Join(claims, claimID+".json")
+	entry := filepath.Join(claims, root.ClaimID+".json")
 	if err := os.Symlink(outside, entry); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
@@ -188,8 +194,12 @@ func TestE2ETaskScopedClaimScanRefusesMisboundAndSymlinkedRecords(t *testing.T) 
 	if err := os.Remove(entry); err != nil {
 		t.Fatal(err)
 	}
-	misbound := workLogClaim{EffortID: "task", RunID: "run", ClaimID: strings.Repeat("b", 64),
-		Task: "task", Repository: "acme/app", Worktree: worktree, Lifecycle: "active"}
+	misbound := root
+	misbound.Branch = "other-task"
+	misbound.ClaimID, err = expectedWorkLogClaimID(misbound)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wtLifeCovWriteJSON(t, entry, misbound)
 	if claim, err := activeWorkLogClaimAtPath(home, worktree, nil); claim != nil || err == nil ||
 		!strings.Contains(err.Error(), "entry identity mismatch") {
@@ -197,6 +207,136 @@ func TestE2ETaskScopedClaimScanRefusesMisboundAndSymlinkedRecords(t *testing.T) 
 	}
 	if results, diagnostics := read(); len(results) != 0 || len(diagnostics) != 0 {
 		t.Fatalf("misbound claim acquired managed placement: %+v %+v", results, diagnostics)
+	}
+}
+
+func TestE2EMissingCheckoutClaimReaderClosesEveryHeldDirectoryOnReadFailure(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "task", "acme", "app")
+	claim := workLogClaim{Version: 2, EffortID: "task", RunID: "run", Task: "task", Repository: "acme/app",
+		Worktree: worktree, Branch: "task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+		Lifecycle: "active", Model: "unknown", ModelProvenance: modelProvenanceUnknown}
+	var err error
+	claim.ClaimID, err = expectedWorkLogClaimID(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtLifeCovWriteJSON(t, filepath.Join(home, "worklogs", "task", "runs", "run", "claims", claim.ClaimID+".json"), claim)
+	for failAt := 1; failAt <= 3; failAt++ {
+		var visited []*os.File
+		readNames := func(directory *os.File) ([]string, error) {
+			visited = append(visited, directory)
+			if len(visited) == failAt {
+				return nil, errors.New("selected held-directory read failed")
+			}
+			return directory.Readdirnames(-1)
+		}
+		found, err := activeWorkLogClaimAtPathWithReadNames(home, worktree, nil, readNames)
+		if found != nil || err == nil || !strings.Contains(err.Error(), "selected held-directory read failed") || len(visited) != failAt {
+			t.Fatalf("read failure at held directory %d = found=%+v err=%v visits=%d", failAt, found, err, len(visited))
+		}
+		for _, directory := range visited {
+			if _, statErr := directory.Stat(); !errors.Is(statErr, os.ErrClosed) {
+				t.Fatalf("held directory remained open after read failure at %d: %v", failAt, statErr)
+			}
+		}
+	}
+}
+
+func TestE2ETaskScopedRegistrySeparatesMissingTerminalFilterAndMetadata(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	projects := t.TempDir()
+	worktree := filepath.Join(t.TempDir(), "task", "acme", "app")
+	claim := workLogClaim{Version: 2, EffortID: "task", RunID: "run", Task: "task", Repository: "acme/app",
+		Worktree: worktree, Branch: "task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+		Lifecycle: "active", Model: "unknown", ModelProvenance: modelProvenanceUnknown}
+	var err error
+	claim.ClaimID, err = expectedWorkLogClaimID(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := filepath.Join(home, "worklogs", "task", "runs", "run", "claims")
+	wtLifeCovWriteJSON(t, filepath.Join(claims, claim.ClaimID+".json"), claim)
+	read := func(filter string) ([]ListResult, []ListDiagnostic) {
+		return listTaskScopedClaimedRegistryWorktrees(context.Background(), projects, home, nil,
+			map[string]bool{"task": true}, "main", filter, "", false, 1, nil, inspectPolicy{})
+	}
+	if results, diagnostics := read(""); len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Path != worktree ||
+		!strings.Contains(diagnostics[0].Message, "working tree is missing") {
+		t.Fatalf("missing managed checkout = results=%+v diagnostics=%+v", results, diagnostics)
+	}
+	if results, diagnostics := read("different-repository"); len(results) != 0 || len(diagnostics) != 0 {
+		t.Fatalf("filter admitted unrelated missing checkout: %+v %+v", results, diagnostics)
+	}
+	terminal := filepath.Join(home, "worklogs", "task", "runs", "run", "terminals", claim.ClaimID+".json")
+	terminalClaim := claim
+	terminalClaim.Lifecycle = "terminal"
+	wtLifeCovWriteJSON(t, terminal, workLogTerminalRecord{Claim: terminalClaim,
+		FinalCommit: claim.BaseSHA, Disposition: "landed", SealedAt: time.Unix(123, 0).UTC()})
+	if results, diagnostics := read(""); len(results) != 0 || len(diagnostics) != 0 {
+		t.Fatalf("terminalized checkout retained missing-active diagnostic: %+v %+v", results, diagnostics)
+	}
+	if err := os.Remove(terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if results, diagnostics := read(""); len(results) != 0 || len(diagnostics) != 0 {
+		t.Fatalf("non-Git checkout acquired managed placement: %+v %+v", results, diagnostics)
+	}
+	if err := os.Remove(filepath.Join(claims, claim.ClaimID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(claims); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claims, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if results, diagnostics := read(""); len(results) != 0 || len(diagnostics) != 1 ||
+		!strings.Contains(diagnostics[0].Message, "read task Work Log claims") {
+		t.Fatalf("unreadable claims directory was not diagnosed: %+v %+v", results, diagnostics)
+	}
+}
+
+func TestE2ETaskScopedRegistrySkipsMissingClaimsAndRefusesLinkedStore(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := filepath.Join(root, "real-store")
+	home := filepath.Join(root, "home")
+	worktree := filepath.Join(root, "shared", "task", "acme", "app")
+	claim := workLogClaim{Version: 2, EffortID: "task", RunID: "run-two", Task: "task", Repository: "acme/app",
+		Worktree: worktree, Branch: "task", Base: "main", BaseSHA: strings.Repeat("a", 40),
+		Lifecycle: "active", Model: "unknown", ModelProvenance: modelProvenanceUnknown}
+	var err error
+	claim.ClaimID, err = expectedWorkLogClaimID(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingClaimsRun := filepath.Join(store, "worklogs", "task", "runs", "run-one")
+	if err := os.MkdirAll(missingClaimsRun, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wtLifeCovWriteJSON(t, filepath.Join(store, "worklogs", "task", "runs", "run-two", "claims", claim.ClaimID+".json"), claim)
+	read := func(home string) ([]ListResult, []ListDiagnostic) {
+		return listTaskScopedClaimedRegistryWorktrees(context.Background(), root, home, nil,
+			map[string]bool{"task": true}, "main", "", "", false, 1, nil, inspectPolicy{})
+	}
+	if results, diagnostics := read(store); len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Path != worktree ||
+		!strings.Contains(diagnostics[0].Message, "working tree is missing") {
+		t.Fatalf("missing claims hid later valid run: %+v %+v", results, diagnostics)
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(store, "worklogs"), filepath.Join(home, "worklogs")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if results, diagnostics := read(home); len(results) != 0 || len(diagnostics) != 0 {
+		t.Fatalf("linked private store supplied managed authority: %+v %+v", results, diagnostics)
 	}
 }
 
@@ -234,12 +374,18 @@ func TestE2EClaimedRegistrySeparatesLockAndMissingClaimEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, diagnostics := inspect()
+		_, scopedDiagnostics := listTaskScopedClaimedRegistryWorktrees(context.Background(), fixture.projectsRoot, fixture.home,
+			map[string]bool{}, map[string]bool{claim.Task: true}, "main", "", "", false, 1, nil, inspectPolicy{})
 		if err := os.Chmod(lockTaskRoot, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if len(diagnostics) != 1 || diagnostics[0].Path != path ||
 			!strings.Contains(diagnostics[0].Message, "inspect authoritative task lock") {
 			t.Fatalf("unreadable task-lock parent was not diagnosed: %+v", diagnostics)
+		}
+		if len(scopedDiagnostics) != 1 || scopedDiagnostics[0].Path != path ||
+			!strings.Contains(scopedDiagnostics[0].Message, "inspect authoritative task lock") {
+			t.Fatalf("task-scoped reader ignored unreadable task lock: %+v", scopedDiagnostics)
 		}
 	}
 	if results, diagnostics := listClaimedRegistryWorktrees(context.Background(), fixture.projectsRoot, fixture.home,
@@ -254,6 +400,69 @@ func TestE2EClaimedRegistrySeparatesLockAndMissingClaimEvidence(t *testing.T) {
 	if len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Path != path ||
 		!strings.Contains(diagnostics[0].Message, "corroborate managed registry worktree claim") {
 		t.Fatalf("manifest did not make missing claim material: results=%+v diagnostics=%+v", results, diagnostics)
+	}
+}
+
+//nolint:paralleltest // Native Create and Git fixture configuration use process-wide state.
+func TestE2EClaimedRegistryRechecksQueuedClaimBeforeInspection(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"),
+		"version: 1\nworktrees:\n  root: "+filepath.Join(fixture.home, "old-shared-root")+"\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "queued-claim-recheck", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create queued managed member: %+v, %v", created, err)
+	}
+	path := created[0].WorktreeDir
+	for _, tc := range []struct {
+		name, want string
+		changed    bool
+	}{
+		{name: "second claim read fails", want: "re-read managed registry claim"},
+		{name: "second claim changes custody", want: "adopted worktree claim requires external registration", changed: true},
+	} {
+		//nolint:paralleltest // The subtests share a native Git fixture whose parent sets process-wide environment.
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			readClaim := func(home, worktree string) (workLogClaim, workLogProjection, string, error) {
+				calls++
+				claim, projection, source, readErr := activeWorkLogClaim(home, worktree)
+				if readErr != nil || calls != 2 {
+					return claim, projection, source, readErr
+				}
+				if tc.changed {
+					claim.AcquiredVia = "adopted"
+					return claim, projection, source, nil
+				}
+				return workLogClaim{}, workLogProjection{}, "", errors.New("selected second claim read failed")
+			}
+			results, diagnostics := listClaimedRegistryWorktreesWithClaimReader(context.Background(), fixture.projectsRoot,
+				fixture.home, map[string]bool{}, nil, "main", "", "", false, 1, nil, inspectPolicy{}, readClaim)
+			if calls != 2 || len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Path != path ||
+				!strings.Contains(diagnostics[0].Message, tc.want) {
+				t.Fatalf("%s = calls=%d results=%+v diagnostics=%+v", tc.name, calls, results, diagnostics)
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // Native Create and Git fixture configuration use process-wide state.
+func TestE2EClaimedRegistryLeavesRepositoryLocalMemberToItsOwningWalk(t *testing.T) {
+	fixture := newGitFixture(t)
+	configureFixtureRepositoryLocalWorktrees(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "local-registry-owner", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 || created[0].WorktreeDir != filepath.Join(fixture.canonical, ".worktrees", "local-registry-owner") {
+		t.Fatalf("create repository-local member: %+v, %v", created, err)
+	}
+	results, diagnostics := listClaimedRegistryWorktrees(context.Background(), fixture.projectsRoot, fixture.home,
+		map[string]bool{}, nil, "main", "", "", false, 1, nil, inspectPolicy{})
+	if len(results) != 0 || len(diagnostics) != 0 {
+		t.Fatalf("registry walk duplicated local member: %+v %+v", results, diagnostics)
 	}
 }
 
