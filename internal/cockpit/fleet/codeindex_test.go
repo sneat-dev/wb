@@ -900,7 +900,7 @@ func TestACorruptObjectStoreIsAGapNotADivergedState(t *testing.T) {
 	if err := os.Chmod(objects, 0); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chmod(objects, 0o755) }()
+	t.Cleanup(func() { _ = os.Chmod(objects, 0o755) })
 	pass, err := store.collector("").Begin()
 	if err != nil {
 		t.Fatal(err)
