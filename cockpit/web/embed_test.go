@@ -412,3 +412,20 @@ func TestAcceptsGzipReadsTheHeaderLikeAClient(t *testing.T) {
 		t.Error("separate header lines are not read as one list")
 	}
 }
+
+// TestOnlyBuildHashesAreImmutable checks the rule against the file names of a
+// real production build (cockpit/web/dist after `pnpm build`) and against names
+// that merely look similar.
+func TestOnlyBuildHashesAreImmutable(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]bool{
+		"main-SS4IWIAX.js": true, "styles-J6F5IS5P.css": true, "chunk-BGJpRc85.js": true, "chunk-BzbuF09_.js": true, "chunk-kBDgmD1u.js": true,
+		"chunk-Cxlh3kJt.js": true, "media/font-A1B2C3D4.woff2": true,
+		"favicon.svg": false, "index.html": false, "prerendered-routes.json": false, "3rdpartylicenses.txt": false,
+		"logo-20240101.svg": false, "app-12345678.js": false, "theme-standard.css": false, "icon-96x96.png": false, "x-ABCD.js": false, "plain.js": false,
+	} {
+		if got := isHashedAsset(name); got != want {
+			t.Errorf("%s: immutable = %v, want %v", name, got, want)
+		}
+	}
+}
