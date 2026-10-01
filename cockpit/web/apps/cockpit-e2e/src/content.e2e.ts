@@ -245,7 +245,7 @@ test('a row opens its detail page, which links back to the list', async ({ page 
   await page.getByRole('link', { name: /Repositories/ }).first().click()
   await expect(page).toHaveURL(/\/cockpit\/repositories$/)
   await page.goto('/cockpit/worktrees')
-  await page.getByRole('link', { name: 'add-search' }).click()
+  await page.getByRole('link', { name: 'Open worktree add-search' }).click()
   await expect(page).toHaveURL(/\/cockpit\/worktrees\/wt-indexed$/)
   await expect(page.getByRole('heading', { name: 'add-search' })).toBeVisible()
   await expectClean()

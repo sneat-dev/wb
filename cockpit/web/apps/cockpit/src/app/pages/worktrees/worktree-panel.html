@@ -1,0 +1,5 @@
+@if (data(); as data) {
+  <app-panel-content kind="Worktree" [heading]="data.entry.task" [facts]="facts()" [related]="related()" [commands]="data.view.commands" [raw]="data.view.raw" [page]="page()">
+    <app-code-index-panel [entry]="data.entry" [states]="data.entry.code_index" [provider]="store.codeIndexProvider()" [now]="store.now()" />
+  </app-panel-content>
+}

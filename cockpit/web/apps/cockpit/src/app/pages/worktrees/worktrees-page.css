@@ -1,0 +1,64 @@
+.identity {
+  position: relative;
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+/* The task link and its copy button sit above the link that covers the whole cell. */
+.task,
+.row-copy {
+  position: relative;
+  z-index: 1;
+}
+
+.task {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+}
+
+.repo {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+}
+
+.stretch {
+  position: absolute;
+  inset: 0;
+}
+
+.with-copy {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.state-word {
+  margin-left: var(--space-1);
+  font-size: var(--fs-xs);
+}
+
+/* On a phone the task is what fits; the repository is in the panel. */
+@container (max-width: 40rem) {
+  .repo {
+    display: none;
+  }
+}

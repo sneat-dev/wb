@@ -1,45 +1,48 @@
-<app-filter-bar
-  [machines]="store.machineOptions()"
-  [repositories]="repositoryOptions()"
-  [machine]="machine()"
-  [repository]="repository()"
-  (changed)="filter($event)"
-/>
-<div class="table-scroll">
-  <p-table [value]="rows()" dataKey="id" size="small" [stripedRows]="true" [paginator]="rows().length > 50" [rows]="50">
-    <ng-template #header>
-      <tr>
-        <th scope="col">Task</th>
-        <th scope="col">Branch</th>
-        <th scope="col">Repository</th>
-        <th scope="col" class="wide">Machine</th>
-        <th scope="col">Source</th>
-        <th scope="col">Code index</th>
-        <th scope="col" class="wide">Lifecycle</th>
-        <th scope="col" class="wide">Owner</th>
-        <th scope="col" class="wide">Last activity</th>
-      </tr>
-    </ng-template>
-    <ng-template #body let-worktree>
-      <tr>
-        <td>
-          <a class="row-link" [routerLink]="['/worktrees', worktree.id]">{{ worktree.task }}</a>
-          <span class="narrow-only machine-sub">{{ worktree.machine }}</span>
-        </td>
-        <td>{{ worktree.branch }}</td>
-        <td>{{ store.repositoryName(worktree.repository) }}</td>
-        <td class="wide">{{ worktree.machine }}</td>
-        <td><app-route-label [entry]="worktree" [now]="store.now()" /></td>
-        <td><app-code-index-label [states]="worktree.code_index" [now]="store.now()" /></td>
-        <td class="wide">{{ worktree.lifecycle ?? '—' }}</td>
-        <td class="wide">{{ worktree.owner_state ?? '—' }}</td>
-        <td class="wide">{{ worktree.last_activity_at ? age(worktree.last_activity_at, store.now()) : '—' }}</td>
-      </tr>
-    </ng-template>
-    <ng-template #emptymessage>
-      <tr>
-        <td colspan="9">No worktrees{{ machine() || repository() ? ' match the filters' : ' yet' }}.</td>
-      </tr>
-    </ng-template>
-  </p-table>
-</div>
+<app-list page="worktrees" noun="worktrees" [rows]="rows()" [columns]="columns" [chips]="chips" [panelLabel]="panelLabel">
+  <ng-template appCell="worktree" let-w>
+    <span class="identity">
+      <a class="task" [routerLink]="taskLink(w).path" [queryParams]="taskLink(w).query">{{ w.task }}</a>
+      <app-copy-button class="row-copy" [value]="w.task" label="Copy task name" [tabbable]="false" />
+      <span class="repo">{{ repoName(w) }}</span>
+      <a class="stretch" [routerLink]="pageLink(w)" [attr.aria-label]="'Open worktree ' + w.task + ' in ' + repoName(w)"></a>
+    </span>
+  </ng-template>
+  <ng-template appCell="branch" let-w>
+    <span class="with-copy">
+      <span class="ellipsis">{{ w.branch }}</span>
+      <app-copy-button [value]="w.branch" label="Copy branch name" [tabbable]="false" />
+    </span>
+  </ng-template>
+  <ng-template appCell="machine" let-w>{{ w.machine }}</ng-template>
+  <ng-template appCell="source" let-w><app-route-label [entry]="w" [now]="store.now()" /></ng-template>
+  <ng-template appCell="state" let-w>
+    <span class="chip" [class]="tone(w.owner_state)">{{ w.owner_state ?? 'unknown' }}</span>
+    @if (w.route === 'local') {
+      @if ((w.ahead ?? 0) > 0) {
+        &ngsp;<span class="chip tone-warn" [attr.title]="w.ahead + ' commits not pushed (this machine)'">↑{{ w.ahead }}</span>
+      }
+      @if ((w.behind ?? 0) > 0) {
+        &ngsp;<span class="chip tone-warn" [attr.title]="w.behind + ' commits behind (this machine)'">↓{{ w.behind }}</span>
+      }
+      @if (w.upstream_gone) {
+        &ngsp;<span class="chip tone-bad" title="The upstream branch vanished (this machine)">gone</span>
+      }
+    }
+  </ng-template>
+  <ng-template appCell="lifecycle" let-w>{{ w.lifecycle }}</ng-template>
+  <ng-template appCell="pr" let-w>
+    @if (pullRequests().get(w.id); as pr) {
+      @if (pr.url) {
+        <a [href]="pr.url" target="_blank" rel="noopener noreferrer" [attr.title]="'Pull request #' + pr.number + (pr.state ? ', ' + pr.state : '')">#{{ pr.number }}</a>
+      } @else {
+        <span>#{{ pr.number }}</span>
+      }
+      @if (pr.state) {
+        &ngsp;<span class="muted state-word">{{ pr.state }}</span>
+      }
+    }
+  </ng-template>
+  <ng-template appCell="index" let-w><app-code-index-label [states]="w.code_index" [now]="store.now()" /></ng-template>
+  <ng-template appCell="activity" let-w><app-age [at]="w.last_activity_at" /></ng-template>
+  <ng-template appListPanel let-w><app-worktree-panel [id]="w.id" /></ng-template>
+</app-list>

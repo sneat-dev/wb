@@ -7,6 +7,8 @@ import { fleet, now, stub, watch } from './support'
 // beyond the PrimeUI licence banner this build is known to show.
 
 const rows = (page: Page) => page.locator('tbody tr')
+// The shared list (the Worktrees page) has no table: its rows are ARIA rows of a virtual grid.
+const listRows = (page: Page) => page.locator('[role=row][aria-rowindex]')
 
 test('every page lists its collection, cached rows show route and age, and the machine filter works', async ({ page }) => {
   await stub(page)
@@ -22,7 +24,6 @@ test('every page lists its collection, cached rows show route and age, and the m
 
   const lists = [
     { link: 'Repositories', rows: 3, first: 'github.com/specscore/specscore-cli' },
-    { link: 'Worktrees', rows: 3, first: 'add-search' },
     { link: 'Agents', rows: 2, first: 'claude session sess-1' },
     { link: 'Machines', rows: 2, first: 'alpha' },
   ]
@@ -72,9 +73,9 @@ test('a count shows its entities on hover or focus and opens exactly them, in da
 
   await count.locator('a').click()
   await expect(page).toHaveURL(/\/cockpit\/worktrees\?repository=repo-cli$/)
-  await expect(rows(page)).toHaveCount(2)
-  await expect(rows(page).nth(0)).toContainText('add-search')
-  await expect(rows(page).nth(1)).toContainText('fix-index')
+  await expect(listRows(page)).toHaveCount(2)
+  await expect(listRows(page).nth(0)).toContainText('add-search')
+  await expect(listRows(page).nth(1)).toContainText('fix-index')
 
   // The dark theme: the page and the table are dark, not the light default.
   const luminance = (css: string) => {
@@ -82,7 +83,7 @@ test('a count shows its entities on hover or focus and opens exactly them, in da
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
   }
   expect(luminance(await page.evaluate(() => getComputedStyle(document.body).backgroundColor))).toBeLessThan(0.25)
-  expect(luminance(await rows(page).first().evaluate((tr) => getComputedStyle(tr.querySelector('td')!).backgroundColor))).toBeLessThan(0.35)
+  expect(luminance(await page.locator('.viewport').evaluate((list) => getComputedStyle(list).backgroundColor))).toBeLessThan(0.35)
   await expectClean()
 })
 
@@ -121,7 +122,7 @@ test('the Worktrees page shows fresh, stale with its count, and never', async ({
   const expectClean = await watch(page)
   await page.goto('/cockpit/worktrees')
   await expect(page.getByRole('columnheader', { name: 'Code index' })).toBeVisible()
-  const indexCell = (task: string) => rows(page).filter({ hasText: task }).locator('app-code-index-label')
+  const indexCell = (task: string) => listRows(page).filter({ hasText: task }).locator('app-code-index-label')
   await expect(indexCell('at-head')).toContainText('fresh')
   await expect(indexCell('behind')).toContainText('stale, 3 behind')
   await expect(indexCell('unindexed')).toHaveText('never')
@@ -149,7 +150,7 @@ test('no page scrolls sideways at 360 px, and the hover card stays on screen', a
   const expectClean = await watch(page)
   for (const path of ['', 'repositories', 'worktrees', 'agents', 'machines']) {
     await page.goto(`/cockpit/${path}`)
-    await expect(rows(page).first()).toBeVisible()
+    await expect((path === 'worktrees' ? listRows(page) : rows(page)).first()).toBeVisible()
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
     expect(widths.page).toBeLessThanOrEqual(widths.window)
   }
