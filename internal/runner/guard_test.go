@@ -54,6 +54,9 @@ func TestGuardRealProcessAllowsAllowRealProcess(t *testing.T) {
 }
 
 func TestGuardRealProcessUnitTierPolicy(t *testing.T) {
+	// The unit-tier denial must remain covered even when this file is
+	// compiled as part of an e2e test binary.
+	withGuardOverride(t, &e2eBuild, false)
 	t.Setenv(envStrictUnitTier, "")
 	if err := guardRealProcess(); err != nil {
 		t.Fatalf("guardRealProcess() = %v, want nil without strict unit tier", err)

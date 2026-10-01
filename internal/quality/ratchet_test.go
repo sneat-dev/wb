@@ -71,7 +71,9 @@ func (r *fixtureRepo) commitAll(message string) string {
 func (r *fixtureRepo) coverProfile() []CoverageBlock {
 	r.t.Helper()
 	profilePath := filepath.Join(r.t.TempDir(), "profile.out")
-	cmd := exec.Command("go", "test", "-coverprofile="+profilePath, "./...")
+	// This fixture measures each package's own tests. Inherited -coverpkg
+	// must not let a test moved to another package keep covering its source.
+	cmd := exec.Command("go", "test", "-coverpkg=", "-coverprofile="+profilePath, "./...")
 	cmd.Dir = r.dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		r.t.Fatalf("go test -coverprofile: %v\n%s", err, output)
