@@ -1,0 +1,18 @@
+@if (view(); as data) {
+  <app-panel-content kind="Repository" [heading]="data.summary.slug" [copyHeading]="true" [facts]="facts()" [related]="related()" [commands]="data.commands" [raw]="data.raw" [page]="page()">
+    <section class="machines" aria-label="Machines">
+      <h3>Machines</h3>
+      @for (checkout of data.summary.checkouts; track checkout.repository.id; let first = $first) {
+        <app-repository-machine-section [checkout]="checkout" [worktrees]="worktreesOf().get(checkout.repository.id) ?? []" [machine]="machineOf(checkout.machineId)" [open]="first" />
+      }
+    </section>
+    <section class="readme-block">
+      @if (data.summary.checkouts[0].route === 'cached') {
+        <h3 class="section-title">README</h3>
+        <p class="muted">The README is read on the machine that holds the repository; this entry is cached from another machine.</p>
+      } @else {
+        <app-readme-section [repository]="data.summary.id" [canRead]="store.canReadContent()" [sessionStatus]="store.sessionStatus()" />
+      }
+    </section>
+  </app-panel-content>
+}

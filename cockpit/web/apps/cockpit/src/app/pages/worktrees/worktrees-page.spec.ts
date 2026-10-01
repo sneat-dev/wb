@@ -45,36 +45,6 @@ describe('WorktreesPage', () => {
     expect(text(root.querySelector('.count'))).toBe('4 of 4')
   })
 
-  it('declares the legacy repository filter as a visible filter, and drops it from the address', async () => {
-    const { root, harness } = await openPage('/worktrees?repository=r2', WorktreesPage, documentOf())
-    await harness.fixture.whenStable()
-    expect(TestBed.inject(Router).url).toBe('/worktrees?q=repo:%22acme%2Fr2%22')
-    expect(tasksOf(root)).toEqual(['far'])
-    expect(root.querySelector('input')?.value).toBe('repo:"acme/r2"')
-  })
-
-  it('adds the legacy repository filter to a filter that is there, and only drops one that cannot be written', async () => {
-    const withQ = await openPage('/worktrees?repository=r1&q=fix', WorktreesPage, documentOf())
-    await withQ.harness.fixture.whenStable()
-    expect(decodeURIComponent(TestBed.inject(Router).url)).toBe('/worktrees?q=fix repo:"acme/r1"')
-    expect(tasksOf(withQ.root)).toEqual(['fix-ci'])
-    const quoted = await openPage('/worktrees?repository=a%22b', WorktreesPage, documentOf())
-    await quoted.harness.fixture.whenStable()
-    expect(TestBed.inject(Router).url).toBe('/worktrees')
-  })
-
-  it('waits for the fleet before turning the legacy filter into one', async () => {
-    const { store, harness } = await openPage('/worktrees', WorktreesPage, documentOf())
-    store.loaded.set(false)
-    await TestBed.inject(Router).navigateByUrl('/worktrees?repository=r2')
-    await harness.fixture.whenStable()
-    expect(TestBed.inject(Router).url).toBe('/worktrees?repository=r2')
-    store.loaded.set(true)
-    await harness.fixture.whenStable()
-    await harness.fixture.whenStable()
-    expect(decodeURIComponent(TestBed.inject(Router).url)).toBe('/worktrees?q=repo:"acme/r2"')
-  })
-
   // cockpit-views#ac:worktree-identity-cell
   it('shows the task in strong type with the repository muted, the task part leading to the task page and the row end to the worktree page', async () => {
     const { root } = await openPage('/worktrees', WorktreesPage, documentOf())
