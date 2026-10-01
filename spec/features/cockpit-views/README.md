@@ -666,7 +666,10 @@ Every entry kind has the fields below; every REQ and AC of this Feature that nam
 this REQ. Types are JSON types; "opt." means the field may be absent; the last column says
 whether it is present for entries of this machine (local), for entries of another machine
 (cached or live-remote), or both. An unknown or out-of-set value from another machine is dropped,
-not rendered. Existing field names are not renamed. Times are RFC 3339 strings.
+not rendered. Existing field names are not renamed. Times are RFC 3339 strings. A `live-remote`
+entry is the exporting machine's own local entry, validated and re-mapped
+(REQ:remote-entries-replace-cached), so it carries the fields marked "local only" as that machine
+observed them; "local only" excludes `cached` entries, whose published snapshot does not hold them.
 
 **Every entry** (machines, repositories, worktrees, pull requests, agents): `id` string; `machine`
 string, the machine's name; `machine_id` string, the id of its machine entry; `route` string,
@@ -945,8 +948,8 @@ are not persisted across a daemon restart.
 the fleet document, `{machine, route, fetched_at?, samples, reason?}` where `machine` is the machine id with the same
 access class as the fleet document (metadata; capability `machine.read`). `route` is
 `local` for this machine's in-memory history, oldest first, so that its last element
-is the latest sample; `live-remote` for the history fetched in the background over SSH from
-another machine (REQ:remote-exporter-transports), with `fetched_at`; `cached`
+is the latest sample; `live-remote` for the history fetched in the background over HTTP or SSH from
+another machine (REQ:remote-exporter-transports), with `fetched_at` (when this daemon received it); `cached`
 for the single latest sample carried in that machine's published snapshot, with its
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
@@ -978,7 +981,11 @@ recorded process is alive and, where the platform can observe it, started when t
 (a recycled process id is `daemon_not_running`); on macOS liveness is asked of launchd with
 `launchctl print` (read-only), so a daemon started by hand in the foreground, outside launchd, is
 reported as `daemon_not_running` there: a stated limitation. The envelope is built by one function that the
-hub route of REQ:hub-export-route also calls. Its capability row, command-coverage entry,
+hub route of REQ:hub-export-route also calls. That function leaves out an entry of this machine
+whose value would not pass the envelope's own rules (a name over the length cap, a time in the
+future) and counts it in the optional envelope field `dropped` (int, absent when zero), so one odd
+entry cannot take a machine's export down; only a machine entry that is itself invalid still fails
+the export as `export_failed`. Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
 
 #### REQ: remote-exporter-transports
@@ -1029,13 +1036,22 @@ route and is reached over SSH.
 #### REQ: remote-http-fetch
 
 The HTTP exporter's address and credential come only from local configuration, never from a
-snapshot, a request or the remote's output. For the machine that is the configured hub
-(`remote.provider: hub`) it reuses the hub client's `remote.url` and `remote.token_file`. For any
-other machine it reads an optional `http` section beside the `ssh` section of
-`session_move.targets.<machine>` in `internal/sessionmove/config.go`, with the keys `url` and
-`token_file`; the URL is validated by `remotestate.ValidateHubURL` (an `https` URL, or `http` only
-for a loopback host, with no user information, query or fragment and no path) and the token file
-must be absolute and private. The section is not a `Courier`, so `default_courier` and session
+snapshot, a request or the remote's output. A machine has an HTTP route when its entry in
+`session_move.targets.<machine>` (`internal/sessionmove/config.go`) has the optional `http` section
+beside `ssh`, with the keys `url` and `token_file`. The `remote` section names no machine for the
+hub it points at, and entries are placed only by a configured key, so the machine that is the
+configured hub (`remote.provider: hub`) is the target whose `http.url` has the same origin as
+`remote.url`: for it `token_file` may be omitted and the hub client's `remote.token_file` is reused.
+A target with no `token_file` whose `url` is not that hub has no HTTP route. The URL is validated by
+the rule of `remotestate.ValidateHubURL` (an `https` URL, or `http` only for a loopback host, with no
+user information, query or fragment and no path); the rule lives in the leaf package
+`internal/hubaddress`, which both `remotestate` and `sessionmove` call, because `sessionmove` cannot
+import `remotestate` (the import would be a cycle). The token file must be absolute and private
+(a regular file that only its owner can read; the mode is not checked on Windows) and is read on
+every export, so a rotated credential needs no restart; a credential that is missing or unusable
+sends no request and is shown as `http_auth_failed`. The client honours the proxy named by the
+environment, as the hub client that already sends this credential does; an `https` request passes
+through such a proxy as a tunnel and a loopback address is never proxied. The section is not a `Courier`, so `default_courier` and session
 delivery are unchanged. That target map is where a machine's addresses already live, and keeping
 one list avoids a second place to be wrong; a separate `cockpit` section would repeat the machine
 names. The client calls `GET /v0/workbench/machines/export` with `Authorization: Bearer`, follows
@@ -1074,7 +1090,10 @@ refused. Every entry in it is placed on the machine named by the configured targ
 machine the response names, and no machine name in the response is used for placement; it is never
 applied to the local machine. A refused payload renders nothing and sets `remote_error`
 `bad_payload`. The remote's own cached entries for third machines are dropped, so only that
-machine's own entries are merged. The same validation applies to the SSH transport. The decoder (`fleet.DecodeEnvelope`) scans the
+machine's own entries are merged: the exporter never emits them, an envelope that carries one is
+refused whole by the single-machine rule below, and the merger keeps only the entries of the
+envelope's one machine entry whatever reaches it. Every envelope is validated again by the
+scheduler, whichever transport produced it. The same validation applies to the SSH transport. The decoder (`fleet.DecodeEnvelope`) scans the
 shape of the bytes before it decodes them (arrays over their caps, nesting beyond 10 levels and
 more than a million tokens are refused without allocating for them), refuses every string field
 that has no declared rule (each closed vocabulary and each identifier pattern is checked, and a
@@ -1089,11 +1108,19 @@ path and never a value, a time or an error text of the remote.
 #### REQ: remote-entries-replace-cached
 
 The accepted entries are merged into the local fleet document as that machine's entries
-with `route` `live-remote`, `observed_at` equal to the remote snapshot's time, and the
+with `route` `live-remote`, `observed_at` equal to the remote snapshot's time (the fleet's
+`snapshot_at`, never later than when this daemon received it), and the
 machine entry's `transport` (`http` or `ssh`) set to the transport that produced them. While
-the export is younger than two refresh intervals they replace that machine's cached
+the export is younger than two refresh intervals, measured from when this daemon received it so
+that a remote's clock cannot keep stale data live, they replace that machine's cached
 (published-store) entries; otherwise the cached entries are shown with their age and the
-`remote_error` explains why. Agents, pull request state, sync facts and `owner_state` of
+`remote_error` explains why. That machine's cached entries are the published snapshots under the
+configured machine name (and under this machine's login when it is known). The machine entry is
+named by the configured key and keeps one id: the id of its published entry when exactly one
+exists, otherwise an id derived from the login and the key; every other id is derived from the
+configured key and never used as received. A configured machine with a failure and no published
+entry is shown as a bare machine entry carrying `remote_error`. A target configured under this
+machine's own name is never read. Agents, pull request state, sync facts and `owner_state` of
 that machine therefore become visible live, and such entries have no actions
 (REQ:action-slots). A machine with no live route keeps its published-store entries as
 before.

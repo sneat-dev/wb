@@ -60,6 +60,11 @@ type HandlerOptions struct {
 	// the route exactly as before, which is what the hosted instance's own
 	// OAuth-viewer-gated deployment keeps doing without changing a line here.
 	DisableSelfHostedEnrollment bool
+	// MachineExport mounts GET MachineExportPath, the host machine's own Cockpit
+	// export, on a daemon-hosted hub (cockpit-views#req:hub-export-route). Nil,
+	// which is what the hosted multi-identity service leaves it, means the route
+	// does not exist.
+	MachineExport *MachineExport
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -72,6 +77,9 @@ func NewHandler(options HandlerOptions) http.Handler {
 	mux := http.NewServeMux()
 	if !options.DisableSelfHostedEnrollment {
 		mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	}
+	if options.MachineExport.usable() {
+		mux.HandleFunc("GET "+MachineExportPath, handler.exportMachine)
 	}
 	mux.HandleFunc("POST "+machinesnapshot.SnapshotPath, handler.publishSnapshot)
 	mux.HandleFunc("GET "+machinesnapshot.SnapshotPath, handler.listSnapshots)

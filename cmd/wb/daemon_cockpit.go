@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
@@ -12,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
+	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -78,9 +83,86 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	if config.CodeIndexProvider == wbconfig.CodeIndexProviderCodeGrapher {
 		local.CodeIndexProvider = cockpitfleet.CodeGrapherProvider{IndexerName: config.CodeIndexIndexer}
 	}
+	targets, transports := cockpitRemotes(configPath, config, logf)
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
 		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: local.Collectors(remote), Interval: config.RefreshInterval,
+		Remotes: targets, Transports: transports,
 		Logf: logf,
 	}
+}
+
+// cockpitRemotes is the other machines the daemon reads live and the transports
+// it reads them over (cockpit-views#req:remote-http-fetch). Every address and
+// credential comes from wb.yaml alone: a machine is a key of
+// session_move.targets with an http section, whose url is where its
+// daemon-hosted hub answers and whose token_file holds the machine credential
+// for it. A machine whose http section names no token_file is read only when
+// its url is the hub this machine is already enrolled with (remote.provider:
+// hub and the same origin as remote.url), and then with remote.token_file; the
+// remote section itself names no machine, so the target key is what says which
+// machine the hub runs on. With cockpit.remote_http false, no session_move
+// section or no http section, nothing is returned and no request is ever made.
+// A target named as this machine is dropped by the snapshotter.
+func cockpitRemotes(configPath string, config wbconfig.CockpitConfig, logf func(string, ...any)) ([]cockpitfleet.RemoteTarget, []cockpitfleet.RemoteTransport) {
+	if !config.RemoteHTTP {
+		return nil, nil
+	}
+	moves, err := sessionmove.LoadConfig(configPath)
+	if err != nil {
+		var unconfigured *sessionmove.UnconfiguredError
+		if !errors.As(err, &unconfigured) {
+			logf("cockpit fleet: other machines are not read live: %v", err)
+		}
+		return nil, nil
+	}
+	hubURL, hubTokenFile := "", ""
+	if remote, loadErr := remotestate.LoadConfig(configPath); loadErr == nil && remote.Provider == "hub" {
+		hubURL, hubTokenFile = remote.URL, remote.TokenFile
+	}
+	var targets []cockpitfleet.RemoteTarget
+	for machine, target := range moves.Targets {
+		if target.HTTP == nil {
+			continue
+		}
+		route := cockpitfleet.HTTPRoute{URL: target.HTTP.URL, TokenFile: target.HTTP.TokenFile}
+		if route.TokenFile == "" {
+			if hubURL == "" || !sameOrigin(hubURL, route.URL) {
+				logf("cockpit fleet: %s is not read over http: its http section names no token_file and its url is not the hub this machine is enrolled with", machine)
+				continue
+			}
+			route.TokenFile = hubTokenFile
+		}
+		targets = append(targets, cockpitfleet.RemoteTarget{Machine: machine, HTTP: &route})
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].Machine < targets[j].Machine })
+	return targets, []cockpitfleet.RemoteTransport{{Name: cockpitfleet.TransportHTTP, Exporter: cockpitfleet.NewHTTPExporter(nil)}}
+}
+
+// machineExportSource is where the hub's export route gets this machine's
+// envelope: the fleet snapshotter, which is built after the hub is mounted and
+// bound here once it exists. Until then, and whenever what the snapshotter
+// yields would not pass the envelope's own rules or its size bound, there is no
+// envelope and the route answers 503.
+type machineExportSource struct {
+	snapshotter atomic.Pointer[cockpitfleet.Snapshotter]
+}
+
+// envelope is this machine's export as the route serves it: the same envelope
+// the CLI verb prints, built in process, encoded with its trailing newline.
+func (source *machineExportSource) envelope(metricsOnly bool) ([]byte, bool) {
+	snapshotter := source.snapshotter.Load()
+	if snapshotter == nil {
+		return nil, false
+	}
+	exported := snapshotter.Export(metricsOnly)
+	// The envelope types cannot fail to marshal.
+	body, _ := json.Marshal(exported)
+	if len(body) >= cockpitfleet.MaxEnvelopeBytes || exported.Validate(metricsOnly, exported.ExportedAt) != nil {
+		return nil, false
+	}
+	return append(body, '\n'), true
 }
