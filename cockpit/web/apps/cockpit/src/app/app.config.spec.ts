@@ -1,5 +1,5 @@
-import { createAppConfig, readCspNonce } from './app.config'
-import { appRoutes } from './app.routes'
+import { createAppConfig } from './app.config'
+import { readCspNonce } from './csp-nonce'
 
 function documentWith(markup: string): Document {
   return new DOMParser().parseFromString(markup, 'text/html')
@@ -17,9 +17,7 @@ describe('readCspNonce', () => {
 })
 
 describe('createAppConfig', () => {
-  it('provides the router, PrimeNG and the zoneless runtime', () => {
-    const config = createAppConfig(documentWith('<app-root ngCspNonce="n"></app-root>'))
-    expect(config.providers.length).toBeGreaterThan(3)
-    expect(appRoutes.length).toBeGreaterThan(5)
+  it('provides the error listeners, the zoneless runtime and the router; PrimeNG comes with the lazy pages', () => {
+    expect(createAppConfig().providers).toHaveLength(4)
   })
 })

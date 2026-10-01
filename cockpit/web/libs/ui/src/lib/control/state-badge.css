@@ -1,0 +1,63 @@
+:host {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.badge {
+  --glyph-size: 0.875rem;
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  height: var(--badge-h, 1.5rem);
+  padding: 0 var(--space-2) 0 6px;
+  border: 1px solid var(--idle-border);
+  border-radius: var(--radius-pill);
+  background: var(--idle-soft);
+  color: var(--idle);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.badge.small {
+  --glyph-size: 0.75rem;
+  height: var(--badge-h-small, 1.25rem);
+  padding: 0 7px 0 5px;
+}
+
+.text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge.unreported {
+  border-style: dashed;
+  background: transparent;
+}
+
+.tone-ok {
+  border-color: var(--ok-border);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.tone-warn {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.tone-bad {
+  border-color: var(--bad-border);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.tone-idle.unreported {
+  color: var(--text-3);
+}

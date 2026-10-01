@@ -1,0 +1,53 @@
+<header class="topbar">
+  <a class="brand" routerLink="/" aria-label="WB Cockpit">
+    <svg class="logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect width="24" height="24" rx="6" />
+      <path d="M6.5 15.5a5.5 5.5 0 0 1 11 0M12 15.5l3-4.2" />
+      <path d="M6 18.5h12" />
+    </svg>
+    <span class="brand-name">WB Cockpit</span>
+  </a>
+
+  <nav class="tabs" aria-label="Pages" #strip>
+    @for (link of links; track link.path) {
+      <a class="tab" [routerLink]="link.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: link.path === '/' }" ariaCurrentWhenActive="page">
+        <span>{{ link.label }}</span>
+        @if (badge(link); as badge) {
+          <span class="badge tnum" [class.hot]="badge.hot" [attr.data-badge]="link.signal">{{ badge.count }}</span>
+          <span class="visually-hidden">{{ badge.hint }}</span>
+        } @else if (link.signal) {
+          <!-- Holds the badge's place until there is data to count, so the tabs do not move when it arrives. -->
+          <span class="badge badge-pending" aria-hidden="true">0</span>
+        }
+      </a>
+    }
+  </nav>
+
+  <div class="actions">
+    <button type="button" class="palette-trigger" aria-haspopup="dialog" aria-label="Search" (click)="shell.openPalette()">
+      <app-icon name="search" />
+      <span class="trigger-text">Search</span>
+      <kbd class="trigger-keys">{{ modifier }} K</kbd>
+    </button>
+    <a class="new-task" [routerLink]="newTaskPath" aria-label="New task">
+      <app-icon name="plus" />
+      <span class="new-task-text">New task</span>
+    </a>
+    <app-freshness-chip />
+    <!-- The anonymous chip is the one affordance that says how to sign in as owner (REQ:owner-gating-is-visible); its card is a lazy overlay. -->
+    <span
+      class="chip tone-neutral session"
+      [attr.role]="session().anonymous ? 'button' : null"
+      [attr.tabindex]="session().anonymous ? 0 : null"
+      [attr.aria-haspopup]="session().anonymous ? 'dialog' : null"
+      [attr.aria-expanded]="session().anonymous ? shell.ownerHintOpen() : null"
+      [attr.title]="session().title"
+      (click)="ownerHint()"
+      (keydown.enter)="ownerHint()"
+      (keydown.space)="ownerHint($event)"
+    >
+      <app-icon name="user" />
+      <span>{{ session().text }}</span>
+    </span>
+  </div>
+</header>

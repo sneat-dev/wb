@@ -1,0 +1,54 @@
+.mismatch {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  max-width: 34rem;
+  margin: var(--space-6) auto;
+  padding: var(--space-5);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-lg);
+  background: var(--warn-soft);
+  text-align: center;
+}
+
+.mismatch-icon {
+  --icon-size: 1.5rem;
+  color: var(--warn);
+}
+
+h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+}
+
+p {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.command code {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.reload {
+  margin-top: var(--space-2);
+  height: 2rem;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.reload:hover {
+  background: var(--surface-hover);
+}

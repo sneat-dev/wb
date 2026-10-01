@@ -1,0 +1,83 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.chart {
+  position: relative;
+  margin: 0;
+}
+
+.title {
+  margin-bottom: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+/* Chart.js sizes the canvas to this box. */
+.plot {
+  position: relative;
+  min-width: 0;
+}
+
+/* The empty and unavailable states sit over the plot, which keeps its height. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+/* The text alternative: visually hidden, never removed. While a button in it has keyboard focus it is shown over the plot. */
+.data {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.data:focus-within {
+  inset: 0;
+  z-index: 1;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  clip-path: none;
+  white-space: normal;
+}
+
+table {
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  padding: 2px var(--space-2);
+  text-align: left;
+}
+
+button {
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
