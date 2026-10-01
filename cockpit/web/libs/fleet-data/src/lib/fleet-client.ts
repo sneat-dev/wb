@@ -1,15 +1,18 @@
 import { Injectable, InjectionToken, inject } from '@angular/core'
 import {
+  AGENT_ACTIVITIES,
   BRANCHES_PATH,
   BranchesResponse,
   FLEET_PATH,
   FleetDocument,
   MACHINE_METRICS_PATH,
+  MERGEABLE_STATES,
   MachineMetrics,
   README_PATH,
   SCHEMA_VERSION,
   SESSION_PATH,
   Session,
+  Throughput,
 } from './fleet.types'
 
 /** The fetch the client uses; tests replace it, so no test needs a network. */
@@ -131,6 +134,92 @@ export function dropBadEntries(document: FleetDocument): { document: FleetDocume
   return dropped === 0 ? { document, dropped } : { document: { ...document, ...cleaned }, dropped }
 }
 
+const isBool = (value: unknown): boolean => typeof value === 'boolean'
+const isOneOf =
+  (values: readonly string[]) =>
+  (value: unknown): boolean =>
+    typeof value === 'string' && values.includes(value)
+const isIdList = (value: unknown): boolean => Array.isArray(value) && value.every(isText)
+
+/**
+ * The optional fields a kind may carry, with what a valid value is. A field of the wrong type, or an enum value
+ * outside its set, is removed from the entry: it reads as "not reported" (REQ:field-tables, an out-of-set value is
+ * dropped, not rendered); the entry itself stays. `remote_error` is not here: an unknown code is "unknown error".
+ */
+const OPTIONAL_CHECKS: Partial<Record<(typeof COLLECTIONS)[number], Record<string, (value: unknown) => boolean>>> = {
+  machines: { export_dropped: isCount, remote_error: isText, wb_version: isText },
+  pull_requests: { mergeable: isOneOf(MERGEABLE_STATES) },
+  agents: {
+    activity: isOneOf(AGENT_ACTIVITIES),
+    task: isText,
+    worktrees: isIdList,
+    started_at: isText,
+    finished_at: isText,
+    exit_code: isCount,
+  },
+}
+
+/** The entry without the fields whose values are invalid; the same object when all are fine. */
+function withoutBadFields(entry: Record<string, unknown>, checks: Record<string, (value: unknown) => boolean>): Record<string, unknown> {
+  const bad = Object.keys(checks).filter((field) => entry[field] !== undefined && !checks[field](entry[field]))
+  if (bad.length === 0) return entry
+  const cleaned = { ...entry }
+  for (const field of bad) delete cleaned[field]
+  return cleaned
+}
+
+/** The throughput block when it is well formed (bad days and entries are left out, bad optional numbers removed); undefined otherwise. */
+export function cleanThroughput(value: unknown): Throughput | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const block = value as Record<string, unknown>
+  if (!isCount(block['window_days']) || !Array.isArray(block['per_day']) || !Array.isArray(block['slowest'])) return undefined
+  const days = (block['per_day'] as unknown[]).filter(
+    (day): day is Record<string, unknown> =>
+      typeof day === 'object' && day !== null && isText((day as Record<string, unknown>)['date']) && isCount((day as Record<string, unknown>)['finished']) && isCount((day as Record<string, unknown>)['dropped']),
+  )
+  const slowest = (block['slowest'] as unknown[]).filter(
+    (entry): entry is Record<string, unknown> =>
+      typeof entry === 'object' && entry !== null && isText((entry as Record<string, unknown>)['task']) && isCount((entry as Record<string, unknown>)['duration_seconds']) && isText((entry as Record<string, unknown>)['landed_at']),
+  )
+  const cleaned: Record<string, unknown> = { window_days: block['window_days'], per_day: days.map((day) => withoutBadFields(day, { landed: isCount })), slowest }
+  if (isCount(block['median_seconds'])) cleaned['median_seconds'] = block['median_seconds']
+  if (isCount(block['p90_seconds'])) cleaned['p90_seconds'] = block['p90_seconds']
+  if (isBool(block['capped'])) cleaned['capped'] = block['capped']
+  return cleaned as unknown as Throughput
+}
+
+/**
+ * Removes the optional fields of the document and its entries that are of the wrong type or out of their set, and
+ * a malformed throughput block. The same object comes back when nothing needed removing.
+ */
+export function cleanOptionalFields(document: FleetDocument): FleetDocument {
+  let changed = false
+  const next: Record<string, unknown> = { ...document }
+  for (const name of COLLECTIONS) {
+    const checks = OPTIONAL_CHECKS[name]
+    if (checks === undefined) continue
+    const rows = document[name] as unknown as Record<string, unknown>[]
+    const cleaned = rows.map((row) => withoutBadFields(row, checks))
+    if (cleaned.some((row, index) => row !== rows[index])) {
+      next[name] = cleaned
+      changed = true
+    }
+  }
+  for (const flag of ['agents_truncated', 'pull_requests_throttled'] as const) {
+    if (document[flag] !== undefined && !isBool(document[flag])) {
+      delete next[flag]
+      changed = true
+    }
+  }
+  if (document.throughput !== undefined) {
+    const throughput = cleanThroughput(document.throughput)
+    changed = true
+    if (throughput === undefined) delete next['throughput']
+    else next['throughput'] = throughput
+  }
+  return changed ? (next as unknown as FleetDocument) : document
+}
+
 /** The document-level facts every schema 2 document carries. */
 function hasDocumentFacts(document: FleetDocument): boolean {
   return (
@@ -173,6 +262,7 @@ export class FleetClient {
     if (version !== expected) throw new FleetSchemaError(version < expected ? 'daemon-older' : 'page-older', version, expected)
     if (!hasFleetShape(document) || !hasDocumentFacts(document)) throw new FleetFormatError()
     const cleaned = dropBadEntries(document)
+    cleaned.document = cleanOptionalFields(cleaned.document)
     return { kind: 'changed', document: cleaned.document, dropped: cleaned.dropped, etag: response.headers.get('ETag') ?? '', digest: digestOf(text) }
   }
 

@@ -11,7 +11,7 @@ import { buildRepositories } from './model-repositories'
 import { ageTermOf, idleOver30Days, wholeDays } from './match'
 import { AGE_TERMS } from './matcher'
 import { interimAtRiskWorktrees } from './task-state'
-import { Cleanup, FleetHealth, HealthItem, ScanErrorItem, ThroughputSeries } from './view-types'
+import { Cleanup, FleetHealth, HealthItem, ScanErrorItem, ThroughputSeriesDay, ThroughputSeries } from './view-types'
 import { ageLink, chipLink, machineLink } from './vocabulary'
 
 const EMPTY_LINK = { path: '/', query: {} }
@@ -21,7 +21,7 @@ function toTime(value: string | undefined): number | undefined {
   return Number.isNaN(time) ? undefined : time
 }
 const EMPTY_CLEANUP: Cleanup = { safeCount: 0, lookCount: 0, safeIds: new Set(), lookIds: new Set(), indicative: true, reviewLink: EMPTY_LINK, bars: [], unknownAge: 0 }
-const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], scanErrors: [] }
+const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], scanErrors: [] }
 
 const AGE_LABELS: Record<(typeof AGE_TERMS)[number], string> = {
   '<1d': 'today',
@@ -71,6 +71,7 @@ export function buildHealth(model: FleetModel): FleetHealth {
     const staleMachines: HealthItem[] = []
     const olderWb: HealthItem[] = []
     const remoteErrors: HealthItem[] = []
+    const exportDropped: HealthItem[] = []
     for (const view of model.machines) {
       const machine = view.machine
       const base = { machine: machine.machine, machineId: machine.id, link: machineLink('machines', machine.id) }
@@ -82,6 +83,10 @@ export function buildHealth(model: FleetModel): FleetHealth {
       }
       if (view.outdated) {
         olderWb.push({ ...base, text: `${machine.machine} runs an older WB (${machine.wb_version})`, command: healthCommand(selfUpdate(target), machine.machine, ssh !== undefined), link: chipLink('machines', 'outdated') })
+      }
+      if (machine.export_dropped !== undefined && machine.export_dropped > 0) {
+        const count = machine.export_dropped
+        exportDropped.push({ ...base, text: `${count} ${count === 1 ? 'entry' : 'entries'} left out of ${machine.machine}'s export`, command: healthCommand(cockpitExport(target), machine.machine, ssh !== undefined) })
       }
       if (machine.remote_error !== undefined) {
         // Enrolling configures this machine, so it runs here whatever the route.
@@ -95,7 +100,7 @@ export function buildHealth(model: FleetModel): FleetHealth {
         const command = fleetStatus(repository.slug)
         return { repository: repository.slug, command: command.ok ? { text: command.text } : { reason: command.reason }, link: chipLink('repositories', 'errors') }
       })
-    return { ok: staleMachines.length + olderWb.length + remoteErrors.length + scanErrors.length === 0, staleMachines, olderWb, remoteErrors, scanErrors }
+    return { ok: staleMachines.length + olderWb.length + remoteErrors.length + exportDropped.length + scanErrors.length === 0, staleMachines, olderWb, remoteErrors, exportDropped, scanErrors }
   })
 }
 
@@ -105,18 +110,26 @@ export function buildThroughput(model: FleetModel): ThroughputSeries | undefined
   return model.memo('throughput', undefined, () => {
     const block = model.document.throughput
     if (block === undefined) return undefined
-    const landed = new Map(block.per_day.map((day) => [day.date, day.landed]))
-    const perDay: { date: string; landed: number }[] = []
+    const byDate = new Map(block.per_day.map((day) => [day.date, day]))
+    const perDay: ThroughputSeriesDay[] = []
     for (let offset = block.window_days - 1; offset >= 0; offset--) {
       const date = isoDay(new Date(model.now - offset * 86_400_000))
-      perDay.push({ date, landed: landed.get(date) ?? 0 })
+      const day = byDate.get(date)
+      perDay.push({ date, finished: day?.finished ?? 0, dropped: day?.dropped ?? 0, landed: day?.landed ?? 0 })
     }
     return {
       windowDays: block.window_days,
       perDay,
+      totalFinished: perDay.reduce((total, day) => total + day.finished, 0),
+      totalDropped: perDay.reduce((total, day) => total + day.dropped, 0),
+      maxPerDay: Math.max(0, ...perDay.map((day) => day.finished + day.dropped)),
+      hasLanded: perDay.some((day) => day.landed > 0),
       totalLanded: perDay.reduce((total, day) => total + day.landed, 0),
       maxLanded: Math.max(0, ...perDay.map((day) => day.landed)),
       slowest: [...block.slowest].sort((a, b) => b.duration_seconds - a.duration_seconds).slice(0, 5).map((entry) => ({ task: entry.task, durationSeconds: entry.duration_seconds, landedAt: entry.landed_at })),
+      medianSeconds: block.median_seconds,
+      p90Seconds: block.p90_seconds,
+      capped: block.capped === true,
     }
   })
 }
@@ -133,6 +146,10 @@ function healthCommand(command: CopyCommand, machine: string, here: boolean): He
 /** A `remote_error` in words; a code this page does not know is an unknown error. */
 export function remoteErrorText(code: string): string {
   switch (code) {
+    case 'remote_warming_up':
+      return 'is still warming up and has no export yet'
+    case 'export_too_large':
+      return 'its export is too large to read'
     case 'http_unavailable':
       return 'cannot be read over HTTP (connection error, timeout, 404, 429, 5xx or a redirect)'
     case 'http_auth_failed':
@@ -164,6 +181,7 @@ export function remoteErrorText(code: string): string {
  */
 export function remoteFix(code: string, ssh: SshRoute | undefined): CopyCommand {
   if (code === 'http_auth_failed') return remoteEnroll()
+  if (code === 'remote_warming_up') return { ok: false, reason: 'nothing to run: it clears when the machine finishes its first scan' }
   const target: CommandTarget = ssh === undefined ? {} : { ssh }
   if (code === 'daemon_not_running') return daemonStart(target)
   if (code === 'wb_too_old') return selfUpdate(target)

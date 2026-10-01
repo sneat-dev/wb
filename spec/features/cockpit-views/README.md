@@ -337,6 +337,19 @@ Feature does not type its input. The second arm of row 7 applies only to worktre
 first arm applies. A pull request whose `state` is not reported is never counted as open,
 ready or landed.
 
+**Trust rule.** Tasks are joined by name across machines, so an entry of another machine
+(`route` `cached` or `live-remote`) MUST NOT decide the good states of a task that has an entry of this
+machine (a worktree, pull request or agent with `route` `local`). For such a task: row 4 is `ready`
+only when at least one of its open pull requests is local and every open pull request, local or
+remote, is ready (a remote open pull request that is not ready still blocks, a remote ready one alone
+cannot make the task ready); row 7 (both arms and the unpushed-work veto) reads only local pull
+requests and local worktrees; remote entries may still worsen the state (rows 2, 3 and 5) or add
+`working` (row 6). A task with no local entry is computed from its remote entries, and its state is
+that machine's report: the view model carries `stateSource` (`local` or `remote`) and `reportedBy`
+(the machines) so the page can say "as reported by <machine>", and every pull request in a Home row
+says which machine it came from. Home lists such a task, and offers no land or push action for it
+(REQ:home-needs-you, REQ:home-ready-to-land).
+
 #### REQ: tasks-list
 
 Serves J1, J2, J5. The Tasks page MUST show one row per task with these columns: Task,
@@ -369,6 +382,8 @@ or a pull request that needs the operator still has that row, which is not age-l
 Agent blocked and Run failed. A pull request link of a row is the pull request's `url` only when
 it is an `https` address with a plain host (the check the daemon applies, applied again here);
 otherwise the row names the pull request and has no link. Rows
+of a task whose state is only another machine's report (REQ:task-state, `stateSource` `remote`) say "as reported by <machine>"; a land or push action is offered only for a task whose `stateSource` is `local` (a remote row has only its "Open" links). Agent finished and Agent blocked are read from the agent's `activity` only when it is reported.
+Rows
 are ordered by the rank of the kind (the order below, which follows REQ:task-state), then by
 last activity, newest first. Items disappear when their state changes; there is no acknowledge
 or snooze. After the task rows, blocked agents that have no task are one row, "n blocked agents
@@ -394,7 +409,7 @@ with no task", whose action opens Agents with chip `blocked`. The kinds, in rank
 Serves J2. The second section, "Ready to land", MUST list the tasks in state `ready`, one row
 per task: the task, the number of repositories, the pull request numbers, the checks passed
 over total and the age of the pull request observation (`checked_at`, the oldest among them).
-The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
+A task whose `stateSource` is `remote` (REQ:task-state) is listed with "as reported by <machine>" and with no action at all, and the pull requests of a task decided here show the machine each one came from. The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
 task's pull requests, offering the registry's landing action, and otherwise "Copy command" with
 `wb pr land '<owner/repository>#<number>'` for each. Tasks in state `not-ready` that wait only
 on checks are shown below them muted, with how long ago their checks were read and no action.
@@ -436,8 +451,8 @@ theme's colours in light and dark.
 
 Serves J7. The sixth section, "Fleet health", MUST be shown only when something is not OK, as
 one line per problem: a stale machine (state older than 24 hours), a machine running an older
-WB than the newest in the fleet, a scan error, or a machine's `remote_error`
-(REQ:remote-error-is-visible). Each has a "Copy fix command": `wb remote publish` labelled "run
+WB than the newest in the fleet, a scan error, a machine's `remote_error`
+(REQ:remote-error-is-visible), or a machine whose `export_dropped` is above zero ("N entries left out of <machine>'s export", with the export command to try). Each has a "Copy fix command": `wb remote publish` labelled "run
 on <machine>" for a stale machine, `wb self-update` labelled "run on <machine>" for an older WB,
 `wb fleet status --filter=<owner/repository>` for a scan error, and the command of
 REQ:remote-error-is-visible for a remote error.
@@ -721,6 +736,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `boot_time` | time | opt. | daemon / snapshot | as above |
 | `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
 | `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
+| `export_dropped` | int | opt. | the live-remote exporter: entries left out of the export | live-remote and cached |
 
 | Repository field | Type | Opt. | Source | Local/cached |
 |---|---|---|---|---|
@@ -1218,8 +1234,8 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 `http_unavailable` (connection error, timeout, 404, 429, 5xx or a redirect), `http_auth_failed`
 (401 or 403), `ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed` (the SSH
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
-`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads) or
-`bad_payload`; it is cleared by the next success on the preferred transport. A remote export that prints
+`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads), `bad_payload`,
+`remote_warming_up` (the remote's first scan is still running; nothing to run) or `export_too_large`; it is cleared by the next success on the preferred transport. A remote export that prints
 `export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
 codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on

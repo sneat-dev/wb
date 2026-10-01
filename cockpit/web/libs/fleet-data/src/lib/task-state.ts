@@ -187,6 +187,23 @@ export function notReadyReasons(pullRequest: PullRequest): string[] {
   return [...reasons]
 }
 
+/** Where a task's state is decided: on this machine (it has an entry of this machine) or only as another machine reported it. */
+export type StateSource = 'local' | 'remote'
+
+/** Whether any worktree, pull request or agent of the task is an entry of this machine (REQ:task-state, trust rule). */
+export function hasLocalEntry(inputs: TaskInputs): boolean {
+  return inputs.worktrees.some(isLocal) || inputs.pullRequests.some(isLocal) || inputs.agents.some(isLocal)
+}
+
+/** The source of a task's state: `local` when it has any entry of this machine, else `remote`. */
+export function stateSourceOf(inputs: TaskInputs): StateSource {
+  return hasLocalEntry(inputs) ? 'local' : 'remote'
+}
+
+function isLocal(entry: { route: string }): boolean {
+  return entry.route === 'local'
+}
+
 /** Row 4 for one pull request: observed, not a draft, a green verdict and a merge state of `clean` or `has_hooks`. */
 function isReadyToLand(pullRequest: PullRequest): boolean {
   return (
@@ -210,12 +227,19 @@ export function hasUnpushedWork(worktree: Worktree): boolean {
   return (worktree.ahead ?? 0) > 0 || worktree.has_upstream === false
 }
 
-/** Landed: a merged pull request, or every worktree merged, with no open pull request and no worktree of the task holding unpushed work. */
-function isLanded(inputs: TaskInputs): boolean {
+/**
+ * Landed: a merged pull request, or every worktree merged, with no open pull request and no worktree of the task
+ * holding unpushed work. When the task has an entry of this machine, only this machine's pull requests and
+ * worktrees count (a remote entry never decides a local task's good state); a task with none is read from what
+ * the other machines reported.
+ */
+function isLanded(inputs: TaskInputs, local: boolean): boolean {
+  const pullRequests = local ? inputs.pullRequests.filter(isLocal) : inputs.pullRequests
+  const worktrees = local ? inputs.worktrees.filter(isLocal) : inputs.worktrees
   const merged =
-    inputs.pullRequests.some((pullRequest) => isObserved(pullRequest) && pullRequest.state === 'merged') ||
-    (inputs.worktrees.length > 0 && inputs.worktrees.every((worktree) => worktree.lifecycle === 'merged'))
-  return merged && !inputs.worktrees.some(hasUnpushedWork)
+    pullRequests.some((pullRequest) => isObserved(pullRequest) && pullRequest.state === 'merged') ||
+    (worktrees.length > 0 && worktrees.every((worktree) => worktree.lifecycle === 'merged'))
+  return merged && !worktrees.some(hasUnpushedWork)
 }
 
 function anythingReported(inputs: TaskInputs): boolean {
@@ -229,12 +253,14 @@ function anythingReported(inputs: TaskInputs): boolean {
 /** The state of one task at `now`. */
 export function taskState(inputs: TaskInputs, now: number): TaskStateId {
   if (interimAtRiskWorktrees(inputs.worktrees).length > 0) return 'at-risk'
+  const local = hasLocalEntry(inputs)
   const open = inputs.pullRequests.filter(isOpenPullRequest)
   if (openObserved(inputs.pullRequests).some((pullRequest) => failedChecks(pullRequest) > 0)) return 'checks-failed'
   if (isBlocked(inputs.agents, now)) return 'blocked'
-  // Ready only when every open pull request, observed or not, is observed and ready.
-  if (open.length > 0) return open.every(isReadyToLand) ? 'ready' : 'not-ready'
+  // Ready only when every open pull request, observed or not, is observed and ready; when the task has an entry of
+  // this machine, one of its own open pull requests must be among them (a remote one alone never makes it ready).
+  if (open.length > 0) return open.some((pullRequest) => !local || isLocal(pullRequest)) && open.every(isReadyToLand) ? 'ready' : 'not-ready'
   if (isWorking(inputs)) return 'working'
-  if (isLanded(inputs)) return 'landed'
+  if (isLanded(inputs, local)) return 'landed'
   return anythingReported(inputs) ? 'idle' : 'not-reported'
 }
