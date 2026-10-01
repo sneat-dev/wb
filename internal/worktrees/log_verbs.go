@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/secureopen"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktreejournal"
@@ -965,9 +968,11 @@ func LogArchive(ctx context.Context, options LogArchiveOptions) (LogVerbResult, 
 		effort = "unknown-effort"
 	}
 	dest := filepath.Join(home, "worklogs", effort, "archived-local", time.Now().UTC().Format("20060102T150405Z"))
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+	destinationParent, err := openPrivateArchiveDirectory(filepath.Dir(dest))
+	if err != nil {
 		return LogVerbResult{}, err
 	}
+	defer func() { _ = destinationParent.Close() }()
 	src := filepath.Join(root, journalRootDirectory, journalLocalDirectory)
 	if err := copyDir(src, dest); err != nil {
 		return LogVerbResult{}, err
@@ -998,22 +1003,79 @@ func copyDir(src, dest string) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
+		rel, _ := filepath.Rel(src, path) // Walk yields only src and its descendants.
 		target := filepath.Join(dest, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o700)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("archive refuses symlink %s", path)
 		}
-		content, err := os.ReadFile(path)
+		if info.IsDir() {
+			directory, openErr := openPrivateArchiveDirectory(target)
+			if openErr != nil {
+				return openErr
+			}
+			return directory.Close()
+		}
+		content, err := readArchiveSourceNoFollow(path)
 		if err != nil {
 			return err
 		}
-		mode := info.Mode().Perm()
-		if mode == 0 {
-			mode = 0o600
-		}
-		return os.WriteFile(target, content, mode)
+		return writeArchiveTargetNoFollow(target, content, archiveCopyMode(info.Mode()))
 	})
+}
+
+func readArchiveSourceNoFollow(path string) ([]byte, error) {
+	parent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(path), false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = parent.Close() }()
+	return readBytesAt(parent, filepath.Base(path))
+}
+
+func archiveCopyMode(mode os.FileMode) os.FileMode {
+	if mode.Perm() == 0 {
+		return 0o600
+	}
+	return mode.Perm()
+}
+
+// archivePrivateOpener retains the shared no-follow path traversal while
+// creating only newly needed archive directories with the original 0700 mode.
+type archivePrivateOpener struct{ secureopen.Real }
+
+func (archivePrivateOpener) Mkdir(parentFD int, name string) error {
+	return unix.Mkdirat(parentFD, name, 0o700)
+}
+
+func openPrivateArchiveDirectory(path string) (*os.File, error) {
+	return openAbsoluteDirectoryNoFollowWith(archivePrivateOpener{}, path, true)
+}
+
+func writeArchiveTargetNoFollow(path string, content []byte, sourceMode os.FileMode) error {
+	parent, err := openPrivateArchiveDirectory(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = parent.Close() }()
+	name := filepath.Base(path)
+	mode, err := archiveTargetMode(parent, name, sourceMode)
+	if err != nil {
+		return err
+	}
+	return filewrite.WriteBytesAtomicAtExactMode(parent, name, content, mode)
+}
+
+func archiveTargetMode(parent *os.File, name string, sourceMode os.FileMode) (os.FileMode, error) {
+	var stat unix.Stat_t
+	err := unix.Fstatat(int(parent.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, os.ErrNotExist) {
+		return sourceMode, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return 0, fmt.Errorf("archive refuses nonregular target %s", name)
+	}
+	return os.FileMode(stat.Mode) & os.ModePerm, nil
 }

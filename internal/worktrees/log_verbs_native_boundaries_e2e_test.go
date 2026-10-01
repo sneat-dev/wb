@@ -4,9 +4,12 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -144,13 +147,13 @@ func TestE2ELogRefreshAndIntegrateRefuseChangedJournalAuthority(t *testing.T) {
 	}
 	beforeEvents = corrupt
 	beforeProjection = logVerbFileBytes(t, projectionPath)
-	if _, err := LogRefresh(ctx, LogRefreshOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main"}); err == nil {
-		t.Fatal("refresh accepted a corrupt authoritative journal")
+	if _, err := LogRefresh(ctx, LogRefreshOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Base: "main"}); err == nil || !strings.Contains(err.Error(), "parse local work-log event") {
+		t.Fatalf("refresh did not report corrupt authoritative journal: %v", err)
 	}
 	assertUntouched("refresh with corrupt journal")
 	logVerbAssertFileBytes(t, "refresh with corrupt journal", projectionPath, beforeProjection)
-	if _, err := LogIntegrate(ctx, LogIntegrateOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Strategy: "merge"}); err == nil {
-		t.Fatal("integration accepted a corrupt authoritative journal")
+	if _, err := LogIntegrate(ctx, LogIntegrateOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Strategy: "merge"}); err == nil || !strings.Contains(err.Error(), "parse local work-log event") {
+		t.Fatalf("integration did not report corrupt authoritative journal: %v", err)
 	}
 	assertUntouched("integrate with corrupt journal")
 	logVerbAssertFileBytes(t, "integrate with corrupt journal", projectionPath, beforeProjection)
@@ -163,8 +166,9 @@ func TestE2ELogRefreshAndIntegrateRefuseChangedJournalAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeProjection = logVerbFileBytes(t, projectionPath)
-	if _, err := LogIntegrate(ctx, LogIntegrateOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree}); err == nil {
-		t.Fatal("integration accepted a corrupt local projection")
+	var syntax *json.SyntaxError
+	if _, err := LogIntegrate(ctx, LogIntegrateOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree}); !errors.As(err, &syntax) {
+		t.Fatalf("integration did not report corrupt local projection syntax: %v", err)
 	}
 	assertUntouched("corrupt projection")
 	logVerbAssertFileBytes(t, "corrupt projection", projectionPath, beforeProjection)
@@ -191,9 +195,134 @@ func TestE2ELogArchiveRequiresReadableProjectionAndEvents(t *testing.T) {
 	if err := os.Symlink(filepath.Join(t.TempDir(), "foreign-events"), logVerbEventsPath(root)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LogArchive(ctx, LogArchiveOptions{Worktree: root, Force: true}); err == nil || strings.Contains(err.Error(), "requires local events") {
-		t.Fatalf("redirected event journal accepted: %v", err)
+	if _, err := LogArchive(ctx, LogArchiveOptions{Worktree: root, Force: true}); !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("redirected event journal did not fail its no-follow read: %v", err)
 	}
+}
+
+func TestE2ELogArchiveRefusesRecentEventAndKeepsOldJournalOnDryRun(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	if _, err := LogArchive(ctx, LogArchiveOptions{Worktree: filepath.Join(t.TempDir(), "missing"), Force: true}); err == nil {
+		t.Fatal("archive accepted a nonexistent checkout")
+	}
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+	}{
+		{"recent", time.Now().UTC()},
+		{"old", time.Now().UTC().Add(-8 * 24 * time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := newJournalWorktree(t)
+			if _, _, err := appendLocalEvent(root, LocalWorkLogEvent{Type: LocalEventInit, At: tc.at, Message: "source event"}); err != nil {
+				t.Fatal(err)
+			}
+			projection, err := readLocalProjection(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projection.Lifecycle = "terminal"
+			wtLifeCovWriteJSON(t, logVerbProjectionPath(root), projection)
+			beforeEvents := logVerbFileBytes(t, logVerbEventsPath(root))
+			beforeProjection := logVerbFileBytes(t, logVerbProjectionPath(root))
+			projectsRoot := t.TempDir()
+			result, err := LogArchive(ctx, LogArchiveOptions{ProjectsRoot: projectsRoot, Worktree: root, Apply: tc.name == "recent"})
+			if tc.name == "recent" {
+				if err == nil || !strings.Contains(err.Error(), "waits seven days") || result.Applied {
+					t.Fatalf("recent archive refusal = %+v, %v", result, err)
+				}
+			} else if err != nil || result.Applied || result.Event != nil || len(result.Notes) == 0 || !strings.Contains(result.Notes[0], "dry-run") {
+				t.Fatalf("old journal dry run = %+v, %v", result, err)
+			}
+			logVerbAssertFileBytes(t, tc.name, logVerbEventsPath(root), beforeEvents)
+			logVerbAssertFileBytes(t, tc.name, logVerbProjectionPath(root), beforeProjection)
+		})
+	}
+}
+
+func TestE2ELogArchiveRefusesOutsideFileSymlinkBeforeCopying(t *testing.T) {
+	t.Parallel()
+	root := newJournalWorktree(t)
+	if _, _, err := appendLocalEvent(root, LocalWorkLogEvent{Type: LocalEventInit, Message: "source event"}); err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents := logVerbFileBytes(t, logVerbEventsPath(root))
+	beforeProjection := logVerbFileBytes(t, logVerbProjectionPath(root))
+	beforeBranch := gitTestOutput(t, root, "symbolic-ref", "HEAD")
+	outside := filepath.Join(t.TempDir(), "outside-secret")
+	const privateContent = "unrelated private bytes"
+	if err := os.WriteFile(outside, []byte(privateContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, journalRootDirectory, journalLocalDirectory, "outside-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := t.TempDir()
+	_, err := LogArchive(context.Background(), LogArchiveOptions{ProjectsRoot: projectsRoot, Worktree: root, Apply: true, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("archive followed a valid outside-file symlink: %v", err)
+	}
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := filepath.WalkDir(home, func(path string, entry os.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil || entry == nil || !entry.Type().IsRegular() {
+			return walkErr
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(content), privateContent) {
+			t.Errorf("archive copied outside bytes into %s", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logVerbAssertFileBytes(t, "outside-link refusal", logVerbEventsPath(root), beforeEvents)
+	logVerbAssertFileBytes(t, "outside-link refusal", logVerbProjectionPath(root), beforeProjection)
+	logVerbAssertFileBytes(t, "outside-link refusal", outside, []byte(privateContent))
+	if got := gitTestOutput(t, root, "symbolic-ref", "HEAD"); got != beforeBranch {
+		t.Fatalf("outside-link refusal moved branch: %s to %s", beforeBranch, got)
+	}
+}
+
+func TestE2ELogArchiveRefusesRedirectedPrivateAncestorBeforeCopying(t *testing.T) {
+	t.Parallel()
+	root := newJournalWorktree(t)
+	if _, _, err := appendLocalEvent(root, LocalWorkLogEvent{Type: LocalEventInit, Message: "source event"}); err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents := logVerbFileBytes(t, logVerbEventsPath(root))
+	beforeProjection := logVerbFileBytes(t, logVerbProjectionPath(root))
+	projectsRoot := t.TempDir()
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(home, "worklogs")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LogArchive(context.Background(), LogArchiveOptions{ProjectsRoot: projectsRoot, Worktree: root, Apply: true, Force: true}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("archive did not refuse redirected private ancestor: %v", err)
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("archive created outside private directories: %v, %v", entries, err)
+	}
+	logVerbAssertFileBytes(t, "redirected private ancestor", logVerbEventsPath(root), beforeEvents)
+	logVerbAssertFileBytes(t, "redirected private ancestor", logVerbProjectionPath(root), beforeProjection)
 }
 
 func TestE2ELogArchiveUsesManifestOrUnknownEffortAndPreservesCopiedBytes(t *testing.T) {
@@ -272,7 +401,7 @@ func TestE2ELogArchiveRefusesBlockedPrivateDestinationWithoutAppending(t *testin
 	if err := os.WriteFile(filepath.Join(home, "worklogs"), []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LogArchive(ctx, LogArchiveOptions{ProjectsRoot: projectsRoot, Worktree: root, Apply: true, Force: true}); err == nil || !strings.Contains(err.Error(), filepath.Join(home, "worklogs")) {
+	if _, err := LogArchive(ctx, LogArchiveOptions{ProjectsRoot: projectsRoot, Worktree: root, Apply: true, Force: true}); err == nil || !strings.Contains(err.Error(), "worklogs") {
 		t.Fatalf("archive did not report blocked private worklogs destination: %v", err)
 	}
 	if after, err := os.ReadFile(logVerbEventsPath(root)); err != nil || string(after) != string(before) {
