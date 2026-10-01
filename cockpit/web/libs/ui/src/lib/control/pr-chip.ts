@@ -1,12 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
-import { PullRequest } from '@cockpit/fleet-data'
+import { PullRequest, webAddress } from '@cockpit/fleet-data'
 import { RelativeTime } from './relative-time'
 import { StateBadge } from './state-badge'
-
-/** The address of a link the daemon sent, only when it is a web address. */
-export function webAddress(url: string | undefined): string | null {
-  return url !== undefined && /^https?:\/\/[^\s]+$/i.test(url) ? url : null
-}
 
 /**
  * A pull request on one line (REQ:field-tables): its number, its state, how many

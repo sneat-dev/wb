@@ -1,10 +1,11 @@
+import { emptyListQuery } from './list-query'
+import { StepCounter } from './match'
 /// <reference types="node" />
 import { FleetModel } from './fleet-model'
-import { ListRow, applyListQuery } from './list-rows'
-import { StepCounter, parseQuery } from './matcher'
+import { ListRow, applyListQuery, buildWorktreeRows } from './list-rows'
+import { parseQuery } from './matcher'
 import { PERF_NOW, performanceFixture, repeatRows } from './perf-fixture'
 import { Worktree } from './fleet.types'
-import { emptyListQuery } from './vocabulary'
 
 // The budget of REQ:fast-filtering: a median under 30 ms for 5,000 rows, with a
 // multiplier of 5 allowed in CI.
@@ -19,7 +20,7 @@ function median(values: number[]): number {
 
 describe('filtering 5,000 rows', () => {
   const model = new FleetModel(performanceFixture().document, { now: () => PERF_NOW })
-  const rows: ListRow<Worktree>[] = repeatRows(model.worktreeRows, 5000)
+  const rows: ListRow<Worktree>[] = repeatRows(buildWorktreeRows(model), 5000)
   // A multi-term glob query over the default fields and a field, with an exclusion.
   const text = 'task:*-ci-* *-i* sneat-*/*-go -state:orphaned -branch:*zzz* repo:*-*'
 

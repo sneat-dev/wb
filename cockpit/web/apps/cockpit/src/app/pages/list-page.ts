@@ -1,5 +1,6 @@
 import { Directive, computed, inject, input } from '@angular/core'
-import { FleetStore, repositoryOptions } from '@cockpit/fleet-data'
+import { FleetStore } from '@cockpit/fleet-data'
+import { repositoryOptions } from '@cockpit/fleet-data/list'
 import { FilterChange } from '@cockpit/ui'
 import { FilterNavigator } from '../filter-navigator'
 

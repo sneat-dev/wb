@@ -1,173 +1,14 @@
-// The "Copy command" templates of REQ:copy-the-command, as pure functions. Each
-// one is an exact `wb` invocation that exists in the command manifest
-// (`ai/capabilities.json`; a unit test parses every template against it, with
-// the flags it needs), built only from identifiers in the read model and
-// `<<<edit:name>>>` placeholders, which are left bare and unquoted. A placeholder
-// is a shell syntax error wherever it stands (bash, zsh and POSIX sh alike), so
-// pasting a template unedited fails to parse instead of running (the entry is
-// flagged `needsEdit`). Every other interpolated value is POSIX single-quoted,
-// flags take the `--flag=value` form, and a value with a control character, or
-// one that starts with `-`, is refused: nothing is ever copied that could be
-// read as an option or break out of its quotes. Nothing here executes anything.
+// The rest of the "Copy command" templates of REQ:copy-the-command (the
+// per-entity and New task ones), as pure functions over the core in
+// `command-core.ts` (quoting, placeholders, targets and the few templates the
+// first page needs, which this module re-exports). Pages import this entry point
+// (`@cockpit/fleet-data/commands`) lazily.
 
-import { MachineRoute } from './fleet.types'
-import { MAX_QUERY_LENGTH, MatchEnv, matchesTerms, parseQuery } from './matcher'
+import { CommandTarget, CopyCommand, PLACEHOLDERS, Part, command, wb } from './command-core'
+import { MatchEnv, matchesTerms } from './match'
+import { MAX_QUERY_LENGTH, parseQuery } from './matcher'
 
-/**
- * What the operator supplies, shown as a placeholder until known. Each is
- * `<<<edit:name>>>`: `<<<` opens a here-string and `>>>` is a redirection with
- * no target, so the shell refuses the whole line wherever the placeholder
- * stands, even in the middle of a command or after `--flag=`. (A shorter
- * `<<edit:name>>` is NOT enough: followed by another word, `>>` takes that word
- * as its file and the line parses.) The UI marks these exact values.
- */
-export const PLACEHOLDERS = {
-  message: '<<<edit:message>>>',
-  model: '<<<edit:model>>>',
-  promptFile: '<<<edit:file>>>',
-  profile: '<<<edit:profile>>>',
-  hubUrl: '<<<edit:hub-url>>>',
-  brief: '<<<edit:brief>>>',
-  task: '<<<edit:task>>>',
-} as const
-
-const PLACEHOLDER_VALUES: ReadonlySet<string> = new Set(Object.values(PLACEHOLDERS))
-
-// Control characters, and the bidirectional and invisible characters that can reorder or hide text.
-const INVISIBLE = '\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff'
-// eslint-disable-next-line no-control-regex
-const FORBIDDEN = new RegExp(`[\\u0000-\\u001f\\u2028\\u2029${INVISIBLE}]`)
-// A multi-line text (a brief) may hold tabs and line breaks, and nothing else of the above.
-// eslint-disable-next-line no-control-regex
-const FORBIDDEN_IN_TEXT = new RegExp(`[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029${INVISIBLE}]`)
-
-/** Why a value cannot be copied into a command; undefined when it can. `multiline` allows tabs and line breaks (a brief). */
-export function valueProblem(value: string, multiline = false): string | undefined {
-  if (value === '') return 'an empty value cannot be copied into a command'
-  if ((multiline ? FORBIDDEN_IN_TEXT : FORBIDDEN).test(value)) return 'a value with a control character is not copied into a command'
-  if (value.startsWith('-')) return 'a value that starts with "-" could be read as an option, so it is not copied into a command'
-  return undefined
-}
-
-/** The value as one POSIX shell word: single-quoted, with each inner quote written `'\''`. */
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, () => `'\\''`)}'`
-}
-
-/** A word the shell reads literally without quotes. */
-const SHELL_SAFE = /^[A-Za-z0-9_@+:,./-]+$/
-
-/** How to reach a machine that has an SSH route (REQ:remote-ssh-fetch); `wbPath` empty means `wb`. */
-export interface SshRoute {
-  host: string
-  /** Empty or absent when the configuration has none: the destination is then just the host. */
-  user?: string
-  wbPath?: string
-}
-
-/** Where a command is to run. A machine other than this one is named; one with an SSH route gets the ssh prefix. */
-export interface CommandTarget {
-  /** The machine's name; undefined for this machine. */
-  machine?: string
-  ssh?: SshRoute
-}
-
-/** The SSH route of a machine from the session response (owner-only), when it has one. */
-export function sshRouteOf(routes: readonly MachineRoute[] | undefined, machineId: string): SshRoute | undefined {
-  const route = routes?.find((candidate) => candidate.machine_id === machineId)
-  return route && { host: route.ssh.host, user: route.ssh.user, wbPath: route.ssh.wb_path }
-}
-
-/**
- * Where an entity's command runs: here for this machine's own entries, else
- * through the machine's SSH route when the session carries one (anonymous readers
- * get none), else labelled "run on <machine>".
- */
-export function commandTarget(entry: { route: string; machine: string; machine_id: string }, routes?: readonly MachineRoute[]): CommandTarget {
-  if (entry.route === 'local') return {}
-  return { machine: entry.machine, ssh: sshRouteOf(routes, entry.machine_id) }
-}
-
-export type CopyCommand =
-  | {
-      ok: true
-      /** The text to copy. */
-      text: string
-      /** "run on <machine>" for another machine without an SSH route; absent otherwise. */
-      label?: string
-      /** The text holds a placeholder the operator must replace: pasted unedited it is a shell syntax error. */
-      needsEdit: boolean
-    }
-  | { ok: false; reason: string }
-
-/** One piece of a command: a fixed word, an interpolated value, or a `--flag=value`; `multiline` is for a brief. */
-type Part = { word: string } | { value: string; multiline?: boolean } | { flag: string; value: string; multiline?: boolean }
-
-/**
- * One interpolated value as the text to copy. Locally it is single-quoted. For
- * ssh, whose arguments the remote shell splits again, a value that is not
- * shell-safe is quoted twice, so the remote shell reads it as the same one word.
- */
-function quoted(value: string, remote: boolean): string {
-  const once = shellQuote(value)
-  return remote && !SHELL_SAFE.test(value) ? shellQuote(once) : once
-}
-
-function render(parts: readonly Part[], remote: boolean): { ok: true; words: string[]; needsEdit: boolean } | { ok: false; reason: string } {
-  const words: string[] = []
-  let needsEdit = false
-  for (const part of parts) {
-    if ('word' in part) {
-      words.push(part.word)
-      continue
-    }
-    // A placeholder is left bare: an unedited paste is a shell syntax error.
-    const placeholder = PLACEHOLDER_VALUES.has(part.value)
-    const problem = placeholder ? undefined : valueProblem(part.value, part.multiline)
-    if (problem) return { ok: false, reason: problem }
-    needsEdit ||= placeholder
-    const text = placeholder ? part.value : quoted(part.value, remote)
-    words.push('flag' in part ? `${part.flag}=${text}` : text)
-  }
-  return { ok: true, words, needsEdit }
-}
-
-/** `ssh [<user>@]<host> <wb_path> <arguments>`, refusing a route with a hostile part. */
-function sshCommand(route: SshRoute, words: readonly string[], needsEdit: boolean): CopyCommand {
-  const user = route.user ?? ''
-  for (const value of [route.host, user === '' ? 'x' : user, route.wbPath || 'wb']) {
-    const problem = valueProblem(value)
-    if (problem) return { ok: false, reason: problem }
-  }
-  const destination = user === '' ? route.host : `${user}@${route.host}`
-  const executable = route.wbPath || 'wb'
-  return {
-    ok: true,
-    needsEdit,
-    text: [
-      'ssh',
-      SHELL_SAFE.test(destination) ? destination : shellQuote(destination),
-      SHELL_SAFE.test(executable) ? executable : shellQuote(shellQuote(executable)),
-      ...words.slice(1),
-    ].join(' '),
-  }
-}
-
-/**
- * Builds the command for a target. For another machine without an SSH route the
- * text is the command itself, labelled "run on <machine>"; with one it is the
- * ssh form above.
- */
-function command(target: CommandTarget, parts: readonly Part[]): CopyCommand {
-  const rendered = render(parts, target.ssh !== undefined)
-  if (!rendered.ok) return rendered
-  if (target.ssh !== undefined) return sshCommand(target.ssh, rendered.words, rendered.needsEdit)
-  const text = rendered.words.join(' ')
-  const { needsEdit } = rendered
-  return target.machine === undefined ? { ok: true, text, needsEdit } : { ok: true, text, needsEdit, label: `run on ${target.machine}` }
-}
-
-const wb = (...words: string[]): Part[] => ['wb', ...words].map((word) => ({ word }))
+export * from './command-core'
 
 // ---- worktree and task ----
 
@@ -187,9 +28,6 @@ export function worktreeCleanup(task: string, target: CommandTarget = {}): CopyC
 
 // ---- pull request ----
 
-export function pullRequestLand(repository: string, number: number, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('pr', 'land'), { value: `${repository}#${number}` }])
-}
 
 // ---- repository ----
 
@@ -220,9 +58,6 @@ export function branchList(repository: string, branch?: string, target: CommandT
   return command(target, [...wb('branch', 'list'), { flag: '--repo', value: repository }, ...(branch ? [{ flag: '--branch', value: branch }] : [])])
 }
 
-export function fleetStatus(repository: string, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('fleet', 'status'), { flag: '--filter', value: repository }])
-}
 
 // ---- branch ----
 
@@ -325,25 +160,3 @@ export function newTaskCommands(form: NewTaskForm): NewTaskCommands {
 }
 
 // ---- fleet health ----
-
-export function remotePublish(target: CommandTarget = {}): CopyCommand {
-  return command(target, wb('remote', 'publish'))
-}
-
-export function selfUpdate(target: CommandTarget = {}): CopyCommand {
-  return command(target, wb('self-update'))
-}
-
-export function daemonStart(target: CommandTarget = {}): CopyCommand {
-  return command(target, wb('daemon', 'start'))
-}
-
-/** For a refused HTTP read: enrol this machine with the hub, the token read from standard input. */
-export function remoteEnroll(hubUrl: string = PLACEHOLDERS.hubUrl, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('remote', 'enroll'), { flag: '--url', value: hubUrl }, { word: '--token-stdin' }])
-}
-
-/** The export to try for a remote error. The verb is added by the export task; until then the manifest test lists it as pending. */
-export function cockpitExport(target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('cockpit', 'export'), { flag: '--format', value: 'json' }])
-}

@@ -1,5 +1,6 @@
 import { PERF_COUNTS, PERF_NOW, performanceFixture, repeatRows, seeded } from './perf-fixture'
 import { FleetModel } from './fleet-model'
+import { buildRepositories } from './model-repositories'
 import { isFleetDocument } from './fleet-client'
 
 describe('the performance fixture', () => {
@@ -33,7 +34,7 @@ describe('the performance fixture', () => {
 
   it('merges to about the size of the founder fleet, and every worktree and branch points at a real repository', () => {
     const model = new FleetModel(fixture.document, { now: () => PERF_NOW })
-    expect(model.repositories).toHaveLength(445)
+    expect(buildRepositories(model)).toHaveLength(445)
     expect(model.tasks).toHaveLength(455)
     const ids = new Set(fixture.document.repositories.map((repository) => repository.id))
     expect(fixture.document.worktrees.every((worktree) => ids.has(worktree.repository))).toBe(true)

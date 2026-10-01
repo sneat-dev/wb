@@ -1,5 +1,7 @@
 import { TestBed } from '@angular/core/testing'
-import { CopyCommand, FleetModel, PanelCommand, branchCleanup, pickRepositories, pullRequestCreate, worktreeList } from '@cockpit/fleet-data'
+import { CopyCommand, FleetModel } from '@cockpit/fleet-data'
+import { branchCleanup, pickRepositories, pullRequestCreate, worktreeList } from '@cockpit/fleet-data/commands'
+import { PanelCommand, buildAgentPanel, buildPullRequestPanel, buildRepositoryPanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
 import { agent, machine, pullRequest, repository, run, worktree } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from './clipboard'
 import { CopyCommandList, commandSegments, copyLabel, runLocation } from './copy-command-list'
@@ -45,11 +47,11 @@ describe('CopyCommandList', () => {
   it('copies exactly the library commands of each entity, anonymous, with the run location of each', async () => {
     const model = modelOf()
     const panels: [string, PanelCommand[]][] = [
-      ['worktree', model.worktreeView('w1')?.commands ?? []],
-      ['pull request', model.pullRequestView('p1')?.commands ?? []],
-      ['repository', model.repositoryView('sneat-dev/wb')?.commands ?? []],
-      ['dispatched run', model.agentView('run-1')?.commands ?? []],
-      ['worktree on vm', model.worktreeView('w3')?.commands ?? []],
+      ['worktree', buildWorktreePanel(model, 'w1')?.commands ?? []],
+      ['pull request', buildPullRequestPanel(model, 'p1')?.commands ?? []],
+      ['repository', buildRepositoryPanel(model, 'sneat-dev/wb')?.commands ?? []],
+      ['dispatched run', buildAgentPanel(model, 'run-1')?.commands ?? []],
+      ['worktree on vm', buildWorktreePanel(model, 'w3')?.commands ?? []],
     ]
     for (const [name, commands] of panels) {
       expect(commands.length, name).toBeGreaterThan(0)
@@ -67,15 +69,15 @@ describe('CopyCommandList', () => {
       expect(copied.length, name).toBe(commands.length)
     }
     // The worktree on vm is labelled, a local one says "run here".
-    const onVm = await render(model.worktreeView('w3')?.commands ?? [])
+    const onVm = await render(buildWorktreePanel(model, 'w3')?.commands ?? [])
     expect(text(onVm.items[0].querySelector('.where'))).toBe('run on vm')
     expect(onVm.items[0].querySelector('.where')?.classList.contains('elsewhere')).toBe(true)
-    const here = await render(model.worktreeView('w1')?.commands ?? [])
+    const here = await render(buildWorktreePanel(model, 'w1')?.commands ?? [])
     expect(text(here.items[0].querySelector('.where'))).toBe('run here')
   })
 
   it('renders nothing for an entity with no command (an unrecorded session), leaving no box', async () => {
-    const { root, items } = await render(modelOf().agentView('s1')?.commands ?? [])
+    const { root, items } = await render(buildAgentPanel(modelOf(), 's1')?.commands ?? [])
     expect(items).toEqual([])
     expect(root.querySelector('section, h3')).toBeNull()
   })
@@ -146,8 +148,8 @@ describe('CopyCommandList', () => {
   })
 
   it('names each copy button after its entry, and each command line is focusable for keyboard selection', async () => {
-    const { items } = await render(modelOf().pullRequestView('p1')?.commands ?? [])
-    expect(items[0].querySelector('button')?.getAttribute('aria-label')).toBe(`Copy command: ${modelOf().pullRequestView('p1')?.commands[0].title}`)
+    const { items } = await render(buildPullRequestPanel(modelOf(), 'p1')?.commands ?? [])
+    expect(items[0].querySelector('button')?.getAttribute('aria-label')).toBe(`Copy command: ${buildPullRequestPanel(modelOf(), 'p1')?.commands[0].title}`)
     expect(items[0].querySelector('code')?.getAttribute('tabindex')).toBe('0')
   })
 

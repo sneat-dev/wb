@@ -1,65 +1,47 @@
+import { LinkResult, agentsBadgeLink, machineAgentsLink, machineRepositoriesLink, machineWorktreesLink, repositoryAgentsLink, repositoryPullRequestsLink, repositoryWorktreesLink, taskWorktreesLink, emptyListQuery, fieldTerm, parseListQuery, sortLink, termLink } from './list-query'
+import { DESC_FIRST, SEL_KEYS, VOCABULARY, chipOf, defaultDirection } from './filter-vocabulary'
 import { AGE_TERMS } from './matcher'
 import { TASK_STATE_IDS } from './task-state'
-import {
-  AppLink,
-  LinkResult,
-  agentsBadgeLink,
-  encodeListItem,
-  machineAgentsLink,
-  machineRepositoriesLink,
-  machineWorktreesLink,
-  repositoryAgentsLink,
-  repositoryPullRequestsLink,
-  repositoryWorktreesLink,
-  taskWorktreesLink,
-  CODE_INDEX_STATES,
-  DESC_FIRST,
-  HOME_PATH,
-  LIST_PAGES,
-  SEL_KEYS,
-  VOCABULARY,
-  agentDetailLink,
-  ageLink,
-  chipLink,
-  declaredFields,
-  defaultDirection,
-  emptyListQuery,
-  fieldTerm,
-  hrefOf,
-  isChip,
-  linkProblems,
-  listLink,
-  listQueryParams,
-  machineDetailLink,
-  machineLink,
-  parseListQuery,
-  repositoryDetailLink,
-  selectionLink,
-  sortLink,
-  stateLink,
-  taskDetailLink,
-  termLink,
-  worktreeDetailLink,
-} from './vocabulary'
+import { AppLink, encodeListItem, CODE_INDEX_STATES, HOME_PATH, LIST_PAGES, PAGE_RULES, agentDetailLink, ageLink, chipLink, declaredFields, hrefOf, isChip, linkProblems, listLink, listQueryParams, machineDetailLink, machineLink, repositoryDetailLink, selectionLink, stateLink, taskDetailLink, worktreeDetailLink } from './vocabulary'
 
 describe('the vocabulary table', () => {
+  // cockpit-views#ac:filter-vocabulary-is-the-only-link-target
+  it('gives every chip a label and a hint, so a list can render its chips from the page alone', () => {
+    for (const page of LIST_PAGES) {
+      expect(VOCABULARY[page].chips.map((chip) => chip.id), page).toEqual([...PAGE_RULES[page].chips])
+      for (const chip of VOCABULARY[page].chips) {
+        expect(chip.label.trim(), `${page}/${chip.id}`).not.toBe('')
+        expect(chip.hint.trim().length, `${page}/${chip.id}`).toBeGreaterThan(10)
+        expect(chipOf(page, chip.id)).toBe(chip)
+      }
+    }
+    expect(chipOf('tasks', 'needs-you')).toMatchObject({ label: 'Needs you' })
+    expect(chipOf('tasks', 'safe')).toBeUndefined()
+  })
+
+  it('knows the dynamic runtime chips of Agents, only there and only for a plain name', () => {
+    expect(chipOf('agents', 'runtime-claude')).toEqual({ id: 'runtime-claude', label: 'claude', hint: 'Agents of the claude runtime' })
+    expect(chipOf('agents', 'runtime-Claude')).toBeUndefined()
+    expect(chipOf('tasks', 'runtime-claude')).toBeUndefined()
+  })
+
   it('lists, per page, what REQ:filter-vocabulary lists', () => {
-    expect(VOCABULARY.tasks.chips).toEqual(['needs-you', 'ready', 'working', 'agent', 'pr', 'multirepo', 'idle30'])
+    expect(VOCABULARY.tasks.chips.map((chip) => chip.id)).toEqual(['needs-you', 'ready', 'working', 'agent', 'pr', 'multirepo', 'idle30'])
     expect(VOCABULARY.tasks.states).toEqual(TASK_STATE_IDS)
     expect(VOCABULARY.tasks.bare).toEqual(['task', 'repository'])
     expect(VOCABULARY.tasks.sorts).toEqual(['task', 'state', 'worktrees', 'activity'])
-    expect(VOCABULARY.repositories.chips).toEqual(['worktrees', 'agents', 'prs', 'index', 'errors'])
+    expect(VOCABULARY.repositories.chips.map((chip) => chip.id)).toEqual(['worktrees', 'agents', 'prs', 'index', 'errors'])
     expect(VOCABULARY.repositories.states).toEqual(CODE_INDEX_STATES)
     expect(VOCABULARY.repositories.sorts).toEqual(['repository', 'activity', 'worktrees', 'branches'])
-    expect(VOCABULARY.worktrees.chips).toEqual(['active', 'orphaned', 'unpushed', 'gone', 'pr', 'idle30', 'safe', 'look'])
+    expect(VOCABULARY.worktrees.chips.map((chip) => chip.id)).toEqual(['active', 'orphaned', 'unpushed', 'gone', 'pr', 'idle30', 'safe', 'look'])
     expect(VOCABULARY.worktrees.states).toEqual(['active', 'idle', 'orphaned', 'unknown'])
     expect(VOCABULARY.worktrees.bare).toEqual(['task', 'repository', 'branch'])
     expect(VOCABULARY.worktrees.sorts).toEqual(['worktree', 'state', 'machine', 'activity'])
-    expect(VOCABULARY.agents.chips).toEqual(['running', 'blocked'])
+    expect(VOCABULARY.agents.chips.map((chip) => chip.id)).toEqual(['running', 'blocked'])
     expect(VOCABULARY.agents.states).toEqual(['working', 'blocked', 'idle', 'done', 'unknown', 'live', 'parked', 'running', 'completed', 'failed', 'timeout', 'abandoned'])
     expect(VOCABULARY.agents.bare).toEqual(['runtime', 'model', 'task', 'repository'])
     expect(VOCABULARY.agents.sorts).toEqual(['label', 'activity', 'machine', 'started'])
-    expect(VOCABULARY.machines.chips).toEqual(['stale', 'outdated'])
+    expect(VOCABULARY.machines.chips.map((chip) => chip.id)).toEqual(['stale', 'outdated'])
     expect(VOCABULARY.machines.states).toEqual(['live', 'cached', 'stale'])
     expect(VOCABULARY.machines.sorts).toEqual(['machine', 'state', 'version'])
     expect(AGE_TERMS).toEqual(['<1d', '1-7d', '8-30d', '31-90d', '>90d'])
@@ -191,7 +173,7 @@ describe('link builders', () => {
     const links: AppLink[] = []
     for (const page of LIST_PAGES) {
       const vocabulary = VOCABULARY[page]
-      for (const chip of vocabulary.chips) links.push(chipLink(page, chip))
+      for (const chip of vocabulary.chips) links.push(chipLink(page, chip.id))
       for (const state of vocabulary.states) links.push(stateLink(page, state))
       for (const sort of vocabulary.sorts) links.push(sortLink(page, sort, defaultDirection(page, sort)))
       if (vocabulary.hasActivity) for (const age of AGE_TERMS) links.push(ageLink(page, age))

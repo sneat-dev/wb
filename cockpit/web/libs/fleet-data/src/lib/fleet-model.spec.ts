@@ -1,17 +1,9 @@
+import { versionKey } from './list-rows'
+import { buildRepositories } from './model-repositories'
 import { Agent, FleetDocument, MachineMetrics, PullRequest, Worktree } from './fleet.types'
-import {
-  Derivation,
-  FleetModel,
-  FleetModels,
-  RESUME_COUNT,
-  agentTitle,
-  compareVersions,
-  machineLoad,
-  parseVersion,
-  versionKey,
-  remoteErrorText,
-  remoteFix,
-} from './fleet-model'
+import { Derivation, FleetModel, FleetModels, RESUME_COUNT, agentTitle, compareVersions, machineLoad, parseVersion } from './fleet-model'
+import { buildCleanup, buildHealth, buildThroughput, remoteErrorText, remoteFix } from './home-details'
+import { buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
 import { NEEDS_YOU_VISIBLE, NeedsYouItem } from './view-types'
 import { hrefOf, linkProblems } from './vocabulary'
 import { OBSERVED, agent, fleetDocument, machine, pullRequest, repository, run, worktree } from './test-data'
@@ -259,9 +251,11 @@ describe('Needs you', () => {
   })
 
   it('puts a task with no reported activity after the others of its kind, and orders by name when none is reported', () => {
-    const risk = { owner_state: 'idle' as const, ahead: 1 }
+    const failing = { checks_failed: 1 }
     const model = modelOf({
-      worktrees: [wt('w1', 'z', { ...risk, last_activity_at: undefined }), wt('w2', 'y', { ...risk, last_activity_at: ago(HOUR) }), wt('w3', 'x', { ...risk, last_activity_at: undefined }), wt('w4', 'w', { ...risk, last_activity_at: ago(2 * HOUR) })],
+      repositories: REPOS,
+      worktrees: [wt('w1', 'z', { last_activity_at: undefined }), wt('w2', 'y', { last_activity_at: ago(HOUR) }), wt('w3', 'x', { last_activity_at: undefined }), wt('w4', 'w', { last_activity_at: ago(2 * HOUR) })],
+      pull_requests: [pr('p1', 'w1', { number: 1, ...failing }), pr('p2', 'w2', { number: 2, ...failing }), pr('p3', 'w3', { number: 3, ...failing }), pr('p4', 'w4', { number: 4, ...failing })],
     })
     expect(model.needsYou.items.map((i) => i.task)).toEqual(['y', 'w', 'x', 'z'])
   })
@@ -431,7 +425,7 @@ describe('Resume and Cleanup', () => {
     for (let index = 0; index < 2; index++) worktrees.push(wt(`u${index}`, `unk${index}`, { owner_state: 'unknown', last_activity_at: ago(100 * DAY) }))
     for (let index = 0; index < 4; index++) worktrees.push(wt(`i${index}`, `idle${index}`, { owner_state: 'idle', ahead: 0, last_activity_at: ago(40 * DAY) }))
     const model = modelOf({ worktrees })
-    const cleanup = model.cleanup
+    const cleanup = buildCleanup(model)
     expect([cleanup.safeCount, cleanup.lookCount]).toEqual([12, 9])
     expect(cleanup.indicative).toBe(true)
     expect(cleanup.safeIds.has('s0')).toBe(true)
@@ -459,9 +453,9 @@ describe('Resume and Cleanup', () => {
         wt('f', 'young', { last_activity_at: undefined }),
       ],
     })
-    expect([...model.cleanup.safeIds].sort()).toEqual(['a', 'e'])
-    expect(model.cleanup.lookCount).toBe(0)
-    expect(model.cleanup.unknownAge).toBe(1)
+    expect([...buildCleanup(model).safeIds].sort()).toEqual(['a', 'e'])
+    expect(buildCleanup(model).lookCount).toBe(0)
+    expect(buildCleanup(model).unknownAge).toBe(1)
   })
 })
 
@@ -496,7 +490,7 @@ describe('machines and Fleet health', () => {
   // cockpit-views#ac:fleet-health-only-when-not-ok (the lines the library derives)
   it('is ok for a fleet in which every machine is live and current', () => {
     const model = modelOf({ machines: [m('alpha', { wb_version: '0.176.0' }), m('beta', { route: 'cached', wb_version: '0.176.0', observed_at: ago(HOUR) })], repositories: [repository('r1', 'alpha')] })
-    expect(model.health).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], scanErrors: [] })
+    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], scanErrors: [] })
   })
 
   it('shows a stale machine, an older WB and a scan error, each with a command to copy', () => {
@@ -504,7 +498,7 @@ describe('machines and Fleet health', () => {
       machines: [m('alpha', { wb_version: '0.176.0' }), m('vm', { route: 'cached', wb_version: '0.170.0', observed_at: ago(25 * HOUR) })],
       repositories: [repository('r1', 'alpha', { name: 'sneat-dev/wb', error: 'scan_failed' })],
     })
-    const { ok, staleMachines, olderWb, scanErrors } = model.health
+    const { ok, staleMachines, olderWb, scanErrors } = buildHealth(model)
     expect(ok).toBe(false)
     expect(staleMachines).toEqual([
       { machine: 'vm', machineId: 'mach-vm', text: 'vm has not published for over 24 hours', command: { text: 'wb remote publish', label: 'run on vm', needsEdit: false }, link: { path: '/machines', query: { chips: 'stale' } } },
@@ -517,7 +511,7 @@ describe('machines and Fleet health', () => {
 
   it('refuses a fix command for a repository name it cannot quote', () => {
     const model = modelOf({ repositories: [repository('r1', 'alpha', { name: '-x/y', error: 'scan_failed' })] })
-    expect(model.health.scanErrors[0].command).toMatchObject({ reason: expect.stringContaining('starts with') })
+    expect(buildHealth(model).scanErrors[0].command).toMatchObject({ reason: expect.stringContaining('starts with') })
   })
 
   // cockpit-views#ac:failed-export-falls-back-and-shows-a-typed-error (the lines the library derives)
@@ -528,8 +522,8 @@ describe('machines and Fleet health', () => {
       now: () => NOW,
       sshRoute: (machine) => (machine.machine === 'vm2' ? { host: 'vm.example', user: 'alex', wbPath: '/usr/local/bin/wb' } : undefined),
     })
-    const byCode = Object.fromEntries(model.health.remoteErrors.map((item, index) => [codes[index], item]))
-    expect(model.health.ok).toBe(false)
+    const byCode = Object.fromEntries(buildHealth(model).remoteErrors.map((item, index) => [codes[index], item]))
+    expect(buildHealth(model).ok).toBe(false)
     expect(byCode['http_auth_failed'].command).toEqual({ text: 'wb remote enroll --url=<<<edit:hub-url>>> --token-stdin', label: 'run here', needsEdit: true })
     expect(byCode['daemon_not_running'].command).toEqual({ text: 'wb daemon start', label: 'run on vm7', needsEdit: false })
     expect(byCode['wb_too_old'].command).toEqual({ text: 'wb self-update', label: 'run on vm6', needsEdit: false })
@@ -547,7 +541,7 @@ describe('machines and Fleet health', () => {
       now: () => NOW,
       sshRoute: () => ({ host: '-oProxyCommand=x', user: 'alex' }),
     })
-    expect(model.health.remoteErrors[0].command).toEqual({ reason: expect.stringContaining('starts with') })
+    expect(buildHealth(model).remoteErrors[0].command).toEqual({ reason: expect.stringContaining('starts with') })
   })
 
   it('says each remote_error in words, and an unknown code as an unknown error', () => {
@@ -589,7 +583,7 @@ describe('throughput', () => {
         slowest: [1, 2, 3, 4, 5, 6].map((n) => ({ task: `t${n}`, duration_seconds: n * 100, landed_at: OBSERVED })),
       },
     })
-    const series = model.throughput
+    const series = buildThroughput(model)
     expect(series?.perDay).toEqual([
       { date: '2026-09-27', landed: 0 },
       { date: '2026-09-28', landed: 0 },
@@ -603,9 +597,9 @@ describe('throughput', () => {
   })
 
   it('has no series without the block, and a window of no landings has a maximum of 0', () => {
-    expect(modelOf({}).throughput).toBeUndefined()
-    expect(modelOf({ throughput: { window_days: 2, per_day: [], slowest: [] } }).throughput).toMatchObject({ totalLanded: 0, maxLanded: 0 })
-    expect(modelOf({ throughput: { window_days: 0, per_day: [], slowest: [] } }).throughput?.perDay).toEqual([])
+    expect(buildThroughput(modelOf({}))).toBeUndefined()
+    expect(buildThroughput(modelOf({ throughput: { window_days: 2, per_day: [], slowest: [] } }))).toMatchObject({ totalLanded: 0, maxLanded: 0 })
+    expect(buildThroughput(modelOf({ throughput: { window_days: 0, per_day: [], slowest: [] } }))?.perDay).toEqual([])
   })
 })
 
@@ -615,8 +609,8 @@ describe('the model as a memo', () => {
     const derived: string[] = []
     const model = modelOf({ worktrees: [wt('w1', 'a')], repositories: REPOS }, (name) => derived.push(name))
     for (let render = 0; render < 5; render++) {
-      void [model.repositories, model.tasks, model.needsYou, model.readyToLand, model.cleanup, model.inFlight, model.resume, model.machines, model.health, model.throughput]
-      void [model.taskRows, model.repositoryRows, model.worktreeRows, model.agentRows, model.machineRows]
+      void [buildRepositories(model), model.tasks, model.needsYou, model.readyToLand, buildCleanup(model), model.inFlight, model.resume, model.machines, buildHealth(model), buildThroughput(model)]
+      void [buildTaskRows(model), buildRepositoryRows(model), buildWorktreeRows(model), buildAgentRows(model), buildMachineRows(model)]
     }
     for (const name of ['repositories', 'tasks', 'needsYou', 'readyToLand', 'cleanup', 'inFlight', 'resume', 'machines', 'health', 'throughput', 'rows:tasks', 'rows:repositories', 'rows:worktrees', 'rows:agents', 'rows:machines'])
       expect(derived.filter((entry) => entry === name), name).toHaveLength(1)
@@ -657,10 +651,10 @@ describe('the model as a memo', () => {
       ...model.needsYou.items.map((i) => i.link),
       ...model.readyToLand.ready.map((r) => r.link),
       ...model.readyToLand.notReady.map((r) => r.link),
-      model.cleanup.reviewLink,
-      ...model.cleanup.bars.map((bar) => bar.link),
-      ...[...model.health.staleMachines, ...model.health.olderWb, ...model.health.remoteErrors].map((i) => i.link),
-      ...model.health.scanErrors.map((i) => i.link),
+      buildCleanup(model).reviewLink,
+      ...buildCleanup(model).bars.map((bar) => bar.link),
+      ...[...buildHealth(model).staleMachines, ...buildHealth(model).olderWb, ...buildHealth(model).remoteErrors].map((i) => i.link),
+      ...buildHealth(model).scanErrors.map((i) => i.link),
     ]
     expect(links.filter((link) => link !== undefined).length).toBeGreaterThan(8)
     for (const link of links) expect(linkProblems(link as NonNullable<typeof link>)).toEqual([])
@@ -711,7 +705,7 @@ describe('review fixes', () => {
 
   it('is never safe to clean up a task while a sibling worktree has unpushed work', () => {
     const model = modelOf({ worktrees: [wt('a', 'done', { lifecycle: 'merged', ahead: 0 }), wt('b', 'done', { lifecycle: 'merged', ahead: 3 }), wt('c', 'other', { lifecycle: 'merged', ahead: 0 })] })
-    expect([...model.cleanup.safeIds]).toEqual(['c'])
+    expect([...buildCleanup(model).safeIds]).toEqual(['c'])
   })
 
   it('reads the clock itself when made without a time or options', () => {
@@ -759,10 +753,10 @@ describe('review fixes', () => {
       expect(model.inFlight).toEqual([])
       expect(model.tasks).toEqual([])
       expect(model.needsYou.items).toEqual([])
-      expect(model.cleanup.safeCount).toBe(0)
-      expect(model.health.ok).toBe(true)
+      expect(buildCleanup(model).safeCount).toBe(0)
+      expect(buildHealth(model).ok).toBe(true)
       expect(model.readyToLand).toEqual({ ready: [], notReady: [] })
-      expect(model.throughput).toBeUndefined()
+      expect(buildThroughput(model)).toBeUndefined()
     }
     expect(model.failedDerivations).toContain('inFlight')
     expect(derived.filter((name) => name === 'inFlight')).toHaveLength(1)
@@ -782,11 +776,11 @@ describe('review fixes', () => {
     ]
     const routes = [{ machine_id: 'mach-vm', ssh: { host: 'vm.example', user: '', wb_path: '' } }]
     const model = new FleetModel(fleetDocument({ machines, repositories: [], worktrees: [], agents: [], pull_requests: [] }), { now: () => NOW, machineRoutes: routes })
-    const stale = model.health.staleMachines
+    const stale = buildHealth(model).staleMachines
     expect(stale.find((item) => item.machine === 'vm')?.command).toEqual({ text: 'ssh vm.example wb remote publish', label: 'run here', needsEdit: false })
     expect(stale.find((item) => item.machine === 'old')?.command).toEqual({ text: 'wb remote publish', label: 'run on old', needsEdit: false })
-    expect(model.health.olderWb.find((item) => item.machine === 'vm')?.command).toMatchObject({ text: 'ssh vm.example wb self-update', label: 'run here' })
-    expect(model.health.remoteErrors[0].command).toEqual({ text: 'wb self-update', label: 'run on old', needsEdit: false })
+    expect(buildHealth(model).olderWb.find((item) => item.machine === 'vm')?.command).toMatchObject({ text: 'ssh vm.example wb self-update', label: 'run here' })
+    expect(buildHealth(model).remoteErrors[0].command).toEqual({ text: 'wb self-update', label: 'run on old', needsEdit: false })
   })
 })
 
