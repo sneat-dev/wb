@@ -61,15 +61,56 @@ func dirtyWorktreeEvidence(ctx context.Context, worktree string) (DirtyWorktreeE
 // not stage, commit, invoke hooks, or mutate the checkout. All bytes are read
 // only after both per-file and total size bounds have been checked.
 func collectDirtyCapture(ctx context.Context, worktree string) (dirtyCaptureMaterial, error) {
+	return collectDirtyCaptureWithBoundary(ctx, worktree, nil)
+}
+
+// dirtyCaptureBoundary observes real filesystem boundaries for deterministic
+// replacement and error tests. A production capture passes nil.
+type dirtyCaptureBoundary func(stage string, root *os.Root, file *os.File)
+
+func observeDirtyCaptureBoundary(boundary dirtyCaptureBoundary, stage string, root *os.Root, file *os.File) {
+	if boundary != nil {
+		boundary(stage, root, file)
+	}
+}
+
+func collectDirtyCaptureWithBoundary(ctx context.Context, worktree string, boundary dirtyCaptureBoundary) (dirtyCaptureMaterial, error) {
+	sourceInfo, err := os.Lstat(worktree)
+	if err != nil {
+		return dirtyCaptureMaterial{}, fmt.Errorf("inspect dirty worktree root: %w", err)
+	}
+	// The worktree root itself must be the directory opened below. Relative
+	// dirty paths may still resolve through safe links inside that root.
+	if !sourceInfo.IsDir() {
+		return dirtyCaptureMaterial{}, fmt.Errorf("refusing non-directory dirty worktree root %s", worktree)
+	}
+	observeDirtyCaptureBoundary(boundary, "root-lstat", nil, nil)
+	root, err := os.OpenRoot(worktree)
+	if err != nil {
+		return dirtyCaptureMaterial{}, fmt.Errorf("open dirty worktree root: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	observeDirtyCaptureBoundary(boundary, "root-open", root, nil)
+	heldInfo, err := root.Stat(".")
+	if err != nil {
+		return dirtyCaptureMaterial{}, fmt.Errorf("inspect held dirty worktree root: %w", err)
+	}
+	if !os.SameFile(sourceInfo, heldInfo) {
+		return dirtyCaptureMaterial{}, fmt.Errorf("dirty worktree root changed before path inspection")
+	}
 	paths, err := dirtyCapturePaths(ctx, worktree)
 	if err != nil {
+		return dirtyCaptureMaterial{}, err
+	}
+	observeDirtyCaptureBoundary(boundary, "paths", root, nil)
+	if err := confirmDirtyCaptureRoot(worktree, sourceInfo); err != nil {
 		return dirtyCaptureMaterial{}, err
 	}
 	entries := make([]dirtyCaptureEntry, 0, len(paths))
 	blobs := make(map[string][]byte)
 	var total int64
 	for _, path := range paths {
-		entry, blob, err := readDirtyCaptureEntry(worktree, path, total)
+		entry, blob, err := readDirtyCaptureEntry(root, path, total, boundary)
 		if err != nil {
 			return dirtyCaptureMaterial{}, err
 		}
@@ -78,6 +119,10 @@ func collectDirtyCapture(ctx context.Context, worktree string) (dirtyCaptureMate
 			blobs[entry.Blob] = blob
 		}
 		entries = append(entries, entry)
+		observeDirtyCaptureBoundary(boundary, "entry", root, nil)
+	}
+	if err := confirmDirtyCaptureRoot(worktree, sourceInfo); err != nil {
+		return dirtyCaptureMaterial{}, err
 	}
 	if len(entries) == 0 {
 		return dirtyCaptureMaterial{Manifest: dirtyCaptureManifest{Version: 1, Receipt: DirtyWorktreeEvidence{SHA256: dirtyCaptureDigest(nil), Files: 0}, Entries: []dirtyCaptureEntry{}}, Blobs: blobs}, nil
@@ -86,6 +131,17 @@ func collectDirtyCapture(ctx context.Context, worktree string) (dirtyCaptureMate
 	receipt := DirtyWorktreeEvidence{Bytes: total, Files: len(entries)}
 	receipt.SHA256 = dirtyCaptureDigest(entries)
 	return dirtyCaptureMaterial{Manifest: dirtyCaptureManifest{Version: 1, Receipt: receipt, Entries: entries}, Blobs: blobs}, nil
+}
+
+func confirmDirtyCaptureRoot(worktree string, expected os.FileInfo) error {
+	current, err := os.Lstat(worktree)
+	if err != nil {
+		return fmt.Errorf("recheck dirty worktree root: %w", err)
+	}
+	if !current.IsDir() || !os.SameFile(expected, current) {
+		return fmt.Errorf("dirty worktree root changed during capture")
+	}
+	return nil
 }
 
 func dirtyCapturePaths(ctx context.Context, worktree string) ([]string, error) {
@@ -131,22 +187,22 @@ func dirtyCapturePath(path string) (string, error) {
 	return path, nil
 }
 
-func readDirtyCaptureEntry(worktree, path string, total int64) (dirtyCaptureEntry, []byte, error) {
-	full := filepath.Join(worktree, filepath.FromSlash(path))
-	info, err := os.Lstat(full)
+func readDirtyCaptureEntry(root *os.Root, path string, total int64, boundary dirtyCaptureBoundary) (dirtyCaptureEntry, []byte, error) {
+	info, err := root.Lstat(filepath.FromSlash(path))
 	if errors.Is(err, os.ErrNotExist) {
 		return dirtyCaptureEntry{Path: path, Kind: "deleted"}, nil, nil
 	}
 	if err != nil {
 		return dirtyCaptureEntry{}, nil, fmt.Errorf("inspect dirty path %s: %w", path, err)
 	}
+	observeDirtyCaptureBoundary(boundary, "leaf-lstat", root, nil)
 	entry := dirtyCaptureEntry{Path: path, Mode: uint32(info.Mode().Perm())}
 	switch {
 	case info.Mode().IsRegular():
 		if info.Size() < 0 || info.Size() > maxDirtyCaptureFileBytes || total > maxDirtyCaptureTotalBytes-info.Size() {
 			return dirtyCaptureEntry{}, nil, fmt.Errorf("refusing dirty capture for %s: size exceeds bounded %d-byte retention", path, maxDirtyCaptureTotalBytes)
 		}
-		content, err := readDirtyFileNoFollow(full, info.Size())
+		content, err := readDirtyCaptureRegular(root, filepath.FromSlash(path), info, boundary)
 		if err != nil {
 			return dirtyCaptureEntry{}, nil, fmt.Errorf("read dirty path %s: %w", path, err)
 		}
@@ -156,9 +212,14 @@ func readDirtyCaptureEntry(worktree, path string, total int64) (dirtyCaptureEntr
 		entry.Blob = dirtyCaptureBlobName(len(content), entry.SHA256)
 		return entry, content, nil
 	case info.Mode()&os.ModeSymlink != 0:
-		target, err := os.Readlink(full)
+		target, err := root.Readlink(filepath.FromSlash(path))
 		if err != nil {
 			return dirtyCaptureEntry{}, nil, fmt.Errorf("read dirty symlink %s: %w", path, err)
+		}
+		observeDirtyCaptureBoundary(boundary, "readlink", root, nil)
+		current, err := root.Lstat(filepath.FromSlash(path))
+		if err != nil || current.Mode()&os.ModeSymlink == 0 || !os.SameFile(info, current) {
+			return dirtyCaptureEntry{}, nil, fmt.Errorf("dirty symlink changed while being captured: %s: %v", path, err)
 		}
 		content := []byte(target)
 		if int64(len(content)) > maxDirtyCaptureFileBytes || total > maxDirtyCaptureTotalBytes-int64(len(content)) {
@@ -174,22 +235,36 @@ func readDirtyCaptureEntry(worktree, path string, total int64) (dirtyCaptureEntr
 	}
 }
 
-func readDirtyFileNoFollow(path string, size int64) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+func readDirtyCaptureRegular(root *os.Root, path string, initial os.FileInfo, boundary dirtyCaptureBoundary) ([]byte, error) {
+	file, err := root.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), filepath.Base(path))
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap dirty file")
-	}
 	defer func() { _ = file.Close() }()
+	observeDirtyCaptureBoundary(boundary, "file-open", root, file)
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(initial, opened) || opened.Size() != initial.Size() {
+		return nil, fmt.Errorf("dirty file changed before being captured")
+	}
+	observeDirtyCaptureBoundary(boundary, "file-stat-before", root, file)
 	content, err := io.ReadAll(io.LimitReader(file, maxDirtyCaptureFileBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(content)) != size || int64(len(content)) > maxDirtyCaptureFileBytes {
+	observeDirtyCaptureBoundary(boundary, "file-read", root, file)
+	current, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	observeDirtyCaptureBoundary(boundary, "file-stat-after", root, file)
+	pathInfo, err := root.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(initial, current) || !os.SameFile(initial, pathInfo) || !pathInfo.Mode().IsRegular() || current.Mode().Perm() != initial.Mode().Perm() || pathInfo.Mode().Perm() != initial.Mode().Perm() || current.Size() != initial.Size() || pathInfo.Size() != initial.Size() || !current.ModTime().Equal(initial.ModTime()) || !pathInfo.ModTime().Equal(initial.ModTime()) || int64(len(content)) != initial.Size() || int64(len(content)) > maxDirtyCaptureFileBytes {
 		return nil, fmt.Errorf("dirty file changed while being captured")
 	}
 	return content, nil
