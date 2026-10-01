@@ -549,9 +549,10 @@ that have its repository entry and its branch.
 Serves J1. The Agents page MUST show each agent as a human label — runtime, model
 and what it works on (its task or repository) — with an activity badge (`working`,
 `blocked`, `idle`, `done`, or "state not reported" when the field is absent), its
-machine, how long it has run, and its session or run id as secondary text with a
-copy button. For a session with no link to work the label is "<runtime> <model>
-session, started <age>". An agent from another machine is shown with the age of
+machine and how long it has run. Its session or run id is not in the row (an
+identifier is not what an agent is doing): it is in the panel, with a copy button.
+For a session with no link to work the row reads "<runtime> <model>" and, muted,
+"session, started <age>". An agent from another machine is shown with the age of
 its snapshot and no actions. For a session that cannot be controlled the side
 panel says so plainly. The quick filters are those of REQ:filter-vocabulary.
 
@@ -1992,7 +1993,7 @@ Then each leaves exactly the worktrees that satisfy it
 Scenario: A claude agent, an unreported session and a cached agent
 Given a running `claude` agent with model `opus` on task `fix-ci` in `sneat-dev/wb` on machine `mac` with activity `working` and session id `wbs-3da4ea95`, a session whose activity is absent, and an agent cached from machine `vm`
 When the Agents page is opened and the copy button is pressed
-Then the first reads runtime, model and task as its label with the badge "working", the machine and the running time, its session id is secondary text and the clipboard holds the full id, the session shows "state not reported", the cached agent shows its snapshot age and no action, and the chips `running`, `blocked` and `runtime-claude` filter the list
+Then the first reads runtime, model and task as its label with the badge "working", the machine and the running time, no row shows a session id, the panel shows it and its copy button puts the full id on the clipboard, the session shows "state not reported", the cached agent shows its snapshot age and no action, and the chips `running`, `blocked` and `runtime-claude` filter the list
 
 ### AC: agent-label-fallback
 
@@ -2001,7 +2002,7 @@ Then the first reads runtime, model and task as its label with the badge "workin
 Scenario: A session with no work link
 Given a registered `claude` session on model `opus` with `state` `live` started 2 hours ago that no worktree's owner or claim names
 When the Agents page is opened
-Then its label reads "claude opus session, started 2 h ago" and it counts as running
+Then its row reads "claude · opus" followed by "session, started 2 h ago" and it counts as running
 
 ### AC: agent-detail-links-its-work
 
