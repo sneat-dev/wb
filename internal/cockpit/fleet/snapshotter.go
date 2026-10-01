@@ -134,6 +134,10 @@ type Options struct {
 	// applied to this machine's own entries.
 	Remotes    []RemoteTarget
 	Transports []RemoteTransport
+	// SSHRoutes are the SSH routes the local configuration gives other machines,
+	// by their configured key, whether or not the daemon reads them: an owner
+	// session's "Copy command" entries are built from them (MachineRoutes).
+	SSHRoutes map[string]SSHRoute
 	// RemoteTick delivers the ticks on which the background loop looks for a due
 	// export, as Tick does for the refresh; nil means a time.Ticker.
 	RemoteTick func(interval time.Duration) (<-chan time.Time, func())
@@ -282,8 +286,12 @@ type Snapshotter struct {
 	// configured key, and liveKeys those keys in order. liveIDs says which
 	// machine ids of the published document stand for which key. All three are
 	// guarded by mu; the set of keys never changes.
-	live       map[string]*liveMachine
-	liveKeys   []string
+	live     map[string]*liveMachine
+	liveKeys []string
+	// sshRoutes is the configured machines' SSH routes and sshKeys their keys in
+	// order; both are fixed once built.
+	sshRoutes  map[string]SSHRoute
+	sshKeys    []string
 	liveIDs    map[string]string
 	transports []RemoteTransport
 	remoteTick func(time.Duration) (<-chan time.Time, func())
@@ -339,6 +347,14 @@ func New(options Options) *Snapshotter {
 		}
 		sort.Strings(snapshotter.liveKeys)
 	}
+	snapshotter.sshRoutes = map[string]SSHRoute{}
+	for key, route := range options.SSHRoutes {
+		if key != "" && key != options.Machine && route.valid() {
+			snapshotter.sshRoutes[key] = route
+			snapshotter.sshKeys = append(snapshotter.sshKeys, key)
+		}
+	}
+	sort.Strings(snapshotter.sshKeys)
 	if len(snapshotter.liveKeys) > 0 {
 		snapshotter.metricsSources = append([]MetricsSource{liveMetrics{snapshotter: snapshotter}}, snapshotter.metricsSources...)
 	}

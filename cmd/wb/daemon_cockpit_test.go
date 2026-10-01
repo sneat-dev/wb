@@ -263,7 +263,7 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	config.RefreshInterval = 90 * time.Second
 	var logs bytes.Buffer
 
-	bare := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, host)
+	bare := cockpitFleetOptionsWith(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, host, cockpitSSH{})
 	if bare.Machine != "the-host" || bare.Collectors.Remote != nil || bare.Interval != 90*time.Second || bare.Collectors.Repositories == nil || bare.Collectors.CodeIndex == nil {
 		t.Errorf("options with no remote section = %+v", bare)
 	}
@@ -283,11 +283,11 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if got := logs.String(); got != "wb: refresh failed: boom\n" {
 		t.Errorf("log = %q", got)
 	}
-	nameless := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, func() (string, error) { return "", io.EOF })
+	nameless := cockpitFleetOptionsWith(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, func() (string, error) { return "", io.EOF }, cockpitSSH{})
 	if nameless.Machine != "local" {
 		t.Errorf("machine without a host name = %q, want local", nameless.Machine)
 	}
-	remote := cockpitFleetOptions(root, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")(), config, &logs, host)
+	remote := cockpitFleetOptionsWith(root, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")(), config, &logs, host, cockpitSSH{})
 	if remote.Machine != "laptop-1" || remote.Collectors.Remote == nil {
 		t.Errorf("options with a remote section = machine %q, remote %v", remote.Machine, remote.Collectors.Remote)
 	}
@@ -295,7 +295,7 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	// A hub provider and an unlocatable store know no other machines, and the
 	// daemon's log says so, once, while the options are built.
 	logs.Reset()
-	hub := cockpitFleetOptions(root, home, cockpitConfigFile(t, "remote:\n  provider: hub\n  url: https://hub.example\n  token_file: /tmp/token\n  machine: laptop-2\n")(), config, &logs, host)
+	hub := cockpitFleetOptionsWith(root, home, cockpitConfigFile(t, "remote:\n  provider: hub\n  url: https://hub.example\n  token_file: /tmp/token\n  machine: laptop-2\n")(), config, &logs, host, cockpitSSH{})
 	if hub.Machine != "laptop-2" || hub.Collectors.Remote != nil || !strings.Contains(logs.String(), "not read from the hub remote provider") {
 		t.Errorf("options with a hub provider = machine %q, remote %v, log %q", hub.Machine, hub.Collectors.Remote, logs.String())
 	}
@@ -304,7 +304,7 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	unlocatable := cockpitFleetOptions(file, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-3\n")(), config, &logs, host)
+	unlocatable := cockpitFleetOptionsWith(file, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-3\n")(), config, &logs, host, cockpitSSH{})
 	if unlocatable.Collectors.Remote != nil || !strings.Contains(logs.String(), "cannot be located") {
 		t.Errorf("options with an unlocatable store = remote %v, log %q", unlocatable.Collectors.Remote, logs.String())
 	}
@@ -318,13 +318,13 @@ func TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed(t *testin
 	t.Parallel()
 	host := func() (string, error) { return "the-host", nil }
 	absent := filepath.Join(t.TempDir(), "absent.yaml")
-	none := cockpitFleetOptions(t.TempDir(), t.TempDir(), absent, wbconfig.DefaultCockpitConfig(), io.Discard, host)
+	none := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), absent, wbconfig.DefaultCockpitConfig(), io.Discard, host, cockpitSSH{})
 	if none.Collectors.CodeIndexProvider != nil {
 		t.Errorf("a provider with none configured = %+v", none.Collectors.CodeIndexProvider)
 	}
 	config := wbconfig.DefaultCockpitConfig()
 	config.CodeIndexProvider, config.CodeIndexIndexer = wbconfig.CodeIndexProviderCodeGrapher, "code-graph"
-	named := cockpitFleetOptions(t.TempDir(), t.TempDir(), absent, config, io.Discard, host)
+	named := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), absent, config, io.Discard, host, cockpitSSH{})
 	provider := named.Collectors.CodeIndexProvider
 	if provider == nil || provider.Name() != "codegrapher" || provider.Indexer() != "code-graph" {
 		t.Errorf("the configured provider = %+v", provider)
@@ -338,7 +338,7 @@ func TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfigure
 	t.Parallel()
 	config := wbconfig.DefaultCockpitConfig()
 	config.PullRequestLimit, config.PullRequestHourlyBudget = 7, 55
-	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), config, io.Discard, func() (string, error) { return "h", nil })
+	options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), config, io.Discard, func() (string, error) { return "h", nil }, cockpitSSH{})
 	watcher, ok := options.PullRequests.(*prwatch.Watcher)
 	if !ok || options.PullRequestLimit != 7 || options.PullRequestHourlyBudget != 55 {
 		t.Fatalf("pull request observer = %T limit %d budget %d, want a *prwatch.Watcher, 7 and 55", options.PullRequests, options.PullRequestLimit, options.PullRequestHourlyBudget)

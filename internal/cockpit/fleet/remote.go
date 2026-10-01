@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 )
 
@@ -81,6 +83,9 @@ const (
 	// remoteExportTimeout bounds one machine's export over all its transports,
 	// whatever a transport's own timeout is.
 	remoteExportTimeout = 30 * time.Second
+	// fallbackCoolDown is how long a machine is read over SSH alone after its
+	// preferred transport failed and SSH answered.
+	fallbackCoolDown = 5 * time.Minute
 	// liveIntervals is how many refresh intervals an export stays fresh for.
 	liveIntervals = 2
 	// The most entries of one remote machine that are kept; what is over is cut
@@ -96,10 +101,11 @@ const (
 
 // RemoteTarget is one other machine the local configuration names. Machine is
 // its key in session_move.targets, and the only thing that places its entries.
-// HTTP is its HTTP route, nil when it has none.
+// HTTP is its HTTP route and SSH its SSH route, each nil when it has none.
 type RemoteTarget struct {
 	Machine string
 	HTTP    *HTTPRoute
+	SSH     *SSHRoute
 }
 
 // RemoteExporter reads one machine's export envelope over one transport. It is
@@ -210,6 +216,60 @@ func exportFrom(ctx context.Context, transports []RemoteTransport, target Remote
 	return exportResult{failure: last}
 }
 
+// fallback is one machine's cool-down on the SSH transport
+// (cockpit-views#req:remote-exporter-transports): until is when the preferred
+// transport is tried again and failure the code it failed with, which the
+// machine entry carries while SSH supplies its entries. It is a value, so the
+// rule is a pure function of it, the time and an export's outcome.
+type fallback struct {
+	until   time.Time
+	failure string
+}
+
+// active reports whether the machine is read over SSH alone at now.
+func (f fallback) active(now time.Time) bool {
+	return f.failure != "" && now.Before(f.until)
+}
+
+// after is the cool-down once an export started at started has ended as result:
+//
+//   - the preferred transport failed and SSH answered: the cool-down starts, for
+//     fallbackCoolDown from started, with the preferred transport's failure;
+//   - SSH answered within a cool-down (the preferred transport was not asked):
+//     the cool-down goes on, unchanged;
+//   - a remote that is warming up says nothing of either: unchanged;
+//   - anything else ends it: a failed export (so the next attempt asks the
+//     preferred transport again), an answer of the preferred transport, or SSH
+//     answering a machine that has no other route.
+func (f fallback) after(started time.Time, result exportResult) fallback {
+	switch {
+	case result.warming:
+		return f
+	case !result.ok || result.transport != TransportSSH:
+		return fallback{}
+	case result.failure != "":
+		return fallback{until: started.Add(fallbackCoolDown), failure: result.failure}
+	case f.active(started):
+		return f
+	}
+	return fallback{}
+}
+
+// routed is the transports an export may use: all of them, in order, or SSH
+// alone within a cool-down.
+func routed(transports []RemoteTransport, cooling bool) []RemoteTransport {
+	if !cooling {
+		return transports
+	}
+	var kept []RemoteTransport
+	for _, transport := range transports {
+		if transport.Name == TransportSSH {
+			kept = append(kept, transport)
+		}
+	}
+	return kept
+}
+
 // remoteSchedule is when one machine is next read. It is a value so that the
 // rule is a pure function of it and the time.
 type remoteSchedule struct {
@@ -292,7 +352,9 @@ type liveView struct {
 type liveMachine struct {
 	target   RemoteTarget
 	schedule remoteSchedule
-	busy     bool
+	// cooling is the machine's cool-down on SSH.
+	cooling fallback
+	busy    bool
 	// asked is when a client last asked for this machine's metrics, in
 	// nanoseconds since the epoch, and zero for never. It is set on a request
 	// path, so it is atomic and needs no exclusive lock.
@@ -761,6 +823,30 @@ func (s *Snapshotter) pollRemotes(ctx context.Context) {
 	}
 }
 
+// MachineRoutes is the SSH routes of the configured machines, by the ids their
+// machine entries have in the document: the id of each published entry of the
+// machine and, for one that is read live, its live id. It is what an owner
+// session's "Copy command" entries are built from
+// (cockpit-views#req:copy-the-command), and it is never part of the document,
+// of an export or of anything an anonymous reader is sent.
+func (s *Snapshotter) MachineRoutes() []cockpit.MachineRoute {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var routes []cockpit.MachineRoute
+	for _, key := range s.sshKeys {
+		route := s.sshRoutes[key]
+		ids := s.cachedMachinesOf(key)
+		if live := s.liveMachineID(key, ids); s.live[key] != nil && !slices.Contains(ids, live) {
+			ids = append(ids, live)
+		}
+		for _, id := range ids {
+			routes = append(routes, cockpit.MachineRoute{MachineID: id, SSH: cockpit.SSHRoute{Host: route.Host, User: route.User, WBPath: route.command()}})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].MachineID < routes[j].MachineID })
+	return routes
+}
+
 // exportRemote reads one machine's export and merges it. A full export replaces
 // the machine's fleet, its metrics and its failure; a metrics-only one its
 // metrics. A failure keeps what the machine last gave and records the code. A
@@ -774,7 +860,10 @@ func (s *Snapshotter) exportRemote(parent context.Context, machine *liveMachine,
 	ctx, cancel := context.WithTimeout(parent, remoteExportTimeout)
 	defer cancel()
 	key := machine.target.Machine
-	result := exportFrom(ctx, s.transports, machine.target, metricsOnly, s.now)
+	s.mu.RLock()
+	cooling := machine.cooling.active(started)
+	s.mu.RUnlock()
+	result := exportFrom(ctx, routed(s.transports, cooling), machine.target, metricsOnly, s.now)
 	received := s.now()
 	var view liveView
 	var digest [sha256.Size]byte
@@ -822,13 +911,23 @@ func (s *Snapshotter) ownExport(envelope Envelope) bool {
 // and a configured machine with no published entry stays visible.
 //
 // A metrics-only export never clears the failure: only a full export on the
-// preferred transport does.
+// preferred transport does. An export that SSH answered after the preferred
+// transport failed starts the machine's cool-down (fallback.after), within
+// which SSH alone is asked and the entry keeps the preferred transport's
+// failure.
 func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine, result exportResult, metricsOnly bool, started, received time.Time, view liveView, digest [sha256.Size]byte, size int, id string) (publish bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	machine.busy = false
 	if parent.Err() != nil {
 		return false
+	}
+	held := machine.cooling
+	machine.cooling = held.after(started, result)
+	if result.ok && result.failure == "" && result.transport == TransportSSH && held.active(started) {
+		// SSH was asked alone: the entry still carries what the preferred transport
+		// failed with.
+		result.failure = held.failure
 	}
 	if result.warming {
 		if machine.fresh(received, s.interval) {

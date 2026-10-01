@@ -966,3 +966,54 @@ func TestDefaultClockAndRandomSourceIssueWorkingSecrets(t *testing.T) {
 		t.Fatalf("session identifier has %d characters or repeats the code", len(id))
 	}
 }
+
+// TestMachineRoutesAreSentToAnOwnerSessionAndToNobodyElse is the session half
+// of cockpit-views#ac:copy-command-for-an-ssh-machine and of
+// cockpit#req:anonymous-local-reads-metadata-only: the session response carries
+// machine_routes (machine id, ssh host, optional user and wb path) for an owner
+// session only. An anonymous-local reader, the hosted origin (with or without
+// the owner's cookie) and a proxied request never receive a host, a user or a
+// path, and a server with no source of routes sends none to anybody.
+func TestMachineRoutesAreSentToAnOwnerSessionAndToNobodyElse(t *testing.T) {
+	t.Parallel()
+	const host, user, path = "SENTINEL-host.example", "SENTINEL-user", "/opt/SENTINEL-path/wb"
+	asked := 0
+	f := newFixture(t, nil)
+	f.server.SetMachineRoutes(func() []MachineRoute {
+		asked++
+		return []MachineRoute{
+			{MachineID: "mach-vm", SSH: SSHRoute{Host: host, User: user, WBPath: path}},
+			{MachineID: "mach-old", SSH: SSHRoute{Host: host, WBPath: "wb"}},
+		}
+	})
+	cookie := f.login()
+	owned := f.do(call{target: sessionPath, cookie: cookie})
+	const want = `"machine_routes":[{"machine_id":"mach-vm","ssh":{"host":"SENTINEL-host.example","user":"SENTINEL-user","wb_path":"/opt/SENTINEL-path/wb"}},{"machine_id":"mach-old","ssh":{"host":"SENTINEL-host.example","wb_path":"wb"}}]`
+	if owned.Code != http.StatusOK || !strings.Contains(owned.Body.String(), want) || !strings.Contains(owned.Body.String(), `"principal":"owner"`) || asked != 1 {
+		t.Fatalf("the owner's session = %d %s (asked %d times)", owned.Code, owned.Body.String(), asked)
+	}
+	for name, other := range map[string]call{
+		"anonymous-local":                  {target: sessionPath},
+		"the hosted origin":                {target: sessionPath, headers: []string{"Origin", hostedOrigin}},
+		"the hosted origin with a session": {target: sessionPath, headers: []string{"Origin", hostedOrigin}, cookie: cookie},
+		"a proxied request":                {target: sessionPath, headers: []string{"Via", "1.1 proxy"}},
+		"a foreign origin with a session":  {target: sessionPath, headers: []string{"Origin", "https://evil.example.test"}, cookie: cookie},
+	} {
+		body := f.do(other).Body.String()
+		if strings.Contains(body, "SENTINEL") || strings.Contains(body, "machine_routes") || strings.Contains(body, "mach-vm") || strings.Contains(body, `"principal":"owner"`) {
+			t.Errorf("%s was sent the machine routes: %s", name, body)
+		}
+	}
+	if asked != 1 {
+		t.Errorf("the routes were read %d times, want once, for the owner", asked)
+	}
+	// With no source there is no field, for the owner either.
+	bare := newFixture(t, nil)
+	if body := bare.do(call{target: sessionPath, cookie: bare.login()}).Body.String(); strings.Contains(body, "machine_routes") || !strings.Contains(body, `"principal":"owner"`) {
+		t.Errorf("a server with no route source answered %s", body)
+	}
+	// The source is fixed before the mounts are taken, like every route.
+	if message := panics(func() { f.server.SetMachineRoutes(nil) }); !strings.Contains(message, "after the mounts were taken") {
+		t.Errorf("setting the source late = %q", message)
+	}
+}
