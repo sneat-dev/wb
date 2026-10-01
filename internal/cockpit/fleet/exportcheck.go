@@ -348,14 +348,9 @@ var stringRules = map[string]textRule{
 }
 
 // rulesForUnmergedFields are rules named in stringRules for fields that are not
-// in this tree's types yet: they belong to the pull request state of
-// cockpit-views task 3 (PullRequest.mergeable, whose values are the
-// observation's mergeableStates, and PullRequest.failed_check, free text of at
-// most 100 characters with control characters removed). Remove each from this set
-// when the merge brings its field, and add a rule for any other string field the
-// merge brings: the walk refuses a field with no rule, and the test of the rules
-// fails until it has one.
-var rulesForUnmergedFields = map[string]bool{"PullRequest.mergeable": true, "PullRequest.failed_check": true}
+// in this tree's types yet. It is empty now that the pull request state fields
+// have merged; a later task that pre-registers a rule lists its field here.
+var rulesForUnmergedFields = map[string]bool{}
 
 var (
 	timeType        = reflect.TypeFor[time.Time]()

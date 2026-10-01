@@ -411,9 +411,18 @@ func mapLive(key, machineID string, fleet *Document, observed time.Time, dropped
 			cut++
 			continue
 		}
+		mergeable := ""
+		if slices.Contains(mergeableStates, pull.Mergeable) {
+			mergeable = pull.Mergeable
+		}
+		// The address is kept only as a candidate host for relink, which rebuilds
+		// the link at publication: an address a remote sent is never rendered.
 		view.pullRequests = append(view.pullRequests, PullRequest{
 			Entry: entry(kindPR, pull.ID), Repository: repositoryIDs[pull.Repository], Worktree: worktreeIDs[pull.Worktree],
 			Branch: pull.Branch, Number: pull.Number, State: pull.State, URL: safeHTTPSURL(pull.URL),
+			Mergeable: mergeable, ChecksTotal: pull.ChecksTotal, ChecksPassed: pull.ChecksPassed, ChecksFailed: pull.ChecksFailed,
+			ChecksSkipped: pull.ChecksSkipped, ChecksPending: pull.ChecksPending, ChecksGreen: pull.ChecksGreen,
+			FailedCheck: plainTextMax(pull.FailedCheck, maxFailedCheckText), CheckedAt: pull.CheckedAt,
 		})
 	}
 	truncated := fleet.AgentsTruncated
