@@ -124,7 +124,7 @@ answers 401 without a session.
 **Id:** task-5
 **Verifies:** cockpit#ac:release-build-includes-cockpit, cockpit#ac:coverage-gates-hold
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Create the Angular 22 project at `cockpit/web` with PrimeNG 22, the CDK,
 Vitest and Playwright: an empty shell that builds, is embedded, and is served
@@ -194,9 +194,6 @@ session. No reloads or manual steps beyond those the journey names.
 ## Open Questions
 
 - The Go package layout under `internal/cockpit` is settled in Task 1.
-- Whether `cockpit/web` is a plain Angular workspace or an Nx workspace like
-  the CodeGrapher web UI is settled in Task 5; sharing components later
-  favors matching it.
 
 ---
 *This document follows the https://specscore.md/plan-specification*

@@ -1,0 +1,104 @@
+name: Cockpit web CI
+
+# No `paths:` filter on the trigger, on purpose. A path-filtered workflow does
+# not run at all when nothing matches, which leaves a required check pending
+# forever. This one always runs and decides inside the job whether anything
+# under cockpit/web (or this workflow, or .goreleaser.yml) changed; when nothing did it succeeds at once, before Node
+# is installed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: cockpit-web-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Cockpit web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Did cockpit/web change?
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Pushes to main and manual runs always build; only a pull request
+          # can be skipped. If the changed-file list cannot be read, build.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)'); then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A change to this workflow or to the release config can break the
+          # Cockpit build too, so it counts. A renamed file counts by both
+          # its old and its new path.
+          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|\.github/workflows/cockpit-web\.yml$|\.goreleaser\.yml$)'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing under cockpit/web changed; nothing to check."
+          fi
+
+      - name: Checkout
+        if: steps.changes.outputs.web == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup Node
+        if: steps.changes.outputs.web == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Angular 22 needs Node ^22.22.3, ^24.15 or >=26 (cockpit/web
+          # package.json "engines"). hub-web.yml pins 22, which floats to a
+          # satisfying 22.x here too, but this job names the major it was
+          # verified on.
+          node-version: 24
+
+      - name: Enable Corepack
+        if: steps.changes.outputs.web == 'true'
+        run: corepack enable
+
+      - name: Install dependencies
+        if: steps.changes.outputs.web == 'true'
+        working-directory: cockpit/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        if: steps.changes.outputs.web == 'true'
+        working-directory: cockpit/web
+        run: pnpm lint
+
+      - name: Build
+        if: steps.changes.outputs.web == 'true'
+        working-directory: cockpit/web
+        run: pnpm build
+
+      # Runs the component-spec check, then the unit tests with the 100%
+      # coverage thresholds.
+      - name: Unit tests and coverage
+        if: steps.changes.outputs.web == 'true'
+        working-directory: cockpit/web
+        run: pnpm test
+
+      - name: Install Playwright browser
+        if: steps.changes.outputs.web == 'true'
+        working-directory: cockpit/web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        if: steps.changes.outputs.web == 'true'
+        working-directory: cockpit/web
+        run: pnpm test:e2e
