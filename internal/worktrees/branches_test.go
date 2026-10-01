@@ -565,13 +565,13 @@ func TestRetiredCountHonoursExactBranchAndAgeSelectors(t *testing.T) {
 	// The count helper's selector predicate is shared for both scopes; this
 	// table protects the no-double-count presentation contract independently of
 	// repository discovery.
-	if !retiredRefSelected(sweep, branchRef{Name: "retired/one", CommitterDate: now.Add(-2 * time.Hour)}) {
+	if !worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), branchRef{Name: "retired/one", CommitterDate: now.Add(-2 * time.Hour)}) {
 		t.Fatal("matching retired ref was excluded")
 	}
-	if retiredRefSelected(sweep, branchRef{Name: "retired/two", CommitterDate: now.Add(-2 * time.Hour)}) {
+	if worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), branchRef{Name: "retired/two", CommitterDate: now.Add(-2 * time.Hour)}) {
 		t.Fatal("exact branch selector was ignored")
 	}
-	if retiredRefSelected(sweep, branchRef{Name: "retired/one", CommitterDate: now.Add(-time.Minute)}) {
+	if worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), branchRef{Name: "retired/one", CommitterDate: now.Add(-time.Minute)}) {
 		t.Fatal("age selector was ignored")
 	}
 }

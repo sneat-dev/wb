@@ -249,14 +249,6 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 	return BranchListOutcome{Host: result.Host, GeneratedAt: result.GeneratedAt, Repository: result.Repository, Org: result.Org, Branch: result.Branch, Base: result.Base, Scope: result.Scope, Entries: result.Entries, Diagnostics: result.Diagnostics, Totals: result.Totals, ElapsedMS: result.ElapsedMS, RetiredRefs: result.RetiredRefs, RetiredBranches: result.RetiredBranches, RetiredTags: result.RetiredTags, RetiredTagNames: result.RetiredTagNames, RetiredRemoteUnavailable: result.RetiredRemoteUnavailable}, nil
 }
 
-func appendRetiredEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
-	return branchInventoryService().AppendRetiredEntries(ctx, entries, names, branchInventoryRepository(repository), sweep.branchInventorySweep(), refs, scope)
-}
-
-func appendRetiredTagEntries(ctx context.Context, entries *[]BranchEntry, names map[string]bool, repository discover.Repo, sweep branchSweepOptions, refs []branchRef, scope string) int {
-	return branchInventoryService().AppendRetiredTagEntries(ctx, entries, names, branchInventoryRepository(repository), sweep.branchInventorySweep(), refs, scope)
-}
-
 // decorateBranchCommits reads metadata for one repository's selected refs in
 // one Git process. Retired list output has the same author/title fields as the
 // normal disposition path without turning a fleet count into one process per
@@ -301,18 +293,6 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 	return branchInventoryService().CountRetiredBranches(ctx, sweep.branchInventorySweep())
 }
 
-func accumulateRetiredCounts(sweep branchSweepOptions, repository discover.Repo, refs []branchRef, scope string, counts map[string]int, names map[string]bool) {
-	worktreebranches.AccumulateRetiredCounts(sweep.branchPolicyOptions(), repository.Slug(), refs, scope, counts, names)
-}
-
-func retiredRefSelected(sweep branchSweepOptions, ref branchRef) bool {
-	return worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), ref)
-}
-
-func branchNameSelected(sweep branchSweepOptions, name string) bool {
-	return worktreebranches.BranchNameSelected(sweep.branchPolicyOptions(), name)
-}
-
 func inspectRepositoryBranchesWithHeartbeat(
 	ctx context.Context,
 	repository discover.Repo,
@@ -326,23 +306,6 @@ func inspectRepositoryBranchesWithHeartbeat(
 		return inspect(ctx, repository, sweep, inUse)
 	}
 	return branchInventoryService().InspectRepositoryBranchesWithHeartbeat(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), inUse, index, total, interval, adapt)
-}
-
-func discoverBranchRepositories(projectsRoot, filter string) ([]discover.Repo, error) {
-	repositories, err := discover.ScanLocal(projectsRoot)
-	if err != nil {
-		return nil, err
-	}
-	if filter == "" {
-		return repositories, nil
-	}
-	filtered := make([]discover.Repo, 0, len(repositories))
-	for _, repository := range repositories {
-		if strings.Contains(repository.Slug(), filter) {
-			filtered = append(filtered, repository)
-		}
-	}
-	return filtered, nil
 }
 
 func selectBranchRepositories(repositories []discover.Repo, repositorySlug, org string) ([]discover.Repo, error) {
@@ -380,14 +343,6 @@ func branchInUseIndex(ctx context.Context, projectsRoot, filter string) (map[str
 	return branchInventoryService().BranchInUseIndex(ctx, projectsRoot, filter)
 }
 
-func reportBranchProgress(out io.Writer, index, total int, repository string) {
-	worktreebranches.ReportBranchProgress(out, index, total, repository)
-}
-
-func reportBranchSummary(out io.Writer, totals map[string]int, elapsed time.Duration) {
-	worktreebranches.ReportBranchSummary(out, totals, elapsed)
-}
-
 // inspectRepositoryBranches classifies every branch in one repository. A
 // fetch failure for the exact target yields unreadable for the whole
 // repository rather than aborting the sweep.
@@ -397,10 +352,6 @@ func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sw
 
 func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *BranchEntry) {
 	branchInventoryService().DecorateBranchCommit(ctx, repositoryPath, entry)
-}
-
-func retiredBranchEntry(repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope, targetSHA string) BranchEntry {
-	return worktreebranches.RetiredBranchEntry(repository.Slug(), sweep.branchPolicyOptions(), ref, scope, targetSHA)
 }
 
 func isRetiredBranch(branch string) bool {
@@ -445,10 +396,6 @@ func listRefs(ctx context.Context, repositoryPath, refPrefix, namePrefix string)
 
 func classifyBranch(ctx context.Context, repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope string, targetSHA, canonicalHEAD string, inUse map[string]string, checkedOut map[string]bool, pullRequestCache map[string][]githubPullRequest) BranchEntry {
 	return branchInventoryService().ClassifyBranch(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), ref, scope, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache)
-}
-
-func receiptedBranch(entry BranchEntry, landingSHA string, pullRequest *PullRequest, absorbedBy string) BranchEntry {
-	return worktreebranches.ReceiptedBranch(entry, landingSHA, pullRequest, absorbedBy)
 }
 
 // classifyAttestedReceipt verifies an operator-supplied --absorbed-by pointer
