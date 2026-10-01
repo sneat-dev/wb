@@ -33,21 +33,6 @@ func (identity DirectoryIdentity) Inode() uint64 { return identity.inode }
 // ErrDirectoryMoveIdentityChanged reports a no-replace move whose identity no longer matches.
 var ErrDirectoryMoveIdentityChanged = errors.New("directory move identity changed")
 
-// CloseIncompleteFiles releases a partially acquired descriptor set.
-func CloseIncompleteFiles(files ...*os.File) bool {
-	for _, file := range files {
-		if file == nil {
-			for _, acquired := range files {
-				if acquired != nil {
-					_ = acquired.Close()
-				}
-			}
-			return true
-		}
-	}
-	return false
-}
-
 // DuplicateDirectoryDescriptor duplicates an owned directory descriptor.
 func DuplicateDirectoryDescriptor(directory *os.File, name string) (*os.File, error) {
 	if directory == nil {

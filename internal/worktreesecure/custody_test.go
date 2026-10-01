@@ -73,16 +73,6 @@ func validSegment(s string) bool { return s != "" && s != "." && s != ".." && fi
 func TestCustodyBasicClassification(t *testing.T) {
 	t.Parallel()
 	root := physicalTempDir(t)
-	if CloseIncompleteFiles(nil) != true || CloseIncompleteFiles() != false {
-		t.Fatal("incomplete group classification")
-	}
-	partial := openTestDirectory(t, root)
-	if !CloseIncompleteFiles(partial, nil) {
-		t.Fatal("partial descriptor group accepted")
-	}
-	if _, err := partial.Stat(); err == nil {
-		t.Fatal("partial descriptor stayed open")
-	}
 	if PathWithin(root, filepath.Join(root, "child")) == false || PathWithin(root, filepath.Dir(root)) {
 		t.Fatal("path containment")
 	}
