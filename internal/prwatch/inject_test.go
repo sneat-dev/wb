@@ -69,6 +69,7 @@ func TestEvaluateRoutesItsGitHubReadsThroughTheReader(t *testing.T) {
 	t.Parallel()
 	var asked []string
 	watcher := NewWatcher()
+	watcher.Observe = prsnapshot.ObserveLean
 	watcher.Reader = &githubobserver.Reader{Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
 		asked = append(asked, request.Endpoint)
 		return githubobserver.Response{Body: []byte(`{"number":3,"state":"closed","merged":true,"head":{"sha":"h"},"base":{"ref":"main"}}`), StatusCode: 200}, nil

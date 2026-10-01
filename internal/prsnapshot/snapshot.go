@@ -72,8 +72,9 @@ type Snapshot struct {
 //     request, its check runs, its Actions workflow runs, its commit statuses, the
 //     target's branch policy and its active rules. Naming a blocked required check
 //     reuses these reads.
-//   - ReadsPerInactiveObservation: a merged or closed pull request: the pull
-//     request alone, since the checks of a head that is no longer open are not read.
+//   - ReadsPerInactiveObservation: a merged or closed pull request, lean only:
+//     the pull request alone, since the checks of a head that is no longer open
+//     are not read. Observe reads them as before.
 //
 // Observe adds to the first the reads that explain a red head (see ObserveLean).
 const (
@@ -115,14 +116,22 @@ func observe(ctx context.Context, repository, selector string, lean bool) Snapsh
 	snapshot.URL = view.HTMLURL
 	snapshot.Mergeable = view.MergeableState
 
-	// The checks of a head that is no longer open are not read: reporting the
-	// merge or the closure costs the one read already made.
-	if snapshot.State != "" && !strings.EqualFold(snapshot.State, "open") {
+	// The Cockpit's lean observation does not read the checks of a head that is
+	// no longer open: reporting the merge or the closure costs the one read
+	// already made. Observe still reads them, as `wb wait pr` always has.
+	inactive := snapshot.State != "" && !strings.EqualFold(snapshot.State, "open")
+	if lean && inactive {
 		snapshot.Checks = map[string]int{}
 		return snapshot
 	}
 	observation, err := orchestrate.ObservePullRequestHead(ctx, repository, view)
 	if err != nil {
+		// A closed pull request no longer needs its checks read; reporting
+		// the closure is more useful than failing on a head that may be gone.
+		if inactive {
+			snapshot.Checks = map[string]int{}
+			return snapshot
+		}
 		snapshot.Err = err
 		return snapshot
 	}

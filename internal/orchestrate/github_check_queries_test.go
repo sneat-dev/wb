@@ -127,6 +127,64 @@ func TestObservePullRequestHeadNamesOnlyMissingOrFailedProducersFromTheSameReads
 	}
 }
 
+func headOps(t *testing.T, runs []RemoteCheck, required []RequiredRemoteCheck) pullRequestCheckOps {
+	t.Helper()
+	ops := fakePullRequestCheckOps(t)
+	ops.runs = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return runs, false, "" }
+	ops.statuses = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return nil, false, "" }
+	ops.required = func(context.Context, string, string, bool) ([]RequiredRemoteCheck, string, string) {
+		return required, "", ""
+	}
+	return ops
+}
+
+// TestObservePullRequestHeadWeighsRequiredChecksAgainstTheObservedOnes pins the
+// verdict rules: a required check with no passing observation blocks even when
+// every observed run passed; with two observations under one name the sorted
+// order decides (a `fail` sorts before a `pass`, and the first one counts); and
+// a check pinned to one GitHub App is satisfied only by that app.
+func TestObservePullRequestHeadWeighsRequiredChecksAgainstTheObservedOnes(t *testing.T) {
+	t.Parallel()
+	view := prUpdateView(t, "head")
+	for name, test := range map[string]struct {
+		runs     []RemoteCheck
+		required []RequiredRemoteCheck
+		green    bool
+		blocked  []string
+	}{
+		"all passed but a required one is missing": {
+			runs:     []RemoteCheck{{Name: "check-run:present", Bucket: "pass"}},
+			required: []RequiredRemoteCheck{{Name: "present"}, {Name: "missing"}},
+			blocked:  []string{"missing"},
+		},
+		"a fail and a pass under one name: the fail sorts first": {
+			runs:     []RemoteCheck{{Name: "check-run:build", Bucket: "pass"}, {Name: "check-run:build", Bucket: "fail"}},
+			required: []RequiredRemoteCheck{{Name: "build"}},
+			blocked:  []string{"build"},
+		},
+		"a skipped and a pass under one name: the pass sorts first": {
+			runs:     []RemoteCheck{{Name: "check-run:build", Bucket: "skipping"}, {Name: "check-run:build", Bucket: "pass"}},
+			required: []RequiredRemoteCheck{{Name: "build"}},
+			green:    true,
+		},
+		"a pinned check passed by its app": {
+			runs:     []RemoteCheck{{Name: "check-run:build", Bucket: "pass", AppID: 7}},
+			required: []RequiredRemoteCheck{{Name: "build", IntegrationID: 7}},
+			green:    true,
+		},
+		"a pinned check passed by another app": {
+			runs:     []RemoteCheck{{Name: "check-run:build", Bucket: "pass", AppID: 8}},
+			required: []RequiredRemoteCheck{{Name: "build", IntegrationID: 7}},
+			blocked:  []string{"build"},
+		},
+	} {
+		observation, err := observePullRequestHeadWith(context.Background(), "acme/app", view, headOps(t, test.runs, test.required))
+		if err != nil || observation.Green != test.green || !reflect.DeepEqual(observation.Blocked, test.blocked) {
+			t.Errorf("%s: green=%v blocked=%v error=%v, want %v %v", name, observation.Green, observation.Blocked, err, test.green, test.blocked)
+		}
+	}
+}
+
 func TestObservePullRequestHeadRefusesIncompleteReads(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

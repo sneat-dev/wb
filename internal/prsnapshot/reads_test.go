@@ -100,7 +100,12 @@ func TestObservationReadCountsAreTested(t *testing.T) {
 				t.Errorf("snapshot = %+v", s)
 			}
 		}},
-		"merged": {github: &fakeGitHub{state: "closed", merged: true, checkRuns: greenRuns, branch: unruled}, reads: ReadsPerInactiveObservation, pullOnly: true, check: func(t *testing.T, s Snapshot) {
+		"merged, full (wb wait pr)": {github: &fakeGitHub{state: "closed", merged: true, checkRuns: greenRuns, branch: unruled}, reads: ReadsPerObservation, check: func(t *testing.T, s Snapshot) {
+			if !s.Merged || s.Checks["pass"] != 1 {
+				t.Errorf("snapshot = %+v, want the merged pull request's checks as before", s)
+			}
+		}},
+		"merged, lean": {github: &fakeGitHub{state: "closed", merged: true, checkRuns: greenRuns, branch: unruled}, lean: true, reads: ReadsPerInactiveObservation, pullOnly: true, check: func(t *testing.T, s Snapshot) {
 			if !s.Merged || s.Green || len(s.Checks) != 0 {
 				t.Errorf("snapshot = %+v", s)
 			}

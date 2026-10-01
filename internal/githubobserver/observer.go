@@ -191,11 +191,12 @@ func Default() *Observer {
 }
 
 // Reader replaces the GitHub reads made below one context: Get answers Get and
-// GetPages, Execute answers Execute; a nil function leaves that call to the
+// GetPages, Read answers Read, Execute answers Execute; a nil function leaves that call to the
 // real observer. It is the seam a unit test uses to count and answer every read
 // of a caller without a `gh` binary, a process or the network.
 type Reader struct {
 	Get     func(ctx context.Context, request GetRequest) (Response, error)
+	Read    func(ctx context.Context, dir string, args ...string) ([]byte, error)
 	Execute func(ctx context.Context, dir string, args ...string) CommandResponse
 }
 
@@ -219,6 +220,9 @@ func Get(ctx context.Context, request GetRequest) (Response, error) {
 }
 
 func Read(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if reader := readerOf(ctx); reader.Read != nil {
+		return reader.Read(ctx, dir, args...)
+	}
 	return Default().Read(ctx, dir, args...)
 }
 
