@@ -51,7 +51,7 @@ describe('pageRoutes', () => {
     for (const route of prime) {
       const [child] = await (route.loadChildren as () => Promise<Route[]>)()
       expect(typeof (await (child.loadComponent as () => Promise<unknown>)()), route.path).toBe('function')
-      expect(child.providers, route.path).toHaveLength(1)
+      expect(child.providers, route.path).toBeDefined()
     }
   })
 

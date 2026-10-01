@@ -1,8 +1,8 @@
-import { Type, inject, provideEnvironmentInitializer } from '@angular/core'
+import { APP_INITIALIZER, Type, inject, provideEnvironmentInitializer } from '@angular/core'
 import { Routes } from '@angular/router'
 import { definePreset } from '@primeuix/themes'
 import Aura from '@primeuix/themes/aura'
-import { PrimeNG } from 'primeng/config'
+import { providePrimeNG } from 'primeng/config'
 import { readCspNonce } from '../csp-nonce'
 
 /**
@@ -106,23 +106,33 @@ export const CockpitPreset = definePreset(Aura, {
 })
 
 /**
- * The route of a page that still uses PrimeNG components: PrimeNG is configured
- * (the Cockpit theme and the style nonce) when the route's injector is created,
- * so the shell and every page that uses no PrimeNG never load it. This file is
- * itself a lazy chunk, fetched only by those routes (app.routes.ts).
+ * `providePrimeNG` configures PrimeNG (theme, style nonce) and runs PrimeNG's own licence
+ * verification, with the notice it shows when the licence is not valid, in an application
+ * initializer, which Angular runs only at bootstrap. The route that loads PrimeNG is created
+ * later, so the initializers its `providePrimeNG` registered are run when the route's injector
+ * is created: PrimeNG's own initialisation, licence check included, runs wherever PrimeNG is
+ * loaded, and nowhere else.
+ */
+export function runInitializers(): void {
+  for (const initialize of inject(APP_INITIALIZER, { self: true, optional: true }) ?? []) initialize()
+}
+
+/**
+ * The route of a page that still uses PrimeNG components. This file is itself a lazy
+ * chunk, fetched only by those routes (app.routes.ts): the shell and every page that
+ * uses no PrimeNG never load PrimeNG, its theme or its licence check.
  */
 export function primePage(loadComponent: () => Promise<Type<unknown>>): Routes {
   return [
     {
       path: '',
       providers: [
-        provideEnvironmentInitializer(() =>
-          inject(PrimeNG).setConfig({
-            csp: { nonce: readCspNonce(document) },
-            // 'system' follows the browser's prefers-color-scheme.
-            theme: { preset: CockpitPreset, options: { darkModeSelector: 'system' } },
-          }),
-        ),
+        providePrimeNG({
+          csp: { nonce: readCspNonce(document) },
+          // 'system' follows the browser's prefers-color-scheme.
+          theme: { preset: CockpitPreset, options: { darkModeSelector: 'system' } },
+        }),
+        provideEnvironmentInitializer(runInitializers),
       ],
       loadComponent,
     },
