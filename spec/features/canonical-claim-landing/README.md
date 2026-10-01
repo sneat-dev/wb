@@ -72,14 +72,16 @@ reported.
 
 `wb worktree end <task>` on a canonical claim MUST release the claim without
 landing, with no extra git call from the agent: commit any uncommitted work onto
-the claim's feature branch as a WIP commit (never discard, reset, or stash),
-push that branch so the work survives, check out the base branch, fast-forward
-it with `--ff-only` to the latest remote, KEEP the unmerged feature branch both
-locally and on the remote, seal the claim as released, refresh the marker, and
-restore the strict guard. If the commit or the push fails, `end` MUST stop
-before switching branches, leave the claim active, and report the failure (the
-same rule as `end`'s capture failure). It MUST use the same restore routine and
-receipt as landing minus the branch deletion.
+the claim's feature branch as a WIP commit (never discard, reset, or stash), push
+that branch so the work survives, check out the base branch, fast-forward it with
+`--ff-only` to the latest remote, KEEP the unmerged feature branch both locally
+and on the remote, seal the claim as released, refresh the marker, and restore
+the strict guard. It MUST work for a lapsed but unsealed claim, committing and
+pushing through the managed hooks (`Guard` admits that on the claim branch; no
+hook bypass). If the commit or the push fails, `end` MUST stop before switching
+branches, leave the claim active, and report the failure (the same rule as
+`end`'s capture failure). It MUST use the same restore routine and receipt as
+landing minus the branch deletion.
 
 #### REQ: end-never-removes-canonical
 
@@ -91,15 +93,22 @@ canonical directory, on success or failure; it is covered by
 
 #### REQ: canonical-path-never-removable
 
-`wb worktree cleanup`, `gc`, `abort`, `retire`, `end`, and the merge-cleanup
-path (`cleanupWorktreeMergeAssets`) MUST share one predicate that identifies a
-canonical clone (the checkout whose Git directory equals its common directory,
-or whose path equals a repository's canonical path), and every removal and
-retirement choke point (`git worktree remove`, `removeWorktreeResidue`, and the
-directory-removal helpers) MUST refuse a path for which the predicate is true,
-before any filesystem change, regardless of claim state, `--force`, `--apply`,
-or the claim's recorded `worktree` field. The guarantee MUST be covered by its
-own dedicated test that feeds a canonical path to every listed entry point.
+Every WB entry point that removes, retires, moves, or adopts a checkout MUST
+share one predicate that identifies a canonical clone (the checkout whose Git
+directory equals its common directory, or whose path equals a repository's
+canonical path) and MUST refuse a path for which it is true, before any
+filesystem change, regardless of claim state, `--force`, `--apply`, or the
+claim's recorded `worktree` field. Removal and retirement entry points:
+`Cleanup`, `GC`, `Abort`, `wb worktree end` (`worktreeend.Engine`), `Retire`,
+`RetireTaskShells` (the `os.Remove` calls in `shell_retirement.go`), the orphan
+residue removal in `Orphans` and `removeWorktreeResidue`, and the merge-cleanup
+path (`cleanupWorktreeMergeAssets`). Movement entry points `Relocate`,
+`RelocateCheckout`, and `RelocateRepository` MUST refuse a canonical clone as the
+source of a move. `Adopt` and `Backfill` do not remove anything but MUST refuse
+to register a canonical path as an adopted or back-filled worktree. The
+guarantee MUST be covered by its own dedicated test that feeds a canonical path
+to each listed entry point, and every directory-removal helper they share MUST
+check the predicate.
 
 #### REQ: cleanup-skips-clone-holding-live-claim
 
@@ -148,30 +157,30 @@ abort. [Fleet Status](../fleet-status/README.md) owns canonical health reporting
 
 **Given** a real bare remote and a canonical claim whose feature branch has a landed pull request
 **When** `wb worktree land` completes, once through each of the three landing verbs
-**Then** the canonical path still exists, is on the base branch at the remote tip containing the landed head, the local feature branch is deleted, the claim is sealed, `.worktree.md` is `writable: false`, and `wb worktree guard` passes strictly; interrupting after each step and rerunning completes without duplicate effects.
+**Then** the canonical path still exists, is on the base branch at the remote tip containing the landed head, the local feature branch is deleted, the claim is sealed, `.worktree.md` is `writable: false`, and `wb worktree guard` passes strictly; a fault-injection seam on the restore routine (an injectable step runner in `internal/worktrees`, set by tests only) fails it after each step, and rerunning completes without duplicate effects.
 
-### AC: restore-refuses-without-destroying
+### AC: landing-refuses-unsafe-clones-without-destroying
 
 **Requirements:** canonical-claim-landing#req:restore-refuses-unsafe-state
 
-**Given** canonical clones that are dirty, on another branch, detached, or diverged from the remote base, and one whose feature branch holds unmerged commits
-**When** landing and `wb worktree end` run
-**Then** each unsafe clone is refused at the blocking step with its remedy and the claim stays active, nothing is reset, cleaned, or stashed, the unmerged branch is retained, and a clean unlanded claim is released back to base with its feature branch kept.
+**Given** canonical clones that are dirty, on another branch, detached, or diverged from the remote base, and one whose feature branch holds commits not contained in the landed target
+**When** landing runs
+**Then** each unsafe clone is refused at the blocking step with its remedy and the claim stays active, nothing is reset, cleaned, or stashed, and the unmerged branch is retained and reported.
 
 ### AC: end-releases-claim-keeping-work
 
 **Requirements:** canonical-claim-landing#req:release-without-landing, canonical-claim-landing#req:end-never-removes-canonical
 
-**Given** a real bare remote and a canonical claim whose clone has uncommitted work on the feature branch, and a second one where the push is made to fail
-**When** `wb worktree end <task>` runs on each
-**Then** the first commits the work as a WIP commit on the feature branch, pushes it, checks out the base branch at the latest remote tip, keeps the feature branch locally and on the remote, seals the claim as released, restores the strict guard and a `writable: false` marker, and the canonical directory still exists; the second stops before any checkout, leaves the claim active and the clone on the feature branch with the work intact, and reports the push failure.
+**Given** a real bare remote and a canonical claim whose clone has uncommitted work on the feature branch, a second one where the push is made to fail, and a third that is detached or dirty off the claim branch
+**When** `wb worktree end <task>` runs on each, once with a live and once with a lapsed lease
+**Then** the first commits the work as a WIP commit on the feature branch, pushes it, checks out the base branch at the latest remote tip, keeps the feature branch locally and on the remote, seals the claim as released, restores the strict guard and a `writable: false` marker, and the canonical directory still exists; the second stops before any checkout, leaves the claim active and the clone on the feature branch with the work intact, and reports the push failure; the third is refused with `wb worktree rescue` named. In every case the canonical directory still exists.
 
 ### AC: no-removal-path-reaches-a-canonical-clone
 
 **Requirements:** canonical-claim-landing#req:canonical-path-never-removable, canonical-claim-landing#req:cleanup-skips-clone-holding-live-claim
 
 **Given** a canonical clone, with and without an active canonical claim, with a claim whose recorded worktree is the canonical path
-**When** cleanup, gc, abort, retire, end, and merge cleanup are run with `--apply` and `--force` against it
+**When** cleanup, gc, abort, end, orphans, backfill, adopt, relocate, relocate-checkout, relocate-repository, retire, retire-shells, and merge cleanup are run with `--apply` and `--force` against it
 **Then** every entry point refuses before any filesystem change, the clone and its feature branch are intact, and the dedicated guarantee test passes.
 
 ### AC: sync-and-readers-skip-claimed-clone

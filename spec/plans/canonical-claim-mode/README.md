@@ -56,8 +56,8 @@ Open Questions.
 
 In `internal/worktrees/worklog.go` add `mode` and
 `lease_expires_at` claim fields, cover `mode` in `expectedWorkLogClaimID`, add
-lease-extension evidence events, and add one exported, clock-injected lookup
-(live, lapsed, sealed, none) built on `activeWorkLogClaim`. It fails closed on
+lease-extension evidence events, and add one exported, read-only, clock-injected lookup
+(live, lapsed, sealed, none; not cached, one projection and claim read per call) built on `activeWorkLogClaim`. It fails closed on
 any read, parse, repository, or corroboration error.
 
 ### Task 2: Guard and hook admission
@@ -69,15 +69,19 @@ any read, parse, repository, or corroboration error.
 
 In `worktrees.Guard` (`internal/worktrees/worktrees.go`, the canonical branch
 before the `branch != base` and clean-tree refusals) admit a canonical clone
-when the lookup reports a live claim and HEAD is the claim branch; report
+when the lookup reports a live claim and HEAD is the claim branch, and keep
+admitting commit and push on the claim branch (only) when the claim is lapsed but
+unsealed; report
 `Kind: "canonical"` with task and lease. Refuse base, other branches and
-detached HEAD naming the claim branch. Prove `post-checkout`, `pre-commit`,
-`pre-push` (`builtin:worktree-guard`) need no hook change, with real-Git tests.
+detached HEAD naming the claim branch. Make `pre-push` (`internal/hooks/config.go` guard script and `wb worktree guard`)
+inspect pushed refs and refuse base or any non-claim ref. Prove `post-checkout`
+and `pre-commit` need no hook change, with real-Git tests, including a lapsed
+claim committing and pushing on its branch.
 
 ### Task 3: Agent guard admission
 
 **Id:** task-3
-**Verifies:** canonical-claim-admission#ac:live-claim-admits-feature-branch-writes, canonical-claim-admission#ac:unreadable-claim-fails-closed
+**Verifies:** canonical-claim-admission#ac:live-claim-admits-feature-branch-writes, canonical-claim-admission#ac:unreadable-claim-fails-closed, canonical-claim-admission#ac:base-branch-and-detached-head-stay-refused
 **Depends-On:** 1
 **Status:** planning
 
@@ -85,7 +89,9 @@ Add an admission-check field to `agentguard.Options`
 (`internal/agentguard/guard.go`) consulted at the `KindCanonical` refusals in
 `guard.go`, `bash.go`, and `git.go`, supplied from `cmd/wb/hooks_agent.go`.
 Keep `internal/agentguard` free of Work Log imports; any check failure refuses.
-Keep the `managedGitLocation` hook-bypass refusal in force.
+Refuse, while admitted, checkout/switch to another branch, `branch -D`, resets
+or ref updates that move base, and pushes naming base. Refuse all writes once
+the lease lapsed. Keep the `managedGitLocation` hook-bypass refusal in force.
 
 ### Task 4: Marker reflects the claim
 
@@ -103,7 +109,7 @@ stale marker never admits (Guard reads the claim, not the marker).
 ### Task 5: `wb worktree create --canonical`
 
 **Id:** task-5
-**Verifies:** canonical-claim-admission#ac:entry-refuses-unsafe-clones-without-touching-them, canonical-claim-admission#ac:second-task-is-pointed-at-worktree-create, canonical-claim-admission#ac:lapsed-lease-resumes-strict-guard, canonical-claim-admission#ac:live-claim-admits-feature-branch-writes
+**Verifies:** canonical-claim-admission#ac:second-canonical-claim-after-sealing, canonical-claim-admission#ac:entry-refuses-unsafe-clones-without-touching-them, canonical-claim-admission#ac:second-task-is-pointed-at-worktree-create, canonical-claim-admission#ac:lapsed-lease-resumes-strict-guard, canonical-claim-admission#ac:live-claim-admits-feature-branch-writes
 **Depends-On:** 1, 2, 4
 **Status:** planning
 
@@ -111,8 +117,12 @@ Add `--canonical` and `--lease` to the shared create constructor
 (`cmd/wb/worktree.go`; the `wb create` alias inherits them). Preflight clean,
 on base, not detached, not mid-operation, no other active canonical claim; use
 `fetchOriginBranchToPrivateRef`, create and check out the branch in the clone
-(WB, never the agent), record the claim with lease, write the marker, print the
-path. Idempotent renewal capped at 8 hours; refusals leave the clone unchanged
+(WB, never the agent), record the claim with lease FIRST (so `post-checkout` sees a live claim), then
+check out the branch, write the marker, print the path; if the checkout fails,
+seal the claim as released and leave the clone on base. Handle a terminal
+projection left at the canonical path by an earlier sealed claim
+(`EnsureWorkLogClaim` rejects non-active projections other than not-found), and
+refuse renewal once the claim is lapsed. Idempotent renewal capped at 8 hours; refusals leave the clone unchanged
 and name `wb worktree rescue` / `wb worktree create <task> <owner/repository>`.
 Add the capabilities row and flag-matrix line. Plain create must stay untouched.
 
@@ -131,7 +141,7 @@ without touching the claim's commits and without discarding by default.
 
 **Id:** task-7
 **Verifies:** canonical-claim-admission#ac:live-claim-admits-feature-branch-writes
-**Depends-On:** 5
+**Depends-On:** 2, 5
 **Status:** planning
 
 Rewrite every statement that `wb worktree create` never touches the canonical
@@ -146,7 +156,7 @@ rescue for crashes.
 ### Task 8: End-to-end admission test
 
 **Id:** task-8
-**Verifies:** canonical-claim-admission#ac:live-claim-admits-feature-branch-writes
+**Verifies:** canonical-claim-admission#ac:live-claim-admits-feature-branch-writes, canonical-claim-admission#ac:lapsed-lease-resumes-strict-guard
 **Depends-On:** 5, 6
 **Status:** planning
 
