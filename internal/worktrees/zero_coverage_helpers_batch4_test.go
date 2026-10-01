@@ -38,7 +38,7 @@ func TestFetchExactRemotePullRequestHeadUsesInjectedGitRunner(t *testing.T) {
 	fake.ExpectArgv([]string{"git", "-C", repository, "rev-parse", "--verify", "--end-of-options", head + "^{commit}"},
 		runner.Result{CombinedOutput: head + "\n"}, nil)
 
-	got, err := fetchExactRemotePullRequestHead(withGitRunner(context.Background(), fake), repository, 17, head)
+	got, err := landingReceiptService().FetchExactRemotePullRequestHead(withGitRunner(context.Background(), fake), repository, 17, head)
 	if err != nil || got != head {
 		t.Fatalf("fetched head = (%q, %v), want (%q, nil)", got, err, head)
 	}

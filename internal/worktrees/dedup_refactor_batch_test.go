@@ -3,12 +3,13 @@ package worktrees
 import (
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 func TestDedupRefactorBatchIdentifiersAndGitDirectories(t *testing.T) {
@@ -91,14 +92,14 @@ func TestDedupRefactorBatchMergedReceipt(t *testing.T) {
 		receipt.MergeSHA != candidate.MergeCommitSHA || receipt.Merged != candidate.MergedAt {
 		t.Fatalf("merged pull-request receipt = %#v", receipt)
 	}
-	selected, err := selectExactDeletedTargetDefaultBranchReceipt(
+	selected, err := landingReceiptService().SelectExactDeletedTargetDefaultBranchReceipt(
 		context.Background(), "acme/app", []githubPullRequest{{}, candidate, candidate},
 		"feature", "main", candidate.Head.SHA,
 	)
 	if err != nil || selected == nil || selected.Number != candidate.Number {
 		t.Fatalf("selected exact receipt = %#v, %v", selected, err)
 	}
-	if selected, err := selectExactDeletedTargetDefaultBranchReceipt(
+	if selected, err := landingReceiptService().SelectExactDeletedTargetDefaultBranchReceipt(
 		context.Background(), "acme/app", nil, "feature", "main", candidate.Head.SHA,
 	); err != nil || selected != nil {
 		t.Fatalf("missing exact receipt = %#v, %v", selected, err)

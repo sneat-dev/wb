@@ -4003,9 +4003,6 @@ func githubPullRequests(ctx context.Context, worktree, repository, head string) 
 func githubPullRequestsForCommit(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, bool, error) {
 	return landingReceiptService().GitHubPullRequestsForCommit(ctx, worktree, repository, head)
 }
-func githubPullRequestsForBranch(ctx context.Context, worktree, repository, branch, base string) ([]githubPullRequest, error) {
-	return landingReceiptService().GitHubPullRequestsForBranch(ctx, worktree, repository, branch, base)
-}
 func githubPullRequestsForBranchWithExecute(ctx context.Context, worktree, repository, branch, base string,
 	execute func(context.Context, string, ...string) githubobserver.CommandResponse) ([]githubPullRequest, error) {
 	return landingReceiptService().GitHubPullRequestsForBranchWithExecute(ctx, worktree, repository, branch, base,
@@ -4016,9 +4013,6 @@ func githubPullRequestsForBranchWithExecute(ctx context.Context, worktree, repos
 }
 func exactDeletedTargetDefaultBranchReceipt(ctx context.Context, worktree, repository, recordedTarget, defaultBase, head string) (*PullRequest, error) {
 	return landingReceiptService().ExactDeletedTargetDefaultBranchReceipt(ctx, worktree, repository, recordedTarget, defaultBase, head)
-}
-func selectExactDeletedTargetDefaultBranchReceipt(ctx context.Context, repository string, pullRequests []githubPullRequest, recordedTarget, defaultBase, head string) (*PullRequest, error) {
-	return landingReceiptService().SelectExactDeletedTargetDefaultBranchReceipt(ctx, repository, pullRequests, recordedTarget, defaultBase, head)
 }
 func matchingPullRequests(pullRequests []githubPullRequest, repository, base, branch, head string) (open, merged *PullRequest) {
 	return landingReceiptService().MatchingPullRequests(pullRequests, repository, base, branch, head)
@@ -4039,25 +4033,9 @@ func absorbedLandingReceipt(ctx context.Context, worktree, repository, slug, hea
 func attestedAbsorbedReceipt(ctx context.Context, worktree, repository, slug, head, base, target, absorbedBy string) (*absorbedReceipt, string, error) {
 	return landingReceiptService().AttestedAbsorbedReceipt(ctx, worktree, repository, slug, head, base, target, absorbedBy)
 }
-func verifyAttestedSquashPullRequest(ctx context.Context, repository, sourceHead, target, absorbedBy string, pullRequest *PullRequest) (string, error) {
-	return landingReceiptService().VerifyAttestedSquashPullRequest(ctx, repository, sourceHead, target, absorbedBy, pullRequest)
-}
-func verifyAttestedMergeCommitPullRequest(ctx context.Context, repository, sourceHead, target, absorbedBy string, pullRequest *PullRequest) (string, error) {
-	return landingReceiptService().VerifyAttestedMergeCommitPullRequest(ctx, repository, sourceHead, target, absorbedBy, pullRequest)
-}
 
 type pullRequestHeadMismatchError = worktreelanding.PullRequestHeadMismatchError
 
-func fetchExactRemotePullRequestHead(ctx context.Context, repository string, number int, expectedSHA string) (string, error) {
-	return landingReceiptService().FetchExactRemotePullRequestHead(ctx, repository, number, expectedSHA)
-}
-func fetchExactRemotePullRequestHeadWithRun(ctx context.Context, repository string, number int, expectedSHA string,
-	run func(context.Context, ...string) (string, error)) (string, error) {
-	return landingReceiptService().FetchExactRemotePullRequestHeadWithRun(ctx, repository, number, expectedSHA, run)
-}
-func resolveAbsorbedBy(ctx context.Context, worktree, repository, slug, base, absorbedBy string) (string, *PullRequest, string, error) {
-	return landingReceiptService().ResolveAbsorbedBy(ctx, worktree, repository, slug, base, absorbedBy)
-}
 func resolveAbsorbedByPullRequestWithGet(ctx context.Context, worktree, slug, base string, number int,
 	get func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error)) (string, *PullRequest, string, error) {
 	return landingReceiptService().ResolveAbsorbedByPullRequestWithGet(ctx, worktree, slug, base, number,
@@ -4078,9 +4056,6 @@ func contentContained(ctx context.Context, repository, head, commit string) (boo
 }
 func mergeResultTree(ctx context.Context, repository, ours, theirs string) (string, bool, error) {
 	return landingReceiptService().MergeResultTree(ctx, repository, ours, theirs)
-}
-func commitFirstParent(ctx context.Context, repository, revision string) (string, error) {
-	return worktreeproof.CommitFirstParent(ctx, repository, revision, git)
 }
 func commitTree(ctx context.Context, repository, revision string) (string, error) {
 	return worktreeproof.CommitTree(ctx, repository, revision, git)

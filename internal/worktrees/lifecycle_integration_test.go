@@ -1146,7 +1146,7 @@ func TestDeletedTargetDefaultBranchReceiptRequiresExactImmutableIdentity(t *test
 			if test.mutate != nil {
 				test.mutate(&pullRequest)
 			}
-			receipt, err := selectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{pullRequest}, "stream/deleted", "main", head)
+			receipt, err := landingReceiptService().SelectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{pullRequest}, "stream/deleted", "main", head)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3002,7 +3002,7 @@ func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing
 			return "", nil
 		}
 	}
-	fetched, err := fetchExactRemotePullRequestHeadWithRun(context.Background(), "/unused", 77, expected, run)
+	fetched, err := landingReceiptService().FetchExactRemotePullRequestHeadWithRun(context.Background(), "/unused", 77, expected, run)
 	if err != nil || fetched != expected {
 		t.Fatalf("fetch PR head = %q, %v", fetched, err)
 	}
