@@ -530,7 +530,7 @@ describe('machines and Fleet health', () => {
     })
     const byCode = Object.fromEntries(model.health.remoteErrors.map((item, index) => [codes[index], item]))
     expect(model.health.ok).toBe(false)
-    expect(byCode['http_auth_failed'].command).toEqual({ text: 'wb remote enroll --url=<hub-url> --token-stdin', label: 'run here', needsEdit: true })
+    expect(byCode['http_auth_failed'].command).toEqual({ text: 'wb remote enroll --url=<<<edit:hub-url>>> --token-stdin', label: 'run here', needsEdit: true })
     expect(byCode['daemon_not_running'].command).toEqual({ text: 'wb daemon start', label: 'run on vm7', needsEdit: false })
     expect(byCode['wb_too_old'].command).toEqual({ text: 'wb self-update', label: 'run on vm6', needsEdit: false })
     expect(byCode['ssh_unavailable'].command).toEqual({ text: "ssh alex@vm.example /usr/local/bin/wb cockpit export --format='json'", label: 'run here', needsEdit: false })

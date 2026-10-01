@@ -2,9 +2,10 @@
 // one is an exact `wb` invocation that exists in the command manifest
 // (`ai/capabilities.json`; a unit test parses every template against it, with
 // the flags it needs), built only from identifiers in the read model and
-// angle-bracket placeholders, which are left bare and unquoted so that pasting
-// a template unedited fails in the shell instead of running (the entry is flagged
-// `needsEdit`). Every other interpolated value is POSIX single-quoted,
+// `<<<edit:name>>>` placeholders, which are left bare and unquoted. A placeholder
+// is a shell syntax error wherever it stands (bash, zsh and POSIX sh alike), so
+// pasting a template unedited fails to parse instead of running (the entry is
+// flagged `needsEdit`). Every other interpolated value is POSIX single-quoted,
 // flags take the `--flag=value` form, and a value with a control character, or
 // one that starts with `-`, is refused: nothing is ever copied that could be
 // read as an option or break out of its quotes. Nothing here executes anything.
@@ -12,15 +13,22 @@
 import { MachineRoute } from './fleet.types'
 import { MAX_QUERY_LENGTH, MatchEnv, matchesTerms, parseQuery } from './matcher'
 
-/** What the operator supplies, shown as a placeholder in angle brackets until known. */
+/**
+ * What the operator supplies, shown as a placeholder until known. Each is
+ * `<<<edit:name>>>`: `<<<` opens a here-string and `>>>` is a redirection with
+ * no target, so the shell refuses the whole line wherever the placeholder
+ * stands, even in the middle of a command or after `--flag=`. (A shorter
+ * `<<edit:name>>` is NOT enough: followed by another word, `>>` takes that word
+ * as its file and the line parses.) The UI marks these exact values.
+ */
 export const PLACEHOLDERS = {
-  message: '<message>',
-  model: '<model>',
-  promptFile: '<file>',
-  profile: '<profile>',
-  hubUrl: '<hub-url>',
-  brief: '<brief>',
-  task: '<task>',
+  message: '<<<edit:message>>>',
+  model: '<<<edit:model>>>',
+  promptFile: '<<<edit:file>>>',
+  profile: '<<<edit:profile>>>',
+  hubUrl: '<<<edit:hub-url>>>',
+  brief: '<<<edit:brief>>>',
+  task: '<<<edit:task>>>',
 } as const
 
 const PLACEHOLDER_VALUES: ReadonlySet<string> = new Set(Object.values(PLACEHOLDERS))
@@ -87,7 +95,7 @@ export type CopyCommand =
       text: string
       /** "run on <machine>" for another machine without an SSH route; absent otherwise. */
       label?: string
-      /** The text holds a placeholder the operator must replace: pasted unedited it fails in the shell. */
+      /** The text holds a placeholder the operator must replace: pasted unedited it is a shell syntax error. */
       needsEdit: boolean
     }
   | { ok: false; reason: string }
@@ -113,7 +121,7 @@ function render(parts: readonly Part[], remote: boolean): { ok: true; words: str
       words.push(part.word)
       continue
     }
-    // A placeholder is left bare, so an unedited paste fails instead of running.
+    // A placeholder is left bare: an unedited paste is a shell syntax error.
     const placeholder = PLACEHOLDER_VALUES.has(part.value)
     const problem = placeholder ? undefined : valueProblem(part.value, part.multiline)
     if (problem) return { ok: false, reason: problem }
@@ -167,7 +175,7 @@ export function worktreeList(task: string, target: CommandTarget = {}): CopyComm
   return command(target, [...wb('worktree', 'list'), { value: task }])
 }
 
-/** `wb pr create '<task>' --commit-all --message='<message>'`: commits and opens the pull request. */
+/** `wb pr create 'task' --commit-all --message='<message>'`: commits and opens the pull request. */
 export function pullRequestCreate(task: string, message: string = PLACEHOLDERS.message, target: CommandTarget = {}): CopyCommand {
   return command(target, [...wb('pr', 'create'), { value: task }, { word: '--commit-all' }, { flag: '--message', value: message }])
 }
@@ -193,7 +201,7 @@ export interface CreateOptions {
 }
 
 /**
- * `wb worktree create '<task>' '<owner/repository>'... --model='<model>'
+ * `wb worktree create 'task' '<owner/repository>'... --model='<model>'
  * --original-prompt-file='<file>'` with `--base` when given. Both required
  * flags are always present, as the operator's placeholders until known.
  */

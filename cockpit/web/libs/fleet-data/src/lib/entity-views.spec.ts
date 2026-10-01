@@ -50,7 +50,7 @@ describe('entity panels', () => {
     expect(modelOf().worktreeView('w3')?.related.pullRequests).toEqual([])
     expect(panel?.commands.map((c) => [c.title, c.command.ok && c.command.text, c.command.ok && c.command.needsEdit])).toEqual([
       ['List worktrees', "wb worktree list 'fix-ci'", false],
-      ['Commit and open pull request', "wb pr create 'fix-ci' --commit-all --message=<message>", true],
+      ['Commit and open pull request', "wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>", true],
       ['Plan cleanup (dry run)', "wb worktree cleanup 'fix-ci'", false],
     ])
     expect(panel?.raw).toEqual([modelOf().worktreeById('w1')])
@@ -89,7 +89,7 @@ describe('entity panels', () => {
     expect(panel?.related.pullRequests.map((p) => p.id)).toEqual(['p1'])
     expect(panel?.related.agents.map((a) => a.id)).toEqual(['run-1', 's1'])
     expect(panel?.commands.map((c) => c.command.ok && c.command.text)).toEqual([
-      "wb worktree create <task> 'sneat-dev/wb' --model=<model> --original-prompt-file=<file>",
+      "wb worktree create <<<edit:task>>> 'sneat-dev/wb' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>",
       "wb branch list --repo='sneat-dev/wb'",
       "wb fleet status --filter='sneat-dev/wb'",
     ])

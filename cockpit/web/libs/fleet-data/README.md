@@ -135,8 +135,11 @@ an id cannot split the list.
 ## Copy command (REQ:copy-the-command)
 
 Pure templates returning `CopyCommand` (`{ok: true, text, label?, needsEdit}` or `{ok: false, reason}`).
-A placeholder (`<message>`, `<model>`, `<file>`, `<profile>`, `<task>`, `<brief>`, `<hub-url>`) is
-written bare, never quoted, so an unedited paste fails in the shell, and `needsEdit` is true:
+A placeholder (`<<<edit:message>>>`, `<<<edit:model>>>`, `<<<edit:file>>>`, `<<<edit:profile>>>`, `<<<edit:task>>>`,
+`<<<edit:brief>>>`, `<<<edit:hub-url>>>`; exported as `PLACEHOLDERS`, which the UI marks) is written bare, never quoted, and
+`needsEdit` is true. It is a shell syntax error in every position (`<<<` is a here-string, `>>>` a redirection with no
+target; the shorter `<<edit:x>>` parses when another word follows), checked by a test that runs `bash -n`, `zsh -n` and
+`dash -n` over every template:
 `worktreeList`, `pullRequestCreate`, `worktreeCleanup`, `pullRequestLand`, `worktreeCreate`,
 `branchList`, `fleetStatus`, `branchCleanup`, `agentStatus`, `agentLogs`, `agentStop`,
 `sessionSend`, `agentDispatch` (`options.brief` is the `--task` text, the task name goes to

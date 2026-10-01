@@ -88,8 +88,8 @@ describe('CopyCommandList', () => {
       { title: 'List worktrees', command: plain },
     ])
     expect(text(items[0].querySelector('.edit'))).toBe('edit before running')
-    expect(items[0].querySelector('mark')?.textContent).toBe('<message>')
-    expect(text(items[0].querySelector('code'))).toBe("wb pr create 'fix-ci' --commit-all --message=<message>")
+    expect(items[0].querySelector('mark')?.textContent).toBe('<<<edit:message>>>')
+    expect(text(items[0].querySelector('code'))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
     expect(text(items[0].querySelector('app-copy-button button'))).toBe('Copy template')
     expect(items[0].querySelector('app-copy-button button')?.getAttribute('aria-label')).toBe('Copy command template: Commit and open pull request')
     expect(items[0].querySelector('[role="status"]')?.textContent).toBe('')
@@ -109,13 +109,13 @@ describe('CopyCommandList', () => {
   })
 
   it('marks only the placeholder values the library writes, not any <word> that is part of a quoted value', async () => {
-    const { items } = await render([{ title: 'List worktrees', command: worktreeList('<script>') }, { title: 'Create', command: pullRequestCreate('<message>') }])
+    const { items } = await render([{ title: 'List worktrees', command: worktreeList('<script>') }, { title: 'Create', command: pullRequestCreate('<<<edit:message>>>') }])
     expect(text(items[0].querySelector('code'))).toBe("wb worktree list '<script>'")
     expect(items[0].querySelector('mark')).toBeNull()
     expect(items[0].querySelector('.edit')).toBeNull()
     // A value that spells a placeholder is the library's placeholder: it is bare, and flagged.
-    expect(items[1].querySelector('mark')?.textContent).toBe('<message>')
-    expect(commandSegments("wb x '<model>'")).toEqual([{ text: "wb x '", placeholder: false }, { text: '<model>', placeholder: true }, { text: "'", placeholder: false }])
+    expect(items[1].querySelector('mark')?.textContent).toBe('<<<edit:message>>>')
+    expect(commandSegments("wb x '<<<edit:model>>>'")).toEqual([{ text: "wb x '", placeholder: false }, { text: '<<<edit:model>>>', placeholder: true }, { text: "'", placeholder: false }])
     expect(copyLabel('T', true)).toBe('Copy command template: T')
   })
 
@@ -156,12 +156,12 @@ describe('CopyCommandList', () => {
   })
 
   it('cuts a command at its placeholders and joins back to the same text', () => {
-    const original = "wb worktree create <task> 'a/b' --model=<model> --original-prompt-file=<file>"
+    const original = "wb worktree create <<<edit:task>>> 'a/b' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>"
     const segments = commandSegments(original)
     expect(segments.map((segment) => segment.text).join('')).toBe(original)
-    expect(segments.filter((segment) => segment.placeholder).map((segment) => segment.text)).toEqual(['<task>', '<model>', '<file>'])
+    expect(segments.filter((segment) => segment.placeholder).map((segment) => segment.text)).toEqual(['<<<edit:task>>>', '<<<edit:model>>>', '<<<edit:file>>>'])
     expect(commandSegments('wb fleet status')).toEqual([{ text: 'wb fleet status', placeholder: false }])
-    expect(commandSegments('<message>')).toEqual([{ text: '<message>', placeholder: true }])
+    expect(commandSegments('<<<edit:message>>>')).toEqual([{ text: '<<<edit:message>>>', placeholder: true }])
   })
 
   it('says where a command runs', () => {

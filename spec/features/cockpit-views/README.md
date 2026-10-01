@@ -599,15 +599,18 @@ unit test parses every template against that manifest:
   --message='<message>'`; no entry for any other session.
 
 Every interpolated value is POSIX single-quoted (an embedded `'` is written `'\''`), and flags
-are written `--flag=value`. A placeholder in angle brackets (`<message>`, `<model>`, `<file>`,
-`<profile>`, `<task>`, `<brief>`, `<hub-url>`) is written bare and never quoted, for example
-`--message=<message>`, so that pasting an entry unedited fails in the shell instead of running,
-and the entry is flagged as needing an edit for the interface to say so; the `'<...>'` forms in
-the list above stand for a quoted value or, until the operator supplies it, a bare placeholder.
-A value that contains a control character (including U+061C, U+200B to U+200F, U+2028, U+2029,
+are written `--flag=value`. A placeholder is written `<<<edit:name>>>` (`<<<edit:message>>>`, `<<<edit:model>>>`,
+`<<<edit:file>>>`, `<<<edit:profile>>>`, `<<<edit:task>>>`, `<<<edit:brief>>>`,
+`<<<edit:hub-url>>>`), bare and never quoted, for example `--message=<<<edit:message>>>`. It is a
+shell syntax error wherever it stands (first word, after `--flag=`, between two words, last, in
+bash, zsh and POSIX sh): `<<<` opens a here-string and `>>>` is a redirection with no target. The
+shorter `<<edit:name>>` is not enough, because `>>` takes the next word as its file and the line
+parses. Pasting an entry unedited therefore fails to parse and never runs, and the entry is
+flagged as needing an edit for the interface to say so and to mark exactly these tokens; the
+`'<...>'` forms in the list above stand for a quoted value or, until the operator supplies it, a
+bare placeholder. A value that contains a control character (including U+061C, U+200B to U+200F, U+2028, U+2029,
 the bidirectional controls and U+FEFF), or that starts with `-`, is never interpolated: the
-entry is refused and says why (a brief may hold line breaks and tabs, nothing else of that). The commands are the vocabulary's own
-placeholders in angle brackets for what the operator supplies. For an entity on a machine that
+entry is refused and says why (a brief may hold line breaks and tabs, nothing else of that). For an entity on a machine that
 has an SSH route (REQ:remote-ssh-fetch) the copied text is `ssh <user>@<host> <wb_path>
 <command>` (just the host when the configuration has no user), built from the same configuration with each token shell-quoted as one argument; for
 an entity on any other machine the command is labelled "run on <machine>". The SSH routes come
@@ -637,7 +640,7 @@ and refusal rules of REQ:copy-the-command: `wb worktree create '<task>' '<owner/
 --model='<model>' --original-prompt-file='<file>'` (both flags are required by that verb, so the
 model is required in the form, `unknown` being the verb's explicit value, and the prompt file is a
 placeholder for the operator) with `--base='<branch>'` when given, and the dispatch form `wb agent
-dispatch --repo='<owner/repository>' --task='<brief>' --profile=<profile>
+dispatch --repo='<owner/repository>' --task='<brief>' --profile=<<<edit:profile>>>
 --new-worktree='<task>'` (`--task` is the text of the task prompt, not the task name, which is the
 worktree) with `--base='<branch>'` when given; the model is not passed to dispatch,
 which has no such flag, and the profile is a placeholder because profiles are named in `wb.yaml`,
@@ -1045,7 +1048,7 @@ names. The client calls `GET /v0/workbench/machines/export` with `Authorization:
 no redirect, caps the response at 8 MiB, uses a 3 second connect timeout and a 10 second total
 timeout, and sends the bearer only to the configured host. A machine with no `remote.provider: hub`
 match, no `http` section or no readable token file has no HTTP route. The credential is installed by
-the existing `wb remote enroll --url=<hub-url> --token-stdin` (it verifies a one-time machine
+the existing `wb remote enroll --url=<<<edit:hub-url>>> --token-stdin` (it verifies a one-time machine
 credential, stores it privately and updates the hub-owned `remote` settings); for a per-machine
 `http` section the operator places the token file by the same enrolment against that machine's hub
 URL.
@@ -1113,7 +1116,7 @@ login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit exp
 codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
-<hub-url> --token-stdin`; `wb daemon start` for `daemon_not_running`; `wb self-update` for
+<<<edit:hub-url>>> --token-stdin`; `wb daemon start` for `daemon_not_running`; `wb self-update` for
 `wb_too_old` and `http_unavailable` caused by 404; and for the others the `ssh <user>@<host>
 <wb_path> cockpit export --format json` command to try. The stderr or response body behind
 it is not shown.
@@ -1888,6 +1891,15 @@ Given every command template of the requirement and `ai/capabilities.json`
 When a test parses each template
 Then each command path exists in the manifest, every flag used exists on that command, and every flag the command requires is present in the template
 
+### AC: copy-command-placeholders-are-syntax-errors
+
+**Requirements:** cockpit-views#req:copy-the-command, cockpit-views#req:new-task-form
+
+Scenario: Every template through the shell parser
+Given every command template of the requirement rendered with its placeholders (here, with an SSH route and labelled "run on"), and again with benign values, and each placeholder placed first, last, after `--flag=`, before a word and before another placeholder
+When `bash -n` and `zsh -n` (and `dash -n`, a shell that is absent being skipped) parse each text
+Then every text with a `<<<edit:name>>>` placeholder, and each placeholder in each position, makes the shell exit non-zero with a syntax error, every template without a placeholder exits 0, and each is flagged needing an edit exactly when it holds a placeholder
+
 ### AC: copy-command-refuses-hostile-values
 
 **Requirements:** cockpit-views#req:copy-the-command, cockpit-views#req:new-task-form
@@ -1913,7 +1925,7 @@ Then the actions are disabled with one consistent explanation, the session chip 
 Scenario: The form
 Given repositories `sneat-co/sneat-go` and `sneat-co/bots-go`
 When "New task" is opened, `sneat-*/*-go` is typed in the picker, both are chosen, the task `fix-ci`, the brief `Fix the flaky CI.`, base `main` and model `opus` are entered
-Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<file> --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<profile> --new-worktree='fix-ci' --base='main'` (one per repository), each flagged as needing an edit because its placeholders are written bare, the form refuses to produce a command until a model is entered, and nothing is run
+Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'` (one per repository), each flagged as needing an edit because its placeholders are written bare and are a shell syntax error (`bash -n` and `zsh -n` exit non-zero), the form refuses to produce a command until a model is entered, and nothing is run
 
 ### AC: intent-to-done-budgets-hold
 
