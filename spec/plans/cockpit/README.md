@@ -104,9 +104,11 @@ flag-matrix line and the persistent-flag support declaration.
 **Status:** planning
 
 Add a background snapshotter in the daemon that builds the fleet document
-from `discover.ScanLocalIndexed`, `worktrees.ListWithDiagnostics`,
-`worktrees.BranchList`, pull request evidence, the session and agent run
-records, and `remotestate.ReadStatus` for other machines, giving every entry
+from `discover.ScanLocalIndexed`, the cheap worktree
+enumeration the existing dashboard uses, one `git for-each-ref` per repository,
+locally recorded pull requests, the session and agent run
+records, and a local-only read of the local copy of the remote state store for
+other machines, giving every entry
 a stable `id`, its `machine`, `route` and `observed_at`. It refreshes on
 `cockpit.refresh_interval`, skipping repositories whose fingerprint is
 unchanged, and can refresh one repository on request from inside the daemon;

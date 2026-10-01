@@ -2516,6 +2516,7 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	}
 	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
 	cockpitServer := newCockpitServer(address, cockpitConfig)
+	fleetSnapshotter := registerCockpitFleet(cockpitServer, cockpitFleetOptions(inv.projectsRoot, location.Home, hubConfigPath(), cockpitConfig, command.ErrOrStderr(), os.Hostname))
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
@@ -2543,6 +2544,9 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	rpcServer := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
+	// The snapshotter lives as long as the daemon and is stopped, and waited
+	// for, on the way out so no refresh outlives the daemon's state.
+	defer fleetSnapshotter.Start(ctx)()
 	queue.StartLeaseRecovery(ctx)
 	if err := startRepositoryEventReceiver(ctx, inv.projectsRoot, hubConfigPath(), command.ErrOrStderr()); err != nil {
 		_, _ = fmt.Fprintln(command.ErrOrStderr(), "repository event receiver disabled:", err)
