@@ -155,12 +155,14 @@ guarded actions, an overflow menu for destructive ones, disabled controls
 with their reason, parameter forms, the preview dialog with the assessment,
 the typed-name confirmation, the refresh button beside the freshness
 indicator, and live operation progress without a reload. No control appears
-in a hover card. The controls fill the action slots, the palette's action
-entries and the operation indicator that the
+in a hover card. The controls fill the action slots that the
 [cockpit-views](../../features/cockpit-views/README.md) plan builds as
-empty-capable components (its Control surface requirements), so this task renders
-the registry's response into those slots and adds no layout of its own. Changed
-from the earlier text: the slots are owned by cockpit-views, not built here.
+empty-capable components (one slot per pull request or worktree), so this task
+renders the registry's response into those slots and adds no layout of its own.
+This task also owns operation feedback (the top-bar indicator and the updating row
+state) and the action results in the palette, which moved here from cockpit-views.
+Changed from the earlier text: the slots are owned by cockpit-views, and operation
+feedback and palette action results are owned here.
 
 ### Task 9: Whole-journey end-to-end test
 

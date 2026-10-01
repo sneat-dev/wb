@@ -123,11 +123,11 @@ new credential without operator guesswork.
 
 #### REQ: remote-publish-periodic
 
-The daemon MUST publish the machine's snapshot after a successful local scan by
-the same publish path as `wb remote publish`, at the interval
-`remote.publish.interval` (minimum 5 minutes), enabled by default when a remote
-store is configured and off otherwise. A failed publish is retried at the next
-interval and never delays the local fleet snapshot.
+The daemon MAY publish the machine's snapshot after a successful local scan by
+the same publish path as `wb remote publish`. It is opt-in: it runs only when
+`remote.publish.interval` is set (minimum 5 minutes), and publishes nothing
+otherwise. A failed publish is retried at the next interval and never delays the
+local fleet snapshot.
 
 #### REQ: remote-snapshot-optional-fields
 
@@ -135,11 +135,14 @@ A published snapshot MAY carry `agents` (per entry: runtime, model, task,
 repository, `activity` when known, start time and the run or session identifier)
 and `metrics` (the latest machine sample, as
 [cockpit-views](../cockpit-views/README.md)#req:machine-metrics-route defines),
-and its machine entry MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Every
-such field is optional and `schema_version` does not change, so an older reader
-that decodes without strict field checking ignores them. The hub provider's own
-snapshot model refuses unknown fields and MUST be extended to accept them before a
-publisher emits them.
+and its machine entry MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents
+(at most 200) are published only with `remote.publish.agents: true` and metrics
+only with `remote.publish.metrics: true`, both off by default. Every such field is
+optional and `schema_version` does not change, so an older reader that decodes
+without strict field checking ignores them. The hub provider's own snapshot model
+refuses unknown fields and MUST be extended to accept them before a publisher
+emits them; a publisher refused with status 400 by an older hub retries once
+without the optional fields and records a diagnostic.
 
 ## Acceptance Criteria
 
@@ -172,9 +175,10 @@ push rejection.
 
 **Requirements:** remote-state#req:remote-publish-periodic, remote-state#req:remote-snapshot-optional-fields
 
-A daemon with a remote store publishes after each successful local scan no more
-often than every 5 minutes, retries a failed publish at the next interval without
-delaying its local snapshot, and a daemon with no store publishes nothing. A
+A daemon with a remote store and `remote.publish.interval` set publishes after each
+successful local scan no more often than every 5 minutes, retries a failed publish at
+the next interval without delaying its local snapshot, and a daemon with no store or
+no interval publishes nothing. A
 snapshot carrying the optional `agents`, `metrics` and machine hardware fields is
 decoded by the previous decoder without error, and the hub provider accepts and
 stores them.

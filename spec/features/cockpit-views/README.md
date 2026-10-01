@@ -104,14 +104,14 @@ and nothing here acknowledges or snoozes an item.
 
 Serves J1 to J7. The application MUST show a top bar with the brand; the tabs
 Home, Tasks, Repositories, Worktrees, Agents and Machines; the palette entry; a
-"New task" button; the operation indicator of REQ:operation-feedback; the
-snapshot freshness chip; and the session chip (`anonymous` or `owner`). A tab
-badge is shown only for a signal: Home shows the number of "needs you" items and
-Agents the number of running agents, highlighted when above zero. No tab shows a
-badge for a static count. The freshness chip reads "updated N s ago" with the age
-of the snapshot, turns amber when the snapshot is older than two refresh
-intervals (the document's `refresh_interval_seconds`), and while the daemon is
-warming up shows how many repositories have been scanned.
+"New task" button; the snapshot freshness chip; and the session chip (`anonymous` or
+`owner`). A tab badge is shown only for a signal: Home shows the number of tasks in
+"Needs you" (REQ:home-needs-you) and Agents the number of running agents (REQ:field-tables
+defines "running"), highlighted when above zero. No tab shows a badge for a static count.
+The freshness chip reads "updated N s ago" with the age of the snapshot, turns amber when
+the snapshot is older than two refresh intervals (the document's
+`refresh_interval_seconds`), and while the daemon is warming up shows how many repositories
+have been scanned.
 
 #### REQ: home-route
 
@@ -127,15 +127,13 @@ The document `<title>` names the page. The active tab carries
 
 #### REQ: command-palette
 
-Serves J5. Pressing `/` where no list filter applies, or Cmd/Ctrl+K anywhere,
-MUST open one palette input over repositories, tasks, worktrees, the branches of
-worktrees listed in the fleet document, agents and machines; branches loaded
-lazily for a repository page are not searched. Results are grouped by kind with
-at most 8 per kind, can be moved through with the arrow keys, and Enter opens the
-highlighted result. After the navigation results the palette lists the actions
-the registry returns for the focused or selected entity and for an entity chosen
-from the results; choosing one opens its preview and runs nothing. The palette
-uses the matcher of REQ:list-filter-and-matcher.
+Serves J5. Pressing `/` where no list filter applies, or Cmd/Ctrl+K anywhere, MUST open
+one palette input over repositories, tasks, worktrees, the branches of worktrees listed in
+the fleet document, agents and machines; branches loaded lazily for a repository page are
+not searched. Results are grouped by kind with at most 8 per kind, can be moved through
+with the arrow keys, and Enter opens the highlighted result. The palette uses the matcher
+of REQ:list-filter-and-matcher. Actions in the palette are specified by `cockpit-actions`
+(its Task 8), not here.
 
 #### REQ: keyboard-shortcuts
 
@@ -185,36 +183,38 @@ global search use one pure matcher with this grammar:
 
 #### REQ: filter-vocabulary
 
-The fleet-data library owns one filter vocabulary, and chart clicks, Home links
-and quick-filter chips MUST use only that vocabulary. It is this table.
+The fleet-data library owns one filter vocabulary, and chart clicks, Home links and
+quick-filter chips MUST use only that vocabulary. It is this table.
 
-| Page | Bare term searches | Chip ids | `state:` values | Other fields |
-|---|---|---|---|---|
-| Tasks | task, repository | `needs-you`, `ready`, `working`, `agent`, `pr`, `multirepo`, `idle30` | the task lifecycle ids `at-risk`, `checks-failed`, `blocked`, `ready`, `checks-pending`, `working`, `landed`, `idle`, `not-reported` | `task`, `repo`, `machine`, `age`, `day` |
-| Repositories | repository | `worktrees`, `agents`, `prs`, `index`, `errors` | `fresh`, `stale`, `diverged`, `pending`, `failed`, `never` (code index) | `repo`, `machine`, `age`, `day` |
-| Worktrees | task, repository, branch | `active`, `orphaned`, `unpushed`, `gone`, `pr`, `idle30`, `safe`, `look` | `active`, `idle`, `orphaned`, `unknown` | `task`, `repo`, `branch`, `machine`, `age`, `day` |
-| Agents | runtime, model, task, repository | `running`, `blocked`, `runtime-<name>` | `working`, `blocked`, `idle`, `done`, `unknown`, `running`, `completed`, `failed`, `timeout`, `abandoned` | `runtime`, `task`, `repo`, `machine` |
-| Machines | machine name | `stale` | `live`, `cached`, `stale` | `machine` |
+| Page | Bare term searches | Chip ids | `state:` values | Other fields | `sel` key | Sort column ids |
+|---|---|---|---|---|---|---|
+| Tasks | task, repository | `needs-you`, `ready`, `working`, `agent`, `pr`, `multirepo`, `idle30` | the task state ids `at-risk`, `checks-failed`, `blocked`, `ready`, `not-ready`, `working`, `landed`, `idle`, `not-reported` | `task`, `repo`, `machine`, `age` | the task name | `task`, `state`, `worktrees`, `activity` |
+| Repositories | repository | `worktrees`, `agents`, `prs`, `index`, `errors` | `fresh`, `stale`, `diverged`, `pending`, `failed`, `never` (code index) | `repo`, `machine`, `age` | the repository entry id | `repository`, `activity`, `worktrees`, `branches` |
+| Worktrees | task, repository, branch | `active`, `orphaned`, `unpushed`, `gone`, `pr`, `idle30`, `safe`, `look` | `active`, `idle`, `orphaned`, `unknown` | `task`, `repo`, `branch`, `machine`, `age` | the worktree entry id | `worktree`, `state`, `machine`, `activity` |
+| Agents | runtime, model, task, repository | `running`, `blocked`, `runtime-<name>` where `<name>` matches `[a-z0-9-]+` | `working`, `blocked`, `idle`, `done`, `unknown`, `live`, `parked`, `running`, `completed`, `failed`, `timeout`, `abandoned` | `runtime`, `task`, `repo`, `machine` | the agent entry id | `label`, `activity`, `machine`, `started` |
+| Machines | machine name | `stale`, `outdated` | `live`, `cached`, `stale` | `machine` | the machine entry id | `machine`, `state`, `version` |
 
-`needs-you` on Tasks is the tasks whose lifecycle is `at-risk`, `checks-failed`
-or `blocked`. `age:` terms apply to last activity and are exactly `age:<1d`,
-`age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`; `day:YYYY-MM-DD` matches
-last activity on that local calendar day. The chip `idle30` is `age:>30d`. The
-Worktrees chips `safe` and `look` are the two cleanup counts of
-REQ:home-cleanup. The Repositories sort ids are `activity`, `worktrees` and
-`branches`. A chip whose id a page does not list is ignored.
+`needs-you` on Tasks is the tasks that REQ:home-needs-you lists (the same set, not a
+second definition). `age:` terms apply to last activity and are exactly `age:<1d`,
+`age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`; there is no `day:` term. The chip
+`idle30` is `age:>30d`. The Worktrees chips `safe` and `look` are the two cleanup counts of
+REQ:home-cleanup, `stale` on Machines is a state older than 24 hours and `outdated` a WB
+older than the newest in the fleet. The Repositories sort ids `activity`, `worktrees` and
+`branches` are the presets of REQ:repositories-list. A chip whose id a page does not list,
+a `sel` that names no entry and a sort column id a page does not list are ignored.
 
 #### REQ: list-quick-filters-sort-and-url-state
 
-Every list page has the quick-filter chips of REQ:filter-vocabulary; a chip is a
-toggle, one click. A click on a column header sorts by that column, a second
-click reverses the direction. The filter text, sort column, direction, machine
-selection, active chips and the selected row MUST be held in the page address, as
-`?q=…&sort=<column>&dir=asc|desc&machine=…&chips=…&sel=<id>`, so that the back
-button and a pasted link restore the same view. A list page shows its result
-count as "37 of 438". The default sorts are: Tasks, Worktrees and Repositories by
-last activity, newest first; Agents with running agents first, then newest first;
-Machines with the local machine first, then by name.
+Every list page has the quick-filter chips of REQ:filter-vocabulary; a chip is a toggle,
+one click. A click on a column header sorts by that column, a second click reverses the
+direction. The filter text, sort column, direction, machine selection, active chips and
+the selected row MUST be held in the page address, as
+`?q=…&sort=<column>&dir=asc|desc&machine=…&chips=…&sel=<key>`, where the sort column ids and
+the `sel` key of each page are those of REQ:filter-vocabulary, so that the back button and a
+pasted link restore the same view. A list page shows its result count as "37 of 438". The
+default sorts are: Tasks, Worktrees and Repositories by last activity, newest first; Agents
+with running agents first, then newest first; Machines with the local machine first, then
+by name.
 
 #### REQ: one-line-virtual-rows
 
@@ -244,10 +244,23 @@ with no entities at all says that nothing has been observed yet.
 
 #### REQ: every-number-is-a-link
 
-Every count cell and number anywhere in the application MUST be a link to the
-list that produced it, using only the vocabulary of REQ:filter-vocabulary. A
-count that cannot link, such as a scan-diagnostics count, says why. Hover cards
-are not required.
+The count cells below MUST be links to the list that produced them, using only the
+vocabulary of REQ:filter-vocabulary, and no other number is required to link:
+
+- Home: the "+n more" of "Needs you" (Tasks, chip `needs-you`); the cleanup counts (Worktrees,
+  chips `safe` and `look`) and the age bars of the cleanup chart (Worktrees with the `age:`
+  term); a stale or outdated machine in "Fleet health" (Machines, chip `stale` or
+  `outdated`); the Agents tab badge (Agents, chip `running`).
+- Tasks: the worktree count (Worktrees with `task:`).
+- Repositories: the worktree count (Worktrees with `repo:`), the agent count (Agents with
+  `repo:`) and the pull request count (Tasks, chip `pr`, with `repo:`).
+- Machines: the repository, worktree and agent counts (each list with `machine:`).
+
+These are declared non-linking, each with its reason: the branch counts on Repositories
+(there is no branches list page), the throughput charts and their numbers (they come from
+sealed terminal records that have no entries in the fleet document, so no list can reproduce
+them), and the checks passed over total of a pull request (it is a fact of one pull request,
+whose link is its `url`). Hover cards are not required.
 
 ### Progressive exposure
 
@@ -279,47 +292,50 @@ On a list, `j` and `k` MUST move the focused row down and up, Enter selects it
 a task name, a branch name and a session id; pressing it puts the full value in
 the clipboard.
 
-### Task lifecycle
+### Task state
 
-#### REQ: task-lifecycle
+#### REQ: task-state
 
 Serves J1, J2, J4. A task is the set of worktrees that share a task name; no task
-storage is introduced. Its lifecycle is a pure function of the fleet document in
-the fleet-data library, evaluated top to bottom, the first row that matches
-winning, which makes the order worst first. A pull request, agent or worktree
-"of the task" is one whose task name equals the task's. In the table, `checks_*`,
-`mergeable`, `state` on a pull request and `activity` on an agent are the fields
-of REQ:pull-request-fields and REQ:agent-activity.
+storage is introduced. Its computed value is called its `state` everywhere (a worktree has a
+`lifecycle` field of its own; the two are different things). The state is a pure function
+of the fleet document in the fleet-data library, evaluated top to bottom, the first row that
+matches winning, which makes the order worst first. A pull request, agent or worktree "of
+the task" is one whose task name equals the task's. A pull request is open when its `state`
+is `open` or `draft`. Rows 2, 4 and 5 consider only pull requests that carry `checked_at`; a
+task whose open pull requests are all unobserved has no reported pull request input, and the
+side panel says how many are unobserved. The fields are those of REQ:field-tables.
 
-| # | Lifecycle id | Label | The task has |
+| # | State id | Label | The task has |
 |---|---|---|---|
-| 1 | `at-risk` | at risk | a worktree that the work-loss-risk read model reports at risk; until that read model exists, a worktree on this machine with `ahead` above zero whose `owner_state` is `orphaned` or `unknown` |
+| 1 | `at-risk` | at risk | a worktree on this machine whose `owner_state` is not `active` and which has `ahead` above zero or `has_upstream` false (the interim rule, below) |
 | 2 | `checks-failed` | checks failed | an open pull request with `checks_failed` above zero |
-| 3 | `blocked` | blocked | an agent whose `activity` is `blocked`, or whose most recent dispatched run (with no later running agent) ended `failed` or `timeout` |
-| 4 | `ready` | ready to land | at least one open pull request, and every open pull request is not a draft, has `checks_green` true and `mergeable` equal to `clean` or `has_hooks` |
-| 5 | `checks-pending` | checks pending | an open pull request that rows 2 and 4 did not take: `checks_pending` above zero, or not `checks_green` with no failed check |
+| 3 | `blocked` | blocked | an agent whose `activity` is `blocked`, or whose most recent dispatched run ended `failed` or `timeout` less than 24 hours ago with no later run or session for the task |
+| 4 | `ready` | ready to land | at least one open pull request, and every open pull request has `state` `open` (not a draft), `checks_green` true and `mergeable` equal to `clean` or `has_hooks` |
+| 5 | `not-ready` | not ready | an open pull request that rows 2 and 4 did not take; the side panel says why: draft, checks pending, not mergeable, behind, or review |
 | 6 | `working` | working | an agent whose `activity` is `working`, a dispatched run in state `running`, or a worktree whose `owner_state` is `active` |
-| 7 | `landed` | landed | no open pull request, and at least one pull request with `state` `merged` or every worktree with lifecycle `merged` |
+| 7 | `landed` | landed | no open pull request, and at least one pull request with `state` `merged`, or, where the worktree's `lifecycle` is populated, every worktree with `lifecycle` `merged` |
 | 8 | `idle` | idle | none of the above, and at least one of: a worktree `owner_state`, a pull request `state` or an agent `activity` reported |
 | 9 | `not-reported` | state not reported | none of the above because no worktree `owner_state`, no pull request `state` and no agent `activity` is reported |
 
-The interim at-risk rule of row 1 is replaced, not kept beside, the work-loss-risk
-assessment when that read model exists. A pull request whose `state` is not
-reported is never counted as open, ready or landed.
+Row 1 is the interim rule. When the work-loss-risk read model lands it replaces row 1; this
+Feature does not type its input. The second arm of row 7 applies only to worktrees whose
+`lifecycle` the daemon populates (REQ:field-tables); if no worktree carries it, only the
+first arm applies. A pull request whose `state` is not reported is never counted as open,
+ready or landed.
 
 #### REQ: tasks-list
 
-Serves J1, J2, J5. The Tasks page MUST show one row per task with these columns:
-Task, Repositories (the first two and "+n"), Worktrees (count), Machines, Agent,
-Pull requests (each with its checks passed over total), Lifecycle (the badge of
-REQ:task-lifecycle, an icon with its label), Last activity. The quick filters are
-those of REQ:filter-vocabulary; selecting a row opens the side panel with the
-task's worktrees, pull requests and agents.
+Serves J1, J2, J5. The Tasks page MUST show one row per task with these columns: Task,
+Repositories (the first two and "+n"), Worktrees (count), Machines, Agent, Pull requests
+(each with its checks passed over total), State (the badge of REQ:task-state, an icon with
+its label), Last activity. The quick filters are those of REQ:filter-vocabulary; selecting a
+row opens the side panel with the task's worktrees, pull requests and agents.
 
 #### REQ: task-detail
 
 Serves J2. `/tasks/detail?task=<name>` is the full-page version of the task panel
-(REQ:detail-routes-share-the-panel): a summary header with the lifecycle badge, the
+(REQ:detail-routes-share-the-panel): a summary header with the state badge, the
 task's worktrees table, its branches, its pull requests with checks and its
 agents, ending with the "Raw data" block.
 
@@ -327,36 +343,39 @@ agents, ending with the "Raw data" block.
 
 #### REQ: home-needs-you
 
-Serves J1 and J4. Home's first section, "Needs you", MUST show at most 5 concrete,
-named rows, each with exactly one primary action, then "+n more" that opens Tasks
-with chip `needs-you`; when there are none it shows one line saying nothing needs
-the operator. The Home badge of REQ:top-bar counts every item, not only the shown
-rows. Items disappear when their state changes; there is no acknowledge or snooze.
-The kinds, in this order, and within a kind the oldest first:
+Serves J1 and J4. Home's first section, "Needs you", MUST show one row per task, at most 5
+rows, each task for its worst kind and with exactly one primary action, then "+n more" that
+opens Tasks with chip `needs-you` (the same set); when there are none it shows one line saying
+nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. Rows
+are ordered by the rank of the kind (the order below, which follows REQ:task-state), then by
+last activity, newest first. Items disappear when their state changes; there is no acknowledge
+or snooze. After the task rows, blocked agents that have no task are one row, "n blocked agents
+with no task", whose action opens Agents with chip `blocked`. The kinds, in rank order:
 
-1. **PR checks failed:** the task, `owner/name#number` and `failed_check`; the
-   action is "Open failure", a link to the pull request's `url`.
-2. **Agent blocked:** only an agent whose `activity` is `blocked` (an agent whose
-   state is not reported is never shown here); the task, or the repository when it
-   has none, and the machine; the action is "Open agent", the agent's page.
-3. **Run failed or timed out:** a dispatched run the read model still lists whose
-   state is `failed` or `timeout`, with no later running agent on its task; the
-   task, the state and the exit code when known (never the run's free text); the
-   action is "View agent".
-4. **Work at risk:** a task in lifecycle `at-risk`; the task and the reason in
-   words; the action is "Push" when the registry offers `branch.push` for the
-   worktree, and otherwise "Copy command" with the command of REQ:copy-the-command.
+1. **Work at risk** (task state `at-risk`): the task, the reason in words and the worktree(s)
+   concerned; the action is "Push" when the registry offers `branch.push`, and otherwise "Copy
+   command", one command per worktree concerned (REQ:copy-the-command).
+2. **PR checks failed** (state `checks-failed`): the task, `owner/name#number` and
+   `failed_check`; the action is "Open failure", a link to the pull request's `url`.
+3. **Agent blocked** or **Run failed or timed out** (state `blocked`): the task, the machine and
+   for a run its state and exit code, never the run's free text; the action is "Open agent"
+   (an agent whose `activity` is not reported is never shown as blocked).
+4. **PR needs you** (state `not-ready`, checks green): a pull request with `checks_green` true
+   whose `mergeable` is `dirty`, `behind` or `blocked` and so needs a review or a merge
+   resolution; the action is "Open pull request", a link to its `url`.
+5. **Agent finished** (an agent whose `activity` is `done` or `idle` for a task with no open
+   pull request, not landed, and a worktree with `ahead` above zero or `has_upstream` false):
+   the task and the agent; the action is "Open task", selecting it on Tasks.
 
 #### REQ: home-ready-to-land
 
-Serves J2. The second section, "Ready to land", MUST list the tasks in lifecycle
-`ready`, one row per task: the task, the number of repositories, the pull request
-numbers, the checks passed over total, and the age of the task's last activity,
-with the action slot of REQ:action-slots offering the registry's landing action
-for the task's pull requests, and otherwise "Copy command" with
-`wb pr land <owner/repository>#<number>`. Tasks in lifecycle `checks-pending` are
-shown below them muted, with how long ago their checks were read (`checked_at`)
-and no action.
+Serves J2. The second section, "Ready to land", MUST list the tasks in state `ready`, one row
+per task: the task, the number of repositories, the pull request numbers, the checks passed
+over total and the age of the pull request observation (`checked_at`, the oldest among them).
+The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
+task's pull requests, offering the registry's landing action, and otherwise "Copy command" with
+`wb pr land '<owner/repository>#<number>'` for each. Tasks in state `not-ready` that wait only
+on checks are shown below them muted, with how long ago their checks were read and no action.
 
 #### REQ: home-in-flight
 
@@ -373,43 +392,41 @@ of the total, `busy` otherwise, with the sample's route (`local`, `live-remote` 
 
 #### REQ: home-resume
 
-Serves J2. The fourth section, "Resume", MUST list the last 5 tasks by last
-activity, each with its lifecycle badge and an "Open" action that selects it on
-Tasks.
+Serves J2. The fourth section, "Resume", MUST list the last 5 tasks by last activity, each with
+its state badge and an "Open" action that selects it on Tasks.
 
 #### REQ: home-cleanup
 
-Serves J6. The fifth section, "Cleanup", MUST be one line, "N safe to remove; M need
-a look", with a "Review & clean" action. N counts the worktrees of tasks in
-lifecycle `landed` with no `ahead` and `owner_state` other than `active` (chip
-`safe`); M counts the other worktrees whose `owner_state` is `orphaned` or
-`unknown`, or that are idle for more than 30 days (chip `look`). The counts are
-indicative: the authoritative safe set is computed by the cleanup operation that
-`cockpit-actions` specifies, and the line says so. "Review & clean" opens
-Worktrees with the chip `safe`. The line expands to the Worktree age chart and the
-summary: bars for today (`age:<1d`), 1 to 7 days, 8 to 30 days, 31 to 90 days and
-older (`age:>90d`), each linking to Worktrees with that `age:` term, with a text
-alternative and the theme's colours in light and dark.
+Serves J6. The fifth section, "Cleanup", MUST be one line, "N safe to remove; M need a look",
+with a "Review & clean" action. N counts the worktrees of tasks in state `landed` whose `ahead`
+is present and equal to 0 and whose `owner_state` is not `active` (chip `safe`); M counts the
+other worktrees whose `owner_state` is `orphaned` or `unknown`, or that are idle for more than
+30 days (chip `look`). The counts are indicative: the authoritative safe set is computed by the
+cleanup operation that `cockpit-actions` specifies, and the line says so. "Review & clean"
+opens Worktrees with the chip `safe`. The line expands to the Worktree age chart and the
+summary: bars for today (`age:<1d`), 1 to 7 days, 8 to 30 days, 31 to 90 days and older
+(`age:>90d`), each linking to Worktrees with that `age:` term, with a text alternative and the
+theme's colours in light and dark.
 
 #### REQ: home-fleet-health
 
-Serves J7. The sixth section, "Fleet health", MUST be shown only when something is
-not OK, as one line: a stale machine (state older than 24 hours), a machine
-running an older WB than the newest in the fleet, or scan errors, each, and each `remote_error` of REQ:remote-error-is-visible, with a
-"Copy fix command": `wb remote publish` labelled "run on <machine>" for a stale
-machine, `wb self-update` labelled "run on <machine>" for an older WB, and
-`wb fleet status --filter <owner/repository>` for a scan error.
+Serves J7. The sixth section, "Fleet health", MUST be shown only when something is not OK, as
+one line per problem: a stale machine (state older than 24 hours), a machine running an older
+WB than the newest in the fleet, a scan error, or a machine's `remote_error`
+(REQ:remote-error-is-visible). Each has a "Copy fix command": `wb remote publish` labelled "run
+on <machine>" for a stale machine, `wb self-update` labelled "run on <machine>" for an older WB,
+`wb fleet status --filter=<owner/repository>` for a scan error, and the command of
+REQ:remote-error-is-visible for a remote error.
 
 #### REQ: home-charts
 
-Serves J2 and J6. Below the sections above, and hidden behind "more" on a phone,
-Home MUST show two charts drawn with Chart.js from the document's `throughput`
-block (REQ:throughput-block): "Time to land", the claim-to-landed durations of
-tasks landed in the last 30 days with the slowest five linked to their tasks, and
-"Landed per day" over the last 30 days. When the block is absent the charts are not
-rendered. Each chart has a text alternative, a visually hidden table of the same
-numbers, and uses the theme's colours in light and dark. The charts never sit above
-sections 1 to 3.
+Serves J2 and J6. Below the sections above, and hidden behind "more" on a phone, Home MUST show
+two charts drawn with Chart.js from the document's `throughput` block (REQ:throughput-block):
+"Time to land", the claim-to-landed durations of tasks landed in the last 30 days with the
+slowest five named, and "Landed per day" over the last 30 days. They are non-linking
+(REQ:every-number-is-a-link). When the block is absent the charts are not rendered. Each chart
+has a text alternative, a visually hidden table of the same numbers, and uses the theme's colours
+in light and dark. The charts never sit above sections 1 to 3.
 
 #### REQ: home-phone
 
@@ -421,11 +438,12 @@ other page MUST merely not break at that width (REQ:responsive-to-360).
 
 #### REQ: repository-identity
 
-A repository's identity is its lower-cased `owner/name`; the host is a
-tie-breaker only when both rows carry one. A local row and a cached row that
-share the identity therefore merge into one row. An entry mapped from another
-machine's snapshot MUST carry `host` when the snapshot's repository name starts
-with a hostname-like segment.
+A repository's identity is its lower-cased `owner/name`; the host is a tie-breaker only when both
+rows carry one. The daemon emits `name` as `owner/name` and `host` as a separate field for every
+entry, local and cached. A snapshot's repository name is split into `host` and `name` when it has
+three or more `/` segments and the first contains a dot; otherwise `host` is omitted and the name
+is taken as it is. A local row and a cached row that share the identity therefore merge into one
+row.
 
 #### REQ: repositories-list
 
@@ -501,7 +519,8 @@ links to its page. The columns are Machines; State (live or cached with its age,
 stale marked); WB version (marked when older than the newest in the fleet);
 Repositories; Worktrees; Agents; CPU; Memory. CPU and Memory show the latest
 sample with its route and age, and are empty for a machine that reports no
-metrics.
+metrics. The chip `outdated` leaves the machines running a WB older than the newest in
+the fleet.
 
 #### REQ: machine-detail
 
@@ -534,49 +553,51 @@ or bulk bar, because the approved `cockpit-actions` Feature excludes them.
 
 #### REQ: action-slots
 
-Serves J1, J2, J4, J6. Every side panel, every detail page header and every Home
-row MUST have an action area that renders exactly what the registry returns for
-that entity from `GET /api/v1/cockpit/actions?target=<type>:<id>`: each action's
-title, enabled or disabled, and for a disabled one the registry's reason. The
-application does not hardcode which actions exist. The most common action for an
-entity kind is a direct button that opens its preview in one click; the other
-actions are in an overflow menu, consistent with
-[cockpit-actions](../cockpit-actions/README.md)#req:common-actions-are-direct. When
-the registry route is absent or returns no action for the entity, the action area
-is not rendered at all: no disabled placeholder and no gap in the layout. An
-entity kind with no registry target type (task, agent, machine) has no action area
-of its own, and an entity on another machine has none.
+Serves J1, J2, J4, J6. Every side panel, every detail page header and every Home row MUST have
+an action area that renders exactly what the registry returns for that entity from
+`GET /api/v1/cockpit/actions?target=<type>:<id>`: each action's title, enabled or disabled, and
+for a disabled one the registry's reason. There is one slot per pull request or worktree (the
+registry's target types), not per task: where a task row shows actions, it shows the list of its
+pull requests' or worktrees' slots. The application does not hardcode which actions exist, and
+how a direct button and an overflow menu are chosen is defined entirely by
+[cockpit-actions](../cockpit-actions/README.md)#req:common-actions-are-direct. When the registry
+route is absent or returns no action for the entity, the action area is not rendered at all: no
+disabled placeholder and no gap in the layout. An entity kind with no registry target type
+(task, agent, machine) has no action area of its own, and an entity on another machine has
+none.
 
 #### REQ: copy-the-command
 
-Serves J1, J2, J3, J6. Independently of the registry, and available to
-`anonymous-local` readers because it executes nothing, each entity's side panel
-and detail header MUST offer "Copy command" entries with the exact equivalent WB
-CLI invocation, only from this list, each of which exists in the command manifest
-(`ai/capabilities.json`):
+Serves J1, J2, J3, J6. Independently of the registry, and available to `anonymous-local` readers
+because it executes nothing, each entity's side panel and detail header MUST offer "Copy
+command" entries with the exact equivalent WB CLI invocation, only from this list. Every
+template exists in the command manifest (`ai/capabilities.json`) with the flags it needs, and a
+unit test parses every template against that manifest:
 
-- worktree and task: `wb worktree list <task>`; `wb pr create <task> --commit-all
-  --message "<message>"`; `wb worktree cleanup <task>`, the dry-run plan, never
-  with `--apply`;
-- pull request: `wb pr land <owner/repository>#<number>`;
-- repository: `wb create <task> <owner/repository>`; `wb branch list --repo
-  <owner/repository>`; `wb fleet status --filter <owner/repository>`;
-- branch: `wb branch list --repo <owner/repository> --branch <branch>`; `wb branch
-  cleanup --repo <owner/repository> --branch <branch>`, a dry-run plan that never
-  carries `--apply`;
-- a dispatched run: `wb agent status <agent-id>`, `wb agent logs <agent-id>` and
-  `wb agent stop <agent-id>`; a recorded successor session: `wb session send
-  <wb-session-id> --message "<message>"`; no entry for any other session.
+- worktree and task: `wb worktree list '<task>'`; `wb pr create '<task>' --commit-all
+  --message='<message>'`; `wb worktree cleanup '<task>'`, the dry-run plan, never with `--apply`;
+- pull request: `wb pr land '<owner/repository>#<number>'`;
+- repository: `wb worktree create '<task>' '<owner/repository>' --model='<model>'
+  --original-prompt-file='<file>'` (that verb requires both flags); `wb branch list
+  --repo='<owner/repository>'`; `wb fleet status --filter='<owner/repository>'`;
+- branch: `wb branch list --repo='<owner/repository>' --branch='<branch>'`; `wb branch cleanup
+  --repo='<owner/repository>' --branch='<branch>'`, a dry-run plan that never carries `--apply`;
+- a dispatched run: `wb agent status '<agent-id>'`, `wb agent logs '<agent-id>'` and `wb agent
+  stop '<agent-id>'`; a recorded successor session: `wb session send '<wb-session-id>'
+  --message='<message>'`; no entry for any other session.
 
-For an entity on a machine that has an SSH route (REQ:remote-ssh-fetch) the copied text is
-`ssh <user>@<host> <wb_path> <command>`, built from the same configuration with each
-token shell-quoted as one argument; for an entity on any other machine the command is
-labelled "run on <machine>". Machines and the code-index refresh have no entry because the manifest
-has no command for them that the read model's identifiers can fill. The copied
-text contains only identifiers already in the read model — the task, the repository
-`owner/name`, the branch, the pull request number, the run or session id — and
-placeholders in angle brackets for what the operator supplies; it never contains a
-filesystem path.
+Every interpolated value is POSIX single-quoted (an embedded `'` is written `'\''`), and flags
+are written `--flag=value`. A value that contains a control character, or that starts with `-`,
+is never interpolated: the entry is refused and says why. The commands are the vocabulary's own
+placeholders in angle brackets for what the operator supplies. For an entity on a machine that
+has an SSH route (REQ:remote-ssh-fetch) the copied text is `ssh <user>@<host> <wb_path>
+<command>`, built from the same configuration with each token shell-quoted as one argument; for
+an entity on any other machine the command is labelled "run on <machine>". Machines and the
+code-index refresh have no entry because the manifest has no command for them that the read
+model's identifiers can fill, and no entry gets a worktree into its location, because the
+manifest has no verb that prints or opens a worktree's location from a task name
+(`wb worktree info` takes a path); paths stay out of the read model. The copied text contains
+only identifiers already in the read model and never a filesystem path.
 
 #### REQ: owner-gating-is-visible
 
@@ -585,39 +606,28 @@ disabled with one consistent explanation, and one affordance in the session chip
 reading "Sign in as owner: run `wb cockpit`"; it MUST NOT add a separate
 message to each button.
 
-#### REQ: operation-feedback
-
-Serves J2 and J6. When the daemon serves the operations route of
-[cockpit-actions](../cockpit-actions/README.md)#req:runs-are-typed-daemon-operations,
-an operation started from the Cockpit MUST show in the top bar's activity
-indicator: the count running and the last result, linking to the operation's
-record. While an operation runs the application polls it every second, and when it
-finishes it refetches the fleet document at once, without a push channel. The
-affected row shows a transient "updating" state until the refetched read model
-reflects the operation, per
-[cockpit-actions](../cockpit-actions/README.md)#req:read-model-reflects-a-finished-run.
-Without the operations route no indicator is rendered.
-
 #### REQ: new-task-form
 
-Serves J3. The "New task" button MUST open a form with a repository picker that
-uses the wildcard matcher, a task name, an optional base branch and an optional
-model, and MUST produce the exact command to copy: `wb create <task>
-<owner/repository>...` with `--base <branch>` and `--model <model>` when given, and
-the dispatch form `wb agent dispatch --repo <owner/repository> --task "<task>"
---profile <profile> --new-worktree <task>` with `--base <branch>` when given; the
-model is not passed to dispatch, which has no such flag, and the profile is a
-placeholder because profiles are named in `wb.yaml`, not in the read model. The
-form runs nothing. Running it from the Cockpit, Stop, Log and Reply on a run, and
-the cleanup flow are follow-ups to be specified in `cockpit-actions` (see Open
+Serves J3. The "New task" button MUST open a form with a repository picker that uses the
+wildcard matcher and offers only names that match `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`, a task name,
+an optional base branch and a model, and MUST produce the exact command to copy, with the quoting
+and refusal rules of REQ:copy-the-command: `wb worktree create '<task>' '<owner/repository>'...
+--model='<model>' --original-prompt-file='<file>'` (both flags are required by that verb, so the
+model is required in the form, `unknown` being the verb's explicit value, and the prompt file is a
+placeholder for the operator) with `--base='<branch>'` when given, and the dispatch form `wb agent
+dispatch --repo='<owner/repository>' --task='<task>' --profile='<profile>'
+--new-worktree='<task>'` with `--base='<branch>'` when given; the model is not passed to dispatch,
+which has no such flag, and the profile is a placeholder because profiles are named in `wb.yaml`,
+not in the read model. The form runs nothing. Running it from the Cockpit, Stop, Log and Reply on a
+run, and the cleanup flow are follow-ups to be specified in `cockpit-actions` (see Open
 Questions).
 
 #### REQ: intent-to-done-budgets
 
-Serves J1 to J6. With a fake registry: the palette MUST open in under 100 ms;
-between choosing an action and its preview being visible there MUST be no page
-navigation; and after an operation completes the affected row MUST reflect it
-within one refetch of the fleet document.
+Serves J5. The palette MUST be visible with no network request and no route navigation before it
+appears, and an action slot MUST open its preview without a route navigation (the preview itself
+is `cockpit-actions`'). Both are measured with a fake registry. Operation feedback and action
+results in the palette are specified by `cockpit-actions` (its Task 8).
 
 ### Read-model contract v2
 
@@ -626,6 +636,100 @@ anonymous-readable fields is defined by
 [cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only, which is
 updated for every field below; none of them carries file content, paths,
 environment, command lines or process lists.
+
+#### REQ: field-tables
+
+Every entry kind has the fields below; every REQ and AC of this Feature that names a field cites
+this REQ. Types are JSON types; "opt." means the field may be absent; the last column says
+whether it is present for entries of this machine (local), for entries of another machine
+(cached or live-remote), or both. An unknown or out-of-set value from another machine is dropped,
+not rendered. Existing field names are not renamed. Times are RFC 3339 strings.
+
+**Every entry** (machines, repositories, worktrees, pull requests, agents): `id` string; `machine`
+string, the machine's name; `machine_id` string, the id of its machine entry; `route` string,
+`local`, `cached` or `live-remote`; `observed_at` time, opt. (the snapshot's time for a cached or
+live-remote entry). Both.
+
+**Document**: `schema_version` int (2); `snapshot_at` time; `warming_up` bool;
+`repositories_total` int; `repositories_scanned` int; `diagnostics` int; `error` string opt.
+(a code); `code_index_provider` string opt.; `refresh_interval_seconds` int; `throughput`
+object opt. (below); `agents_truncated` bool opt.; the collections `machines`, `repositories`,
+`worktrees`, `pull_requests` and `agents`. There is no `branches` collection and no `metrics`.
+
+| Machine field | Type | Opt. | Source | Local/cached |
+|---|---|---|---|---|
+| `wb_version` | string | opt. | daemon / snapshot | both |
+| `repository_count`, `worktree_count` | int | no | counted | both |
+| `os`, `arch` | string | opt. | daemon / snapshot | local, and cached when published |
+| `cpu_count` | int | opt. | daemon / snapshot | as above |
+| `boot_time` | time | opt. | daemon / snapshot | as above |
+| `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
+| `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
+
+| Repository field | Type | Opt. | Source | Local/cached |
+|---|---|---|---|---|
+| `host` | string | opt. | origin host; split from a snapshot name (REQ:repository-identity) | both |
+| `name` | string, `owner/name` | no | repository slug | both |
+| `default_branch` | string | opt. | Git | both |
+| `worktree_count` | int | no | counted | both |
+| `local_branch_count`, `remote_branch_count`, `open_pull_request_count`, `active_agent_count` | int | opt. | counted | local only |
+| `last_activity_at` | time | opt. | newest local-branch activity | local only |
+| `remote_url_web` | string | opt. | host and `owner/name` (REQ:repository-activity-fields) | local only |
+| `error` | string, a code | opt. | scan | local |
+| `code_index` | list | opt. | receipts and provider | local only |
+
+| Worktree field | Type | Opt. | Source | Local/cached |
+|---|---|---|---|---|
+| `repository` | string, an entry id | no | mapping | both |
+| `task` | string | no | claim / record | both |
+| `name` | string, equal to `task` | no | mapping | both |
+| `stream` | string | opt. | task parent | both |
+| `branch` | string | no | record | both |
+| `lifecycle` | string, `working`\|`review`\|`merged`\|`superseded` | opt. | the snapshot; locally only if the claim or record already holds it | cached; local if available |
+| `owner_state` | string, `active`\|`idle`\|`orphaned`\|`unknown` | opt. | REQ:owner-state-vocabulary | both |
+| `last_activity_at` | time | opt. | heartbeat or last commit | both |
+| `ahead`, `behind` | int | opt. | branch sync | local only |
+| `upstream_gone`, `has_upstream` | bool | opt. | branch sync | local only |
+| `code_index` | list | opt. | receipts | local only |
+
+| Pull request field | Type | Opt. | Source | Local/cached |
+|---|---|---|---|---|
+| `repository`, `worktree` | string, entry ids | opt. | mapping | both |
+| `branch` | string | opt. | binding | both |
+| `number` | int | no | binding | both |
+| `state` | string, `open`\|`merged`\|`closed`\|`draft` | opt. | the watcher; a snapshot's value only if in the set | both |
+| `url` | string | opt. | emitted only when `https` with a host of ASCII letters, digits, dots and hyphens, no port and no user information | both |
+| `mergeable` | string, a closed enum (`clean`, `blocked`, `dirty`, `behind`, `unstable`, `has_hooks`, `draft`, `unknown`) | opt. | the watcher | local only |
+| `checks_total`, `checks_passed`, `checks_failed`, `checks_skipped`, `checks_pending` | int | opt. | the watcher | local only |
+| `checks_green` | bool | opt. | the watcher's verdict | local only |
+| `failed_check` | string, at most 100 characters, control and bidirectional characters removed | opt. | the first failing check | local only |
+| `checked_at` | time | opt. | the watcher | local only |
+
+| Agent field | Type | Opt. | Source | Local/cached |
+|---|---|---|---|---|
+| `kind` | string `session`\|`run` | no | mapping | both |
+| `session_id`, `run_id` | string | opt. | record | both |
+| `runtime`, `model` | string | opt. | record | both |
+| `state` | string: a session `live`\|`parked`; a run `running`\|`completed`\|`failed`\|`timeout`\|`abandoned` | no | record | both |
+| `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr | local only |
+| `repository`, `task` | string | opt. | run record; claim or owner for a session | both |
+| `worktrees` | list of entry ids | opt. | as above | both |
+| `started_at` | time | opt. | record | both |
+| `finished_at` | time | opt. | a finished run's record | both |
+| `exit_code` | int | opt. | a finished run's record | both |
+
+A client's notion "running" is derived, not a field: a session `live` or a run `running`. The
+agents of one machine are capped at 200 at read and at publish, and every string is length-capped.
+
+**Throughput** (`throughput`): `window_days` int (30); `per_day` list of `date` string
+(`YYYY-MM-DD`) and `landed` int; `slowest` list of at most 5 of `task` string, `duration_seconds`
+int and `landed_at` time. Local only.
+
+**Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
+string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt.; `samples` list, at
+most 360; `reason` string, opt. A sample has `cpu_percent` number (0 to 100), `load1` number (0
+or more), `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` ints
+(0 or more) and `sampled_at` time (not in the future).
 
 #### REQ: compressed-responses
 
@@ -660,91 +764,84 @@ and a `reason`; an unknown id is answered with status 404 and no data.
 
 #### REQ: repository-activity-fields
 
-A repository entry carries `last_activity_at`, the newest local-branch activity
-time, omitted for an entry cached from another machine, and `remote_url_web`,
-the `https://<host>/<owner>/<name>` address built from the repository's forge
-host and `owner/name`. `remote_url_web` is emitted only when the host matches a
-hostname pattern and every path segment matches `[A-Za-z0-9._-]+` and is not `.`
-or `..`; otherwise it is omitted. No other new data class is introduced; the
-origin URL itself is never in the read model.
+A repository entry carries `last_activity_at`, the newest local-branch activity time, and
+`remote_url_web`, the `https://<host>/<owner>/<name>` address built from the repository's forge
+host and `owner/name`; both only on an entry of this machine and omitted on a cached entry.
+`remote_url_web` is emitted only when the host matches a hostname pattern and every path segment
+matches `[A-Za-z0-9._-]+` and is not `.` or `..`; otherwise it is omitted. No other new data class
+is introduced; the origin URL itself is never in the read model.
 
 #### REQ: owner-state-vocabulary
 
-`owner_state` has the vocabulary `active`, `idle`, `orphaned`, `unknown` on
-every route, and the application's types accept all four. Today the two sources
-differ: a worktree in another machine's published snapshot carries the result of
-the owner process-liveness derivation (`active`, `orphaned` or `unknown`, never
-`idle`), and a worktree mapped on this machine is `active` when its recorded
-heartbeat is no older than the session-freshness window and `idle` otherwise,
-never `orphaned` or `unknown`. The one mapping, used for local worktrees, is
-this table:
-
-| Condition | `owner_state` |
-|---|---|
-| an owner process is recorded and alive | `active` |
-| an owner process is recorded and no longer alive | `orphaned` |
-| no owner process is recorded and the heartbeat (or creation time) is within the session-freshness window | `active` |
-| no owner process is recorded and the heartbeat (or creation time) is older than that window | `idle` |
-
-A worktree mapped from another machine's snapshot keeps the value it published
-(`active`, `orphaned` or `unknown`), and `unknown` there means that no owner
-process was recorded. `unknown` is an attention item and takes part in the task
-state order.
+The daemon normalises `owner_state` to `active`, `idle`, `orphaned` or `unknown`, or omits it, on
+every route, and drops any value from another machine's snapshot outside that set. For a worktree
+of this machine it is the owner-process-liveness derivation that the published remote snapshot
+already uses (`worktreeclaims.WorktreeOwnerState`): `active` when an owner process is recorded and
+alive, `orphaned` when one is recorded and gone, and otherwise `unknown` when no owner process is
+recorded; `idle` is never derived locally and is kept only for a snapshot that publishes it. The
+heartbeat is not used. The liveness is read once per snapshot and cached for it; the contract task
+reports the measured cost. Today `internal/cockpit/fleet/mapping.go` derives only `active` or
+`idle` from the heartbeat and the published snapshot never carries `idle`, so the mapper changes.
+`unknown` is part of the at-risk condition of REQ:task-state ("not `active`") and of the Cockpit
+"look" count.
 
 #### REQ: worktree-name-and-sync-fields
 
-A worktree entry carries `name`, which is its task, never a filesystem path, and
-the sync facts of its branch: `ahead`, `behind` and `upstream_gone`, each
-omitted when unknown. The sync facts are present only for worktrees of the
-machine the Cockpit runs on and omitted for cached ones.
+A worktree entry carries `name`, which is its task, never a filesystem path, and the sync facts of
+its branch: `ahead`, `behind`, `upstream_gone` and `has_upstream` (false when the branch tracks no
+upstream), each omitted when unknown. The sync facts are present only for worktrees of the machine
+the Cockpit runs on and omitted for cached ones. Its `lifecycle` is populated for a local worktree
+only if the claim or record already holds it; if not, the field stays absent and the second arm of
+row 7 of REQ:task-state is not used, which the contract task reports.
 
 #### REQ: pull-request-fields
 
-A pull request entry carries, in addition to `number`, `repository`, `worktree`,
-`branch` and `url`: `state` (`open`, `merged`, `closed` or `draft`), `mergeable`
-(the string GitHub reports as the merge state, such as `clean`, `blocked`, `dirty`,
-`behind`, `unstable`, `has_hooks`, `draft` or `unknown`), `checks_total`,
-`checks_passed`, `checks_failed` (failed and cancelled), `checks_pending`,
-`checks_green` (the verdict of `prsnapshot.Snapshot.Green`, which is not re-derived
-from the counts because it includes the required-check policy), `failed_check` (the
-name of the first failing check) and `checked_at`. They come from the daemon's
-snapshotter, which runs the existing watcher (`internal/prwatch`, over
-`internal/prsnapshot.Observe`) on its own ticker for the pull requests that
-`worktrees.ListRegisteredPullRequestBindings` returns, with the credentials WB
-already uses. At most `cockpit.pull_request_limit` pull requests are observed per
-tick, the oldest `checked_at` first; an observation that fails leaves the previous
-values and `checked_at` in place, so the age shows. No request reads GitHub. When no
-observation has ever succeeded for a pull request, the fields other than `number`,
-`repository` and `url` are omitted and the application says the state is not
-reported.
+A pull request entry carries, in addition to `number`, `repository`, `worktree`, `branch` and
+`url`, the fields of REQ:field-tables: `state`, `mergeable` (a closed enum, otherwise omitted),
+`checks_total`, `checks_passed`, `checks_failed` (failed and cancelled), `checks_skipped` (counted
+separately from passed), `checks_pending`, `checks_green` (the verdict of
+`prsnapshot.Snapshot.Green`, which is not re-derived from the counts because it includes the
+required-check policy), `failed_check` (the name of the first failing check, at most 100
+characters, with control and bidirectional characters removed, and rendered only as text) and
+`checked_at`. `url` is emitted only when it is `https` with a host of ASCII letters, digits, dots
+and hyphens, no port and no user information. They come from the daemon's snapshotter, which runs
+the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) on its own ticker for
+the pull requests that `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials
+WB already uses. At most `cockpit.pull_request_limit` pull requests are observed per tick, the
+oldest `checked_at` first; a merged pull request leaves the watch set after one confirmed
+observation; an observation that fails leaves the previous values and `checked_at` in place, so the
+age shows. No request reads GitHub. When no observation has ever succeeded for a pull request, the
+fields other than `number`, `repository` and `url` are omitted and the application says the state
+is not reported. A pull request of another machine carries only what its snapshot published
+(`number`, `url`, `state` if in the set).
 
 #### REQ: agent-activity
 
-An agent entry carries `activity` (`working`, `blocked`, `idle`, `done` or
-`unknown`) when the daemon can read it: when herdr is available, the snapshotter
-lists herdr's agents once per refresh (`herdr.Client.AgentList`, whose `Agent.Status`
-has exactly those five values) and joins each to a registered session by the harness
-session id (`Agent.HarnessSessionID`). With no herdr or no match the field is omitted
-and the application says "state not reported". Screen text and logs are content: they
-are owner-only and belong to `cockpit-actions`, not to this Feature.
+An agent entry carries `activity` (a closed enum: `working`, `blocked`, `idle`, `done` or
+`unknown`) when the daemon can read it: when herdr is available, the snapshotter lists herdr's
+agents once per refresh (`herdr.Client.AgentList`, whose `Agent.Status` has exactly those five
+values) and joins each to a registered session by the harness session id
+(`Agent.HarnessSessionID`). With no herdr or no match the field is omitted and the application says
+"state not reported". It is present only for agents of this machine. Screen text and logs are
+content: they are owner-only and belong to `cockpit-actions`, not to this Feature.
 
 #### REQ: agent-fields
 
-An agent entry carries `worktrees` (worktree ids), `task`, `repository` and
-`started_at`, populated for a dispatched run from its run record (`agents.Result`:
-`Repository`, `Worktree`, `Branch`, `StartedAt`, `State`, `FinishedAt`, `ExitCode`);
-a run's terminal state is `completed`, `failed`, `timeout` or `abandoned`, and the
-entry carries the exit code, never the run's free-text failure. For a registered
-session only `started_at` is populated, plus a worktree and task when a worktree's
-owner or claim names that session; otherwise they are absent and are never guessed.
+An agent entry carries `worktrees` (worktree ids), `task`, `repository` and `started_at`,
+populated for a dispatched run from its run record (`agents.Result`: `Repository`, `Worktree`,
+`Branch`, `StartedAt`, `State`, `FinishedAt`, `ExitCode`); a finished run also carries
+`finished_at` and `exit_code`, never its free-text failure, and its `state` is `running`,
+`completed`, `failed`, `timeout` or `abandoned`. A registered session has `state` `live` or
+`parked`, and only `started_at` is populated, plus a worktree and task when a worktree's owner or
+claim names that session; otherwise they are absent and are never guessed. The agents of another
+machine are capped at 200 per machine when read from a snapshot and when published.
 
 #### REQ: machine-fields
 
-A machine entry carries `os`, `arch`, `cpu_count` and `boot_time` for the local
-machine, and for another machine when its published snapshot carries them; they are
-omitted otherwise. The fleet document carries no `metrics`; the latest sample and the
-history come only from REQ:machine-metrics-route. Uptime is derived from
-`boot_time`.
+A machine entry carries `os`, `arch`, `cpu_count` and `boot_time` (RFC 3339) for the local
+machine, and for another machine when its published snapshot carries them; they are omitted
+otherwise. The fleet document carries no `metrics`; the latest sample and the history come only
+from REQ:machine-metrics-route. Uptime is derived from `boot_time`.
 
 #### REQ: refresh-interval-field
 
@@ -754,34 +851,34 @@ refresh interval, which the freshness chip uses.
 #### REQ: derived-collections-memoised
 
 The application MUST compute the merged repositories, the tasks with their
-lifecycle, the "Needs you" items, the ready-to-land list and the cleanup counts once per
+state, the "Needs you" items, the ready-to-land list and the cleanup counts once per
 snapshot, memoised on the identity of the fleet document, not on every render.
 
 #### REQ: periodic-remote-publish
 
-The daemon MUST publish this machine's snapshot to the remote store after a
-successful local scan, by the same publish path as `wb remote publish`, at an interval
-set by the configuration value `remote.publish.interval`, with a minimum of 5 minutes,
-enabled by default when a remote store is configured and off otherwise. A failed
+The daemon MAY publish this machine's snapshot to the remote store after a successful local scan,
+by the same publish path as `wb remote publish`. It is opt-in: it runs only when
+`remote.publish.interval` is set (minimum 5 minutes); with no value nothing is published. A failed
 publish is retried at the next interval and never delays the local snapshot.
-[remote-state](../remote-state/README.md)#req:remote-publish-periodic specifies the
-behaviour; until the founder settles which remote store is the fleet's shared one
-(Open Questions), each machine publishes to whatever it has configured. It stays as
-the fallback for machines without a live route (REQ:remote-exporter-transports), whose
-live data replaces the published entries only while fresh.
+[remote-state](../remote-state/README.md)#req:remote-publish-periodic specifies the behaviour;
+until the founder settles which remote store is the fleet's shared one (Open Questions), each
+machine publishes to whatever it has configured. It stays as the fallback for machines without a
+live route (REQ:remote-exporter-transports), whose live data replaces the published entries only
+while fresh.
 
 #### REQ: remote-snapshot-agents-and-metrics
 
-The published remote snapshot MUST be able to carry optional `agents` (the
-snapshot's agent entries, each with runtime, model, task, repository, `activity` when
-known, `started_at` and the run or session identifier) and `metrics` (the latest
-sample of REQ:machine-metrics-route). Both are optional and `schema_version` does not
-change: an older reader decodes the YAML snapshot without strict field checking and
-ignores them. The hub provider's HTTP snapshot model
-(`api/githubapp/machinesnapshot.Snapshot`) is decoded with unknown fields refused, so
-it MUST accept the same optional fields before any publisher emits them, in the same
-task. The fleet document shows another machine's agents as `cached` with the age of the
-snapshot and with no actions.
+The published remote snapshot MAY carry optional `agents` (at most 200 entries, each with
+runtime, model, task, repository, `activity` when known, `started_at` and the run or session
+identifier) and `metrics` (the latest sample of REQ:machine-metrics-route), and its machine entry
+MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents are published only with
+`remote.publish.agents: true` and metrics only with `remote.publish.metrics: true`; both default to
+off. All are optional and `schema_version` does not change: an older reader decodes the YAML
+snapshot without strict field checking and ignores them. The hub provider's HTTP snapshot model
+(`api/githubapp/machinesnapshot.Snapshot`) is decoded with unknown fields refused, so it MUST accept
+the same optional fields in the same task; a publisher refused with status 400 by an older hub
+retries once without the optional fields and records a diagnostic. The fleet document shows another
+machine's agents as `cached` with the age of the snapshot and with no actions.
 
 #### REQ: throughput-block
 
@@ -810,7 +907,7 @@ are not persisted across a daemon restart.
 #### REQ: machine-metrics-route
 
 `GET /api/v1/cockpit/machine-metrics?machine=<id>` MUST return, for a machine id in
-the fleet document, `{machine, route, fetched_at?, samples, reason?}` with the same
+the fleet document, `{machine, route, fetched_at?, samples, reason?}` where `machine` is the machine id with the same
 access class as the fleet document (metadata; capability `machine.read`). `route` is
 `local` for this machine's in-memory history, oldest first, so that its last element
 is the latest sample; `live-remote` for the history fetched in the background over SSH from
@@ -871,39 +968,40 @@ host.
 
 #### REQ: hub-export-route
 
-A wb server that mounts the hub MUST serve its own machine's export envelope at
+A wb server that mounts a daemon-hosted hub MUST serve its own machine's export envelope at
 `GET /v0/workbench/machines/export`, and with `?metrics_only=1` the metrics-only envelope of
-REQ:cockpit-export-verb, built from its own daemon's state in process. The route is
-authenticated only by a machine bearer credential carrying the existing scope
-`machine_snapshot:read`: a request with no bearer, a peer credential (`peer:session` alone),
-a credential without that scope, or only a session cookie is refused with status 401, and
-no anonymous principal is accepted. It is not under `/api/v1/cockpit/`, so the Cockpit
-`Host` guard and the rule that forwarded requests are never anonymous
-([cockpit](../cockpit/README.md)#req:forwarded-requests-are-never-anonymous) are untouched.
-No new scope is added: `machine_snapshot:read` already reads every machine's published
-snapshot from the hub, and the envelope carries only the anonymous-readable metadata set. A
-wb server that does not mount the hub has no such route and is reached over SSH.
+REQ:cockpit-export-verb, built from its own daemon's state in process. The route is never served
+by the hosted multi-identity service, only by a daemon-hosted hub, and exposes only this machine's
+own export, never another machine's. It is authenticated only by a machine bearer credential
+carrying the existing scope `machine_snapshot:read` whose identity equals the identity of the host
+owner: a request with no bearer, a peer credential (`peer:session` alone), a credential without
+that scope, a credential of another identity, or only a session cookie is refused with status 401
+(403 for another identity), and no anonymous principal is accepted. It is not under
+`/api/v1/cockpit/`, so the Cockpit `Host` guard and the rule that forwarded requests are never
+anonymous ([cockpit](../cockpit/README.md)#req:forwarded-requests-are-never-anonymous) are
+untouched. No new scope is added. A wb server that does not mount a daemon-hosted hub has no such
+route and is reached over SSH.
 
 #### REQ: remote-http-fetch
 
 The HTTP exporter's address and credential come only from local configuration, never from a
 snapshot, a request or the remote's output. For the machine that is the configured hub
-(`remote.provider: hub`) it reuses the hub client's `remote.url` and `remote.token_file`. For
-any other machine it reads an optional `http` section beside the `ssh` section of
+(`remote.provider: hub`) it reuses the hub client's `remote.url` and `remote.token_file`. For any
+other machine it reads an optional `http` section beside the `ssh` section of
 `session_move.targets.<machine>` in `internal/sessionmove/config.go`, with the keys `url` and
-`token_file`, validated like `SSHConfig` (absolute `https` URL; `http` only for a loopback
-host; no user information, query or fragment; an absolute, private token file); the section
-is not a `Courier`, so `default_courier` and session delivery are unchanged. That target map
-is where a machine's addresses already live and keeping one list avoids a second place to be
-wrong; a separate `cockpit` section would repeat the machine names. The client calls
-`GET /v0/workbench/machines/export` with `Authorization: Bearer`, requires HTTPS unless the
-host is loopback, follows no redirect, caps the response at 8 MiB, uses a 3 second connect
-timeout and a 10 second total timeout, and sends the bearer only to the configured host. A
-machine with no `remote.provider: hub` match, no `http` section or no readable token file has
-no HTTP route. The credential is installed by the existing `wb remote enroll --url <hub-url>
---token-stdin` (it verifies a one-time machine credential, stores it privately and updates the
-hub-owned `remote` settings); for a per-machine `http` section the operator places the
-token file by the same enrolment against that machine's hub URL.
+`token_file`; the URL is validated by `remotestate.ValidateHubURL` (an `https` URL, or `http` only
+for a loopback host, with no user information, query or fragment and no path) and the token file
+must be absolute and private. The section is not a `Courier`, so `default_courier` and session
+delivery are unchanged. That target map is where a machine's addresses already live, and keeping
+one list avoids a second place to be wrong; a separate `cockpit` section would repeat the machine
+names. The client calls `GET /v0/workbench/machines/export` with `Authorization: Bearer`, follows
+no redirect, caps the response at 8 MiB, uses a 3 second connect timeout and a 10 second total
+timeout, and sends the bearer only to the configured host. A machine with no `remote.provider: hub`
+match, no `http` section or no readable token file has no HTTP route. The credential is installed by
+the existing `wb remote enroll --url=<hub-url> --token-stdin` (it verifies a one-time machine
+credential, stores it privately and updates the hub-owned `remote` settings); for a per-machine
+`http` section the operator places the token file by the same enrolment against that machine's hub
+URL.
 
 #### REQ: remote-ssh-fetch
 
@@ -924,14 +1022,15 @@ Cockpit never exposes remote stderr. With no `ssh` section no process is started
 
 #### REQ: remote-envelope-is-untrusted
 
-The remote envelope, from either transport, MUST be decoded strictly: an unknown field is
-rejected, the size is bounded as above, every string is capped (256 bytes, 2048 for URLs), and
-the collections are capped at the document's own limits. Its `machine` MUST equal the
-configured target name exactly (for the configured hub, the machine name the hub reports for
-itself), and every entry in it is assigned to that machine whatever machine it names; a
-mismatch refuses the whole payload. A refused payload renders nothing and sets
-`remote_error` `bad_payload`. The remote's own cached entries for third machines are dropped,
-so only that machine's own entries are merged.
+The remote envelope, from either transport, is untrusted and MUST be decoded strictly: an unknown
+field is rejected; the size is bounded as above; every string is length-capped (256 bytes, 2048 for
+URLs); the collections are capped at the document's own limits and the samples at 360; a number that
+is not finite or is negative where it is a count, size or percentage, and a time in the future, are
+refused. Every entry in it is placed on the machine named by the configured target key, whatever
+machine the response names, and no machine name in the response is used for placement; it is never
+applied to the local machine. A refused payload renders nothing and sets `remote_error`
+`bad_payload`. The remote's own cached entries for third machines are dropped, so only that
+machine's own entries are merged. The same validation applies to the SSH transport.
 
 #### REQ: remote-entries-replace-cached
 
@@ -986,7 +1085,7 @@ in the DOM, the visible rows plus a fixed overscan, whatever the number of rows.
 #### REQ: fast-filtering
 
 Filtering 5,000 rows with the matcher and the view functions MUST take a median
-of under 30 ms over repeated runs, with a multiplier allowed in CI, and the
+of under 30 ms over repeated runs, with a CI multiplier of 5, and the
 matcher's step count MUST stay within the bound of REQ:list-filter-and-matcher.
 Typing in a filter MUST NOT be debounced beyond one animation frame.
 
@@ -1019,7 +1118,7 @@ first-class.
 Cards have subtle borders, an 8 px radius and a consistent 8 px spacing grid.
 Skeleton rows and cards have fixed heights and are shown while the daemon is
 warming up, and data arriving MUST NOT shift the layout: the cumulative layout
-shift is 0.
+shift is under 0.01.
 
 #### REQ: responsive-to-360
 
@@ -1067,22 +1166,26 @@ responses; the one real-daemon journey runs on Linux CI only.
 - Reading screen text or logs of an agent (content, owner-only, in
   `cockpit-actions`).
 - A separate pull request page.
+- Operation feedback (the top-bar indicator and the updating row state) and action results in
+  the palette: they move to `cockpit-actions` (its Task 8). This Feature keeps the action slots
+  and copy-the-command.
 - A push channel; the application refetches and polls.
 - A network-facing Cockpit route that serves one machine's data to another (the hub route
-  is authenticated by a machine credential and lives outside `/api/v1/cockpit/`), and metrics
-  from a machine with no live route beyond its last published sample; persistence of metrics across daemon restarts, and task storage.
+  is authenticated by a machine credential, served only by a daemon-hosted hub, and lives outside
+  `/api/v1/cockpit/`), and metrics from a machine with no live route beyond its last published
+  sample; persistence of metrics across daemon restarts, and task storage.
 - The PrimeUI licence key; see Open Questions.
 
 ## Acceptance Criteria
 
 ### AC: top-bar-shows-tabs-badges-and-freshness
 
-**Requirements:** cockpit-views#req:top-bar, cockpit-views#req:refresh-interval-field
+**Requirements:** cockpit-views#req:top-bar, cockpit-views#req:refresh-interval-field, cockpit-views#req:field-tables
 
 Scenario: Signals only, and an old snapshot
-Given a fleet with 3 machines, 529 worktrees, 1 running agent and 3 "needs you" items, a document whose `refresh_interval_seconds` is 30, and a snapshot taken 70 seconds ago
+Given a fleet with 3 machines, 529 worktrees, 1 running agent (a session `live`) and 3 tasks in "Needs you", a document whose `refresh_interval_seconds` is 30, and a snapshot taken 70 seconds ago
 When the application is opened
-Then the tabs Home, Tasks, Repositories, Worktrees, Agents and Machines are shown, the Home badge reads 3 and the Agents badge reads 1 highlighted, no other tab has a badge, the palette entry, the "New task" button, the freshness chip reading "updated 70 s ago" in amber and the session chip naming the principal are in the top bar
+Then the tabs Home, Tasks, Repositories, Worktrees, Agents and Machines are shown, the Home badge reads 3 and the Agents badge reads 1 highlighted, no other tab has a badge, the palette entry, the "New task" button, the freshness chip reading "updated 70 s ago" in amber and the session chip naming the principal are in the top bar, and there is no operation indicator
 
 ### AC: home-route-and-alias
 
@@ -1109,7 +1212,7 @@ Then each page shows its entries, every cached row shows its route and age (a me
 Scenario: Before the first pass completes
 Given a document marked as warming up with 120 of 438 repositories scanned
 When the application is opened
-Then the freshness chip shows the scanned count, fixed-height skeleton rows are shown, and when the complete document arrives the cumulative layout shift stays 0
+Then the freshness chip shows the scanned count, fixed-height skeleton rows are shown, and when the complete document arrives the cumulative layout shift stays under 0.01
 
 ### AC: no-heading-repeats-the-tab
 
@@ -1128,15 +1231,6 @@ Scenario: Search across kinds
 Given a fleet with more than 8 repositories whose name contains `go`, and a task, a worktree branch and an agent that also match, and a branch that exists only in a lazily loaded repository page
 When the operator presses Cmd+K, types `go`, presses the down arrow twice and Enter
 Then results are grouped by kind with at most 8 per kind, the lazily loaded branch is not among them, the highlighted result moves with the arrows, and Enter opens the page of the highlighted result
-
-### AC: palette-lists-actions-after-navigation
-
-**Requirements:** cockpit-views#req:command-palette
-
-Scenario: A focused worktree
-Given the focus on a worktree row for which the registry offers `branch.push`
-When Cmd+K is pressed, `fix` is typed, and the push action is chosen
-Then navigation results are listed first and the actions for the focused entity after them, and choosing Push opens its preview without running it
 
 ### AC: shortcuts-navigate-and-respect-typing
 
@@ -1188,18 +1282,18 @@ Then it returns no match and the steps counted are at most a constant times the 
 **Requirements:** cockpit-views#req:filter-vocabulary, cockpit-views#req:every-number-is-a-link
 
 Scenario: Every generated link parses
-Given Home, its "Needs you", "Ready to land", "Cleanup" and "Fleet health" rows, both charts, the Repositories sort presets and every page's chips
-When every link and chart click target is collected
-Then each is an address on one of the pages whose chips, `state:`, `age:`, `day:` terms and sort ids are all in the vocabulary table, and the `age:` terms are exactly `age:<1d`, `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`
+Given Home, its "Needs you", "Ready to land", "Cleanup" and "Fleet health" rows, the Repositories sort presets and every page's chips and count cells
+When every link target is collected
+Then each is an address on one of the pages whose chips, `state:` values, `age:` terms, sort column ids and `sel` keys are all in the vocabulary table, the `age:` terms are exactly `age:<1d`, `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`, and no `day:` term exists
 
 ### AC: filter-state-lives-in-the-address
 
 **Requirements:** cockpit-views#req:list-quick-filters-sort-and-url-state
 
-Scenario: Back button, a pasted link and the selection
+Scenario: Back button, a pasted link, the selection and a bad value
 Given the Worktrees page
-When the operator types `fix`, toggles the Unpushed chip, selects machine `mac`, clicks the Last activity header twice, selects a row, then presses back, and separately opens the pasted address
-Then the address carries `q`, `chips`, `machine`, `sort`, `dir` and `sel`, back removes the last change, the result count reads "n of N", and the pasted address shows the same filtered, sorted rows with the same side panel open
+When the operator types `fix`, toggles the Unpushed chip, selects machine `mac`, clicks the Last activity header twice, selects a row, then presses back, and separately opens the pasted address, and then an address with `sort=bogus`, `chips=nonsense` and a `sel` that names no entry
+Then the address carries `q`, `chips`, `machine`, `sort`, `dir` and `sel`, back removes the last change, the result count reads "n of N", the pasted address shows the same rows with the same side panel open, and the bad address ignores the three bad values and shows the default view
 
 ### AC: default-sorts
 
@@ -1250,10 +1344,10 @@ Then the first names the filter and offers "clear filters", which restores the f
 
 **Requirements:** cockpit-views#req:every-number-is-a-link
 
-Scenario: Count cells
-Given Home, the Repositories, Tasks and Machines pages and a detail page
-When every number shown is inspected
-Then each is a link to the list that produced it, and a scan-diagnostics count, if shown, is the one exception and shows why it does not link
+Scenario: The enumerated count cells and the declared exceptions
+Given Home, Tasks, Repositories and Machines with data, and a branch count on Repositories
+When every count cell in the enumerated list of the requirement is inspected, and the branch counts, the throughput numbers and a pull request's checks over total are inspected
+Then each enumerated cell is a link to the list that produced it with only vocabulary terms, and each declared exception is not a link and carries its reason in its `title`
 
 ### AC: side-panel-opens-and-closes
 
@@ -1291,104 +1385,113 @@ Given a task name, a branch name and a session id that are each longer than the 
 When each copy button is pressed
 Then the clipboard holds the full value, not the shortened text
 
-### AC: lifecycle-at-risk
+### AC: task-state-at-risk
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
-Scenario: Interim rule and the real read model
-Given a task with a worktree on this machine with `ahead` 2 and `owner_state` `orphaned`, a task whose only such worktree has `ahead` 0, and a task that the work-loss-risk read model reports at risk
-When the lifecycle is computed, with and without the work-loss-risk read model
-Then the first and third tasks are `at-risk` and the second is not, and when the read model exists the interim rule is not applied
+Scenario: The interim rule
+Given local worktrees of four tasks: one with `owner_state` `orphaned` and `ahead` 2, one with `owner_state` `idle`, `ahead` 0 and `has_upstream` false, one with `owner_state` `active` and `ahead` 3, and one with `owner_state` `orphaned`, `ahead` 0 and `has_upstream` true, and a worktree cached from another machine with the same facts as the first
+When the task state is computed
+Then the first two tasks are `at-risk`, the third and fourth are not, and the cached worktree never makes its task `at-risk` because the sync facts are local only
 
-### AC: lifecycle-checks-failed
+### AC: task-state-checks-failed
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
-Scenario: A failed check beats everything below it
-Given a task with an open pull request whose `checks_failed` is 1, and also a blocked agent and a ready pull request
-When the lifecycle is computed
-Then it is `checks-failed`, not `blocked` or `ready`
+Scenario: A failed check beats everything below it, and an unobserved one is ignored
+Given a task with an observed open pull request whose `checks_failed` is 1, also a blocked agent and a ready pull request, and a task whose open pull request has `checks_failed` 1 but no `checked_at`
+When the task state is computed
+Then the first is `checks-failed`, not `blocked` or `ready`, and the second has no reported pull request input
 
-### AC: lifecycle-blocked
+### AC: task-state-blocked
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
-Scenario: Blocked agent, failed run, and a later running agent
-Given a task with an agent whose `activity` is `blocked`, a task whose latest dispatched run ended `timeout`, and a task whose latest run ended `failed` but has a later running agent
-When the lifecycle is computed
-Then the first two are `blocked` and the third is not
+Scenario: Blocked agent, failed run, a later run, and 24 hours
+Given a task with an agent whose `activity` is `blocked`, a task whose latest dispatched run ended `timeout` 2 hours ago, a task whose latest run ended `failed` 2 hours ago but has a later session, and a task whose latest run ended `failed` 25 hours ago
+When the task state is computed
+Then the first two are `blocked` and the other two are not
 
-### AC: lifecycle-ready-to-land
+### AC: task-state-ready-to-land
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
-Scenario: Every open pull request green and mergeable
-Given a task with two open pull requests, both not draft with `checks_green` true and `mergeable` `clean`, one task where one of its two has `mergeable` `blocked`, and one where one is a draft
-When the lifecycle is computed
-Then the first is `ready` and the other two are `checks-pending`
+Scenario: Every observed open pull request green and mergeable
+Given a task with two observed open pull requests, both `state` `open`, `checks_green` true and `mergeable` `clean`, a task where one of its two has `mergeable` `blocked`, and a task where one is a `draft`
+When the task state is computed
+Then the first is `ready` and the other two are `not-ready`
 
-### AC: lifecycle-checks-pending
+### AC: task-state-not-ready
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
-Scenario: Pending, or green without a verdict
-Given a task whose pull request has `checks_pending` 2, and a task whose pull request has no failed and no pending check but `checks_green` false
-When the lifecycle is computed
-Then both are `checks-pending`
+Scenario: Why a task is not ready
+Given a task with a draft pull request, a task whose pull request has `checks_pending` 2, a task whose green pull request has `mergeable` `dirty`, a task whose green pull request has `mergeable` `behind`, and a task whose pull request has no failed and no pending check but `checks_green` false
+When the task state is computed and the side panel is opened
+Then all five are `not-ready` and the panel says draft, checks pending, not mergeable, behind and review respectively
 
-### AC: lifecycle-working
+### AC: task-state-working
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state
 
 Scenario: Three signs of work
 Given a task with an agent whose `activity` is `working`, a task with a dispatched run in state `running`, and a task with a worktree whose `owner_state` is `active`
-When the lifecycle is computed
+When the task state is computed
 Then all three are `working`
 
-### AC: lifecycle-landed
+### AC: task-state-landed
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
-Scenario: Merged, or every worktree merged
-Given a task whose only pull request has `state` `merged`, a task with no pull request whose every worktree has lifecycle `merged`, and a task with a merged pull request and an open one
-When the lifecycle is computed
-Then the first two are `landed` and the third is not
+Scenario: Merged, populated lifecycle, and an open one
+Given a task whose only pull request has `state` `merged`, a task with no pull request whose every worktree has `lifecycle` `merged`, a task with no pull request whose worktrees carry no `lifecycle`, and a task with a merged pull request and an open one
+When the task state is computed
+Then the first two are `landed`, the third is not (the second arm needs a populated `lifecycle`), and the fourth is not
 
-### AC: lifecycle-idle
+### AC: task-state-idle
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
 Scenario: Reported but quiet
 Given a task whose worktree `owner_state` is `idle` and which has no agent, no pull request and nothing else reported
-When the lifecycle is computed
+When the task state is computed
 Then it is `idle`
 
-### AC: lifecycle-not-reported
+### AC: task-state-not-reported
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
 Scenario: Nothing reported
 Given a task, cached from an older publisher, whose worktrees carry no `owner_state`, with no pull request `state` and no agent `activity`
-When the lifecycle is computed
+When the task state is computed
 Then it is `not-reported`, the badge reads "state not reported", and a pull request whose `state` is absent is not counted as open
 
-### AC: lifecycle-is-worst-first
+### AC: task-state-is-worst-first
 
-**Requirements:** cockpit-views#req:task-lifecycle
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
 
 Scenario: One task per state
-Given nine tasks, one in each lifecycle state
-When the Tasks page is sorted by lifecycle
-Then they are in the order at risk, checks failed, blocked, ready to land, checks pending, working, landed, idle, state not reported
+Given nine tasks, one in each task state
+When the Tasks page is sorted by state
+Then they are in the order at risk, checks failed, blocked, ready to land, not ready, working, landed, idle, state not reported
+
+### AC: task-state-ignores-unobserved-pull-requests
+
+**Requirements:** cockpit-views#req:task-state, cockpit-views#req:field-tables
+
+Scenario: Observed and unobserved pull requests
+Given a task with one observed open pull request that is ready and one open pull request with no `checked_at`, and a task whose only open pull request has no `checked_at` and whose worktree `owner_state` is `idle`
+When the task state is computed and the side panel is opened
+Then the first is `ready` and its panel says one pull request is not yet observed, and the second is `idle` with no reported pull request input
 
 ### AC: tasks-list-aggregates-worktrees
 
-**Requirements:** cockpit-views#req:tasks-list
+**Requirements:** cockpit-views#req:tasks-list, cockpit-views#req:field-tables
 
 Scenario: One task over three repositories
 Given worktrees named for task `fix-ci` in three repositories on two machines, a running agent and a pull request with 3 of 4 checks passed
 When the Tasks page is opened and the Multi-repo and With agent chips are toggled
-Then one row names `fix-ci` with two repositories and "+1", 3 worktrees, 2 machines, its agent, the pull request with "3/4", its lifecycle badge with icon and label and its newest activity, it stays in the list with both chips on, and selecting it opens the side panel with the worktrees, pull requests and agents
+Then one row names `fix-ci` with two repositories and "+1", 3 worktrees, 2 machines, its agent, the pull request with "3/4", its state badge with icon and label and its newest activity, it stays in the list with both chips on, and selecting it opens the side panel with the worktrees, pull requests and agents
 
 ### AC: task-detail-shows-its-entities
 
@@ -1397,20 +1500,20 @@ Then one row names `fix-ci` with two repositories and "+1", 3 worktrees, 2 machi
 Scenario: A task name that needs encoding, and an asset-like name
 Given tasks named `fix/ci 100%` and `release.js`
 When the Tasks page links to each and the links are followed
-Then the addresses are `/tasks/detail?task=fix%2Fci%20100%25` and `/tasks/detail?task=release.js`, and each page shows the summary header with the lifecycle badge, the worktrees table, the branches, the pull requests with checks and the agents of that task
+Then the addresses are `/tasks/detail?task=fix%2Fci%20100%25` and `/tasks/detail?task=release.js`, and each page shows the summary header with the state badge, the worktrees table, the branches, the pull requests with checks and the agents of that task
 
 ### AC: needs-you-pr-checks-failed
 
-**Requirements:** cockpit-views#req:home-needs-you
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
 
 Scenario: A failed check
-Given a task `fix-ci` whose pull request `sneat-dev/wb#12` has `failed_check` `go-ci / test`
+Given a task `fix-ci` whose observed pull request `sneat-dev/wb#12` has `failed_check` `go-ci / test`
 When Home is opened
 Then a "Needs you" row shows `fix-ci`, `sneat-dev/wb#12` and `go-ci / test` with exactly one action, "Open failure", a link to the pull request's `url` with `rel="noopener noreferrer"`
 
 ### AC: needs-you-agent-blocked
 
-**Requirements:** cockpit-views#req:home-needs-you
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
 
 Scenario: Reported and unreported agents
 Given an agent whose `activity` is `blocked` on task `fix-ci` on machine `mac`, and another agent whose `activity` is absent
@@ -1419,39 +1522,57 @@ Then one row shows `fix-ci` and `mac` with the single action "Open agent" linkin
 
 ### AC: needs-you-run-failed
 
-**Requirements:** cockpit-views#req:home-needs-you
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
 
 Scenario: Failed and timed-out runs
-Given a dispatched run for task `a` in state `failed` with exit code 2 whose record has a free-text failure, a run for task `b` in state `timeout`, and a run for task `c` in state `failed` with a later running agent on `c`
+Given a dispatched run for task `a` finished `failed` with exit code 2 whose record has a free-text failure, a run for task `b` finished `timeout`, and a run for task `c` finished `failed` with a later session on `c`
 When Home is opened
-Then rows for `a` and `b` show the state, and for `a` the exit code, never the free text, each with the single action "View agent", and `c` has no row
+Then rows for `a` and `b` show the state, and for `a` the exit code, never the free text, each with the single action "Open agent", and `c` has no row
 
 ### AC: needs-you-work-at-risk
 
-**Requirements:** cockpit-views#req:home-needs-you
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:copy-the-command, cockpit-views#req:field-tables
 
-Scenario: With and without the push action
-Given a task in lifecycle `at-risk` for which a fake registry offers `branch.push`, and one for which it offers nothing
+Scenario: Two worktrees, with and without the push action
+Given a task in state `at-risk` with two worktrees on this machine for which a fake registry offers `branch.push`, and one for which it offers nothing
 When Home is opened
-Then the first row shows the reason in words and the action "Push" opening its preview, the second shows the reason and the action "Copy command" copying `wb pr create <task> --commit-all --message "<message>"`, and each row has exactly one primary action
+Then the first row names both worktrees and the reason in words and offers "Push" per worktree opening its preview, the second names its worktree and offers "Copy command" with one command per worktree, `wb pr create '<task>' --commit-all --message='<message>'`, and each row has exactly one primary action
+
+### AC: needs-you-pr-needs-you
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
+
+Scenario: Green checks but a merge to resolve
+Given a task whose observed pull request has `checks_green` true and `mergeable` `dirty`, and one whose `mergeable` is `behind`
+When Home is opened
+Then each task has a row of the kind "PR needs you" with the single action "Open pull request" linking to its `url`
+
+### AC: needs-you-agent-finished
+
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
+
+Scenario: A finished agent with unpushed work
+Given a task with an agent whose `activity` is `done`, no open pull request, and a local worktree with `ahead` 2, and a task whose agent is `done` with no unpushed work and a merged pull request
+When Home is opened
+Then the first task has a row of the kind "Agent finished" with the single action "Open task", and the second has none
 
 ### AC: needs-you-is-capped-and-empty-line
 
-**Requirements:** cockpit-views#req:home-needs-you
+**Requirements:** cockpit-views#req:home-needs-you, cockpit-views#req:field-tables
 
-Scenario: Seven items, then none
-Given 7 items of mixed kinds
-When Home is opened, "+2 more" is activated, and later every item's state has changed
-Then 5 rows are shown in the order of kinds with the oldest first within a kind, the Home badge reads 7, "+2 more" opens Tasks with chip `needs-you`, and afterwards one line says nothing needs the operator and no row remains, with no acknowledge or snooze control anywhere
+Scenario: One row per task, order, the cap, blocked agents without a task, then none
+Given 7 tasks in "Needs you" (one with two kinds of need), including a task `old` last active a week ago and a task `new` last active an hour ago in the same kind, and 3 blocked agents with no task
+When Home is opened, "+2 more" is activated, and later every state has changed
+Then 5 task rows are shown, one per task and for its worst kind, ordered by kind rank and then by last activity newest first (`new` before `old`), the Home badge reads 7, after them one row says "3 blocked agents with no task" and opens Agents with chip `blocked`, "+2 more" opens Tasks with chip `needs-you` showing exactly the 7 tasks, and afterwards one line says nothing needs the operator and no row remains, with no acknowledge or snooze control anywhere
 
 ### AC: ready-to-land-groups-by-task
 
-**Requirements:** cockpit-views#req:home-ready-to-land
+**Requirements:** cockpit-views#req:home-ready-to-land, cockpit-views#req:field-tables
 
-Scenario: Ready, pending and the action
-Given a task `fix-ci` in lifecycle `ready` with pull requests `sneat-dev/wb#12` and `sneat-co/sneat-go#7`, each 5 of 5 checks passed, a task in `checks-pending` checked 4 minutes ago, and a fake registry offering the landing action
+Scenario: Ready, not ready and the slots
+Given a task `fix-ci` in state `ready` with pull requests `sneat-dev/wb#12` and `sneat-co/sneat-go#7`, each 5 of 5 checks passed and read 4 and 9 minutes ago, a task in `not-ready` waiting only on checks read 4 minutes ago, and a fake registry offering the landing action for pull requests
 When Home is opened, and again with no registry and no owner session
-Then a row shows `fix-ci`, 2 repositories, both numbers, "10/10" and its activity age with the registry's landing action, the pending task is shown muted below with "checked 4 min ago" and no action, and without a registry the action is "Copy command" with `wb pr land sneat-dev/wb#12`
+Then a row shows `fix-ci`, 2 repositories, both numbers, "10/10" and the age 9 min of the oldest observation, with one landing slot per pull request, the not-ready task is shown muted below with "checked 4 min ago" and no action, and without a registry each pull request offers "Copy command" `wb pr land 'sneat-dev/wb#12'`
 
 ### AC: in-flight-lists-agents-on-every-machine
 
@@ -1478,34 +1599,34 @@ Then the chips show `mac` free, `vm` busy and `old` with its sample's age and th
 Scenario: Last five
 Given 8 tasks with distinct last activity
 When Home is opened and "Open" is pressed on one
-Then 5 tasks are listed newest first, each with its lifecycle badge, and "Open" selects that task on Tasks
+Then 5 tasks are listed newest first, each with its state badge, and "Open" selects that task on Tasks
 
 ### AC: cleanup-line-counts-and-chart
 
-**Requirements:** cockpit-views#req:home-cleanup
+**Requirements:** cockpit-views#req:home-cleanup, cockpit-views#req:field-tables
 
 Scenario: Safe, look, and the age chart
-Given 12 worktrees of landed tasks with no `ahead` and owner state `idle`, 3 orphaned worktrees, 2 unknown ones and 4 not-landed ones idle for 40 days
+Given 12 worktrees of landed tasks with `ahead` 0 and owner state `unknown`, one worktree of a landed task with `ahead` absent, 3 orphaned worktrees, 2 unknown ones of other tasks and 4 not-landed ones idle for 40 days
 When Home is opened, "Review & clean" is pressed, and the Cleanup line is expanded
-Then the line reads "12 safe to remove; 9 need a look" and says the counts are indicative, "Review & clean" opens Worktrees with chip `safe` showing 12 rows, and the expansion shows the worktree-age bars with the five `age:` links, a text alternative and the theme's colours
+Then the line reads "12 safe to remove; 9 need a look" (the worktree with `ahead` absent is not safe), says the counts are indicative, "Review & clean" opens Worktrees with chip `safe` showing 12 rows, and the expansion shows the worktree-age bars with the five `age:` links, a text alternative and the theme's colours
 
 ### AC: fleet-health-only-when-not-ok
 
 **Requirements:** cockpit-views#req:home-fleet-health
 
-Scenario: Healthy, then three problems
-Given a fleet in which every machine is live and current, and then one with a machine stale for 25 hours, a machine on an older WB, and a repository with a scan error
+Scenario: Healthy, then problems
+Given a fleet in which every machine is live and current, and then one with a machine stale for 25 hours, a machine on an older WB, a repository with a scan error and a machine with `remote_error` `wb_too_old`
 When Home is opened for each
-Then the first shows no Fleet health line, the second shows one line with "Copy fix command" entries `wb remote publish` and `wb self-update`, each labelled "run on <machine>", and `wb fleet status --filter <owner/repository>`
+Then the first shows no Fleet health line, the second shows one line per problem with "Copy fix command" entries `wb remote publish` and `wb self-update`, each labelled "run on <machine>", `wb fleet status --filter='<owner/repository>'` and the command of the remote error
 
 ### AC: home-charts-from-throughput
 
 **Requirements:** cockpit-views#req:home-charts
 
-Scenario: With and without throughput
+Scenario: With and without throughput, and non-linking
 Given a document with a `throughput` block of 30 days and one without
-When Home is opened on a desktop viewport for each
-Then the first shows "Time to land" with the slowest five linking to their tasks and "Landed per day", each with a visually hidden table and theme colours, below sections 1 to 3, and the second shows neither chart
+When Home is opened on a desktop viewport for each, and a bar and a number of the charts are clicked
+Then the first shows "Time to land" with the slowest five named and "Landed per day", each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
 
 ### AC: home-phone-layout
 
@@ -1518,12 +1639,21 @@ Then sections 1 to 3 are cards, sections 4 to 6 and the charts are behind "more"
 
 ### AC: repository-identity-merges-local-and-cached
 
-**Requirements:** cockpit-views#req:repository-identity, cockpit-views#req:repositories-list
+**Requirements:** cockpit-views#req:repository-identity, cockpit-views#req:field-tables
 
-Scenario: One local and one cached row
-Given `sneat-co/sneat-go` as a local entry carrying host `github.com` and as an entry cached from another machine whose snapshot name is `github.com/Sneat-Co/sneat-go`, and a second pair differing only in that one carries no host
-When the fleet document is mapped and the Repositories page is opened
-Then the cached entry carries `host` `github.com`, each pair is one row, and the row has a chip for each machine, the cached one showing its age and a stale mark when stale
+Scenario: Merging local and cached rows
+Given the fleet document with `sneat-co/sneat-go` as a local entry carrying host `github.com` and as a cached entry with host `github.com` and name `Sneat-Co/sneat-go`, and a second pair differing only in that one carries no host
+When the Repositories page is opened
+Then each pair is one row keyed by the lower-cased `owner/name`, with a chip for each machine, the cached one showing its age and a stale mark when stale
+
+### AC: cached-repository-names-are-split-into-host-and-name
+
+**Requirements:** cockpit-views#req:repository-identity, cockpit-views#req:field-tables
+
+Scenario: Splitting a snapshot name in the daemon
+Given cached snapshot names `github.com/Sneat-Co/sneat-go`, `sneat-co/sneat-go` and `gitlab.example.com/group/sub/proj`, and a local repository with an origin on `github.com`
+When the fleet document is requested
+Then the first cached entry has `host` `github.com` and `name` `Sneat-Co/sneat-go`, the second has `name` `sneat-co/sneat-go` and no `host`, the third has `host` `gitlab.example.com` and `name` `group/sub/proj`, and the local entry carries `name` as `owner/name` with `host` separate
 
 ### AC: repositories-merge-across-machines
 
@@ -1608,12 +1738,12 @@ Then the first reads runtime, model and task as its label with the badge "workin
 
 ### AC: agent-label-fallback
 
-**Requirements:** cockpit-views#req:agents-list, cockpit-views#req:agent-fields
+**Requirements:** cockpit-views#req:agents-list, cockpit-views#req:agent-fields, cockpit-views#req:field-tables
 
 Scenario: A session with no work link
-Given a registered `claude` session on model `opus` started 2 hours ago that no worktree's owner or claim names
+Given a registered `claude` session on model `opus` with `state` `live` started 2 hours ago that no worktree's owner or claim names
 When the Agents page is opened
-Then its label reads "claude opus session, started 2 h ago"
+Then its label reads "claude opus session, started 2 h ago" and it counts as running
 
 ### AC: agent-detail-links-its-work
 
@@ -1637,10 +1767,10 @@ Then the first column header reads "Machines" in larger type with no separate se
 
 **Requirements:** cockpit-views#req:machines-list
 
-Scenario: Filter box and chip
-Given three machines of which two are stale
-When the filter `mac` is typed and the chip `stale` is toggled
-Then the filter narrows the rows by machine name and the chip leaves exactly the two stale machines
+Scenario: Filter box and chips
+Given three machines of which two are stale, and one of them runs an older WB than the newest in the fleet
+When the filter `mac` is typed and the chips `stale` and `outdated` are toggled in turn
+Then the filter narrows the rows by machine name, `stale` leaves exactly the two stale machines and `outdated` exactly the machine on the older WB
 
 ### AC: machine-detail-metrics-charts
 
@@ -1674,9 +1804,9 @@ Then the route is requested every 10 seconds during the first and third periods 
 **Requirements:** cockpit-views#req:action-slots
 
 Scenario: A registry, a test action, and no registry
-Given a fake registry that returns for a worktree `pr.create` enabled, `worktree.discard` disabled with the reason "2 commits are not on the remote" and one extra test action, and returns nothing for a task
-When a worktree's side panel, its page header and a "Needs you" row are opened, and then the registry route is made absent
-Then each area shows the three actions with the disabled one disabled and carrying its reason, the most common action is a direct button and the others are in the overflow menu, a task's panel has no action area, and with the route absent no action area, placeholder or layout gap is rendered anywhere
+Given a fake registry that returns for a worktree `pr.create` enabled, `worktree.discard` disabled with the reason "2 commits are not on the remote" and one extra test action, and for a pull request one landing action, and returns nothing for a task
+When a worktree's side panel, a pull request's slot in a "Ready to land" row, a worktree page header and a "Needs you" row are opened, and then the registry route is made absent
+Then each area shows exactly the registry's actions with the disabled one disabled and carrying its reason, a task's panel has no action area of its own and shows a slot per pull request or worktree, and with the route absent no action area, placeholder or layout gap is rendered anywhere
 
 ### AC: copy-command-uses-only-existing-commands-and-identifiers
 
@@ -1685,7 +1815,25 @@ Then each area shows the three actions with the disabled one disabled and carryi
 Scenario: Each entity kind as an anonymous reader
 Given a worktree, a pull request, a repository, a branch, a dispatched run, a recorded successor session, an unrecorded session and a worktree on machine `vm`, no owner session, and the manifest `ai/capabilities.json`
 When each entity's "Copy command" entries are pressed
-Then the clipboard holds exactly the commands listed in the requirement with the identifiers filled in, every command's path exists in the manifest, the worktree on `vm` is labelled "run on vm", no copied text contains `--apply` or a filesystem path, the unrecorded session offers no entry and says it cannot be controlled, and the entries are available without an owner session
+Then the clipboard holds exactly the commands listed in the requirement with the identifiers single-quoted and flags written `--flag=value`, the repository's creation command carries `--model` and `--original-prompt-file`, the worktree on `vm` is labelled "run on vm", no copied text contains `--apply` or a filesystem path, the unrecorded session offers no entry and says it cannot be controlled, no entry offers to enter a worktree, and the entries are available without an owner session
+
+### AC: copy-command-templates-match-the-manifest
+
+**Requirements:** cockpit-views#req:copy-the-command
+
+Scenario: A unit test over every template
+Given every command template of the requirement and `ai/capabilities.json`
+When a test parses each template
+Then each command path exists in the manifest, every flag used exists on that command, and every flag the command requires is present in the template
+
+### AC: copy-command-refuses-hostile-values
+
+**Requirements:** cockpit-views#req:copy-the-command, cockpit-views#req:new-task-form
+
+Scenario: Quotes, control characters, a leading dash, and the picker
+Given a task named `a'; rm -rf ~; '`, one named `-x`, one containing a newline, a branch named `--upstream`, and repositories named `owner/na me` and `owner/ok.name`
+When "Copy command" entries and the "New task" picker are used on each
+Then the value with a quote is copied single-quoted with the embedded quote escaped, the values starting with `-` or containing a control character are refused with an explanation and nothing is copied, the picker offers `owner/ok.name` and not `owner/na me`, and no refused value reaches the clipboard
 
 ### AC: owner-gating-is-one-affordance
 
@@ -1696,15 +1844,6 @@ Given no owner session and a registry that returns actions the caller cannot run
 When a list row's action area and a detail page are shown
 Then the actions are disabled with one consistent explanation, the session chip offers "Sign in as owner: run `wb cockpit`", and no button carries its own sign-in message
 
-### AC: operation-indicator-and-updating-row
-
-**Requirements:** cockpit-views#req:operation-feedback
-
-Scenario: With and without the operations route
-Given a daemon serving the operations route and a push started from a worktree's panel, and another daemon without that route
-When the push is running, then reaches a terminal state, and the other daemon's page is opened
-Then the top bar shows 1 running, the operation is polled every second, and at the terminal state the fleet document is refetched at once, the last result links to the operation's record, the row shows "updating" until the refetched read model reflects the push, and the other daemon's top bar has no activity indicator
-
 ### AC: new-task-form-produces-commands
 
 **Requirements:** cockpit-views#req:new-task-form
@@ -1712,23 +1851,23 @@ Then the top bar shows 1 running, the operation is polled every second, and at t
 Scenario: The form
 Given repositories `sneat-co/sneat-go` and `sneat-co/bots-go`
 When "New task" is opened, `sneat-*/*-go` is typed in the picker, both are chosen, the task `fix-ci`, base `main` and model `opus` are entered
-Then the copyable commands are `wb create fix-ci sneat-co/sneat-go sneat-co/bots-go --base main --model opus` and `wb agent dispatch --repo sneat-co/sneat-go --task "fix-ci" --profile <profile> --new-worktree fix-ci --base main` (one per repository), and nothing is run
+Then the copyable commands are `wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file='<file>' --base='main'` and `wb agent dispatch --repo='sneat-co/sneat-go' --task='fix-ci' --profile='<profile>' --new-worktree='fix-ci' --base='main'` (one per repository), the form refuses to produce a command until a model is entered, and nothing is run
 
 ### AC: intent-to-done-budgets-hold
 
 **Requirements:** cockpit-views#req:intent-to-done-budgets
 
-Scenario: Palette, preview, refetch
-Given a fake registry and a fixture fleet
-When the palette is opened, an action is chosen, and an operation then completes
-Then the palette is visible within 100 ms, the preview is visible with no page navigation, and the affected row reflects the result after one refetch
+Scenario: Palette and preview
+Given a fake registry, a fixture fleet and a network request counter
+When the palette is opened, and an action slot is activated
+Then the palette is visible with no network request made and no route navigation before it appears, and the action slot opens its preview with no route navigation
 
 ### AC: responses-are-gzip-with-etag
 
 **Requirements:** cockpit-views#req:compressed-responses
 
 Scenario: Compressed and conditional
-Given a daemon serving the fleet document, the branches and metrics routes and a static asset
+Given a daemon serving the fleet document, the branches route and a static asset
 When each is requested with `Accept-Encoding: gzip`, the fleet document is then requested again with the ETag it returned, with the identity ETag, and once with no `Accept-Encoding`
 Then every compressed response carries `Content-Encoding: gzip`, an ETag ending in `-gzip` and `Vary: Origin, Accept-Encoding`, both conditional requests are answered `304`, and the request without the header receives an identity body with its own ETag
 
@@ -1756,7 +1895,7 @@ Then the asset is served from a build-time compressed file with `Cache-Control: 
 
 Scenario: A preflight and a response from the hosted origin
 Given `cockpit.hosted_url` is `https://hosted.example.test/wb/cockpit/`
-When the origin `https://hosted.example.test` requests the branches route and the metrics route, with a preflight first, and then repeats with `If-None-Match`
+When the origin `https://hosted.example.test` requests the fleet document and the branches route, with a preflight first, and then repeats with `If-None-Match`
 Then the preflight allows `If-None-Match`, the responses expose `ETag`, the repeat is answered `304`, and a request from any other foreign origin is still refused with status 403
 
 ### AC: branches-leave-the-document
@@ -1788,30 +1927,30 @@ Then only the valid repository has `remote_url_web`, and the others omit the fie
 
 ### AC: owner-state-mapping
 
-**Requirements:** cockpit-views#req:owner-state-vocabulary
+**Requirements:** cockpit-views#req:owner-state-vocabulary, cockpit-views#req:field-tables
 
-Scenario: Four local conditions and a cached one
-Given local worktrees whose recorded owner process is alive, whose recorded owner process is dead, with no owner process and a fresh heartbeat, with no owner process and a heartbeat older than the session-freshness window, and a worktree cached from another machine that published `unknown`
-When the fleet document is requested
-Then their `owner_state` values are `active`, `orphaned`, `active`, `idle` and `unknown`, and the application's types accept all four values
+Scenario: Liveness locally, normalisation of the rest
+Given local worktrees whose recorded owner process is alive, whose recorded owner process is gone, and with no owner process recorded, cached worktrees that published `idle`, `unknown` and a value `sleepy`, and a worktree with no value
+When the fleet document is requested twice within one snapshot, with a counter on the liveness probe
+Then the local `owner_state` values are `active`, `orphaned` and `unknown`, never `idle` and never from the heartbeat, the cached ones are `idle`, `unknown` and omitted (the out-of-set value is dropped), the last has no `owner_state`, the probe ran once per worktree for the snapshot, and the application's types accept all four values
 
 ### AC: worktree-entries-carry-name-and-sync
 
-**Requirements:** cockpit-views#req:worktree-name-and-sync-fields
+**Requirements:** cockpit-views#req:worktree-name-and-sync-fields, cockpit-views#req:field-tables
 
-Scenario: Known, unknown and cached sync facts
-Given a local worktree whose branch is 2 ahead and 1 behind, a local one whose upstream is gone, a local one with no upstream information, and a cached one
+Scenario: Known, unknown and cached sync facts, and lifecycle
+Given a local worktree whose branch is 2 ahead and 1 behind, a local one whose upstream is gone, a local one with no upstream configured, a local one with no sync information, a cached one, and a local claim that holds a lifecycle and one that does not
 When the fleet document is requested
-Then the first has `ahead` 2 and `behind` 1, the second `upstream_gone` true, the third and the cached one have none of the three fields, and every worktree has a `name` equal to its task that contains no path separator
+Then the first has `ahead` 2, `behind` 1 and `has_upstream` true, the second `upstream_gone` true, the third `has_upstream` false, the fourth and the cached one have none of the four fields, every worktree has a `name` equal to its task that contains no path separator, and `lifecycle` is present only where the claim or record already held it
 
 ### AC: pull-request-entries-carry-state-and-checks
 
-**Requirements:** cockpit-views#req:pull-request-fields
+**Requirements:** cockpit-views#req:pull-request-fields, cockpit-views#req:field-tables
 
-Scenario: Observed, failed read, and over the bound
-Given a fake observer returning for pull request 12 state open with 3 passed, 1 failed named `go-ci / test` and 1 pending check and `mergeable` `blocked`, and for pull request 13 a successful then a failing read, and 5 bound pull requests with `cockpit.pull_request_limit` 3
-When the snapshotter ticks twice with the second tick failing for 13, and the fleet document is requested with a counter on GitHub reads
-Then entry 12 carries `state` `open`, `checks_total` 5, `checks_passed` 3, `checks_failed` 1, `checks_pending` 1, `failed_check` `go-ci / test`, `mergeable`, `checks_green` false and `checked_at`, entry 13 keeps its first values and `checked_at`, no more than 3 pull requests are observed per tick, the oldest `checked_at` first, and no request caused a GitHub read
+Scenario: Observed, failed read, merged, and over the bound
+Given a fake observer returning for pull request 12 state open with 3 passed, 1 skipped, 1 failed named `go-ci / test` and 1 pending check and `mergeable` `blocked`, for pull request 13 a successful then a failing read, for pull request 14 state merged, and 5 bound pull requests with `cockpit.pull_request_limit` 3
+When the snapshotter ticks three times with the second tick failing for 13, and the fleet document is requested with a counter on GitHub reads
+Then entry 12 carries `state` `open`, `checks_total` 6, `checks_passed` 3, `checks_skipped` 1, `checks_failed` 1, `checks_pending` 1, `failed_check` `go-ci / test`, `mergeable`, `checks_green` false and `checked_at`, entry 13 keeps its first values and `checked_at`, entry 14 is not observed again after one confirmed merged observation, no more than 3 pull requests are observed per tick, the oldest `checked_at` first, and no request caused a GitHub read
 
 ### AC: pull-request-state-absent-until-observed
 
@@ -1821,6 +1960,15 @@ Scenario: Never observed
 Given a bound pull request whose observation has never succeeded
 When the fleet document is requested and the Tasks page is opened
 Then its entry has only `number`, `repository` and `url`, and the application says the pull request's state is not reported and counts it as neither open nor landed
+
+### AC: pull-request-strings-are-hostile-safe
+
+**Requirements:** cockpit-views#req:pull-request-fields, cockpit-views#req:field-tables
+
+Scenario: Hostile names and addresses
+Given an observation whose first failing check is named with 300 characters, control characters and a right-to-left override, one whose `mergeable` is `<img onerror=1>`, and pull requests whose `url` is `javascript:alert(1)`, `http://example.com/x`, `https://user@example.com/x`, `https://example.com:8443/x` and `https://github.com/o/r/pull/1`, and a cached pull request whose `state` is `bogus`
+When the fleet document is requested and the Tasks page and Home render them
+Then `failed_check` is at most 100 characters with the control and bidirectional characters removed and is rendered as text, the `mergeable` value is omitted, only the last `url` is emitted, the cached `state` is omitted, and nothing is rendered as markup
 
 ### AC: agent-activity-joins-herdr-by-session
 
@@ -1833,21 +1981,30 @@ Then the matched session has `activity` `blocked`, the unmatched one and every a
 
 ### AC: agent-entries-carry-run-links
 
-**Requirements:** cockpit-views#req:agent-fields
+**Requirements:** cockpit-views#req:agent-fields, cockpit-views#req:field-tables
 
-Scenario: Run, claimed session and bare session
-Given a dispatched run with a run record naming a repository, a worktree and a start time and ended `failed` with exit code 2 and a free-text failure, a session that a worktree's owner names, and a session that nothing names
+Scenario: Run, finished run, sessions
+Given a running dispatched run with a run record naming a repository, a worktree and a start time, a run finished `failed` with exit code 2 at a known time with a free-text failure, a live session that a worktree's owner names, a parked session, and a session that nothing names
 When the fleet document is requested
-Then the run has `worktrees`, `task`, `repository`, `started_at` and the exit code but never the free text, the claimed session has `started_at` plus that worktree and task, and the bare session has only `started_at` and no worktree, task or repository
+Then the running run has `worktrees`, `task`, `repository` and `started_at`, the finished run also has `finished_at` and `exit_code` 2 but never the free text, the sessions have `state` `live` or `parked`, the claimed session has `started_at` plus that worktree and task, and the bare session has only `started_at` and no worktree, task or repository
+
+### AC: remote-agents-are-capped
+
+**Requirements:** cockpit-views#req:agent-fields, cockpit-views#req:remote-snapshot-agents-and-metrics
+
+Scenario: 500 agents from a snapshot, and at publish
+Given a published snapshot of machine `vm` with 500 agents with 5,000-character strings, and a local machine with 500 agents publishing with `remote.publish.agents` true
+When the fleet document is read and a snapshot is published
+Then at most 200 `vm` agents are in the document and at most 200 are published, every string is length-capped, and `agents_truncated` is set
 
 ### AC: machine-entries-carry-hardware-and-no-metrics
 
-**Requirements:** cockpit-views#req:machine-fields
+**Requirements:** cockpit-views#req:machine-fields, cockpit-views#req:field-tables
 
 Scenario: Local, snapshot with hardware, snapshot without
 Given the local machine, a machine whose published snapshot carries `os`, `arch`, `cpu_count` and `boot_time`, and one whose snapshot does not
 When the fleet document is requested
-Then the first two have the four fields, the third has none, no entry has `metrics`, and no process list, path or environment value appears
+Then the first two have the four fields with `boot_time` an RFC 3339 time, the third has none, no entry has `metrics`, and no process list, path or environment value appears
 
 ### AC: document-carries-refresh-interval
 
@@ -1858,23 +2015,32 @@ Given `cockpit.refresh_interval` set to 45 seconds
 When the fleet document is requested
 Then it carries `refresh_interval_seconds` 45
 
+### AC: field-tables-hold-in-the-document
+
+**Requirements:** cockpit-views#req:field-tables, cockpit-views#req:schema-version-2
+
+Scenario: Every kind, local and cached
+Given a fixture with local and cached entries of every kind, including values outside the closed sets
+When the fleet document is requested
+Then it carries `schema_version` 2, has no `branches` and no `metrics`, every field of every table has the documented type and appears only where the last column allows (the local-only fields are absent on cached entries), `name` is `owner/name` and `host` separate, existing field names are unchanged, and values outside a closed set are dropped
+
 ### AC: periodic-publish-runs-after-a-local-scan
 
 **Requirements:** cockpit-views#req:periodic-remote-publish
 
-Scenario: Interval, minimum, failure and no store
-Given a daemon with a fake remote store and a fake clock, `remote.publish.interval` set to 1 minute, then to 10 minutes, a store that fails once, and a daemon with no remote store
+Scenario: Opt-in, minimum, failure and no store
+Given a daemon with a fake remote store and a fake clock, first with `remote.publish.interval` unset, then set to 1 minute, then to 10 minutes, a store that fails once, and a daemon with no remote store
 When scans complete and time passes
-Then publishes happen only after a successful scan, never closer than 5 minutes apart, the interval of 1 minute is raised to 5, a failed publish is retried at the next interval and the local snapshot is not delayed, and the daemon with no store publishes nothing
+Then nothing is published while the interval is unset, publishes happen only after a successful scan and never closer than 5 minutes apart, the interval of 1 minute is raised to 5, a failed publish is retried at the next interval and the local snapshot is not delayed, and the daemon with no store publishes nothing
 
 ### AC: remote-snapshot-carries-optional-agents-and-metrics
 
 **Requirements:** cockpit-views#req:remote-snapshot-agents-and-metrics
 
-Scenario: New fields, old reader, hub model
-Given a snapshot carrying `agents` and `metrics`, the current YAML decoder of the previous wb version, and the hub provider's snapshot model
-When the snapshot is encoded, decoded by the old decoder and published through the hub model
-Then `schema_version` is unchanged, the old decoder returns the snapshot without error and without those fields, the hub model accepts and stores them, and the local fleet document shows that machine's agents as `cached` with the snapshot's age and no actions
+Scenario: Flags, old reader, old hub
+Given a publisher with `remote.publish.agents` and `remote.publish.metrics` each true and each unset, the current YAML decoder of the previous wb version, a hub provider model that accepts the fields, and an older hub that refuses them with status 400
+When snapshots are encoded, decoded by the old decoder and published through each hub
+Then agents and metrics are present only when their flag is true, `schema_version` is unchanged, the old decoder returns the snapshot without error and without those fields, the new hub model accepts and stores them, the older hub's 400 is followed by one retry without the optional fields and a recorded diagnostic, and the local fleet document shows that machine's agents as `cached` with the snapshot's age and no actions
 
 ### AC: throughput-block-from-terminal-records
 
@@ -1903,6 +2069,15 @@ Given a sampler with a fake source and a fake clock, and a build for Windows
 When 400 ten-second ticks elapse, and separately the source reports unsupported
 Then the buffer holds exactly the newest 360 samples oldest first, each tick spaced 10 seconds apart, no sampling ran on a request, the unsupported platform reports that metrics are unsupported without an error, and `GOOS=windows go build ./...` succeeds
 
+### AC: metrics-route-is-compressed-and-revalidatable
+
+**Requirements:** cockpit-views#req:compressed-responses, cockpit-views#req:hosted-origin-conditional-requests, cockpit-views#req:machine-metrics-route
+
+Scenario: The metrics route
+Given a daemon serving `machine-metrics?machine=<id>` for the local machine
+When it is requested with `Accept-Encoding: gzip` and again with its ETag, and from the hosted origin `https://hosted.example.test` with a preflight and `If-None-Match`
+Then the response carries `Content-Encoding: gzip`, an ETag ending in `-gzip` and `Vary: Origin, Accept-Encoding`, the repeats are answered `304`, the preflight allows `If-None-Match`, the responses expose `ETag`, and any other foreign origin is refused with status 403
+
 ### AC: metrics-route-serves-each-source
 
 **Requirements:** cockpit-views#req:machine-metrics-route
@@ -1920,6 +2095,15 @@ Scenario: A healthy HTTP route
 Given machine `vm` with an `http` section whose fake server returns an envelope with 3 worktrees, 1 running agent and 360 metric samples, an `ssh` section with a counting fake `remotessh.Runner`, and published-store entries for `vm` that are 25 days old
 When the daemon runs through one refresh interval on a fake clock and the fleet document and `machine-metrics?machine=<vm id>` are requested
 Then the `vm` worktrees and agent appear with `route` `live-remote`, `transport` `http` and `observed_at` equal to the envelope's time, replacing the cached entries, with their `owner_state`, sync facts and pull request state, the metrics answer has `route` `live-remote` with `fetched_at` and the history, no ssh process was started, no request caused an outbound call, and the browser made no request to `vm`
+
+### AC: response-machine-name-is-ignored-for-placement
+
+**Requirements:** cockpit-views#req:remote-envelope-is-untrusted
+
+Scenario: A payload that names another machine, or this one
+Given a target `vm` whose export, over either transport, names machine `mac`, another whose export names the local machine, and entries for a third machine
+When the daemon decodes them
+Then the entries are placed on `vm` whatever machine they name, nothing is applied to the local machine, the third machine's entries are dropped, and no machine name in the response is used for placement
 
 ### AC: failed-export-shows-a-typed-error
 
@@ -1943,19 +2127,19 @@ Then no ssh process is started and no HTTP request is sent by any, and the metri
 
 **Requirements:** cockpit-views#req:hub-export-route
 
-Scenario: Credentials and the metrics-only variant
-Given a wb server mounting the hub, a machine credential with `machine_snapshot:read`, a peer credential with `peer:session` alone, and a session cookie
+Scenario: Credentials, identity, scope of data, and the hosted service
+Given a daemon-hosted hub, a machine credential with `machine_snapshot:read` of the host owner's identity, one of another identity, a peer credential with `peer:session` alone, a session cookie, and the hosted multi-identity service
 When `GET /v0/workbench/machines/export` and `?metrics_only=1` are requested with each, and with none, and a Cockpit route is requested with `Host: vm.example`
-Then only the machine credential receives the envelope (without `fleet` for the metrics-only call), the others receive 401, no new scope exists, the route is not under `/api/v1/cockpit/`, and the Cockpit route is still refused with status 421
+Then only the owner's machine credential receives the envelope of this machine alone (without `fleet` for the metrics-only call), the other identity is refused with 403, the others with 401, the hosted service serves no such route, no new scope exists, the route is not under `/api/v1/cockpit/`, and the Cockpit route is still refused with status 421
 
 ### AC: bearer-stays-with-the-configured-host
 
 **Requirements:** cockpit-views#req:remote-http-fetch
 
-Scenario: Redirect, plain HTTP, wrong host
-Given an `http` section whose server answers 302 to another host, one with an `http://` non-loopback URL, one with a loopback `http://` URL, and a token file
+Scenario: Redirect, plain HTTP, URL validation, wrong host
+Given an `http` section whose server answers 302 to another host, one with an `http://` non-loopback URL, one with a URL carrying user information, a path and a query, one with a loopback `http://` URL, and a token file
 When the daemon fetches
-Then the redirect is not followed and no request reaches the other host, the non-loopback `http://` URL is refused without any request, the loopback one is used, every request carries the bearer only to the configured host, and the response is capped at 8 MiB
+Then the redirect is not followed and no request reaches the other host, the non-loopback `http://` URL and the URL with user information, a path or a query are refused by `ValidateHubURL` without any request, the loopback one is used, every request carries the bearer only to the configured host, the address comes only from local configuration and never from a snapshot or a response, and the response is capped at 8 MiB
 
 ### AC: http-failure-falls-back-to-ssh
 
@@ -1975,23 +2159,14 @@ Given a machine whose HTTP failed once and whose SSH works, on a fake clock
 When time advances by 4 minutes and then by 2 minutes more, and HTTP then succeeds
 Then no HTTP request is made during the first 5 minutes, one is made after them, and on its success the entry returns to `transport` `http` with `remote_error` cleared
 
-### AC: identity-mismatch-is-refused
-
-**Requirements:** cockpit-views#req:remote-envelope-is-untrusted
-
-Scenario: A payload that names another machine
-Given a target `vm` whose export, over either transport, names machine `mac` and carries entries for `mac` and for a third machine
-When the daemon decodes it
-Then the whole payload is refused, `vm` carries `remote_error` `bad_payload`, and nothing from it appears in the fleet document
-
 ### AC: hostile-payload-is-refused
 
 **Requirements:** cockpit-views#req:remote-envelope-is-untrusted, cockpit-views#req:remote-exporter-transports
 
-Scenario: Oversized, unknown field, long string, filesystem path
-Given exports, over HTTP and over SSH, of 9 MiB, one with an unknown top-level field, one with a 10,000-byte task name, and one whose worktree entry carries a `path`
+Scenario: Oversized, unknown field, long string, filesystem path, bad numbers, future time, too many samples
+Given exports, over HTTP and over SSH, of 9 MiB, one with an unknown top-level field, one with a 10,000-byte task name, one whose worktree entry carries a `path`, one with a negative count, a `NaN` percentage and a sample 5 minutes in the future, and one with 361 samples
 When each is decoded
-Then each is refused with `remote_error` `bad_payload`, nothing from it is rendered, and the stdout buffer never held more than the cap
+Then each is refused with `remote_error` `bad_payload`, nothing from it is rendered, and the stdout or body buffer never held more than the cap
 
 ### AC: metrics-only-export-is-demand-driven
 
@@ -2044,8 +2219,8 @@ Then the first is refused with status 421, the second with 401, and neither retu
 
 Scenario: With and without an SSH route
 Given a worktree on machine `vm` that has `ssh` `host` `vm.example`, `user` `alex` and `wb_path` `/usr/local/bin/wb`, and one on machine `old` with none
-When the "Copy command" entry `wb worktree list <task>` is pressed on each
-Then the first copies `ssh alex@vm.example /usr/local/bin/wb worktree list fix-ci` with each token shell-quoted as one argument, and the second copies `wb worktree list fix-ci` labelled "run on old"
+When the "Copy command" entry `wb worktree list '<task>'` is pressed on each
+Then the first copies `ssh alex@vm.example /usr/local/bin/wb worktree list 'fix-ci'` with the interpolated value single-quoted, and the second copies `wb worktree list 'fix-ci'` labelled "run on old"
 
 ### AC: fleet-document-fits-the-budget
 
@@ -2081,7 +2256,7 @@ Then at no moment are there more than 60 row elements in the DOM
 Scenario: Benchmark
 Given 5,000 rows
 When the matcher and view functions filter them with a multi-term glob query many times, and a key is typed in a filter box
-Then the median time is under 30 ms with the CI multiplier applied, and the list updates on the next animation frame with no debounce timer
+Then the median time is under 30 ms with the CI multiplier of 5 applied, and the list updates on the next animation frame with no debounce timer
 
 ### AC: unchanged-snapshot-does-nothing
 
@@ -2117,7 +2292,7 @@ Then each state shows an icon or text as well as its colour, tables use tabular 
 Scenario: Skeleton to data
 Given a page showing fixed-height skeleton rows and cards
 When the data arrives
-Then the cumulative layout shift measured by a layout-shift observer is 0
+Then the cumulative layout shift measured by a layout-shift observer is under 0.01
 
 ### AC: usable-at-360-wide
 
@@ -2153,14 +2328,24 @@ Then every added Go statement is covered, thresholds of 100 hold for statements,
 Scenario: Many renders, one snapshot
 Given one fleet document and a counter on the derivation functions
 When Home, Tasks and Repositories are rendered repeatedly and a filter is typed
-Then merged repositories, tasks with lifecycle, the "Needs you" items, the ready-to-land list and the cleanup counts were each computed once for that document, and a new document computes them once more
+Then merged repositories, tasks with state, the "Needs you" items, the ready-to-land list and the cleanup counts were each computed once for that document, and a new document computes them once more
 
 ## Open Questions
 
 - Which remote store is the fleet's shared one is undecided: the Mac reads the git
   store and the VM publishes to its own hub. Until it is settled, periodic publish
-  uses whatever each machine has configured; it is the fallback for machines without an
-  SSH route, which Cockpit reads live over SSH.
+  uses whatever each machine has configured; it is opt-in and the fallback for machines with
+  no live route, which Cockpit reads over HTTP or SSH.
+- Founder, 2026-10-01: "its interesting idea to have wb state pushed to some remote ingitdb
+  repo". The opt-in periodic publish (REQ:periodic-remote-publish) could target a remote
+  inGitDB repository as the shared store. Because Git keeps history, that store could also feed
+  trend charts (throughput, worktree debt over time, machine load) and let the hosted or phone
+  Cockpit read fleet state without reaching any machine. Open, not specified here: how it relates
+  to the existing `remote.provider: git` store (a state repository such as `sneat-dev/wb-state`,
+  one snapshot per `<login>/<machine>`, every publish a commit) and to the daemon-hosted hub's
+  inGitDB engine (`hub.store.engine: ingitdb`); write frequency versus repository growth, since
+  every publish is a commit; and what may leave the machine, that is, the redaction of
+  `remote.publish.unpushed` and of the opt-in agents and metrics.
 - A daemon run by launchd or systemd may have no SSH agent socket, so the key used for
   `session_move.targets.<machine>.ssh` must work non-interactively (an unencrypted key or
   a key in a keychain the service can read); a failure shows as `auth_failed`.
@@ -2175,11 +2360,13 @@ Then merged repositories, tasks with lifecycle, the "Needs you" items, the ready
   running "New task" from the Cockpit, Stop, Log and Reply on a run, and the cleanup
   flow (`wb worktree gc` as the dry-run preview and `--apply` as the run, as a daemon
   operation with progress).
-- The local `owner_state` mapping of REQ:owner-state-vocabulary needs the owner
-  process-liveness of each local worktree, which the current local mapper does not
-  read (it reads only the heartbeat). Whether that read is cheap enough for the
-  snapshot is for the contract task to measure; if it is not, local worktrees with a
-  recorded owner process fall back to the heartbeat rows of the table.
+- The local `owner_state` of REQ:owner-state-vocabulary is the owner-process liveness, which the
+  current local mapper does not read (it reads only the heartbeat). The contract task caches it per
+  snapshot and reports the measured cost; the heartbeat fallback is not part of this Feature.
+- Rows 2, 4 and 5 of REQ:task-state ignore a pull request that has no `checked_at`, so a task with
+  one observed ready pull request and one unobserved open one reads as ready; the side panel says
+  how many pull requests are not yet observed. Whether `ready` should require every open pull
+  request to be observed is left for review.
 - Elapsed pending time of a pull request's checks is not available (the observation
   carries no start time), so Home shows how long ago the checks were read.
 

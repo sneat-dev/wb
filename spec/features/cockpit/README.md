@@ -164,8 +164,9 @@ is this closed set of fields:
   (`route`: `local`, `live-remote`, `cached` or `none`) and, for `live-remote`,
   its fetch time (`fetched_at`)
   ([cockpit-views](../cockpit-views/README.md)#req:machine-metrics-route);
-- repository forge host (also on an entry mapped from another machine's snapshot
-  whose name starts with a hostname), `owner/name`, default branch name, for a
+- repository forge host (split from the name of an entry mapped from another
+  machine's snapshot when that name has three or more segments and the first
+  contains a dot), `owner/name` as the name, default branch name, for a
   local repository the time of its newest local-branch activity, and
   `remote_url_web`, the `https://<host>/<owner>/<name>` address built from the
   host and `owner/name` alone and emitted only when the host matches a hostname
@@ -174,17 +175,23 @@ is this closed set of fields:
 - task name, stream name, branch name, lifecycle and owner state (`active`,
   `idle`, `orphaned` or `unknown`), last activity time, the worktree name (its
   task, never a path), and, for a worktree on the local machine only, its
-  `ahead` and `behind` commit counts and its `upstream_gone` flag;
-- pull request number, URL and state (`open`, `merged`, `closed` or `draft`),
-  the merge state GitHub reports (`mergeable`), the counts of checks total,
-  passed, failed and pending, the checks verdict (`checks_green`), the name of the
-  first failing check (`failed_check`) and the time it was read (`checked_at`)
+  `ahead` and `behind` commit counts, its `upstream_gone` flag and whether it
+  has an upstream (`has_upstream`); an owner state is one of those four values
+  or absent, and a value outside them from another machine is dropped;
+- pull request number, URL (only when it is `https` with a host of ASCII
+  letters, digits, dots and hyphens, no port and no user information) and state
+  (`open`, `merged`, `closed` or `draft`), the merge state GitHub reports as a
+  closed set (`mergeable`), the counts of checks total, passed, failed, skipped
+  and pending, the checks verdict (`checks_green`), the name of the first failing
+  check (`failed_check`, at most 100 characters, control and bidirectional
+  characters removed) and the time it was read (`checked_at`)
   ([cockpit-views](../cockpit-views/README.md)#req:pull-request-fields);
 - agent run and session identifiers, runtime, model and state, the agent's
   `activity` (`working`, `blocked`, `idle`, `done` or `unknown`) when it is
   reported, the ids of the worktrees an agent works on, its task name, repository
-  and its start time, the exit code of a finished run, and the same agent fields
-  read from another machine's snapshot;
+  and its start time, the finish time and exit code of a finished run, a
+  session's state (`live` or `parked`), and the same agent fields read from
+  another machine's snapshot, at most 200 agents per machine;
 - the landed-task throughput block (`throughput`): the window in days, the
   number of tasks landed per day, and at most five of the slowest landed tasks
   with their task name, duration in seconds and landing time;
