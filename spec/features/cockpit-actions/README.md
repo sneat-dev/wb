@@ -444,9 +444,9 @@ Then the fake indexer ran once for that checkout, the working tree is unchanged,
 **Requirements:** cockpit-actions#req:runs-are-typed-daemon-operations, cockpit-actions#req:read-model-reflects-a-finished-run
 
 Scenario: A double click
-Given a `branch.push` run that has been admitted
+Given a run of an action that changes one repository's state, admitted to the queue
 When the same run is requested again with the same idempotency key, the operation is polled to completion, and the read model is then requested
-Then both requests return the same operation identifier, the branch was pushed once, the final state is succeeded with the operation's summary, and the read model already shows the branch on the remote
+Then both requests return the same operation identifier, the action executed once, the final state is succeeded with the operation's summary, and the read model already shows the changed state
 
 ### AC: argument-vector-is-unreachable-over-http
 

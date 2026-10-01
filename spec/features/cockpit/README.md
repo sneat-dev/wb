@@ -181,8 +181,9 @@ compromise of the hosted origin leaks names only.
 RPC on its unix socket. The code is valid for 60 seconds. It travels in the
 query string of `/cockpit/session/login` on the canonical origin; the daemon
 exchanges it for a session cookie that is `HttpOnly`, `SameSite=Strict`,
-expires after 12 hours, and is named after the listen port so two daemons on
-one host keep separate sessions. The login response redirects to `/cockpit/`
+expires after 12 hours, and is named after the port the request arrived on,
+so two daemons reached on one host — one of them through a forward — keep
+separate sessions. The login response redirects to `/cockpit/`
 so the code does not stay in the address bar. A used or expired code is
 refused and establishes nothing.
 

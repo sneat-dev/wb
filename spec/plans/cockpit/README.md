@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Draft
+status: Approved
 ---
 # Plan: Cockpit shell
 
-**Status:** Draft
+**Status:** Approved
 **Source Feature:** cockpit
 **Date:** 2026-10-01
 **Owner:** alex
@@ -30,12 +30,12 @@ and the repository README asks for an owner session.
 
 ## Approach
 
-Eight tasks. The Go side is built bottom-up — mount and guard, then the
+Nine tasks. The Go side is built bottom-up — mount and guard, then the
 session, then the command that issues it, then the read model — so every
 route exists and is protected before any browser code calls it. The
 application is split in three so no pull request carries the whole of it:
-the project with its build, embedding and gates; the pages; then content and
-the code-index panel. The journey test closes the plan. Go packages are new
+the project with its build, embedding and gates; the pages; code-index
+freshness; then content and the code-index panel. The journey test closes the plan. Go packages are new
 (`internal/cockpit` and its children) so they start and stay at full
 coverage. Every task keeps the code it adds at 100% coverage: Go through `wb coverage --changed`, and `cockpit/web` through thresholds of 100 for statements, branches, functions and lines plus a rendering test for every component (founder, 2026-10-01).
 
@@ -113,9 +113,7 @@ unchanged, and can refresh one repository on request from inside the daemon;
 the default interval is set here from a measurement on the founder's
 projects root. Map every source into the closed metadata field set, so
 paths, file names, commit subjects and task summaries in a remote snapshot
-are dropped. Add `code_index` freshness in the six states
-`code-index-freshness` defines, read from receipts, building that report if
-it is still missing. Serve `GET /api/v1/cockpit/fleet`; a request reads the
+are dropped. Serve `GET /api/v1/cockpit/fleet`; a request reads the
 last snapshot and never runs Git, and before the first snapshot it returns
 the empty warming-up document. Add the owner-only README route, which
 resolves the file inside the checkout without following a link out of it and
@@ -141,22 +139,36 @@ with an assertion that its output exists.
 ### Task 6: Pages, tables and drill-down
 
 **Id:** task-6
-**Verifies:** cockpit#ac:every-page-lists-its-collection, cockpit#ac:counts-drill-down, cockpit#ac:repository-links-to-code-browser, cockpit#ac:code-index-freshness-appears
+**Verifies:** cockpit#ac:every-page-lists-its-collection, cockpit#ac:counts-drill-down, cockpit#ac:repository-links-to-code-browser
 **Depends-On:** 2, 4, 5
 **Status:** planning
 
 Build the shell and navigation, and the Dashboard, Repositories, Worktrees,
 Agents and Machines pages as tables filterable by machine and repository,
 with route and age labels on cached rows, the hover card and drill-down for
-every count, the code-index freshness column, the link from each repository
+every count, the link from each repository
 to the CodeGrapher browser built from `cockpit.code_browser_url`, and light
 and dark themes. Controls are driven by `GET /api/v1/cockpit/session`.
 
-### Task 7: Repository content and the code-index panel
+### Task 7: Code-index freshness
 
 **Id:** task-7
-**Verifies:** cockpit#ac:readme-needs-owner, cockpit#ac:hostile-readme-is-inert, cockpit#ac:code-index-panel
+**Verifies:** cockpit#ac:code-index-freshness-appears
 **Depends-On:** 4, 6
+**Status:** planning
+
+Add `code_index` freshness to each repository and worktree in the read model,
+in the six states `code-index-freshness` defines, read from indexer receipts.
+If WB does not yet produce that report, build the receipt reader here as that
+Feature's `freshness-in-fleet-status` requirement describes, without changing
+`wb fleet status`. Add the freshness column to the Repositories and Worktrees
+tables.
+
+### Task 8: Repository content and the code-index panel
+
+**Id:** task-8
+**Verifies:** cockpit#ac:readme-needs-owner, cockpit#ac:hostile-readme-is-inert, cockpit#ac:code-index-panel
+**Depends-On:** 4, 6, 7
 **Status:** planning
 
 Render the README as sanitized Markdown on the repository page, with the
@@ -166,11 +178,11 @@ once per checkout per indexer receipt and puts the statistics in the read
 model, and no request starts a provider process. Add the code-index panel on
 the repository and worktree pages.
 
-### Task 8: Whole-journey end-to-end test
+### Task 9: Whole-journey end-to-end test
 
-**Id:** task-8
+**Id:** task-9
 **Verifies:** cockpit#ac:whole-journey-e2e
-**Depends-On:** 3, 6, 7
+**Depends-On:** 3, 6, 8
 **Status:** planning
 
 One Playwright test against a real daemon on a temporary projects root: run

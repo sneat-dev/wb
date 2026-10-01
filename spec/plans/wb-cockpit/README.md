@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Draft
+status: Approved
 ---
 # Plan: WB Cockpit master plan
 
-**Status:** Draft
+**Status:** Approved
 **Source:** idea:wb-cockpit
 **Date:** 2026-10-01
 **Owner:** alex

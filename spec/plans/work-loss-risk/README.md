@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Draft
+status: Approved
 ---
 # Plan: Work-loss risk
 
-**Status:** Draft
+**Status:** Approved
 **Source Feature:** work-loss-risk
 **Date:** 2026-10-01
 **Owner:** alex
