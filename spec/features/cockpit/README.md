@@ -148,12 +148,22 @@ A request that passes the two checks above and has no owner session is the
 principal `anonymous-local`. It MAY read metadata and nothing else. Metadata
 is this closed set of fields:
 
-- machine name, the machine's unique id, WB version, route and observation time;
-- repository forge host, `owner/name` and default branch name;
-- task name, stream name, branch name, lifecycle and owner state, last
-  activity time;
+- machine name, the machine's unique id, WB version, route and observation time,
+  operating system and architecture names and CPU count;
+- the local machine's latest resource sample and its history, which are numbers
+  and times only: CPU percent, one-minute load, memory used and total bytes,
+  free and total bytes of the projects-root disk, and the sample time
+  ([cockpit-views](../cockpit-views/README.md)#req:machine-fields);
+- repository forge host, `owner/name`, default branch name, the time of its
+  newest branch activity, and `remote_url_web`, the `https://<host>/<owner>/<name>`
+  address built from the host and `owner/name` alone;
+- task name, stream name, branch name, lifecycle and owner state (`active`,
+  `idle`, `orphaned` or `unknown`), last activity time, the worktree name (never
+  a path), and a worktree's `ahead` and `behind` commit counts and its
+  `upstream_gone` flag;
 - pull request number, state and URL;
-- agent run and session identifiers, runtime, model and state;
+- agent run and session identifiers, runtime, model and state, the ids of the
+  worktrees an agent works on, its task name and its start time;
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;
@@ -165,6 +175,11 @@ is this closed set of fields:
 - the read model's own `error` code and `agents_truncated` flag;
 - the configured code browser base (`cockpit.code_browser_url`), on the session response.
 
+The metadata routes are `session`, `fleet`, `attention`, the action list, and
+two added by [cockpit-views](../cockpit-views/README.md): `GET /api/v1/cockpit/branches?repository=<id>`
+and `GET /api/v1/cockpit/machine-metrics?machine=<id>`, each of the same access
+class as `fleet`.
+
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT
 change anything. The same exclusion applies to data read from another
@@ -174,7 +189,7 @@ machine's snapshot, whose source carries several of those fields.
 
 `/api/v1/cockpit/` MUST send `Access-Control-Allow-Origin` for exactly one
 foreign origin, the origin of `cockpit.hosted_url`, only on the metadata
-`GET` routes — `session`, `fleet`, `attention` and the action list — and
+`GET` routes — `session`, `fleet`, `branches`, `machine-metrics`, `attention` and the action list — and
 never with `Access-Control-Allow-Credentials`. Those responses carry
 `Vary: Origin`. A preflight from that origin is answered with the allowance
 and with `Access-Control-Allow-Private-Network: true`. A request carrying any
@@ -246,15 +261,20 @@ unavailable control.
 #### REQ: fleet-read-model
 
 `GET /api/v1/cockpit/fleet` MUST return one versioned document
-(`schema_version`) with `snapshot_at` and these collections:
+(`schema_version`, which is 2 since [cockpit-views](../cockpit-views/README.md)#req:schema-version-2)
+with `snapshot_at` and these collections:
 
 - **machines** — this machine, and every other machine whose snapshot is
   already in the local copy of the remote state store; the snapshot reads that
   copy and does not fetch it;
 - **repositories** — with counts of worktrees, local branches, remote
   branches, open pull requests where known, and active agents;
-- **worktrees** — task, repository, branch, owner state, last activity;
-- **branches** — local and remote;
+- **worktrees** — task, repository, branch, owner state, last activity, and
+  the fields [cockpit-views](../cockpit-views/README.md) adds;
+- **branches** — not part of the document: they are served per repository by
+  `GET /api/v1/cockpit/branches?repository=<id>`, and the document keeps each
+  repository's branch counts
+  ([cockpit-views](../cockpit-views/README.md)#req:lazy-branches-route);
 - **pull_requests** — every open pull request recorded locally, without a
   network call, tied to
   its repository and, where one exists, its worktree;
@@ -352,16 +372,22 @@ no forge host has no link. Cockpit does not check that the page exists.
 
 #### REQ: navigation
 
-The application MUST provide Dashboard, Repositories, Worktrees, Agents and
-Machines pages. Each list page is a table that can be filtered by machine and
-by repository.
+The application MUST provide Dashboard, Tasks, Repositories, Worktrees, Agents
+and Machines pages, and shows no visible page heading that repeats the tab.
+Each list page is a table that can be filtered by machine and by repository.
+The behaviour of the pages — filtering, sorting, tabs, search, keyboard and
+detail pages — is defined by [cockpit-views](../cockpit-views/README.md), which
+takes precedence where it differs.
 
 #### REQ: summary-hover-drill-down
 
 Every count the application shows MUST have a hover card that names the
 entities it counts, or the first of them with the total when there are many,
 and a click that opens the list filtered to exactly those entities. A hover
-card contains no control that changes state.
+card contains no control that changes state. Where
+[cockpit-views](../cockpit-views/README.md) defines a page's counts, such as the
+Dashboard's attention items and the tab badges, its definition takes
+precedence.
 
 #### REQ: repository-readme
 
@@ -613,9 +639,9 @@ Then the row links to `https://codegrapher.dev/github.com/specscore/specscore-cl
 
 **Requirements:** cockpit#req:navigation, cockpit#req:route-and-freshness-are-explicit
 
-Scenario: Five pages
+Scenario: Six pages
 Given a read model with entries in every collection, some of them cached
-When each of the Dashboard, Repositories, Worktrees, Agents and Machines pages is opened and the machine filter is applied on a list page
+When each of the Dashboard, Tasks, Repositories, Worktrees, Agents and Machines pages is opened and the machine filter is applied on a list page
 Then each page shows its entries, every cached row shows its route and age, and the filter leaves only that machine's rows
 
 ### AC: counts-drill-down

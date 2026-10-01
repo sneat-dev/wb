@@ -7,7 +7,7 @@ status: Specified
 **Status:** Specified
 **Date:** 2026-10-01
 **Owner:** alex
-**Promotes To:** cockpit, cockpit-actions, work-loss-risk
+**Promotes To:** cockpit, cockpit-actions, cockpit-views, work-loss-risk
 **Supersedes:** —
 **Related Ideas:** extends:daemon-as-coordinator
 
