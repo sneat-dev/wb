@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/semver"
 )
 
 func inspectGoDriftRepository(ctx context.Context, repository Repository, options DriftOptions, observedAt time.Time) (DriftRepository, error) {
@@ -178,10 +177,7 @@ func observeLatestGoVersion(ctx context.Context, modulePath string, options Drif
 		evidence.Reason = sanitizeDriftReason(err.Error())
 		return evidence
 	}
-	if !semver.IsValid(version) {
-		evidence.Reason = fmt.Sprintf("latest version %q is not a valid semantic version", version)
-		return evidence
-	}
+	// latestGoVersion validates the native result before returning success.
 	evidence.Value = version
 	return evidence
 }

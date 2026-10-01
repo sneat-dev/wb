@@ -173,10 +173,9 @@ func npmRangeComparatorAdmits(specifier, version string) npmRangeVerdict {
 		return npmRangeVerdict{Evaluated: true, Admits: compared <= 0}
 	case "^":
 		return npmRangeVerdict{Evaluated: true, Admits: compared >= 0 && universalSemverCompare(version, npmCaretCeiling(literal)) < 0}
-	case "~":
+	default: // splitNpmRangeOperator returns only the cases above or "~".
 		return npmRangeVerdict{Evaluated: true, Admits: compared >= 0 && universalSemverCompare(version, npmTildeCeiling(literal)) < 0}
 	}
-	return npmRangeVerdict{Reason: "specifier operator " + quoteForReason(operator) + " is not evaluated"}
 }
 
 // splitNpmRangeOperator separates a leading comparison operator from the

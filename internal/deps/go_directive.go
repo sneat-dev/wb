@@ -267,7 +267,11 @@ type moduleListEntry struct {
 // resolves there, so `go list`'s own `-mod=mod` bookkeeping writes land on a
 // throwaway copy instead of the repository being assessed.
 func resolveModuleGraph(ctx context.Context, moduleDir string, options Options) ([]moduleListEntry, error) {
-	scratch, err := os.MkdirTemp("", "wb-go-directive-*")
+	return resolveModuleGraphWithScratch(ctx, moduleDir, options, os.MkdirTemp)
+}
+
+func resolveModuleGraphWithScratch(ctx context.Context, moduleDir string, options Options, makeScratch func(string, string) (string, error)) ([]moduleListEntry, error) {
+	scratch, err := makeScratch("", "wb-go-directive-*")
 	if err != nil {
 		return nil, err
 	}
