@@ -35,7 +35,7 @@ export const pageRoutes: Routes = [
   page('repositories/:id', 'Repository', () => import('./pages/repositories/repository-page').then((m) => m.RepositoryPage)),
   page('worktrees', 'Worktrees', () => import('./pages/worktrees/worktrees-page').then((m) => m.WorktreesPage)),
   page('worktrees/:id', 'Worktree', () => import('./pages/worktrees/worktree-page').then((m) => m.WorktreePage)),
-  prime('agents', 'Agents', () => import('./pages/agents/agents-page').then((m) => m.AgentsPage)),
+  page('agents', 'Agents', () => import('./pages/agents/agents-page').then((m) => m.AgentsPage)),
   page('agents/:id', 'Agent', () => import('./pages/agents/agent-detail-page').then((m) => m.AgentDetailPage)),
   prime('machines', 'Machines', () => import('./pages/machines/machines-page').then((m) => m.MachinesPage)),
   page('machines/:id', 'Machine', () => import('./pages/machines/machine-detail-page').then((m) => m.MachineDetailPage)),

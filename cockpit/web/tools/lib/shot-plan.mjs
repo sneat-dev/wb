@@ -55,6 +55,11 @@ export const LIST_SHOTS = [
   { name: 'tasks-no-match', url: '/tasks', steps: ['filter:zzzzqq'] },
   { name: 'tasks-panel', url: '/tasks', steps: ['row:1'] },
   { name: 'tasks-panel-raw', url: '/tasks', steps: ['row:1', 'raw'] },
+  { name: 'agents-list', url: '/agents', steps: [] },
+  { name: 'agents-chip', url: '/agents', steps: ['chip:Blocked'] },
+  { name: 'agents-no-match', url: '/agents', steps: ['filter:zzzzqq'] },
+  { name: 'agents-panel', url: '/agents', steps: ['row:3'] },
+  { name: 'agents-panel-raw', url: '/agents', steps: ['row:3', 'raw'] },
 ]
 
 // Every shot: the route plan in each scheme and size, then the overlays on Home,

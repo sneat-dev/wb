@@ -1,44 +1,47 @@
-<app-filter-bar
-  [machines]="store.machineOptions()"
-  [repositories]="repositoryOptions()"
-  [machine]="machine()"
-  [repository]="repository()"
-  (changed)="filter($event)"
-/>
-@if (state()) {
-  <p class="state-filter">Showing agents in the “{{ state() }}” state.</p>
+<app-list page="agents" [columns]="columns" [extraChips]="runtimeChips()" [panelLabel]="panelLabel">
+  <ng-template appCell="agent" let-a>
+    <span class="agent">
+      <strong class="name">{{ name(a) }}</strong>
+      <span class="work">
+        @if (tasks(a); as names) {
+          @if (names.length === 1) {
+            <a class="task" tabindex="-1" [routerLink]="taskLink(names[0]).path" [queryParams]="taskLink(names[0]).query">{{ names[0] }}</a>
+          } @else if (names.length > 1) {
+            <span class="muted">{{ names.length }} tasks</span>
+          }
+          @if (repository(a); as repo) {
+            <span class="muted">{{ repo }}</span>
+          } @else if (names.length === 0) {
+            <span class="muted">{{ fallback(a) }}</span>
+          }
+        }
+      </span>
+    </span>
+  </ng-template>
+  <ng-template appCell="state" let-a>
+    <span class="state" [class.has-activity]="!!a.activity">
+      <app-state-badge kind="agent-state" size="small" [value]="a.state" />
+      @if (a.activity) {
+        <app-state-badge kind="agent-activity" size="small" [value]="a.activity" />
+      } @else if (reportsActivity(a)) {
+        <span class="muted">state not reported</span>
+      }
+    </span>
+  </ng-template>
+  <ng-template appCell="time" let-a>
+    <span class="time">
+      <span>{{ time(a) }}</span>
+      @if (a.exit_code !== undefined && a.state !== 'completed') {
+        <span class="exit" [attr.title]="'Exit code ' + a.exit_code">exit {{ a.exit_code }}</span>
+      }
+    </span>
+  </ng-template>
+  <ng-template appCell="machine" let-a><app-machine-cell [id]="a.machine_id" /></ng-template>
+  <ng-template appListPanel let-a><app-agent-panel [id]="a.id" /></ng-template>
+</app-list>
+@if (truncated()) {
+  <p class="note" role="note">Showing the first 200 agents of each machine; a machine that has more reports only that many.</p>
 }
-<div class="table-scroll">
-  <p-table [value]="rows()" dataKey="id" size="small" [stripedRows]="true" [paginator]="rows().length > 50" [rows]="50">
-    <ng-template #header>
-      <tr>
-        <th scope="col">Agent</th>
-        <th scope="col">State</th>
-        <th scope="col">Repository</th>
-        <th scope="col" class="wide">Machine</th>
-        <th scope="col">Source</th>
-        <th scope="col" class="wide">Runtime</th>
-        <th scope="col" class="wide">Model</th>
-      </tr>
-    </ng-template>
-    <ng-template #body let-agent>
-      <tr>
-        <td>
-          {{ label(agent) }}
-          <span class="narrow-only machine-sub">{{ agent.machine }}</span>
-        </td>
-        <td>{{ agent.state }}</td>
-        <td>{{ store.repositoryName(agent.repository) }}</td>
-        <td class="wide">{{ agent.machine }}</td>
-        <td><app-route-label [entry]="agent" [now]="store.now()" /></td>
-        <td class="wide">{{ agent.runtime ?? '—' }}</td>
-        <td class="wide">{{ agent.model ?? '—' }}</td>
-      </tr>
-    </ng-template>
-    <ng-template #emptymessage>
-      <tr>
-        <td colspan="7">No agents{{ machine() || repository() || state() ? ' match the filters' : ' yet' }}.</td>
-      </tr>
-    </ng-template>
-  </p-table>
-</div>
+@if (silentMachines().length > 0) {
+  <p class="note">Agents are reported only by machines that publish them; {{ silentMachines().join(', ') }} {{ silentMachines().length === 1 ? 'reports' : 'report' }} none.</p>
+}

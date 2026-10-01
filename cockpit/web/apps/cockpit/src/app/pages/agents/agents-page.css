@@ -1,0 +1,89 @@
+:host {
+  display: block;
+}
+
+.agent,
+.state,
+.time {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.name,
+.work {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The label keeps about 22 characters before it truncates; what it works on is muted and truncates first. */
+.name {
+  flex: 0 1 auto;
+  min-width: min(22ch, 100%);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.work {
+  display: flex;
+  flex: 0 100 auto;
+  gap: var(--space-2);
+  color: var(--text-3);
+}
+
+.work > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task {
+  flex: none;
+  max-width: 14rem;
+}
+
+.state app-state-badge {
+  flex: none;
+}
+
+.muted {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.exit {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--bad-border);
+  border-radius: var(--radius-sm);
+  color: var(--bad);
+  font-size: var(--fs-xs);
+  line-height: 1.25rem;
+}
+
+.note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+/* On a phone the label is what fits; what it works on is in the panel. */
+@container (max-width: 40rem) {
+  .work {
+    display: none;
+  }
+}
+
+/* When the cell is narrow the quiet "state not reported" goes, and the activity badge ("working", "blocked") stands for the state; the panel has both. */
+@container (max-width: 24rem) {
+  .state .muted,
+  .state.has-activity app-state-badge:first-child {
+    display: none;
+  }
+}
