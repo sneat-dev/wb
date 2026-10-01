@@ -22,7 +22,7 @@ REQ:owner-gating-is-visible, REQ:intent-to-done-budgets, REQ:look-*, REQ:strict-
 | `app-pr-chip` | `pullRequest` | `#n` (link only for a checked `webAddress` of the library: https, a plain host), state, `passed/total` checks (verdict is the daemon's `checks_green`), the failed check name truncated with the full name as `title`, observation age or "not yet checked". |
 | `app-machine-chip` | `machine`, `stale` | Name, route, cached age, stale mark, transport (`http`/`ssh`). |
 | `app-relative-time` | `at` | `<time datetime>` (ISO UTC) with the time in the viewer's zone and the UTC value as tooltip; "age unknown" for an absent time. It reads the shared `UiClock` (one timer, replaceable in a test), so rows pass no clock down. |
-| `app-glyph` | `paths` | Inline SVG (CSP: no data: images, no icon font). `glyphs.ts` has one `GLYPH_*` export per glyph, so a page bundles only those it names. |
+| `app-glyph` | `paths` | Inline SVG (CSP: no data: images, no icon font). `glyphs.ts` has one `GLYPH_*` export per glyph (`GLYPH_CODE`, `GLYPH_EXTERNAL_LINK`, ...), importable from `@cockpit/ui/control`, so a page bundles only those it names. The shell's `app/ui/icon.ts` keeps its own copies of a few of them: the shell loads before this entry point, so it does not import it. |
 
 ## Copy command
 

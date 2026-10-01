@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing'
-import { provideRouter } from '@angular/router'
-import { taskDetailLink } from '@cockpit/fleet-data'
+import { Router, provideRouter } from '@angular/router'
+import { agentDetailLink, repositoryDetailLink, taskDetailLink, worktreeDetailLink } from '@cockpit/fleet-data'
 import { IdentityCell } from './identity-cell'
 
 function render(inputs: Record<string, unknown>) {
@@ -27,5 +27,26 @@ describe('IdentityCell', () => {
     expect(link.getAttribute('tabindex')).toBe('-1')
     expect(root.querySelector('.secondary')).toBeNull()
     expect(root.querySelector('button')?.getAttribute('aria-label')).toBe('Copy name')
+  })
+
+  // The router encodes router commands itself, so an id with a slash, a space or a percent sign is encoded once.
+  it('links to a detail address whose id has a slash, a space, a percent sign or accents, encoded once and decoded back by the router', async () => {
+    for (const id of ['a/b', 'a b', '100%', 'é/ü ß', '%2F']) {
+      for (const link of [agentDetailLink(id), worktreeDetailLink(id), repositoryDetailLink('gitlab.com', 'g/s/p', id)]) {
+        const root = await render({ name: 'n', link })
+        const href = (root.querySelector('a.name') as HTMLAnchorElement).getAttribute('href') as string
+        expect(href, id).toBe(link.path)
+        const segments = TestBed.inject(Router).parseUrl(href).root.children['primary'].segments.map((segment) => segment.path)
+        expect(segments[segments.length - 1], id).toBe(id)
+      }
+    }
+  })
+
+  // cockpit-views#ac:filter-vocabulary-is-the-only-link-target
+  it('keeps the secondary text right after the name, in one row, and lets the muted text give way first', async () => {
+    const root = await render({ name: 'fix-ci', secondary: 'sneat-dev/wb' })
+    const text = root.querySelector('.text') as HTMLElement
+    expect([...text.children].map((child) => child.className)).toEqual(['name', 'secondary'])
+    expect(root.querySelector('app-copy-icon')?.previousElementSibling).toBe(text)
   })
 })

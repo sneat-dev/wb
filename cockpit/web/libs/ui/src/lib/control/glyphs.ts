@@ -51,3 +51,7 @@ export const GLYPH_ARROW_UP: GlyphPaths = ['M12 19V5', 'm6 11 6-6 6 6']
 export const GLYPH_ARROW_DOWN: GlyphPaths = ['M12 5v14', 'm6 13 6 6 6-6']
 
 export const GLYPH_X: GlyphPaths = ['M6 6l12 12M18 6 6 18']
+
+export const GLYPH_CODE: GlyphPaths = ['m8 8-4 4 4 4', 'm16 8 4 4-4 4', 'm13.5 5-3 14']
+
+export const GLYPH_EXTERNAL_LINK: GlyphPaths = ['M14 4h6v6', 'M20 4 10 14', 'M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4']

@@ -159,4 +159,10 @@ describe('resolveResult', () => {
     // The agent detail asks for the agent's task: 8 times, not 30.
     expect(spy).toHaveBeenCalledTimes(8)
   })
+
+  // A GitLab group/sub/project has no host/owner/name address; its result opens by entry id.
+  it('links a repository whose name has more than two segments by its entry id', () => {
+    const groups = searchPalette(model(fleetDocument({ repositories: [repository('gl-1', 'alpha', { host: 'gitlab.com', name: 'group/sub/project' })], worktrees: [], agents: [] })), 'project', NOW)
+    expect(hrefOf(groupOf(groups, 'repository').results[0].link)).toBe('/repositories/gl-1')
+  })
 })

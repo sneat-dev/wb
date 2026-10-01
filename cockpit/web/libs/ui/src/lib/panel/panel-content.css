@@ -97,6 +97,17 @@ pre {
   font-size: var(--fs-xs);
 }
 
+/* What a page projects above the facts takes no space while nothing is projected. */
+.header-slot:not(:has(*)) {
+  display: none;
+}
+
+/* A fact with several values (repositories, machines) wraps them. */
+dd.many {
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+}
+
 /* The action area is for task 13's slot; it takes no space while nothing is projected into it. */
 .actions:not(:has(*)) {
   display: none;

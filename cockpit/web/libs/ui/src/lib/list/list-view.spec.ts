@@ -80,7 +80,22 @@ class PlainHost {
   protected readonly columns = COLUMNS
 }
 
-type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost
+const FOOTER_COLUMNS: ListColumn<Worktree>[] = [...COLUMNS, { id: 'links', header: 'Links', width: 40, chrome: true }]
+
+/** A page that tells the list what `c` copies, adds notes under the rows and has an actions cell. */
+@Component({
+  imports: [ListView, ListCell],
+  template: `<app-list page="worktrees" [columns]="columns" [copyValue]="copyValue">
+    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
+    <p listFooter class="page-note">showing the first 200</p>
+  </app-list>`,
+})
+class FooterHost {
+  protected readonly columns = FOOTER_COLUMNS
+  protected readonly copyValue = (w: Worktree) => `id:${w.id}`
+}
+
+type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost | typeof FooterHost
 
 function documentOf(): FleetDocument {
   return fleetDocument({
@@ -634,6 +649,20 @@ describe('ListView', () => {
     keydown(page.viewport, 'c')
     await vi.waitFor(() => expect(text(page.root.querySelector('section > [role=status]'))).toBe('Copy failed'))
     expect(page.root.querySelectorAll('.row [role=status]')).toHaveLength(0)
+  })
+
+  // The page may say what c copies, and may put notes under the rows (the Agents page).
+  it('copies what the page says with c, shows the page\'s notes under the rows, and draws an actions cell\'s header for assistive technology only', async () => {
+    const copy = vi.fn(async () => true)
+    const page = await open('/list', { copy, host: FooterHost })
+    page.viewport.focus()
+    keydown(page.viewport, 'c')
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith('id:w2'))
+    await vi.waitFor(() => expect(text(page.root.querySelector('section > [role=status]'))).toBe('Copied id:w2'))
+    expect(text(page.root.querySelector('.footer .page-note'))).toBe('showing the first 200')
+    const links = headers(page.root).find((header) => text(header) === 'Links') as HTMLElement
+    expect(links.querySelector('.visually-hidden')?.textContent).toBe('Links')
+    expect(links.querySelector('button')).toBeNull()
   })
 
   it('stops at the first and last row, and leaves keys that are not its own alone', async () => {

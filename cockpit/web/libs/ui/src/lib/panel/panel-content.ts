@@ -1,12 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { AppLink, PanelCommand } from '@cockpit/fleet-data'
+import { AppLink, PanelCommand, linkTarget } from '@cockpit/fleet-data'
 import { CopyCommandList } from '../control/copy-command-list'
 import { Glyph } from '../control/glyph'
 import { AgeText } from '../list/age-text'
 import { CopyIcon } from '../list/copy-icon'
 import { ListAnnouncer } from '../list/list-announcer'
 import { GLYPH_OPEN } from '../list/list-glyphs'
+import { MachineCell } from '../list/machine-cell'
 
 /** One fact of a panel's summary. */
 export interface PanelFact {
@@ -18,6 +19,10 @@ export interface PanelFact {
   title?: string
   /** An address inside the application. */
   link?: AppLink
+  /** Several addresses inside the application, side by side (a task's repositories); instead of `text`. */
+  links?: readonly { text: string; link: AppLink }[]
+  /** Machines by id, each as the list's machine cell with the age of a cached snapshot; instead of `text`. */
+  machines?: readonly string[]
   /** Offers a copy button for `text`. */
   copy?: boolean
   muted?: boolean
@@ -40,7 +45,8 @@ export interface PanelRelated {
 /**
  * The content of one entity, which is the side panel's content and the detail
  * page's, rendered by this one component (REQ:detail-routes-share-the-panel):
- * the heading, the summary facts, the related entities, what the page projects
+ * the heading, what the page projects above the facts (`[panelHeader]`: the state
+ * and why, in `app-panel-state`), the summary facts, the related entities, what the page projects
  * (the default slot), the action area (`[panelActions]`, which task 13 fills
  * and which vanishes while empty), the "Copy command" entries, and the
  * collapsed "Raw data" block, which renders the entries exactly as the read
@@ -48,7 +54,7 @@ export interface PanelRelated {
  */
 @Component({
   selector: 'app-panel-content',
-  imports: [RouterLink, AgeText, CopyIcon, CopyCommandList, Glyph],
+  imports: [RouterLink, AgeText, CopyIcon, CopyCommandList, Glyph, MachineCell],
   providers: [ListAnnouncer],
   templateUrl: './panel-content.html',
   styleUrl: './panel-content.css',
@@ -69,6 +75,7 @@ export class PanelContent {
 
   protected readonly announcer = inject(ListAnnouncer)
   protected readonly open = GLYPH_OPEN
+  protected readonly target = linkTarget
   protected readonly rawOpen = signal(false)
   protected readonly json = computed(() => JSON.stringify(this.raw(), null, 2))
 }

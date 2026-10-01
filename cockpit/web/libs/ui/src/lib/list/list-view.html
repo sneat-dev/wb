@@ -41,6 +41,8 @@
                   <app-glyph [paths]="sort().dir === 'asc' ? up : down" />
                 }
               </button>
+            } @else if (column.chrome) {
+              <span class="visually-hidden">{{ column.header }}</span>
             } @else {
               {{ column.header }}
             }
@@ -88,7 +90,7 @@
                   </div>
                 }
                 <div class="cell open-cell" role="gridcell">
-                  <a class="open" tabindex="-1" [routerLink]="detail(item.row.item).path" [queryParams]="detail(item.row.item).query" [attr.aria-label]="'Open ' + name(item.row.item)" [attr.title]="'Open the page (o)'"><app-glyph [paths]="open" /></a>
+                  <a class="open" tabindex="-1" [routerLink]="target(detail(item.row.item))" [queryParams]="detail(item.row.item).query" [attr.aria-label]="'Open ' + name(item.row.item)" [attr.title]="'Open the page (o)'"><app-glyph [paths]="open" /></a>
                 </div>
               </div>
             }
@@ -96,6 +98,7 @@
         </div>
       }
     </div>
+    <div class="footer"><ng-content select="[listFooter]" /></div>
     <span class="visually-hidden" role="status">{{ announcer.message() }}</span>
   </section>
 

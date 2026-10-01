@@ -73,7 +73,7 @@ export class WorktreePanelView {
       { label: 'Task', text: summary.task, link: taskDetailLink(summary.task), copy: true },
       related.repository === undefined
         ? { label: 'Repository', text: summary.repository }
-        : { label: 'Repository', text: summary.repository, link: repositoryDetailLink(related.repository.host, related.repository.slug) },
+        : { label: 'Repository', text: summary.repository, link: repositoryDetailLink(related.repository.host, related.repository.slug, related.repository.id) },
       { label: 'Branch', text: summary.branch, copy: true },
       { label: 'Machine', text: summary.machine },
       { label: 'Source', text: routeLabel(entry, this.store.now()) },

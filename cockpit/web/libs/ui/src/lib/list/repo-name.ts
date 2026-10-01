@@ -19,23 +19,36 @@ export class RepositoryNames {
  * A repository name: the owner and a slash in muted type, the name in strong
  * type, and the host in front only when the fleet has more than one. Give the
  * repository entry `id`, or its `name` (`owner/name`) and `host`. The full name
- * is the `title`, since a cell truncates.
+ * is the `title`, since a cell truncates: the owner shrinks first, the name last.
  */
 @Component({
   selector: 'app-repo-name',
   template: `<span class="repo" [attr.title]="full()">@if (prefix()) {<span class="muted">{{ prefix() }}</span>}<strong>{{ strong() }}</strong></span>`,
   styles: `
-    .repo {
+    :host {
       display: block;
+      min-width: 0;
+    }
+    /* One row: the owner and the name side by side. The owner gives way first, down to nothing; the name never shrinks (so it is never cut by a fraction of a pixel) and is cut only when it alone is wider than the cell. */
+    .repo {
+      display: flex;
+      min-width: 0;
       overflow: hidden;
-      text-overflow: ellipsis;
       white-space: nowrap;
     }
     .muted {
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
       color: var(--text-3);
+      text-overflow: ellipsis;
     }
     strong {
+      flex: 0 0 auto;
+      max-width: 100%;
+      overflow: hidden;
       font-weight: var(--fw-semibold);
+      text-overflow: ellipsis;
     }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,

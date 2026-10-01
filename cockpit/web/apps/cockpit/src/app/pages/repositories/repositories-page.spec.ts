@@ -86,7 +86,10 @@ describe('RepositoriesPage', () => {
     const { root } = await open('/repositories')
     expect(namesOf(root)).toEqual(['sneat-co/sneat-go', 'sneat-dev/wb', 'acme/lone'])
     expect(text(root.querySelector('.count'))).toBe('3 of 3')
-    expect(headersOf(root)).toEqual(['Repository', 'Machines', 'Worktrees', 'Branches', 'Code index', 'Last activity', 'Links'])
+    // Eight columns and an actions cell: the cap of seven is a default, and the columns that declare a priority show while the list is wide enough.
+    expect(headersOf(root)).toEqual(['Repository', 'Machines', 'Worktrees', 'Agents', 'PRs', 'Branches', 'Code index', 'Last activity', 'Links'])
+    // The actions cell's header is read by assistive technology and not drawn.
+    expect(root.querySelector('.head [role=columnheader]:nth-last-child(2) .visually-hidden')?.textContent).toBe('Links')
   })
 
   // cockpit-views#ac:repository-identity-merges-local-and-cached

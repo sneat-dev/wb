@@ -192,3 +192,13 @@
   margin: 0;
   color: var(--text-2);
 }
+
+/* The page's notes under the rows take no space while there are none. */
+.footer:not(:has(*)) {
+  display: none;
+}
+
+.footer {
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}

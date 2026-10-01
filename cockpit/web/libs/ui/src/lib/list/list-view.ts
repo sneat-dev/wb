@@ -18,7 +18,7 @@ import {
 } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
 import { ActivatedRoute, Router, RouterLink } from '@angular/router'
-import { AppLink, FleetStore, ListPageId, ListQuery, declaredFields, hrefOf } from '@cockpit/fleet-data'
+import { AppLink, FleetStore, ListPageId, ListQuery, declaredFields, hrefOf, linkTarget } from '@cockpit/fleet-data'
 import { ListRow, VOCABULARY, applyListQuery, parseListQuery } from '@cockpit/fleet-data/list'
 import { ClipboardWriter } from '../control/clipboard'
 import { Glyph } from '../control/glyph'
@@ -30,7 +30,7 @@ import { GLYPH_OPEN } from './list-glyphs'
 import { ListCell, ListPanelTemplate } from './list-cell'
 import { LIST_SHORTCUTS } from './list-host'
 import { ListToolbar } from './list-toolbar'
-import { PAGE_NOUN, chipsOf, detailOf, nameOf, rowsOf } from './page-defaults'
+import { PAGE_NOUN, chipsOf, copyOf, detailOf, nameOf, rowsOf } from './page-defaults'
 import {
   ADDRESS_KEYS,
   ListChip,
@@ -70,6 +70,8 @@ let nextId = 0
  * restore it. The list is one tab stop: the links and buttons in its rows are out
  * of the tab order.
  *
+ * Under the rows, `[listFooter]` projects the page's notes ("showing the first 200"); it takes no space while empty.
+ *
  * A page gives the `page` and the columns, and templates for the cells that are
  * more than text and for the panel; the rows, the noun, the chips and their
  * words, the entity's address and name come from the page id, and the
@@ -95,6 +97,8 @@ export class ListView<T = unknown> {
   readonly prefix = input('')
   /** What assistive technology calls the panel of a row. */
   readonly panelLabel = input<(item: T) => string>(() => 'Details')
+  /** What `c` copies for the focused row; by default its name, and for an agent its run or session id (`copyOf`). */
+  readonly copyValue = input<(item: T) => string>()
   /** How a `sel` finds its row; by default the row with that id. */
   readonly resolve = input<(rows: readonly ListRow<T>[], sel: string) => ListRow<T> | undefined>((rows, sel) => rows.find((row) => row.id === sel))
 
@@ -115,6 +119,7 @@ export class ListView<T = unknown> {
   protected readonly id = `list-${nextId++}`
   protected readonly rowHeight = ROW_HEIGHT
   protected readonly open = GLYPH_OPEN
+  protected readonly target = linkTarget
   protected readonly up = GLYPH_ARROW_UP
   protected readonly down = GLYPH_ARROW_DOWN
 
@@ -275,6 +280,11 @@ export class ListView<T = unknown> {
     return nameOf(this.page(), item)
   }
 
+  /** What `c` copies for a row: the page's `copyValue`, else the default for the page. */
+  protected copied(item: T): string {
+    return this.copyValue()?.(item) ?? copyOf(this.page(), item)
+  }
+
   protected measure(): void {
     this.height.set(this.viewport().nativeElement.clientHeight || window.innerHeight)
     this.width.set(this.viewport().nativeElement.clientWidth)
@@ -380,7 +390,7 @@ export class ListView<T = unknown> {
         if (rows.length > 0) void this.router.navigateByUrl(hrefOf(this.detail(rows[this.focused()].item)))
         break
       case 'c':
-        if (rows.length > 0) void this.copyName(this.name(rows[this.focused()].item))
+        if (rows.length > 0) void this.copyName(this.copied(rows[this.focused()].item))
         break
       default:
         return
