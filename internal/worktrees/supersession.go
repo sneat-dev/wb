@@ -64,57 +64,6 @@ func applySupersessionReceipt(ctx context.Context, path string, entry *ListResul
 	entry.supersessionReceipt = receipt
 }
 
-func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, entry ListResult) string {
-	return supersessionService().ValidateDependencyDeltasReason(ctx, receipt, supersessionEntry(entry))
-}
-func dependencyDeltasForValidation(receipt SupersessionReceipt, entry ListResult) ([]SupersessionDependencyDelta, string) {
-	return worktreebranches.DependencyDeltasForValidation(receipt, supersessionEntry(entry))
-}
 func ValidateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, entry ListResult) error {
 	return supersessionService().ValidateDependencyDeltas(ctx, receipt, supersessionEntry(entry))
-}
-func validateAuthoritativeSourcePullRequest(receipt SupersessionReceipt, entry ListResult) string {
-	return worktreebranches.ValidateAuthoritativeSourcePullRequest(receipt, supersessionEntry(entry))
-}
-func dependencyCampaignWorktree(ctx context.Context, entry ListResult) bool {
-	return supersessionService().DependencyCampaignWorktree(ctx, supersessionEntry(entry))
-}
-func isDependencyManifestOrImporter(file string) bool {
-	return worktreebranches.IsDependencyManifestOrImporter(file)
-}
-func dependencyLockfile(ctx context.Context, canonical, target string, delta SupersessionDependencyDelta) (string, bool, error) {
-	return supersessionService().DependencyLockfile(ctx, canonical, target, delta)
-}
-func selectorNamesExactPackage(selector, packageName string) bool {
-	return worktreebranches.SelectorNamesExactPackage(selector, packageName)
-}
-func lockfileEntryContainsVersion(ecosystem, lockfilePath, contents, selector, version string) bool {
-	return worktreebranches.LockfileEntryContainsVersion(ecosystem, lockfilePath, contents, selector, version)
-}
-func selectorPackageFromLockfileSelector(selector string) string {
-	return worktreebranches.SelectorPackageFromLockfileSelector(selector)
-}
-func parseLockfileSelector(ecosystem, lockfilePath, selector, packageName string) ([]string, bool) {
-	return worktreebranches.ParseLockfileSelector(ecosystem, lockfilePath, selector, packageName)
-}
-func dependencyVersionSatisfies(ecosystem, candidate, requested string) bool {
-	return worktreebranches.DependencyVersionSatisfies(ecosystem, candidate, requested)
-}
-func normalizeDependencyVersion(value string) string {
-	return worktreebranches.NormalizeDependencyVersion(value)
-}
-func npmRangeAlternativeSatisfies(candidate, requested string) bool {
-	return worktreebranches.NpmRangeAlternativeSatisfies(candidate, requested)
-}
-func npmComparatorSatisfies(candidate, constraint string) bool {
-	return worktreebranches.NpmComparatorSatisfies(candidate, constraint)
-}
-func mustAtoi(value string) int {
-	return worktreebranches.MustAtoi(value)
-}
-func validateDependencyManifest(delta SupersessionDependencyDelta, contents []byte, expectedVersion string, exact bool) string {
-	return worktreebranches.ValidateDependencyManifest(delta, contents, expectedVersion, exact)
-}
-func dependencyManifestValue(delta SupersessionDependencyDelta, contents []byte) (string, bool, error) {
-	return worktreebranches.DependencyManifestValue(delta, contents)
 }

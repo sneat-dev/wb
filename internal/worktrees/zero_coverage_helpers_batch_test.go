@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +16,8 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 func TestZeroCoverageBatchValueHelpers(t *testing.T) {
@@ -60,7 +61,7 @@ func TestZeroCoverageBatchValueHelpers(t *testing.T) {
 	if got := retireArchiveManifestPreserve(retireArchiveManifest{Preserve: "tag"}); got != "tag" {
 		t.Fatalf("explicit archive preservation = %q", got)
 	}
-	if mustAtoi("") != 0 || mustAtoi("2048") != 2048 {
+	if worktreebranches.MustAtoi("") != 0 || worktreebranches.MustAtoi("2048") != 2048 {
 		t.Fatal("decimal parser returned an unexpected value")
 	}
 	left := &SupersessionReceipt{Version: 1, Repository: "acme/app", Task: "old"}
