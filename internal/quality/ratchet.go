@@ -42,6 +42,12 @@ type coverageBlockLocation struct {
 // than profileTotals' aggregate. Repeated blocks from instrumented test
 // binaries combine execution counts according to the profile mode.
 func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
+	return parseCoverageProfile(profilePath, false)
+}
+
+// requireProfile distinguishes a valid header-only measurement from an empty file
+// using the same open descriptor as the block parser.
+func parseCoverageProfile(profilePath string, requireProfile bool) ([]CoverageBlock, error) {
 	file, err := os.Open(profilePath)
 	if err != nil {
 		return nil, err
@@ -51,6 +57,7 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 	var blocks []CoverageBlock
 	seen := make(map[coverageBlockLocation]int)
 	mode := "set"
+	headerSeen := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	lineNumber := 0
@@ -61,6 +68,7 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 			continue
 		}
 		if lineNumber == 1 && strings.HasPrefix(line, "mode: ") {
+			headerSeen = true
 			mode = strings.TrimSpace(strings.TrimPrefix(line, "mode: "))
 			continue
 		}
@@ -88,6 +96,9 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+	if requireProfile && len(blocks) == 0 && !headerSeen {
+		return nil, fmt.Errorf("invalid coverage profile %s at line 1", profilePath)
 	}
 	return blocks, nil
 }
