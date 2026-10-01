@@ -154,7 +154,9 @@ is this closed set of fields:
 - the snapshot refresh interval in seconds (`refresh_interval_seconds`), and a
   machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
   `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
-  `export_refused` or `bad_payload`), never the remote's error text;
+  `export_refused`, `http_unavailable`, `http_auth_failed` or `bad_payload`), never the
+  remote's error text, and the transport that supplied a machine's live entries
+  (`transport`: `http` or `ssh`);
 - a machine's resource samples, served only by the `machine-metrics` route and
   never in the fleet document, which are numbers and times only: CPU percent,
   one-minute load, memory used and total bytes, free and total bytes of the
@@ -312,7 +314,8 @@ Every entry carries a stable `id` unique within its collection, its
 #### REQ: route-and-freshness-are-explicit
 
 `route` is `local` for state this daemon observed itself, `live-remote` for
-state it read in the background from another machine over the configured SSH route
+state it read in the background from another machine over its configured HTTP route, or
+over SSH as the fallback
 ([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch), and `cached` for
 state read from another machine's published snapshot. A `cached` entry's
 `observed_at` is the snapshot's publish time, and a `live-remote` entry's is the

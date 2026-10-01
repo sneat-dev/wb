@@ -767,8 +767,8 @@ publish is retried at the next interval and never delays the local snapshot.
 [remote-state](../remote-state/README.md)#req:remote-publish-periodic specifies the
 behaviour; until the founder settles which remote store is the fleet's shared one
 (Open Questions), each machine publishes to whatever it has configured. It stays as
-the fallback for machines without an SSH route (REQ:remote-ssh-fetch), whose live
-data replaces the published entries only while fresh.
+the fallback for machines without a live route (REQ:remote-exporter-transports), whose
+live data replaces the published entries only while fresh.
 
 #### REQ: remote-snapshot-agents-and-metrics
 
@@ -814,7 +814,7 @@ the fleet document, `{machine, route, fetched_at?, samples, reason?}` with the s
 access class as the fleet document (metadata; capability `machine.read`). `route` is
 `local` for this machine's in-memory history, oldest first, so that its last element
 is the latest sample; `live-remote` for the history fetched in the background over SSH from
-another machine (REQ:remote-ssh-fetch), with `fetched_at`; `cached`
+another machine (REQ:remote-exporter-transports), with `fetched_at`; `cached`
 for the single latest sample carried in that machine's published snapshot, with its
 `sampled_at`; and `none` with an empty list and a `reason` for a machine with no
 source or a platform where sampling is unsupported, with status 200. A sample has
@@ -830,70 +830,136 @@ that never opens a browser, never mints a login code and never starts a daemon. 
 this machine's running daemon from the daemon record, and reads that daemon's fleet
 document and machine-metrics (the latest sample and the history) over the daemon's
 loopback transport as the `anonymous-local` principal, the same read any local browser
-tab makes. It prints one JSON envelope `{schema_version, machine, exported_at, fleet,
+tab makes. It prints the export envelope `{schema_version, machine, exported_at, fleet,
 metrics}` to stdout, bounded at 8 MiB, containing only the anonymous-readable metadata
 set of [cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only. The flag
 `--metrics-only` omits `fleet`. When no daemon is running, or the daemon refuses an
 anonymous read (`cockpit.anonymous_metadata: false`), it prints
 `{schema_version, error}` with `error` `daemon_not_running` or `export_refused` and exits
-with the findings code 1, and starts nothing. Its capability row, command-coverage entry,
+with the findings code 1, and starts nothing. The envelope is built by one function that the
+hub route of REQ:hub-export-route also calls. Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
+
+#### REQ: remote-exporter-transports
+
+Serves J1, J7. The local daemon MUST read another machine's export envelope in the
+background, never on a request path, through one interface, `RemoteExporter`
+(`Export(ctx, target, metricsOnly) (Envelope, error)`), with two implementations tried in
+this order for each machine:
+
+1. **HTTP (default)**, REQ:remote-http-fetch, used when the machine has an HTTP route
+   configured, or is the configured hub.
+2. **SSH fallback**, REQ:remote-ssh-fetch, used when no HTTP route is configured for the
+   machine or when the HTTP attempt fails with a transport or auth error.
+
+The HTTP failures that trigger the fallback are: a connection error, a timeout, status
+401 or 403, status 404 (the remote wb is older and has no such route), status 429, any 5xx
+status, and a redirect (never followed). A well-formed envelope that fails validation
+(REQ:remote-envelope-is-untrusted) is `bad_payload` on either transport and never triggers
+a fallback. After a fallback the daemon keeps using SSH for that machine for a cool-down of
+5 minutes and then tries HTTP again; while on SSH the machine entry carries the HTTP
+failure in `remote_error`, and a later HTTP success clears it. The cadence is the same
+for both: a fleet export once per snapshot refresh interval; while any client has requested
+that machine's metrics within the last 60 seconds, a metrics-only export every 30 seconds;
+when every transport fails the delay doubles up to 5 minutes. A slow or failing remote
+never delays the local snapshot. Both transports yield the same strictly validated envelope
+and the same merge. With neither transport configured for a machine, no request is made and
+no process is started. `cockpit.remote_http: false` and `cockpit.remote_ssh: false` turn the
+transports off; both are on by default for configured machines. No network-facing Cockpit
+route is added for other machines, and the Cockpit routes keep refusing every non-loopback
+host.
+
+#### REQ: hub-export-route
+
+A wb server that mounts the hub MUST serve its own machine's export envelope at
+`GET /v0/workbench/machines/export`, and with `?metrics_only=1` the metrics-only envelope of
+REQ:cockpit-export-verb, built from its own daemon's state in process. The route is
+authenticated only by a machine bearer credential carrying the existing scope
+`machine_snapshot:read`: a request with no bearer, a peer credential (`peer:session` alone),
+a credential without that scope, or only a session cookie is refused with status 401, and
+no anonymous principal is accepted. It is not under `/api/v1/cockpit/`, so the Cockpit
+`Host` guard and the rule that forwarded requests are never anonymous
+([cockpit](../cockpit/README.md)#req:forwarded-requests-are-never-anonymous) are untouched.
+No new scope is added: `machine_snapshot:read` already reads every machine's published
+snapshot from the hub, and the envelope carries only the anonymous-readable metadata set. A
+wb server that does not mount the hub has no such route and is reached over SSH.
+
+#### REQ: remote-http-fetch
+
+The HTTP exporter's address and credential come only from local configuration, never from a
+snapshot, a request or the remote's output. For the machine that is the configured hub
+(`remote.provider: hub`) it reuses the hub client's `remote.url` and `remote.token_file`. For
+any other machine it reads an optional `http` section beside the `ssh` section of
+`session_move.targets.<machine>` in `internal/sessionmove/config.go`, with the keys `url` and
+`token_file`, validated like `SSHConfig` (absolute `https` URL; `http` only for a loopback
+host; no user information, query or fragment; an absolute, private token file); the section
+is not a `Courier`, so `default_courier` and session delivery are unchanged. That target map
+is where a machine's addresses already live and keeping one list avoids a second place to be
+wrong; a separate `cockpit` section would repeat the machine names. The client calls
+`GET /v0/workbench/machines/export` with `Authorization: Bearer`, requires HTTPS unless the
+host is loopback, follows no redirect, caps the response at 8 MiB, uses a 3 second connect
+timeout and a 10 second total timeout, and sends the bearer only to the configured host. A
+machine with no `remote.provider: hub` match, no `http` section or no readable token file has
+no HTTP route. The credential is installed by the existing `wb remote enroll --url <hub-url>
+--token-stdin` (it verifies a one-time machine credential, stores it privately and updates the
+hub-owned `remote` settings); for a per-machine `http` section the operator places the
+token file by the same enrolment against that machine's hub URL.
 
 #### REQ: remote-ssh-fetch
 
 Serves J1, J7. For every machine in `session_move.targets` that has an `ssh` section
 (`sessionmove.SSHConfig`: `host`, `user`, `wb_path`, validated by `SSHConfig.Validate`,
-loaded as `agents.LoadRemoteTargets` loads them), the local daemon MUST, in the
-background and never on a request path, run `ssh` through `internal/remotessh`
-(`Resolve`, `Build`, a `Runner`, `NewLimitedBuffer` and `SanitizeDiagnostic`; `-T`,
-`BatchMode=yes`, no terminal) executing `<wb_path> cockpit export --format json`, or `wb`
-when `wb_path` is empty. The argument vector is built from that configuration only: it
-never contains text from a published snapshot, from a request, or from the remote's
-output. The call has a connect timeout (`remotessh.ConnectTimeoutSeconds`, 10 seconds,
-which `remotessh.Build` fixes), a total timeout of 15 seconds, stdout capped at 8 MiB, and
-stderr sanitised and capped (`remotessh.MaxDiagnosticBytes`), never forwarded to any
-reader and kept only in the daemon's own log. A fleet export runs once per snapshot
-refresh interval; while any client has requested that machine's metrics within the last
-60 seconds, a metrics-only export (`--metrics-only`) runs every 30 seconds. After a
-failure the delay doubles up to 5 minutes. A slow or failing remote never delays the local
-snapshot. Setting `cockpit.remote_ssh: false` turns it off; it is on by default for
-configured targets, and with no `ssh` section no process is started. The SSH login already
-carries full shell authority on the remote, so this adds no privilege; the daemon never
-forwards request-supplied text to the remote command and the Cockpit never exposes remote
-stderr. No network-facing route is added for other machines, and the Cockpit routes keep
-refusing every non-loopback host.
+loaded as `agents.LoadRemoteTargets` loads them), the SSH exporter MUST run `ssh` through
+`internal/remotessh` (`Resolve`, `Build`, a `Runner`, `NewLimitedBuffer` and
+`SanitizeDiagnostic`; `-T`, `BatchMode=yes`, no terminal) executing `<wb_path> cockpit export
+--format json` (with `--metrics-only` for the metrics call), or `wb` when `wb_path` is empty.
+The argument vector is built from that configuration only: it never contains text from a
+published snapshot, from a request, or from the remote's output. The call has a connect
+timeout (`remotessh.ConnectTimeoutSeconds`, 10 seconds, which `remotessh.Build` fixes), a total
+timeout of 15 seconds, stdout capped at 8 MiB, and stderr sanitised and capped
+(`remotessh.MaxDiagnosticBytes`), never forwarded to any reader and kept only in the daemon's
+own log. The SSH login already carries full shell authority on the remote, so this adds no
+privilege; the daemon never forwards request-supplied text to the remote command and the
+Cockpit never exposes remote stderr. With no `ssh` section no process is started.
 
 #### REQ: remote-envelope-is-untrusted
 
-The remote envelope MUST be decoded strictly: an unknown field is rejected, the size is
-bounded as above, every string is capped (256 bytes, 2048 for URLs), and the collections are
-capped at the document's own limits. Its `machine` MUST equal the configured target name
-exactly, and every entry in it is assigned to that machine whatever machine it names; a
+The remote envelope, from either transport, MUST be decoded strictly: an unknown field is
+rejected, the size is bounded as above, every string is capped (256 bytes, 2048 for URLs), and
+the collections are capped at the document's own limits. Its `machine` MUST equal the
+configured target name exactly (for the configured hub, the machine name the hub reports for
+itself), and every entry in it is assigned to that machine whatever machine it names; a
 mismatch refuses the whole payload. A refused payload renders nothing and sets
-`remote_error` `bad_payload`. The remote's own cached entries for third machines are
-dropped, so only that machine's own entries are merged.
+`remote_error` `bad_payload`. The remote's own cached entries for third machines are dropped,
+so only that machine's own entries are merged.
 
 #### REQ: remote-entries-replace-cached
 
 The accepted entries are merged into the local fleet document as that machine's entries
-with `route` `live-remote` and `observed_at` equal to the remote snapshot's time. While
+with `route` `live-remote`, `observed_at` equal to the remote snapshot's time, and the
+machine entry's `transport` (`http` or `ssh`) set to the transport that produced them. While
 the export is younger than two refresh intervals they replace that machine's cached
 (published-store) entries; otherwise the cached entries are shown with their age and the
 `remote_error` explains why. Agents, pull request state, sync facts and `owner_state` of
 that machine therefore become visible live, and such entries have no actions
-(REQ:action-slots). A machine with no SSH route keeps its published-store entries as
+(REQ:action-slots). A machine with no live route keeps its published-store entries as
 before.
 
 #### REQ: remote-error-is-visible
 
-A machine entry carries `remote_error` when its last export failed, one of
-`ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed`, `timeout`,
-`wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`), `daemon_not_running`,
-`export_refused` (the remote daemon refuses anonymous reads) or `bad_payload`; it is
-cleared by the next success. Home "Fleet health" shows it with the fixing command to
-copy, labelled "run on <machine>": `wb daemon start` for `daemon_not_running`, `wb
-self-update` for `wb_too_old`, and for the others the `ssh <user>@<host> <wb_path> cockpit
-export --format json` command to try. The stderr behind it is not shown.
+A machine entry carries `remote_error` when its last attempt failed, one of
+`http_unavailable` (connection error, timeout, 404, 429, 5xx or a redirect), `http_auth_failed`
+(401 or 403), `ssh_unavailable` (no local ssh, or the host unreachable), `auth_failed` (the SSH
+login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
+`daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads) or
+`bad_payload`; it is cleared by the next success on the preferred transport. The `http_*`
+codes name the HTTP transport and the others the SSH transport, so Fleet health shows which
+failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
+<machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
+<hub-url> --token-stdin`; `wb daemon start` for `daemon_not_running`; `wb self-update` for
+`wb_too_old` and `http_unavailable` caused by 404; and for the others the `ssh <user>@<host>
+<wb_path> cockpit export --format json` command to try. The stderr or response body behind
+it is not shown.
 
 ### Performance budgets
 
@@ -1002,8 +1068,9 @@ responses; the one real-daemon journey runs on Linux CI only.
   `cockpit-actions`).
 - A separate pull request page.
 - A push channel; the application refetches and polls.
-- A network-facing route that serves one machine's data to another, and metrics
-  from a machine with no SSH route beyond its last published sample; persistence of metrics across daemon restarts, and task storage.
+- A network-facing Cockpit route that serves one machine's data to another (the hub route
+  is authenticated by a machine credential and lives outside `/api/v1/cockpit/`), and metrics
+  from a machine with no live route beyond its last published sample; persistence of metrics across daemon restarts, and task storage.
 - The PrimeUI licence key; see Open Questions.
 
 ## Acceptance Criteria
@@ -1847,52 +1914,88 @@ Then the local answer has `route` `local` and the 5 samples oldest first with on
 
 ### AC: configured-target-appears-live-remote
 
-**Requirements:** cockpit-views#req:remote-ssh-fetch, cockpit-views#req:remote-entries-replace-cached, cockpit-views#req:machine-metrics-route
+**Requirements:** cockpit-views#req:remote-exporter-transports, cockpit-views#req:remote-http-fetch, cockpit-views#req:remote-entries-replace-cached, cockpit-views#req:machine-metrics-route
 
-Scenario: A reachable target
-Given a `session_move.targets.vm.ssh` section, a fake `remotessh.Runner` whose export for `vm` carries 3 worktrees, 1 running agent and 360 metric samples, and published-store entries for `vm` that are 25 days old
+Scenario: A healthy HTTP route
+Given machine `vm` with an `http` section whose fake server returns an envelope with 3 worktrees, 1 running agent and 360 metric samples, an `ssh` section with a counting fake `remotessh.Runner`, and published-store entries for `vm` that are 25 days old
 When the daemon runs through one refresh interval on a fake clock and the fleet document and `machine-metrics?machine=<vm id>` are requested
-Then the `vm` worktrees and agent appear with `route` `live-remote` and `observed_at` equal to the export's time, replacing the cached entries, with their `owner_state`, sync facts and pull request state, the metrics answer has `route` `live-remote` with `fetched_at` and the history, no request caused an ssh call, and the browser made no request to `vm`
+Then the `vm` worktrees and agent appear with `route` `live-remote`, `transport` `http` and `observed_at` equal to the envelope's time, replacing the cached entries, with their `owner_state`, sync facts and pull request state, the metrics answer has `route` `live-remote` with `fetched_at` and the history, no ssh process was started, no request caused an outbound call, and the browser made no request to `vm`
 
-### AC: failed-export-falls-back-and-shows-a-typed-error
+### AC: failed-export-shows-a-typed-error
 
-**Requirements:** cockpit-views#req:remote-error-is-visible, cockpit-views#req:remote-entries-replace-cached, cockpit-views#req:remote-ssh-fetch
+**Requirements:** cockpit-views#req:remote-error-is-visible, cockpit-views#req:remote-entries-replace-cached, cockpit-views#req:remote-exporter-transports
 
 Scenario: Each failure, backoff and age
-Given a fake Runner that fails in turn with an unresolvable host, `Permission denied (publickey)`, a deadline overrun, `wb: command not found`, `unknown command "cockpit export"`, an export of `daemon_not_running`, an export of `export_refused`, and an invalid payload, and published-store entries for `vm`
+Given machines each with one transport that fails in turn with a refused connection, status 401, an unresolvable host, `Permission denied (publickey)`, a deadline overrun, `wb: command not found`, `unknown command "cockpit export"`, an export of `daemon_not_running`, an export of `export_refused` and an invalid payload, and published-store entries for each
 When the daemon fetches repeatedly and the fleet document and Home are read
-Then the `vm` entry carries `remote_error` `ssh_unavailable`, `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`, `export_refused` and `bad_payload` respectively and the published-store entries are shown with their age, the delay between attempts doubles up to 5 minutes, the local snapshot is never delayed, Fleet health shows the error with its command to copy and no remote stderr text, and the next success clears the field
+Then the entries carry `remote_error` `http_unavailable`, `http_auth_failed`, `ssh_unavailable`, `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`, `export_refused` and `bad_payload` respectively and the published-store entries are shown with their age, the delay between attempts doubles up to 5 minutes, the local snapshot is never delayed, Fleet health names the failed transport and shows the command to copy and no remote stderr or body text, and the next success clears the field
 
-### AC: no-ssh-section-starts-no-process
+### AC: no-route-configured-makes-no-request
 
-**Requirements:** cockpit-views#req:remote-ssh-fetch
+**Requirements:** cockpit-views#req:remote-exporter-transports, cockpit-views#req:remote-ssh-fetch
 
-Scenario: No target, no ssh section, opted out
-Given a daemon with no `session_move` section, one whose target has only a `synchestra` section, and one with an ssh target and `cockpit.remote_ssh: false`
-When each runs for 60 seconds on a fake clock with a counting Runner
-Then no ssh process is started by any, and the metrics route answers from the snapshot or `none`
+Scenario: No target, no section, opted out
+Given a daemon with no `session_move` section, one whose target has only a `synchestra` section, one with an ssh target and `cockpit.remote_ssh: false`, and one with an http target and `cockpit.remote_http: false`
+When each runs for 60 seconds on a fake clock with a counting Runner and a counting HTTP client
+Then no ssh process is started and no HTTP request is sent by any, and the metrics route answers from the snapshot or `none`
+
+### AC: hub-export-route-requires-a-machine-bearer
+
+**Requirements:** cockpit-views#req:hub-export-route
+
+Scenario: Credentials and the metrics-only variant
+Given a wb server mounting the hub, a machine credential with `machine_snapshot:read`, a peer credential with `peer:session` alone, and a session cookie
+When `GET /v0/workbench/machines/export` and `?metrics_only=1` are requested with each, and with none, and a Cockpit route is requested with `Host: vm.example`
+Then only the machine credential receives the envelope (without `fleet` for the metrics-only call), the others receive 401, no new scope exists, the route is not under `/api/v1/cockpit/`, and the Cockpit route is still refused with status 421
+
+### AC: bearer-stays-with-the-configured-host
+
+**Requirements:** cockpit-views#req:remote-http-fetch
+
+Scenario: Redirect, plain HTTP, wrong host
+Given an `http` section whose server answers 302 to another host, one with an `http://` non-loopback URL, one with a loopback `http://` URL, and a token file
+When the daemon fetches
+Then the redirect is not followed and no request reaches the other host, the non-loopback `http://` URL is refused without any request, the loopback one is used, every request carries the bearer only to the configured host, and the response is capped at 8 MiB
+
+### AC: http-failure-falls-back-to-ssh
+
+**Requirements:** cockpit-views#req:remote-exporter-transports
+
+Scenario: Fallback-class and non-fallback failures
+Given a machine with both an `http` and an `ssh` section and a fake Runner, and an HTTP server that answers in turn with a refused connection, a timeout, 401, 403, 404, 429, 500 and a redirect, and then a well-formed envelope that fails validation
+When the daemon fetches after each
+Then each of the first eight attempts is followed by an SSH export, the entry shows the data with `transport` `ssh` and `remote_error` of the HTTP failure, and the invalid envelope sets `bad_payload` with no SSH attempt
+
+### AC: fallback-cool-down-is-honoured
+
+**Requirements:** cockpit-views#req:remote-exporter-transports
+
+Scenario: Five minutes on SSH, then HTTP again
+Given a machine whose HTTP failed once and whose SSH works, on a fake clock
+When time advances by 4 minutes and then by 2 minutes more, and HTTP then succeeds
+Then no HTTP request is made during the first 5 minutes, one is made after them, and on its success the entry returns to `transport` `http` with `remote_error` cleared
 
 ### AC: identity-mismatch-is-refused
 
 **Requirements:** cockpit-views#req:remote-envelope-is-untrusted
 
 Scenario: A payload that names another machine
-Given a target `vm` whose export names machine `mac` and carries entries for `mac` and for a third machine
+Given a target `vm` whose export, over either transport, names machine `mac` and carries entries for `mac` and for a third machine
 When the daemon decodes it
 Then the whole payload is refused, `vm` carries `remote_error` `bad_payload`, and nothing from it appears in the fleet document
 
 ### AC: hostile-payload-is-refused
 
-**Requirements:** cockpit-views#req:remote-envelope-is-untrusted, cockpit-views#req:remote-ssh-fetch
+**Requirements:** cockpit-views#req:remote-envelope-is-untrusted, cockpit-views#req:remote-exporter-transports
 
 Scenario: Oversized, unknown field, long string, filesystem path
-Given exports of 9 MiB, one with an unknown top-level field, one with a 10,000-byte task name, and one whose worktree entry carries a `path`
+Given exports, over HTTP and over SSH, of 9 MiB, one with an unknown top-level field, one with a 10,000-byte task name, and one whose worktree entry carries a `path`
 When each is decoded
 Then each is refused with `remote_error` `bad_payload`, nothing from it is rendered, and the stdout buffer never held more than the cap
 
 ### AC: metrics-only-export-is-demand-driven
 
-**Requirements:** cockpit-views#req:remote-ssh-fetch, cockpit-views#req:machine-metrics-polling
+**Requirements:** cockpit-views#req:remote-exporter-transports, cockpit-views#req:machine-metrics-polling
 
 Scenario: Demand and idle
 Given a configured target and a fake clock
@@ -1928,12 +2031,12 @@ Then the first prints one envelope with `fleet` and `metrics` within 8 MiB whose
 
 ### AC: non-loopback-metrics-request-is-refused
 
-**Requirements:** cockpit-views#req:remote-ssh-fetch, cockpit-views#req:machine-metrics-route
+**Requirements:** cockpit-views#req:remote-exporter-transports, cockpit-views#req:machine-metrics-route
 
 Scenario: A remote caller of the Cockpit route
 Given a daemon listening on loopback
 When `/api/v1/cockpit/machine-metrics` is requested with `Host: vm.example`, and with `X-Forwarded-For` and no session
-Then the first is refused with status 421, the second with 401, and neither returns a sample, and no other route serving another machine's data exists
+Then the first is refused with status 421, the second with 401, and neither returns a sample, and no Cockpit route serves another machine's data
 
 ### AC: copy-command-for-an-ssh-machine
 

@@ -37,32 +37,33 @@ is in the address, and nothing renders more than 60 rows.
 
 ## Approach
 
-Fifteen tasks. Six Go tasks change the contract (1 to 6) and run serially, because
+Sixteen tasks. Six Go tasks change the contract (1 to 6) and run serially, because
 they all touch the read model and the shared API writer, where gzip lives, and each
-extends the sentinel test. The live remote route over SSH is two tasks: task 7 adds
-the read-only `wb cockpit export` verb and its envelope (needs tasks 1 and 2), and
-task 8 adds the background fetch, strict decode, merge, typed errors and metrics
-sources (needs task 7). They share the read model with tasks 3 to 6, so whichever lands
-later rebases. Periodic publish to the shared store (task 5) stays as the fallback for
-machines without an SSH route. Frontend task 9 (the `fleet-data` library, "3a") has no
-code dependency on the Go tasks and works from the contract in the Feature; task 10 (the
-UI foundation, "3b") needs it. Tasks 11 to 14 need task 10 (14 also needs the metrics
-contract of task 2), run in parallel, and do not edit `app.routes.ts`, the tab list or the
-shared fixtures, which tasks 9 and 10 own. Task 15 needs all and closes the plan.
+extends the sentinel test. The live remote route is three tasks behind one `RemoteExporter`
+interface: task 7 adds the read-only `wb cockpit export` verb and its envelope (needs tasks 1
+and 2), task 8 adds the default HTTP transport with its hub route, client, strict decode,
+scheduler and merge (needs task 7), and task 9 adds the SSH fallback, the cool-down, the typed
+errors and the SSH copy commands (needs task 8). They share the read model with tasks 3 to 6,
+so whichever lands later rebases. Periodic publish to the shared store (task 5) stays as the
+fallback for machines with neither route. Frontend task 10 (the `fleet-data` library, "3a")
+has no code dependency on the Go tasks and works from the contract in the Feature; task 11 (the
+UI foundation, "3b") needs it. Tasks 12 to 15 need task 11 (15 also needs the metrics contract
+of task 2), run in parallel, and do not edit `app.routes.ts`, the tab list or the shared
+fixtures, which tasks 10 and 11 own. Task 16 needs all and closes the plan.
 
 All tasks land on the integration branch `cockpit-ux`; `main` receives milestone pull
-requests when the branch is coherent, the first after tasks 1, 2 and 9 to 14 at the
+requests when the branch is coherent, the first after tasks 1, 2 and 10 to 15 at the
 earliest, so `main` is never between contract versions. A task updates the existing
 e2e and journey tests its change breaks, in the same task. No test may use a real SSH
-connection.
+or HTTP connection to another machine.
 
-The Cockpit is a control panel, and the views are where its actions live: task 10 owns
+The Cockpit is a control panel, and the views are where its actions live: task 11 owns
 the action slot, the "Copy command" component, the palette's action results, the
 owner-gating affordance and the operation indicator as empty-capable components with
-fixtures for a fake registry, so they render nothing until a registry exists; tasks 11
-to 14 place them, and the per-entity "Copy command" lists are written in tasks 11 to 14
-(worktree, task, pull request, branch in 12; repository in 13; dispatched run and
-session in 14; Home rows in 11). The sub-plans `work-loss-risk` and `cockpit-actions`
+fixtures for a fake registry, so they render nothing until a registry exists; tasks 12
+to 15 place them, and the per-entity "Copy command" lists are written in tasks 12 to 15
+(worktree, task, pull request, branch in 13; repository in 14; dispatched run and
+session in 15; Home rows in 12). The sub-plans `work-loss-risk` and `cockpit-actions`
 follow this plan; `cockpit-actions` Task 8 ("Action controls in the application") fills
 these slots, and its description was adjusted to say so. This plan executes no action:
 every execution path is `cockpit-actions`. There is no generic selection or bulk bar.
@@ -80,7 +81,7 @@ branches, functions and lines plus a rendering test for every component.
 **Depends-On:** —
 **Status:** planning
 
-Bump the fleet document to `schema_version` 2 (the daemon half of REQ:schema-version-2; the client half is task 9). Put gzip in the shared API writer: encoding-specific strong ETags, `Vary: Origin, Accept-Encoding`, gzip bytes computed once when the snapshot is stored, build-time pre-compressed hashed static assets with `immutable` caching and a per-response compressed index, `ETag` exposed and `If-None-Match` allowed for the hosted origin. Remove `branches` from the document and add `GET /api/v1/cockpit/branches?repository=<id>` (200 with an empty list and a reason for a cached repository, 404 for an unknown id, no Git on the request path). Add the repository fields (`last_activity_at` for local repositories, the validated `remote_url_web`, `host` on cached entries), the worktree fields (`name` equal to the task, local-only `ahead`, `behind`, `upstream_gone`), the local-and-snapshot machine fields (`os`, `arch`, `cpu_count`, `boot_time`) and `refresh_interval_seconds`. Write the `owner_state` mapping of REQ:owner-state-vocabulary, reading the owner process liveness of local worktrees and measuring its cost (fall back to the heartbeat rows if too dear). Build the 500/600/4,000/3 fixture with realistic names and `code_index` statistics. Extend the sentinel test that proves no path, origin URL or credential reaches the document. Update the existing Go and web e2e tests that this contract change breaks in this task.
+Bump the fleet document to `schema_version` 2 (the daemon half of REQ:schema-version-2; the client half is task 10). Put gzip in the shared API writer: encoding-specific strong ETags, `Vary: Origin, Accept-Encoding`, gzip bytes computed once when the snapshot is stored, build-time pre-compressed hashed static assets with `immutable` caching and a per-response compressed index, `ETag` exposed and `If-None-Match` allowed for the hosted origin. Remove `branches` from the document and add `GET /api/v1/cockpit/branches?repository=<id>` (200 with an empty list and a reason for a cached repository, 404 for an unknown id, no Git on the request path). Add the repository fields (`last_activity_at` for local repositories, the validated `remote_url_web`, `host` on cached entries), the worktree fields (`name` equal to the task, local-only `ahead`, `behind`, `upstream_gone`), the local-and-snapshot machine fields (`os`, `arch`, `cpu_count`, `boot_time`) and `refresh_interval_seconds`. Write the `owner_state` mapping of REQ:owner-state-vocabulary, reading the owner process liveness of local worktrees and measuring its cost (fall back to the heartbeat rows if too dear). Build the 500/600/4,000/3 fixture with realistic names and `code_index` statistics. Extend the sentinel test that proves no path, origin URL or credential reaches the document. Update the existing Go and web e2e tests that this contract change breaks in this task.
 
 Verification (all must pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
 
@@ -150,20 +151,31 @@ Add the read-only verb `wb cockpit export --format json` (with `--metrics-only`)
 
 Verification (allmust pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
 
-### Task 8: Backend: live remote route over SSH, background fetch and merge
+### Task 8: Backend: HTTP route, HTTP client, strict decode and merge
 
 **Id:** task-8
-**Verifies:** cockpit-views#ac:configured-target-appears-live-remote, cockpit-views#ac:failed-export-falls-back-and-shows-a-typed-error, cockpit-views#ac:no-ssh-section-starts-no-process, cockpit-views#ac:identity-mismatch-is-refused, cockpit-views#ac:hostile-payload-is-refused, cockpit-views#ac:metrics-only-export-is-demand-driven, cockpit-views#ac:ssh-argument-vector-contains-only-configured-values, cockpit-views#ac:non-loopback-metrics-request-is-refused, cockpit-views#ac:copy-command-for-an-ssh-machine, cockpit-views#ac:metrics-route-serves-each-source
+**Verifies:** cockpit-views#ac:configured-target-appears-live-remote, cockpit-views#ac:hub-export-route-requires-a-machine-bearer, cockpit-views#ac:bearer-stays-with-the-configured-host, cockpit-views#ac:no-route-configured-makes-no-request, cockpit-views#ac:identity-mismatch-is-refused, cockpit-views#ac:hostile-payload-is-refused, cockpit-views#ac:metrics-only-export-is-demand-driven, cockpit-views#ac:non-loopback-metrics-request-is-refused, cockpit-views#ac:metrics-route-serves-each-source
 **Depends-On:** 7
 **Status:** planning
 
-Add the background fetcher in the daemon: for each `session_move.targets.<machine>.ssh` target (`agents.LoadRemoteTargets`, `sessionmove.SSHConfig`), run `internal/remotessh` (`Resolve`, `Build`, an injectable `Runner`, `NewLimitedBuffer`, `SanitizeDiagnostic`) with an argument vector built from configuration only to execute `<wb_path> cockpit export --format json`, once per refresh interval, plus a demand-driven `--metrics-only` export every 30 seconds while a client asked within 60 seconds, with a 15 second total timeout, the 8 MiB stdout cap, doubling backoff to 5 minutes, and `cockpit.remote_ssh: false` as the opt-out. Make the `remotessh.Build` connect timeout a parameter (it is fixed at 10 seconds today). Decode the envelope strictly (unknown fields rejected, string and collection caps, machine identity equal to the configured target name), merge accepted entries as `route` `live-remote` replacing fresh cached entries and showing cached ones with their age otherwise, set and clear the typed `remote_error`, serve `live-remote`, `cached` and `none` through `machine-metrics`, and build the "Copy command" `ssh <user>@<host> <wb_path> <command>` text source from the same configuration. Real-SSH tests are not allowed locally: the unit tier uses a fake `remotessh.Runner`, and nothing in any test may ssh to the founder's VM. This is a separate task from the export verb because it needs a fetcher, strict decoder, merge, backoff and the metrics sources beyond the verb; it follows task 7.
+Behind a `RemoteExporter` interface, add the HTTP transport. Serve `GET /v0/workbench/machines/export` (and `?metrics_only=1`) on the hub mount, building the envelope with the function of task 7 in process, authenticated only by a machine bearer with the existing scope `machine_snapshot:read` (a peer credential, a cookie or no credential is refused with 401; nothing under `/api/v1/cockpit/`). Add the HTTP client: address and credential only from local configuration (the hub client's `remote.url` and `remote.token_file` for the configured hub, otherwise the new optional `http` section with `url` and `token_file` beside `ssh` in `session_move.targets.<machine>`, validated in `internal/sessionmove/config.go` without becoming a `Courier`), HTTPS unless loopback, no redirects, 8 MiB cap, 3 second connect and 10 second total timeout, the bearer sent only to the configured host. Add the background scheduler (fleet export once per refresh interval, demand-driven metrics-only every 30 seconds while a client asked within 60 seconds, doubling backoff to 5 minutes), the strict envelope decoder (unknown fields rejected, caps, machine identity equal to the configured name), the merge as `route` `live-remote` with `transport`, and the `live-remote`, `cached` and `none` sources of `machine-metrics`; add `cockpit.remote_http`, the opt-out. With neither transport configured nothing is sent. Unit tier only: fake HTTP servers and a fake clock; nothing may call a real host.
 
 Verification (allmust pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
 
-### Task 9: Frontend: fleet-data library
+### Task 9: Backend: SSH fallback, cool-down, typed errors and copy commands
 
 **Id:** task-9
+**Verifies:** cockpit-views#ac:http-failure-falls-back-to-ssh, cockpit-views#ac:fallback-cool-down-is-honoured, cockpit-views#ac:failed-export-shows-a-typed-error, cockpit-views#ac:ssh-argument-vector-contains-only-configured-values, cockpit-views#ac:copy-command-for-an-ssh-machine
+**Depends-On:** 8
+**Status:** planning
+
+Add the SSH transport behind the same `RemoteExporter`: run `ssh` through `internal/remotessh` (`Resolve`, `Build`, an injectable `Runner`, `NewLimitedBuffer`, `SanitizeDiagnostic`) with an argument vector built from `session_move.targets.<machine>.ssh` only (`agents.LoadRemoteTargets`, `sessionmove.SSHConfig`) to execute `<wb_path> cockpit export --format json` (with `--metrics-only` for metrics), with a 15 second total timeout and the 8 MiB stdout cap, making the `remotessh.Build` connect timeout a parameter (it is fixed at 10 seconds today), and `cockpit.remote_ssh: false` as the opt-out. Implement the fallback rule of REQ:remote-exporter-transports (connection error, timeout, 401, 403, 404, 429, 5xx and redirect fall back; a valid-shaped envelope that fails validation does not), the 5 minute cool-down on SSH before HTTP is tried again, the typed `remote_error` vocabulary and the `transport` field, and the Fleet health data for them. Build the `ssh <user>@<host> <wb_path> <command>` text source for the "Copy command" entries from the same configuration. Real-SSH tests are not allowed locally: the unit tier uses a fake `remotessh.Runner`, and nothing in any test may ssh to the founder's VM or any host.
+
+Verification (allmust pass before the task is complete): targeted `wb run -- go test <touched packages> -count=1`; `wb run -- go run ./cmd/wb coverage --changed` with 100% of the new code covered; `golangci-lint run <touched packages>`; `GOOS=windows go build ./... && GOOS=windows go vet ./...`; `wb run -- go test ./internal/quality/... -count=1`; `go run ./cmd/wb ci audit . --target main --strict`; `specscore spec lint`. The full Go suite runs in CI, never locally.
+
+### Task 10: Frontend: fleet-data library
+
+**Id:** task-10
 **Verifies:** cockpit-views#ac:matcher-grammar, cockpit-views#ac:matcher-limits-and-bare-fields, cockpit-views#ac:matcher-is-linear-time, cockpit-views#ac:filter-vocabulary-is-the-only-link-target, cockpit-views#ac:client-accepts-only-schema-2, cockpit-views#ac:derived-collections-computed-once, cockpit-views#ac:filtering-5000-rows-is-fast, cockpit-views#ac:unchanged-snapshot-does-nothing, cockpit-views#ac:repository-identity-merges-local-and-cached, cockpit-views#ac:lifecycle-at-risk, cockpit-views#ac:lifecycle-checks-failed, cockpit-views#ac:lifecycle-blocked, cockpit-views#ac:lifecycle-ready-to-land, cockpit-views#ac:lifecycle-checks-pending, cockpit-views#ac:lifecycle-working, cockpit-views#ac:lifecycle-landed, cockpit-views#ac:lifecycle-idle, cockpit-views#ac:lifecycle-not-reported, cockpit-views#ac:lifecycle-is-worst-first
 **Depends-On:** —
 **Status:** planning
@@ -172,66 +184,66 @@ In `cockpit/web/libs/fleet-data`: the schema version 2 types and strict client (
 
 Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
 
-### Task 10: Frontend: UI foundation and control surface
-
-**Id:** task-10
-**Verifies:** cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness, cockpit-views#ac:home-route-and-alias, cockpit-views#ac:warming-up-shows-progress, cockpit-views#ac:no-heading-repeats-the-tab, cockpit-views#ac:palette-groups-results, cockpit-views#ac:palette-lists-actions-after-navigation, cockpit-views#ac:shortcuts-navigate-and-respect-typing, cockpit-views#ac:filter-state-lives-in-the-address, cockpit-views#ac:rows-are-one-line-and-virtual, cockpit-views#ac:columns-are-few-and-uniform-ones-hidden, cockpit-views#ac:repository-and-time-rendering, cockpit-views#ac:empty-states-offer-clear, cockpit-views#ac:every-number-is-a-link, cockpit-views#ac:side-panel-opens-and-closes, cockpit-views#ac:side-panel-shows-summary-actions-commands-and-raw-data, cockpit-views#ac:detail-routes-render-the-same-panel, cockpit-views#ac:copy-buttons-copy-the-full-value, cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it, cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers, cockpit-views#ac:owner-gating-is-one-affordance, cockpit-views#ac:operation-indicator-and-updating-row, cockpit-views#ac:intent-to-done-budgets-hold, cockpit-views#ac:initial-script-fits-the-budget, cockpit-views#ac:list-never-exceeds-60-row-elements, cockpit-views#ac:chart-library-is-pinned-and-tree-shaken
-**Depends-On:** 9
-**Status:** planning
-
-In `cockpit/web`: the shell (top bar with signal badges, freshness, session chip, "New task" button and operation indicator, hidden `h1`, the palette with its action results, keyboard shortcuts), the shared virtual list (sticky header, sort, chips, machine chips, URL state including `sel`, default and auto-hidden columns, `j`/`k`/Enter/Esc) with the side panel and the one component that renders both panel and detail page, and the control-surface components as empty-capable pieces driven by task 9's fake registry: the action slot with its overflow menu, the "Copy command" component taking a per-entity command list, the owner-gating affordance and the operation indicator with the updating row state. Also the tokens (typography, state colours with icons, light and dark), the exact-pinned tree-shaken Chart.js wrapper as a lazy chunk, all routes pre-registered with placeholder pages (so later tasks never edit `app.routes.ts` or the tab list), and the bundle budget check in `tools/finish-build.mjs`. There is no selection model and no bulk bar. Nothing here executes an action: the slots render the registry and open previews as `cockpit-actions` defines.
-
-Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
-
-### Task 11: Frontend: Home
+### Task 11: Frontend: UI foundation and control surface
 
 **Id:** task-11
-**Verifies:** cockpit-views#ac:needs-you-pr-checks-failed, cockpit-views#ac:needs-you-agent-blocked, cockpit-views#ac:needs-you-run-failed, cockpit-views#ac:needs-you-work-at-risk, cockpit-views#ac:needs-you-is-capped-and-empty-line, cockpit-views#ac:ready-to-land-groups-by-task, cockpit-views#ac:in-flight-lists-agents-on-every-machine, cockpit-views#ac:in-flight-machine-load-indicator, cockpit-views#ac:resume-lists-five-recent-tasks, cockpit-views#ac:cleanup-line-counts-and-chart, cockpit-views#ac:fleet-health-only-when-not-ok, cockpit-views#ac:home-charts-from-throughput, cockpit-views#ac:home-phone-layout, cockpit-views#ac:csp-and-canvas-only
+**Verifies:** cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness, cockpit-views#ac:home-route-and-alias, cockpit-views#ac:warming-up-shows-progress, cockpit-views#ac:no-heading-repeats-the-tab, cockpit-views#ac:palette-groups-results, cockpit-views#ac:palette-lists-actions-after-navigation, cockpit-views#ac:shortcuts-navigate-and-respect-typing, cockpit-views#ac:filter-state-lives-in-the-address, cockpit-views#ac:rows-are-one-line-and-virtual, cockpit-views#ac:columns-are-few-and-uniform-ones-hidden, cockpit-views#ac:repository-and-time-rendering, cockpit-views#ac:empty-states-offer-clear, cockpit-views#ac:every-number-is-a-link, cockpit-views#ac:side-panel-opens-and-closes, cockpit-views#ac:side-panel-shows-summary-actions-commands-and-raw-data, cockpit-views#ac:detail-routes-render-the-same-panel, cockpit-views#ac:copy-buttons-copy-the-full-value, cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it, cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers, cockpit-views#ac:owner-gating-is-one-affordance, cockpit-views#ac:operation-indicator-and-updating-row, cockpit-views#ac:intent-to-done-budgets-hold, cockpit-views#ac:initial-script-fits-the-budget, cockpit-views#ac:list-never-exceeds-60-row-elements, cockpit-views#ac:chart-library-is-pinned-and-tree-shaken
 **Depends-On:** 10
 **Status:** planning
 
-Build Home: "Needs you" (at most five rows, one primary action each, "+n more", empty line), "Ready to land" with its action slot or copy command, "In flight" with machine chips and the load indicator, "Resume", the "Cleanup" line with the worktree-age chart, the "Fleet health" line, and the two throughput charts hidden on a phone, plus the phone layout. It uses only task 9's view model and task 10's components, against stubs; it does not edit the routes, tabs or shared fixtures.
+In `cockpit/web`: the shell (top bar with signal badges, freshness, session chip, "New task" button and operation indicator, hidden `h1`, the palette with its action results, keyboard shortcuts), the shared virtual list (sticky header, sort, chips, machine chips, URL state including `sel`, default and auto-hidden columns, `j`/`k`/Enter/Esc) with the side panel and the one component that renders both panel and detail page, and the control-surface components as empty-capable pieces driven by task 10's fake registry: the action slot with its overflow menu, the "Copy command" component taking a per-entity command list, the owner-gating affordance and the operation indicator with the updating row state. Also the tokens (typography, state colours with icons, light and dark), the exact-pinned tree-shaken Chart.js wrapper as a lazy chunk, all routes pre-registered with placeholder pages (so later tasks never edit `app.routes.ts` or the tab list), and the bundle budget check in `tools/finish-build.mjs`. There is no selection model and no bulk bar. Nothing here executes an action: the slots render the registry and open previews as `cockpit-actions` defines.
 
 Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
 
-### Task 12: Frontend: Tasks and Worktrees
+### Task 12: Frontend: Home
 
 **Id:** task-12
+**Verifies:** cockpit-views#ac:needs-you-pr-checks-failed, cockpit-views#ac:needs-you-agent-blocked, cockpit-views#ac:needs-you-run-failed, cockpit-views#ac:needs-you-work-at-risk, cockpit-views#ac:needs-you-is-capped-and-empty-line, cockpit-views#ac:ready-to-land-groups-by-task, cockpit-views#ac:in-flight-lists-agents-on-every-machine, cockpit-views#ac:in-flight-machine-load-indicator, cockpit-views#ac:resume-lists-five-recent-tasks, cockpit-views#ac:cleanup-line-counts-and-chart, cockpit-views#ac:fleet-health-only-when-not-ok, cockpit-views#ac:home-charts-from-throughput, cockpit-views#ac:home-phone-layout, cockpit-views#ac:csp-and-canvas-only
+**Depends-On:** 11
+**Status:** planning
+
+Build Home: "Needs you" (at most five rows, one primary action each, "+n more", empty line), "Ready to land" with its action slot or copy command, "In flight" with machine chips and the load indicator, "Resume", the "Cleanup" line with the worktree-age chart, the "Fleet health" line, and the two throughput charts hidden on a phone, plus the phone layout. It uses only task 10's view model and task 11's components, against stubs; it does not edit the routes, tabs or shared fixtures.
+
+Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
+
+### Task 13: Frontend: Tasks and Worktrees
+
+**Id:** task-13
 **Verifies:** cockpit-views#ac:tasks-list-aggregates-worktrees, cockpit-views#ac:task-detail-shows-its-entities, cockpit-views#ac:worktree-identity-cell, cockpit-views#ac:worktrees-columns-and-badges, cockpit-views#ac:worktrees-quick-filters, cockpit-views#ac:default-sorts, cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers
-**Depends-On:** 10
+**Depends-On:** 11
 **Status:** planning
 
 Build the Tasks page (lifecycle badge column, chips) with the task panel and `/tasks/detail?task=<name>`, and the Worktrees page (identity cell, conditional Branch column, sync badges for this machine, chips including `safe` and `look`) with its panel. Place the action slots and the "Copy command" lists for worktree, task, pull request and branch (the commands of REQ:copy-the-command). These pages do not edit the routes, tabs or shared fixtures.
 
 Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
 
-### Task 13: Frontend: Repositories
+### Task 14: Frontend: Repositories
 
-**Id:** task-13
+**Id:** task-14
 **Verifies:** cockpit-views#ac:repositories-merge-across-machines, cockpit-views#ac:repository-actions-follow-configuration, cockpit-views#ac:repositories-sort-presets, cockpit-views#ac:repositories-quick-filters, cockpit-views#ac:repository-detail-loads-branches-lazily, cockpit-views#ac:default-sorts
-**Depends-On:** 10
+**Depends-On:** 11
 **Status:** planning
 
 Build the Repositories page (merged per identity, machine chips with cached age and stale mark, icon actions, the Recent, Most worktrees and Most branches sort presets, chips including `index` and `errors`), the repository panel and `/repositories/:host/:owner/:name` with lazily loaded branches from task 1's route (stubbed), and the repository "Copy command" list. Detail pages are lazy chunks; no edit to the routes, tabs or shared fixtures.
 
 Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
 
-### Task 14: Frontend: Agents, Machines and New task
+### Task 15: Frontend: Agents, Machines and New task
 
-**Id:** task-14
+**Id:** task-15
 **Verifies:** cockpit-views#ac:agents-list-describes-the-work, cockpit-views#ac:agent-label-fallback, cockpit-views#ac:agent-detail-links-its-work, cockpit-views#ac:machines-table-title-and-links, cockpit-views#ac:machines-filter-and-stale-chip, cockpit-views#ac:machine-detail-metrics-charts, cockpit-views#ac:machine-without-metrics-says-so, cockpit-views#ac:metrics-poll-only-while-visible, cockpit-views#ac:new-task-form-produces-commands, cockpit-views#ac:default-sorts
-**Depends-On:** 10, 2
+**Depends-On:** 11, 2
 **Status:** planning
 
 Build the Agents page (human labels, activity badge or "state not reported", cached agents with age and no action, the dispatched-run and session "Copy command" entries), the agent panel and page, the Machines page (title column, filter box, `stale` chip, state age, version mark, CPU and Memory with route and age) and the machine panel and page with its four last-hour charts from `GET /api/v1/cockpit/machine-metrics` (polled every 10 seconds only while Home or a Machines page is visible, with the `local`, `live-remote`, `cached` and `none` states from the task 2 contract, stubbed), and the "New task" form that produces the `wb create` and `wb agent dispatch` commands to copy.
 
 Verification (all must pass before the task is complete), in `cockpit/web`: `pnpm test` (the component-spec check plus Vitest with thresholds of 100 for statements, branches, functions and lines); `pnpm lint`; `pnpm build` with the bundle budget (initial JavaScript at most 350 kB raw); the stubbed Playwright run `pnpm test:e2e`; `specscore spec lint`. The real-daemon journey (`pnpm test:journey`) runs only on Linux CI. The full Go suite runs in CI, never locally.
 
-### Task 15: Integration: journey, budgets, accessibility, phone, docs and manifests
+### Task 16: Integration: journey, budgets, accessibility, phone, docs and manifests
 
-**Id:** task-15
+**Id:** task-16
 **Verifies:** cockpit-views#ac:every-tab-lists-its-collection, cockpit-views#ac:usable-at-360-wide, cockpit-views#ac:no-layout-shift-on-arrival, cockpit-views#ac:state-is-never-colour-only, cockpit-views#ac:views-coverage-gates-hold, cockpit-views#ac:every-number-is-a-link
-**Depends-On:** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
+**Depends-On:** 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15
 **Status:** planning
 
 Update the stubbed Playwright suite and the Linux-CI real-daemon journey for the new pages and routes (existing e2e and journey tests are already updated by the task that broke them, not deferred to this one); assert the budgets on the fixture end to end; run the accessibility pass (focus order, `aria-current`, chart text alternatives, contrast in both themes, 360 px width and the phone Home, cumulative layout shift 0); audit that every number is a link; and update the docs, command manifests and Agent Skill text that describe the Cockpit pages. It verifies, now that all pages exist, that every tab lists its collection: the views counterpart of the changed `cockpit` criterion `every-page-lists-its-collection`. Confirm every component has a rendering test and the thresholds still hold.
