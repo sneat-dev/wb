@@ -150,6 +150,11 @@ func TestE2EFailedRecycleRecoveryRefusesMissingOrConflictingEvidence(t *testing.
 			t.Fatalf("corrupt original claim error = %v", err)
 		}
 		fixture.assertPriorProjectionAndHEAD(t)
+		for _, path := range []string{fixture.claimPath, fixture.outboxPath} {
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("corrupt original claim published successor evidence %s: %v", path, err)
+			}
+		}
 	})
 	//nolint:paralleltest // each subtest uses a fixture with t.Setenv.
 	t.Run("missing terminals directory", func(t *testing.T) {
@@ -322,7 +327,7 @@ func TestE2EExternalTargetClaimLoadRefusesCorruptEvidenceAndReleasesClaimFence(t
 			t.Fatal(err)
 		}
 		_, _, unlock, err := loadExternalTargetClaim(cycle, prepared.fixture.base.request, prepared.fixture.digest, prepared.fixture.worktree)
-		if err == nil || unlock != nil {
+		if err == nil || unlock != nil || !strings.Contains(err.Error(), "too many links") {
 			t.Fatalf("cyclic home root returned unlock=%t, err=%v", unlock != nil, err)
 		}
 		prepared.assertPrivateUnchanged(t, true)
