@@ -45,6 +45,11 @@ async function runStep(page, step) {
   else if (kind === 'chip') await page.getByRole('button', { name: argument, exact: true }).click()
   // The last cell but the open button is the time: a click there selects the row.
   else if (kind === 'row') await page.locator('[role=row][data-index]').nth(Number(argument)).locator('[role=gridcell]:not(.open-cell)').last().click()
+  else if (kind === 'select') {
+    await page.getByRole('grid').focus()
+    for (let index = 0; index < Number(argument); index++) await page.keyboard.press('j')
+    await page.keyboard.press('Enter')
+  } else if (kind === 'radio') await page.getByText(argument, { exact: true }).click()
   else if (kind === 'raw') await page.getByText('Raw data', { exact: true }).click()
   await page.waitForTimeout(200)
 }

@@ -20,9 +20,11 @@ import "time"
 // document and added the fields below.
 const SchemaVersion = 2
 
-// The two routes an entry can have (cockpit#req:route-and-freshness-are-
+// The routes an entry can have (cockpit#req:route-and-freshness-are-
 // explicit): local for state this daemon observed itself, cached for state
-// read from another machine's published snapshot.
+// read from another machine's published snapshot, and live-remote
+// (RouteLiveRemote) for state read in the background from another machine's own
+// export (cockpit-views#req:remote-entries-replace-cached).
 const (
 	RouteLocal  = "local"
 	RouteCached = "cached"
@@ -195,6 +197,14 @@ const ReasonCachedRepository = "cached_repository"
 // machine and for another whose published snapshot carries them, and omitted
 // otherwise. They are names and numbers: no process list, path or environment.
 // The document carries no resource samples; the metrics route serves them.
+//
+// Transport is the transport (`http` or `ssh`) that produced a machine's
+// live-remote entries, and RemoteError the code of the last failed read of
+// another machine (cockpit-views#req:remote-error-is-visible): one of
+// remoteErrorCodes, never the remote's own text. ExportDropped is the number of
+// that machine's entries its export left out, or this daemon cut at its caps,
+// and AgentsTruncated says its agents were cut. None of the four is ever set
+// on this machine's own entry.
 type Machine struct {
 	Entry
 	WBVersion       string    `json:"wb_version,omitempty"`
@@ -204,6 +214,10 @@ type Machine struct {
 	Arch            string    `json:"arch,omitempty"`
 	CPUCount        int       `json:"cpu_count,omitempty"`
 	BootTime        time.Time `json:"boot_time,omitzero"`
+	Transport       string    `json:"transport,omitempty"`
+	RemoteError     string    `json:"remote_error,omitempty"`
+	ExportDropped   int       `json:"export_dropped,omitempty"`
+	AgentsTruncated bool      `json:"agents_truncated,omitempty"`
 }
 
 // Repository is one repository with its counts. A count that is nil is not
@@ -305,17 +319,40 @@ type PullRequest struct {
 	CheckedAt     time.Time `json:"checked_at,omitzero"`
 }
 
+// The activity values of an agent entry: herdr's five agent statuses, which are
+// the only thing the cockpit reads from herdr (never the screen).
+const (
+	ActivityWorking = "working"
+	ActivityBlocked = "blocked"
+	ActivityIdle    = "idle"
+	ActivityDone    = "done"
+	ActivityUnknown = "unknown"
+)
+
+// maxAgentWorktrees bounds the worktrees one agent entry lists.
+const maxAgentWorktrees = 10
+
 // Agent is a registered session or a dispatched run: identifiers, runtime,
-// model and state, and the repository a run works in.
+// model and state, the repository, task and worktrees it works in, when it
+// started and, for a finished run, when it finished and its exit code.
+// Activity is herdr's status of a session of this machine, absent when herdr
+// does not report it. A session has Repository, Task and Worktrees only when a
+// worktree's declared owner process is the session's; they are never guessed.
 type Agent struct {
 	Entry
-	Kind       string `json:"kind"`
-	SessionID  string `json:"session_id,omitempty"`
-	RunID      string `json:"run_id,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
-	Model      string `json:"model,omitempty"`
-	State      string `json:"state"`
-	Repository string `json:"repository,omitempty"`
+	Kind       string    `json:"kind"`
+	SessionID  string    `json:"session_id,omitempty"`
+	RunID      string    `json:"run_id,omitempty"`
+	Runtime    string    `json:"runtime,omitempty"`
+	Model      string    `json:"model,omitempty"`
+	State      string    `json:"state"`
+	Activity   string    `json:"activity,omitempty"`
+	Repository string    `json:"repository,omitempty"`
+	Task       string    `json:"task,omitempty"`
+	Worktrees  []string  `json:"worktrees,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitzero"`
+	FinishedAt time.Time `json:"finished_at,omitzero"`
+	ExitCode   *int      `json:"exit_code,omitempty"`
 }
 
 // emptyDocument is the well-formed document served before the first snapshot:

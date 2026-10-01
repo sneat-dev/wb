@@ -40,9 +40,10 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command.SetContext(ctx)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	stderr := &lockedBuffer{} // the daemon's goroutines write to it together
 	command.SetOut(&stdout)
-	command.SetErr(&stderr)
+	command.SetErr(stderr)
 
 	served := make(chan error, 1)
 	go func() {
@@ -271,6 +272,9 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	}
 	if bare.Sampler == nil {
 		t.Error("this machine has no metrics sampler")
+	}
+	if bare.Collectors.Activity == nil {
+		t.Error("this machine does not read herdr for agent activity")
 	}
 	if terminals, ok := bare.Terminals.(*cockpitfleet.LocalTerminals); !ok || terminals.ProjectsRoot != root || terminals.Home != home {
 		t.Errorf("the throughput source = %+v, want this machine's terminal records", bare.Terminals)

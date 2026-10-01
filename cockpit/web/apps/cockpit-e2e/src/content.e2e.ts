@@ -66,6 +66,7 @@ async function stub(page: Page, options: { session: typeof OWNER; document?: () 
     route.fulfill({ json: (options.document ?? (() => fleet(12)))(), headers: { ETag: `"${Math.random()}"`, 'Cache-Control': 'no-cache' } }),
   )
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: options.session }))
+  await page.route('**/api/v1/cockpit/branches?*', (route) => route.fulfill({ json: { branches: [] } }))
   await page.route('**/api/v1/cockpit/readme?*', (route) => {
     readmeCalls.push(route.request().url())
     const readme = options.readme ?? { body: '' }
@@ -111,7 +112,7 @@ test('the README renders for an owner session, and without one the page asks for
   const expectClean = await watch(page)
   const owner = await stub(page, { session: OWNER, readme: { body: '# Widgets\n\nA **small** library.\n' } })
   await page.goto('/cockpit/repositories/repo-cli')
-  await expect(page.getByRole('heading', { name: 'github.com/specscore/specscore-cli' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'specscore/specscore-cli' })).toBeVisible()
   await expect(page.locator('.readme-content h4')).toHaveText('Widgets')
   await expect(page.locator('.readme-content strong')).toHaveText('small')
   expect(owner.readmeCalls).toHaveLength(1)
@@ -126,7 +127,7 @@ test('the README renders for an owner session, and without one the page asks for
   await expect(page.locator('.readme-content')).toHaveCount(0)
   expect(anonymous.readmeCalls).toEqual([])
   // The lists still load without a session.
-  await expect(page.getByRole('heading', { name: 'github.com/specscore/specscore-cli' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'specscore/specscore-cli' })).toBeVisible()
   await expectClean()
 })
 
@@ -239,9 +240,9 @@ test('a row opens its detail page, which links back to the list', async ({ page 
   const expectClean = await watch(page)
   await stub(page, { session: ANONYMOUS })
   await page.goto('/cockpit/repositories')
-  await page.getByRole('link', { name: 'github.com/specscore/specscore-cli' }).first().click()
-  await expect(page).toHaveURL(/\/cockpit\/repositories\/repo-cli$/)
-  await expect(page.locator('dl.detail')).toContainText('main')
+  await page.getByRole('link', { name: 'Open specscore/specscore-cli', exact: true }).click()
+  await expect(page).toHaveURL(/\/cockpit\/repositories\/github\.com\/specscore\/specscore-cli$/)
+  await expect(page.locator('app-repository-machine-section')).toContainText('main')
   await page.getByRole('link', { name: /Repositories/ }).first().click()
   await expect(page).toHaveURL(/\/cockpit\/repositories$/)
   await page.goto('/cockpit/worktrees')

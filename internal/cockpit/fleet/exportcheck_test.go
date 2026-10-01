@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -108,6 +109,13 @@ func TestHostileEnvelopesAreRefused(t *testing.T) {
 		"an unknown owner state":           {false, func(e *Envelope) { e.Fleet.Worktrees[0].OwnerState = "asleep" }, "owner_state is not valid"},
 		"an unknown lifecycle":             {false, func(e *Envelope) { e.Fleet.Worktrees[0].Lifecycle = "zombie" }, "lifecycle is not valid"},
 		"an unknown agent kind":            {false, func(e *Envelope) { e.Fleet.Agents[0].Kind = "daemon" }, "fleet.agents[0].kind is not valid"},
+		"an unknown agent activity":        {false, func(e *Envelope) { e.Fleet.Agents[0].Activity = "napping" }, "fleet.agents[0].activity is not valid"},
+		"an agent task that is too long":   {false, func(e *Envelope) { e.Fleet.Agents[0].Task = long }, "fleet.agents[0].task is not valid"},
+		"an agent worktree that is a path": {false, func(e *Envelope) { e.Fleet.Agents[0].Worktrees = []string{"/tmp/x"} }, "fleet.agents[0].worktrees[0] is not valid"},
+		"too many agent worktrees": {false, func(e *Envelope) {
+			e.Fleet.Agents[0].Worktrees = slices.Repeat([]string{entryID(kindWorktree, "m")}, maxAgentWorktrees+1)
+		}, "fleet.agents[0].worktrees has more than 10"},
+		"a negative exit code":             {false, func(e *Envelope) { e.Fleet.Agents[0].ExitCode = &negative }, "fleet.agents[0].exit_code is negative or too large"},
 		"an unknown agent state":           {false, func(e *Envelope) { e.Fleet.Agents[0].State = "exploding" }, "fleet.agents[0].state is not valid"},
 		"an agent with no state":           {false, func(e *Envelope) { e.Fleet.Agents[0].State = "" }, "fleet.agents[0].state is not valid"},
 		"a runtime that is free text":      {false, func(e *Envelope) { e.Fleet.Agents[0].Runtime = "rm -rf /" }, "runtime is not valid"},
@@ -534,6 +542,8 @@ func TestStringRulesAcceptTheirOwnVocabularyAndRefuseTheRest(t *testing.T) {
 		"EnvelopeMetrics.reason":       {ReasonNoSource, ReasonUnsupported, ReasonUnavailable},
 		"EnvelopeMetrics.route":        {RouteLocal, RouteNone},
 		"Entry.route":                  {RouteLocal},
+		"Agent.activity":               {ActivityWorking, ActivityBlocked, ActivityIdle, ActivityDone, ActivityUnknown},
+		"Agent.worktrees":              {entryID(kindWorktree, "m", "r", "t", "b")},
 		"Agent.runtime":                {"claude", "codex", "gpt-5.3"},
 		"Agent.session_id":             {"wbs-1"},
 		"Agent.run_id":                 {"agt-1"},
@@ -561,7 +571,7 @@ func TestStringRulesAcceptTheirOwnVocabularyAndRefuseTheRest(t *testing.T) {
 			}
 		}
 	}
-	for _, key := range []string{"Worktree.lifecycle", "Worktree.owner_state", "CodeIndex.state", "CodeStatistics.error", "Repository.error", "Document.error", "PullRequest.state", "PullRequest.mergeable", "Agent.kind", "Agent.state", "EnvelopeMetrics.reason", "EnvelopeMetrics.route", "Entry.route"} {
+	for _, key := range []string{"Worktree.lifecycle", "Worktree.owner_state", "CodeIndex.state", "CodeStatistics.error", "Repository.error", "Document.error", "PullRequest.state", "PullRequest.mergeable", "Agent.kind", "Agent.state", "Agent.activity", "EnvelopeMetrics.reason", "EnvelopeMetrics.route", "Entry.route"} {
 		if stringRules[key]("nope") {
 			t.Errorf("the vocabulary %s accepts a word outside it", key)
 		}

@@ -314,38 +314,45 @@ var stringRules = map[string]textRule{
 	"Machine.wb_version":           matching(versionPattern),
 	"Machine.os":                   matching(shortNamePattern),
 	"Machine.arch":                 matching(shortNamePattern),
-	"Repository.host":              isHost,
-	"Repository.name":              isText,
-	"Repository.default_branch":    isText,
-	"Repository.error":             oneOf(ErrorTimeout, ErrorReadFailed),
-	"Repository.remote_url_web":    isSafeURL,
-	"Worktree.repository":          matching(idPattern),
-	"Worktree.name":                isText,
-	"Worktree.task":                isText,
-	"Worktree.stream":              isText,
-	"Worktree.branch":              isText,
-	"Worktree.lifecycle":           oneOf(remoteLifecycles...),
-	"Worktree.owner_state":         oneOf(OwnerActive, OwnerIdle, OwnerOrphaned, OwnerUnknown),
-	"PullRequest.repository":       matching(idPattern),
-	"PullRequest.worktree":         matching(idPattern),
-	"PullRequest.branch":           isText,
-	"PullRequest.state":            oneOf("open", "merged", "closed", "draft"),
-	"PullRequest.url":              isSafeURL,
-	"PullRequest.mergeable":        oneOf("clean", "blocked", "dirty", "behind", "unstable", "has_hooks", "draft", "unknown"),
-	"PullRequest.failed_check":     isText,
-	"Agent.kind":                   required(oneOf(AgentSession, AgentRun)),
-	"Agent.session_id":             matching(tokenPattern),
-	"Agent.run_id":                 matching(tokenPattern),
-	"Agent.runtime":                matching(tokenPattern),
-	"Agent.model":                  matching(modelPattern),
-	"Agent.state":                  required(oneOf("live", "parked", "running", "completed", "failed", "timeout", "abandoned")),
-	"Agent.repository":             matching(idPattern),
-	"CodeIndex.indexer":            required(matching(tokenPattern)),
-	"CodeIndex.state":              required(oneOf(CodeIndexFresh, CodeIndexStale, CodeIndexDiverged, CodeIndexPending, CodeIndexFailed, CodeIndexNever)),
-	"CodeStatistics.error":         oneOf(ErrorProviderUnavailable, ErrorProviderTimeout, ErrorProviderFailed, ErrorProviderOutput),
-	"KindCount.kind":               required(matching(kindPattern)),
-	"ThroughputDay.date":           required(matching(datePattern)),
-	"ThroughputTask.task":          required(isText),
+	// An export is a machine's own entry, which never carries the transport or
+	// the error of a read of another machine: both must be absent.
+	"Machine.transport":         oneOf(),
+	"Machine.remote_error":      oneOf(),
+	"Repository.host":           isHost,
+	"Repository.name":           isText,
+	"Repository.default_branch": isText,
+	"Repository.error":          oneOf(ErrorTimeout, ErrorReadFailed),
+	"Repository.remote_url_web": isSafeURL,
+	"Worktree.repository":       matching(idPattern),
+	"Worktree.name":             isText,
+	"Worktree.task":             isText,
+	"Worktree.stream":           isText,
+	"Worktree.branch":           isText,
+	"Worktree.lifecycle":        oneOf(remoteLifecycles...),
+	"Worktree.owner_state":      oneOf(OwnerActive, OwnerIdle, OwnerOrphaned, OwnerUnknown),
+	"PullRequest.repository":    matching(idPattern),
+	"PullRequest.worktree":      matching(idPattern),
+	"PullRequest.branch":        isText,
+	"PullRequest.state":         oneOf("open", "merged", "closed", "draft"),
+	"PullRequest.url":           isSafeURL,
+	"PullRequest.mergeable":     oneOf("clean", "blocked", "dirty", "behind", "unstable", "has_hooks", "draft", "unknown"),
+	"PullRequest.failed_check":  isText,
+	"Agent.kind":                required(oneOf(AgentSession, AgentRun)),
+	"Agent.session_id":          matching(tokenPattern),
+	"Agent.run_id":              matching(tokenPattern),
+	"Agent.runtime":             matching(tokenPattern),
+	"Agent.model":               matching(modelPattern),
+	"Agent.state":               required(oneOf("live", "parked", "running", "completed", "failed", "timeout", "abandoned")),
+	"Agent.activity":            oneOf(ActivityWorking, ActivityBlocked, ActivityIdle, ActivityDone, ActivityUnknown),
+	"Agent.repository":          matching(idPattern),
+	"Agent.task":                isText,
+	"Agent.worktrees":           matching(idPattern),
+	"CodeIndex.indexer":         required(matching(tokenPattern)),
+	"CodeIndex.state":           required(oneOf(CodeIndexFresh, CodeIndexStale, CodeIndexDiverged, CodeIndexPending, CodeIndexFailed, CodeIndexNever)),
+	"CodeStatistics.error":      oneOf(ErrorProviderUnavailable, ErrorProviderTimeout, ErrorProviderFailed, ErrorProviderOutput),
+	"KindCount.kind":            required(matching(kindPattern)),
+	"ThroughputDay.date":        required(matching(datePattern)),
+	"ThroughputTask.task":       required(isText),
 }
 
 // rulesForUnmergedFields are rules named in stringRules for fields that are not
@@ -493,6 +500,11 @@ func validateDocument(document *Document) error {
 		if machine.ID != machine.MachineID {
 			return refuse("fleet.machines[0].machine_id is not its id")
 		}
+		// What a reader records about its read of another machine is never part of
+		// a machine's own export.
+		if machine.ExportDropped != 0 || machine.AgentsTruncated {
+			return refuse("fleet.machines[0] carries a field only a reader sets")
+		}
 		machineID = machine.ID
 	}
 	type located struct {
@@ -523,6 +535,9 @@ func validateDocument(document *Document) error {
 	}
 	for index, agent := range document.Agents {
 		entries = append(entries, located{"fleet.agents", index, agent.Entry})
+		if len(agent.Worktrees) > maxAgentWorktrees {
+			return refuse("fleet.agents[%d].worktrees has more than %d entries", index, maxAgentWorktrees)
+		}
 	}
 	seen := map[string]bool{}
 	for _, item := range entries {

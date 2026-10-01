@@ -37,7 +37,7 @@ describe('the PrimeUI licence check', () => {
       expect(route?.providers, path).toBeUndefined()
     }
     const primeRoutes = pageRoutes.filter((route) => route.loadChildren !== undefined).map((route) => route.path)
-    expect(primeRoutes).toEqual(['repositories', 'agents', 'machines'])
+    expect(primeRoutes).toEqual(['agents', 'machines'])
   })
 
   it('runs no initializer in an injector that has none', () => {
