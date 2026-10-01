@@ -77,7 +77,7 @@ export function shotPlan(document) {
   return shots
 }
 
-// Home is photographed against hand-made fleets (tools/home-states.ts): each case is a fleet and what the
+// Home is photographed against hand-made fleets (apps/cockpit/src/app/pages/home/home-fixtures.ts): each case is a fleet and what the
 // preview serves around it (the session and the action registry), at the sizes Home is designed for.
 export const HOME_VIEWPORTS = [
   { name: '1440', width: 1440, height: 900 },

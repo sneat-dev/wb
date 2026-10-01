@@ -69,6 +69,7 @@
   --chart-bar: var(--accent);
   --chart-bar-hover: var(--accent-hover);
   --chart-bar-muted: var(--idle);
+  --chart-bar-soft: color-mix(in srgb, var(--accent) 42%, var(--surface));
   --chart-grid: var(--border);
   --chart-tick: var(--text-3);
   --chart-tooltip-bg: light-dark(#14171c, #e8ebf0);

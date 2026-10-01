@@ -25,7 +25,10 @@ const ROUTE_WORDS: Record<MachineLoad['route'], string> = { local: 'local', 'liv
 export function machineTile(model: FleetModel, view: FleetModel['machines'][number], load: MachineLoad): MachineTile {
   const { machine } = view
   const reach = machine.route === 'local' ? 'local' : machine.route === 'cached' ? `cached ${formatAge(machine.observed_at, model.now)}` : 'live'
-  const sample = load.state === 'not-reported' ? 'no usable sample' : `${ROUTE_WORDS[load.route]}${load.sampledAt === undefined ? '' : `, ${formatAge(new Date(load.sampledAt).toISOString(), model.now)}`}`
+  const sample =
+    load.state === 'not-reported'
+      ? 'no usable sample'
+      : `${ROUTE_WORDS[load.route]}${load.sampledAt === undefined ? '' : `, ${formatAge(new Date(load.sampledAt).toISOString(), model.now)}`}`
   const bars = load.cpuPercent === undefined || load.memoryPercent === undefined ? undefined : { cpu: percent(load.cpuPercent), memory: percent(load.memoryPercent) }
   return { id: machine.id, name: machine.machine, state: view.state, reach, load, sample, bars }
 }

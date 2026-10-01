@@ -129,6 +129,11 @@
   font-size: var(--fs-xs);
 }
 
+.home-age {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .home-place {
   color: var(--text-3);
   font-size: var(--fs-xs);
@@ -141,6 +146,33 @@
   background: var(--surface-sunken);
   color: var(--text-2);
   font-family: var(--font-mono);
+}
+
+.home-machine {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  white-space: nowrap;
+}
+
+.home-machine-name {
+  color: var(--text-2);
+  font-weight: var(--fw-semibold);
+}
+
+.home-chip {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1.25rem;
+}
+
+.home-chip.stale {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .home-action {

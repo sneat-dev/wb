@@ -16,14 +16,21 @@ export interface HealthRow {
 
 /** The rows of "Fleet health": one per problem, stale machines first. Empty when nothing is wrong. */
 export function healthRows(health: FleetHealth, dropped: number): HealthRow[] {
-  const machine = (kind: string) => (item: FleetHealth['staleMachines'][number]): HealthRow => ({
-    id: `${kind}:${item.machineId}`,
-    text: item.text,
-    link: item.link,
-    where: 'text' in item.command ? item.command.label : undefined,
-    command: 'text' in item.command ? { text: item.command.text, needsEdit: item.command.needsEdit } : item.command,
-  })
-  const rows = [...health.staleMachines.map(machine('stale')), ...health.olderWb.map(machine('older')), ...health.remoteErrors.map(machine('remote'))]
+  const machine =
+    (kind: string) =>
+    (item: FleetHealth['staleMachines'][number]): HealthRow => ({
+      id: `${kind}:${item.machineId}`,
+      text: item.text,
+      link: item.link,
+      where: 'text' in item.command ? item.command.label : undefined,
+      command: 'text' in item.command ? { text: item.command.text, needsEdit: item.command.needsEdit } : item.command,
+    })
+  const rows = [
+    ...health.staleMachines.map(machine('stale')),
+    ...health.olderWb.map(machine('older')),
+    ...health.remoteErrors.map(machine('remote')),
+    ...health.exportDropped.map(machine('export')),
+  ]
   for (const error of health.scanErrors) {
     rows.push({
       id: `scan:${error.repository}`,
@@ -34,7 +41,13 @@ export function healthRows(health: FleetHealth, dropped: number): HealthRow[] {
     })
   }
   if (dropped > 0) {
-    rows.push({ id: 'dropped', text: `${dropped} ${dropped === 1 ? 'entry' : 'entries'} of the fleet document ${dropped === 1 ? 'was' : 'were'} invalid and left out`, link: undefined, where: undefined, command: undefined })
+    rows.push({
+      id: 'dropped',
+      text: `${dropped} ${dropped === 1 ? 'entry' : 'entries'} of the fleet document ${dropped === 1 ? 'was' : 'were'} invalid and left out`,
+      link: undefined,
+      where: undefined,
+      command: undefined,
+    })
   }
   return rows
 }

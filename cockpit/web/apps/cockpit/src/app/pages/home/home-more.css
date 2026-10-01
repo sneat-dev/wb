@@ -64,7 +64,7 @@ app-home-more {
   }
 }
 
-.home-lazy-slot.reserve {
+.home-lazy-slot {
   min-height: 13rem;
 }
 
@@ -85,10 +85,14 @@ app-home-more {
   border-radius: 2px;
 }
 
-.swatch.finished {
+.swatch.primary {
   background: var(--chart-bar);
 }
 
-.swatch.dropped {
+.swatch.soft {
+  background: var(--chart-bar-soft);
+}
+
+.swatch.muted {
   background: var(--chart-bar-muted);
 }

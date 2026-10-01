@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
-import { FleetDocument, FleetModel, ReadyToLand } from '@cockpit/fleet-data'
+import { FleetDocument, FleetModel, ReadyToLand, ReadyToLandRow } from '@cockpit/fleet-data'
 import { ActionSlot, CopyButton, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { counted, isoOf } from './home-format'
@@ -46,6 +46,11 @@ export class ReadySection {
   protected readonly note = computed(() => throttleNote(this.model(), this.rows()))
   protected readonly iso = isoOf
   protected readonly counted = counted
+
+  /** The machines that reported a task this machine has no entry of. */
+  protected reportedBy(row: ReadyToLandRow): string {
+    return row.reportedBy.map((machine) => machine.name).join(', ')
+  }
 
   protected offered(id: string) {
     return this.registry.offered(`pull_request:${id}`, LAND_ACTION)

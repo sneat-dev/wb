@@ -20,7 +20,7 @@
             @if ('text' in command) {
               <app-copy-button [text]="command.text" [idleWord]="command.needsEdit ? 'Copy template' : 'Copy fix command'" label="Copy fix command: {{ row.text }}" />
             } @else {
-              <span class="home-reason" [attr.title]="command.reason">no command: {{ command.reason }}</span>
+              <span class="home-reason">{{ command.reason }}</span>
             }
           }
         </div>

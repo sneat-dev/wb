@@ -146,7 +146,7 @@ function stacked(spec: StackedBarsSpec, context: ChartContext): ChartConfigurati
       datasets: spec.series.map((series, index) => ({
         label: series.name,
         data: spec.bars.map((bar) => bar.values[index] ?? 0),
-        backgroundColor: series.tone === 'primary' ? theme.bar : theme.barMuted,
+        backgroundColor: { primary: theme.bar, soft: theme.barSoft, muted: theme.barMuted }[series.tone],
         borderRadius: 2,
         borderSkipped: false,
         maxBarThickness: 18,

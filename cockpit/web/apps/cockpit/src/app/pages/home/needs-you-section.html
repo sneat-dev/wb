@@ -24,11 +24,15 @@
             @for (place of row.places; track $index) {
               <span class="home-place">{{ place.repository }}@if (place.branch) {<code>{{ place.branch }}</code>}</span>
             }
-            @if (row.machine; as view) {
-              <span class="home-place">{{ view.machine.machine }}</span>
-              <app-state-badge kind="route" size="small" [value]="view.state === 'stale' ? 'stale' : view.machine.route" />
+            @if (row.machine; as machine) {
+              <span class="home-machine" [attr.title]="machine.title"><span class="home-machine-name">{{ machine.name }}</span>@if (machine.chip) {<span class="home-chip" [class.stale]="machine.stale">{{ machine.chip }}</span>}</span>
             }
-            <app-relative-time [at]="row.at" />
+            @if (row.reportedBy; as machines) {
+              <span class="home-place" title="This machine has no entry of the task, so it offers no push or copy for it">as reported by {{ machines }}</span>
+            }
+            @if (row.at) {
+              <time class="home-age" [attr.datetime]="row.at" [attr.title]="row.at">{{ row.age }}</time>
+            }
           </div>
           <div class="home-action">
             @if (row.action.kind === 'route') {
@@ -38,18 +42,6 @@
             } @else {
               <app-lazy-mount [load]="loadWork" [inputs]="{ action: row.action }" />
             }
-          </div>
-        </li>
-      }
-      @if (needs().withoutTask; as blocked) {
-        <li class="home-row needs-row">
-          <app-state-badge kind="task" size="small" value="blocked" />
-          <div class="home-main">
-            <strong class="home-task">{{ blockedWords() }}</strong>
-          </div>
-          <div class="home-meta"></div>
-          <div class="home-action">
-            <a class="home-act" [routerLink]="blocked.link.path" [queryParams]="blocked.link.query">Open agents</a>
           </div>
         </li>
       }

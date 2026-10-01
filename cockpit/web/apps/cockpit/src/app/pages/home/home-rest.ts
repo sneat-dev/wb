@@ -24,7 +24,7 @@ export const ACTION_CAPABILITIES: readonly string[] = ['git.commit', 'branch.pus
 /** The registry targets whose actions Home's rows can show: the worktrees at risk and the pull requests ready to land. */
 export function registryTargets(model: FleetModel): string[] {
   const atRisk = needsYouRows(model).flatMap((row) => (row.action.kind === 'work' ? row.action.worktrees.map((worktree) => `worktree:${worktree.id}`) : []))
-  const ready = model.readyToLand.ready.flatMap((row) => row.pullRequests.map((pullRequest) => `pull_request:${pullRequest.id}`))
+  const ready = model.readyToLand.ready.flatMap((row) => row.pullRequests.filter((pullRequest) => !pullRequest.remote).map((pullRequest) => `pull_request:${pullRequest.id}`))
   return [...atRisk, ...ready]
 }
 

@@ -1,9 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { FleetModel } from '@cockpit/fleet-data'
-import { GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/state'
+import { GLYPH_CHECK_CIRCLE, Glyph, StateBadge } from '@cockpit/ui/state'
 import { SkeletonRows } from '../../shell/skeleton-rows'
-import { counted } from './home-format'
 import { LazyMount } from './lazy-mount'
 import { needsYouRows } from './needs-you-rows'
 
@@ -19,7 +18,7 @@ const loadWorkAction = () => import('./work-action').then((module) => module.Wor
  */
 @Component({
   selector: 'app-needs-you',
-  imports: [RouterLink, Glyph, LazyMount, RelativeTime, SkeletonRows, StateBadge],
+  imports: [RouterLink, Glyph, LazyMount, SkeletonRows, StateBadge],
   templateUrl: './needs-you-section.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -32,6 +31,5 @@ export class NeedsYouSection {
   protected readonly loadWork = loadWorkAction
   protected readonly rows = computed(() => needsYouRows(this.model()))
   protected readonly needs = computed(() => this.model().needsYou)
-  protected readonly empty = computed(() => this.rows().length === 0 && this.needs().withoutTask === undefined)
-  protected readonly blockedWords = computed(() => `${counted(this.needs().withoutTask?.count ?? 0, 'blocked agent')} with no task`)
+  protected readonly empty = computed(() => this.rows().length === 0)
 }

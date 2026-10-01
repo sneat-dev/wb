@@ -1,11 +1,10 @@
 import { ChangeDetectionStrategy, Component, ViewEncapsulation, computed, input } from '@angular/core'
 import { FleetModel } from '@cockpit/fleet-data'
-import { buildCleanup, buildHealth } from '@cockpit/fleet-data/home-details'
+import { buildCleanup, buildHealth, buildThroughput } from '@cockpit/fleet-data/home-details'
 import { CleanupSection } from './cleanup-section'
 import { HealthSection } from './health-section'
 import { healthRows } from './health-rows'
-import { LazyMount } from './lazy-mount'
-import { throughputView } from './throughput-view'
+import { ViewportMount } from './viewport-mount'
 
 /** The charts (and Chart.js with them) load only when their section scrolls near the viewport. */
 const loadCharts = () => import('./home-charts').then((module) => module.HomeCharts)
@@ -18,7 +17,7 @@ const loadCharts = () => import('./home-charts').then((module) => module.HomeCha
  */
 @Component({
   selector: 'app-home-more',
-  imports: [CleanupSection, HealthSection, LazyMount],
+  imports: [CleanupSection, HealthSection, ViewportMount],
   templateUrl: './home-more.html',
   styleUrl: './home-more.css',
   // Shares the row styles of the page that hosts it.
@@ -33,5 +32,5 @@ export class HomeMore {
   protected readonly loadCharts = loadCharts
   protected readonly cleanup = computed(() => buildCleanup(this.model()))
   protected readonly health = computed(() => healthRows(buildHealth(this.model()), this.dropped()))
-  protected readonly throughput = computed(() => throughputView(this.model()))
+  protected readonly throughput = computed(() => buildThroughput(this.model()))
 }

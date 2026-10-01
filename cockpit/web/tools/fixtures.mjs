@@ -9,7 +9,7 @@ import { workspaceAliases } from '../vite.aliases.mts'
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 // {document, metrics, branches}: performanceFixture(), 500 repositories, 600 worktrees and 3 machines;
-// with `home` the hand-made fleets Home is photographed against (tools/home-states.ts), by name.
+// with `home` the hand-made fleets Home is photographed against (apps/cockpit/src/app/pages/home/home-fixtures.ts), by name.
 export async function loadFixture({ home = false } = {}) {
   const vite = await createServer({
     root: webRoot,
@@ -23,7 +23,7 @@ export async function loadFixture({ home = false } = {}) {
   try {
     const { performanceFixture } = await vite.ssrLoadModule('@cockpit/fleet-data/testing')
     if (!home) return performanceFixture()
-    const { homeStates } = await vite.ssrLoadModule('/tools/home-states.ts')
+    const { homeStates } = await vite.ssrLoadModule('/apps/cockpit/src/app/pages/home/home-fixtures.ts')
     return { ...performanceFixture(), home: homeStates() }
   } finally {
     await vite.close()

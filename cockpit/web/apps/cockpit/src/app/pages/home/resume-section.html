@@ -6,7 +6,11 @@
     <ul class="home-card">
       @for (task of tasks(); track task.name) {
         <li class="home-row resume-row">
-          <app-state-badge kind="task" size="small" [value]="task.state" />
+          @if (task.state === 'idle') {
+            <span class="home-idle">idle</span>
+          } @else {
+            <app-state-badge kind="task" size="small" [value]="task.state" />
+          }
           <div class="home-main">
             <strong class="home-task">{{ task.name }}</strong>
             <span class="home-reason">{{ where(task) }}</span>

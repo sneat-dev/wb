@@ -26,7 +26,10 @@ export class HomeRegistry {
 
   /** The registry's `id` actions for the target, or undefined when it offers none (or there is no registry). */
   offered(target: string, id: string): RegistryAction[] | undefined {
-    const found = this.answers().get(target)?.filter((action) => action.id === id) ?? []
+    const found =
+      this.answers()
+        .get(target)
+        ?.filter((action) => action.id === id) ?? []
     return found.length > 0 ? found : undefined
   }
 

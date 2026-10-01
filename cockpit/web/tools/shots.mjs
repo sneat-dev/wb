@@ -63,16 +63,17 @@ for (const shot of plan) {
     else await page.keyboard.press(key)
   }
   if (shot.click) await page.locator(shot.click).click()
-  // The charts draw when their section nears the viewport, so scroll there and back before the photograph.
+  // The charts draw when their section nears the viewport, and a canvas is cleared when the page is resized for a
+  // full-page photograph: so the viewport is made as tall as the page, the charts are waited for there, and the photograph is plain.
   if (shot.scrollEnd) {
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    const height = await page.evaluate(() => document.documentElement.scrollHeight)
+    await page.setViewportSize({ width: shot.viewport.width, height })
     // Until the charts have been drawn, or four seconds: a fleet without throughput never has any.
     await page.waitForFunction(() => document.querySelector('.home-lazy-slot') === null, undefined, { timeout: 4000 }).catch(() => undefined)
     await page.waitForTimeout(800)
-    await page.evaluate(() => window.scrollTo(0, 0))
   }
   await page.waitForTimeout(150)
-  await page.screenshot({ path: resolve(directory, shot.file), fullPage: shot.fullPage === true })
+  await page.screenshot({ path: resolve(directory, shot.file), fullPage: shot.fullPage === true && !shot.scrollEnd })
   await context.close()
   console.log(shot.file)
 }

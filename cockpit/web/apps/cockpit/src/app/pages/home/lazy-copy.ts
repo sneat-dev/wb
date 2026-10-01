@@ -12,7 +12,15 @@ import { GLYPH_CHECK, GLYPH_COPY } from '@cockpit/ui/state'
 @Component({
   selector: 'app-lazy-copy',
   imports: [Glyph],
-  template: `<button type="button" class="home-copy" [class.done]="state() === 'copied'" [class.failed]="state() === 'failed'" [attr.aria-label]="label()" [attr.title]="reason() ?? null" (click)="copy()">
+  template: `<button
+      type="button"
+      class="home-copy"
+      [class.done]="state() === 'copied'"
+      [class.failed]="state() === 'failed'"
+      [attr.aria-label]="label()"
+      [attr.title]="reason() ?? null"
+      (click)="copy()"
+    >
       <app-glyph [paths]="state() === 'copied' ? check : glyph" />
       <span aria-hidden="true">{{ word() }}</span>
     </button>

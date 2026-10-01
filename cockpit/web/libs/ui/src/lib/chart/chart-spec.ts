@@ -39,12 +39,12 @@ export interface HorizontalBarsSpec extends Base {
 
 /**
  * One stacked bar per day, with one value per series (bottom first). `tone` picks the series' colour
- * from the chart tokens: `primary` is the accent, `muted` the neutral one. The legend is the caller's
+ * from the chart tokens: `primary` is the accent, `soft` a lighter tint of it and `muted` the neutral one. The legend is the caller's
  * (text beside the chart); the data table names every series in each row.
  */
 export interface StackedBarsSpec extends Base {
   kind: 'stacked-bars'
-  series: { name: string; tone: 'primary' | 'muted' }[]
+  series: { name: string; tone: 'primary' | 'soft' | 'muted' }[]
   bars: { label: string; values: number[] }[]
 }
 

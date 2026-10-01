@@ -68,6 +68,12 @@ app-home-rest {
   font-variant-numeric: tabular-nums;
 }
 
+.home-idle {
+  padding-left: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
 .resume-row {
   grid-template-columns: 7.5rem minmax(0, 1fr) 6rem 4.5rem;
 }

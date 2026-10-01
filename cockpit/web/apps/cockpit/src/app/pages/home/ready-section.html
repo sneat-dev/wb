@@ -19,6 +19,9 @@
           <div class="home-main">
             <strong class="home-task">{{ row.task }}</strong>
             <span class="home-reason">
+              @if (row.stateSource === 'remote') {
+                as reported by {{ reportedBy(row) }} ·
+              }
               {{ counted(row.repositories.length, 'repository', 'repositories') }}
               ·
               @if (row.checksPassed !== undefined && row.checksTotal !== undefined) {
@@ -38,7 +41,10 @@
                   <span class="home-pr-number">#{{ pullRequest.number }}</span>
                 }
                 <span class="home-place">{{ pullRequest.repository }}</span>
-                @if (offered(pullRequest.id); as actions) {
+                @if (pullRequest.remote) {
+                  <span class="home-place" title="Reported by another machine: nothing to land from here">{{ pullRequest.machine }}</span>
+                }
+                @if (!pullRequest.remote && offered(pullRequest.id); as actions) {
                   <app-action-slot [actions]="actions" [target]="'pull_request:' + pullRequest.id" />
                 } @else if (pullRequest.landCommand; as command) {
                   @if (pullRequest.landLabel; as where) {
