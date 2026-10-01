@@ -8,5 +8,10 @@ import { mergeRepositories } from './repository-merge'
 
 /** One merged repository per lower-cased `owner/name` across machines, computed once per model. */
 export function buildRepositories(model: FleetModel): MergedRepository[] {
-  return model.memo('repositories', [], () => mergeRepositories(model.document.repositories, model.now, { pullRequests: model.document.pull_requests, agents: model.document.agents }))
+  return model.memo('repositories', [], () => mergeRepositories(model.document.repositories, model.now, {
+      pullRequests: model.document.pull_requests,
+      agents: model.document.agents,
+      agentsComplete: model.document.agents_truncated !== true,
+      pullRequestsComplete: model.document.pull_requests_throttled !== true,
+    }))
 }

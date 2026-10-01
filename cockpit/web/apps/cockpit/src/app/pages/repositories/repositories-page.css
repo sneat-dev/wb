@@ -111,7 +111,8 @@ legend {
 
 .machine {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: none;
+  max-width: 100%;
   gap: var(--space-1);
   align-items: center;
   min-width: 0;
@@ -120,6 +121,11 @@ legend {
   border-radius: var(--radius-sm);
   color: var(--text);
   line-height: 1.25rem;
+}
+
+.machine[hidden],
+.more[hidden] {
+  display: none;
 }
 
 .machine:hover {

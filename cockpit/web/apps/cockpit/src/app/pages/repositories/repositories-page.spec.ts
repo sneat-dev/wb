@@ -143,9 +143,16 @@ describe('RepositoriesPage', () => {
     const prs = (row: HTMLElement) => cell(row, 'prs')
     expect(agents(a).querySelector('a')?.getAttribute('href')).toBe('/agents?q=repo:%22acme%2Fa%22')
     expect(prs(a).querySelector('a')?.getAttribute('href')).toBe('/tasks?q=repo:%22acme%2Fa%22&chips=pr')
-    // A zero is an empty cell, not a "0".
-    expect(text(agents(b))).toBe('')
-    expect(text(prs(b))).toBe('')
+    // A real zero (a repository of this machine, with whole lists) is the quiet "0"; absent data is "not reported".
+    expect(text(agents(b))).toBe('0')
+    expect(agents(b).querySelector('.quiet')?.getAttribute('title')).toBe('No running agents')
+    expect(text(prs(b))).toBe('0')
+    expect(prs(b).querySelector('.quiet')?.getAttribute('title')).toBe('No open pull requests')
+    const cachedOnly = await open('/repositories', documentOf({ machines: [machine('alpha'), machine('beta', 'cached')], repositories: [repository('c', 'beta', { route: 'cached', name: 'acme/c', active_agent_count: undefined, open_pull_request_count: undefined }), repository('d', 'alpha', { name: 'acme/d', active_agent_count: 2, open_pull_request_count: 1 })], worktrees: [], pull_requests: [], agents: [] }))
+    const unknown = rowsOf(cachedOnly.root).find((row) => text(row).includes('acme/c')) as HTMLElement
+    expect(text(agents(unknown))).toBe('—')
+    expect(agents(unknown).querySelector('.quiet')?.getAttribute('title')).toContain('Not reported')
+    expect(text(prs(unknown))).toBe('—')
   })
 
   it('shows a dash for the side of the branch counts that no machine reports, and says so in the hover text', async () => {

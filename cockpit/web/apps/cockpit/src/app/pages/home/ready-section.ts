@@ -1,15 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { FleetDocument, FleetModel, ReadyToLand, ReadyToLandRow, chipLink } from '@cockpit/fleet-data'
+import { FleetModel, ReadyToLand, ReadyToLandRow, chipLink } from '@cockpit/fleet-data'
 import { ActionSlot, CopyButton, GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { counted, isoOf } from './home-format'
 import { minutesBetween } from './home-time'
 import { HomeRegistry, LAND_ACTION } from './home-registry'
-
-/** A document as the daemon sends it, with the field the library's type does not carry yet. */
-// TODO(fleet-data): `pull_requests_throttled` is in the daemon's document (document.go) but not in FleetDocument.
-type ThrottleAware = FleetDocument & { pull_requests_throttled?: boolean }
 
 /**
  * The quiet note under "Ready to land" when the daemon's hourly budget cut the last pull request
@@ -17,7 +13,7 @@ type ThrottleAware = FleetDocument & { pull_requests_throttled?: boolean }
  * when the pass was not throttled.
  */
 export function throttleNote(model: FleetModel, rows: ReadyToLand): string | undefined {
-  if (!(model.document as ThrottleAware).pull_requests_throttled) return undefined
+  if (!model.document.pull_requests_throttled) return undefined
   const times = [...rows.ready.map((row) => row.checkedAt), ...rows.notReady.map((row) => row.checkedAt)].filter((time): time is number => time !== undefined)
   return times.length === 0 ? 'PR state may be out of date' : `PR state may be up to ${minutesBetween(Math.min(...times), model.now)} min old`
 }

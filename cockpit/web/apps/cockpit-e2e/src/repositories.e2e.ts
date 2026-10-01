@@ -184,13 +184,21 @@ test('the browse-code button needs a code browser, and the host button an addres
   await expect(page.getByRole('link', { name: 'Browse the code of sneat-dev/wb' })).toHaveAttribute('href', 'https://code.example.test/github.com/sneat-dev/wb')
 })
 
-test('a machine chip opens the panel at that machine\'s checkout', async ({ page }) => {
+test('a machine chip opens the panel at that machine\'s checkout, and a cell too narrow for every chip says how many it left out', async ({ page }) => {
   await stub(page)
   const expectClean = await watch(page)
   await page.goto('/cockpit/repositories')
-  await listRows(page).first().locator('a.machine').nth(2).click()
-  await expect(page).toHaveURL(/sel=go-a#machine-mach-gamma$/)
-  const section = page.getByRole('complementary').locator('app-repository-machine-section').nth(2)
+  const row = listRows(page).first()
+  // Three machines do not fit the cell: the chips that do are whole, the others are named in a "+n".
+  const note = row.locator('.more.fitted')
+  await expect(note).toBeVisible()
+  await expect(row.locator('a.machine[hidden]')).toHaveCount(1)
+  await expect(note).toHaveText('+1')
+  await expect(note).toHaveAttribute('title', 'gamma')
+  expect(await row.locator('a.machine:not([hidden]) .machine-name').evaluateAll((names) => names.every((name) => name.scrollWidth <= name.clientWidth))).toBe(true)
+  await row.locator('a.machine:not([hidden])').first().click()
+  await expect(page).toHaveURL(/sel=go-a#machine-mach-alpha$/)
+  const section = page.getByRole('complementary').locator('app-repository-machine-section').nth(0)
   await expect(section.locator('details')).toHaveAttribute('open', '')
   await expect(section).toBeInViewport()
   await expectClean()

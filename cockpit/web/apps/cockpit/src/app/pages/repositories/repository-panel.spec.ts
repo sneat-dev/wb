@@ -101,7 +101,8 @@ describe('RepositoryPanelView', () => {
     const oddFacts = facts(odd.root)
     expect(Object.keys(oddFacts)).not.toContain('Host')
     expect(text(oddFacts['Branches'])).toBe('not reported')
-    expect(text(oddFacts['Running agents'])).toBe('not reported')
+    // Whole lists and a checkout of this machine: no agent is a real zero, not an absence.
+    expect(text(oddFacts['Running agents'])).toBe('0')
     expect(text(oddFacts['Code index'])).toBe('not reported')
     expect(text(oddFacts['Last activity'])).toBe('not reported')
     expect(oddFacts['Worktrees'].querySelector('a')).toBeNull()

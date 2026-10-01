@@ -114,8 +114,8 @@ test('the palette opens with Control+K, groups what matches and opens the highli
   const dialog = page.getByRole('dialog', { name: 'Search' })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('combobox')).toBeFocused()
-  // Opening it needed no request.
-  expect(requestsBefore).toEqual([])
+  // Opening it needed no request (Home's machine strip polls the metrics every 10 seconds, whatever the palette does).
+  expect(requestsBefore.filter((url) => !url.includes('/machine-metrics'))).toEqual([])
 
   await dialog.getByRole('combobox').fill('cli')
   await expect(dialog.getByRole('group').first()).toBeVisible()

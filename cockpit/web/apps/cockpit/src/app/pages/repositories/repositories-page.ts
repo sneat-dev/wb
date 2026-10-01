@@ -4,7 +4,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router'
 import { FleetStore, MergedRepository } from '@cockpit/fleet-data'
 import { LinkResult, ListRow, buildRepositories, codeBrowserLink, parseListQuery, repositoryAgentsLink, repositoryPullRequestsLink, repositoryWorktreesLink } from '@cockpit/fleet-data/list'
 import { GLYPH_CODE, GLYPH_EXTERNAL_LINK, Glyph, StateBadge, UiClock } from '@cockpit/ui/control'
-import { ADDRESS_KEYS, ALWAYS, AgeText, CopyIcon, ListCell, ListColumn, ListPanelTemplate, ListView, CountLink, RepoName, effectiveSort } from '@cockpit/ui/list'
+import { ADDRESS_KEYS, ALWAYS, AgeText, CopyIcon, FitChips, ListCell, ListColumn, ListPanelTemplate, ListView, CountLink, RepoName, effectiveSort } from '@cockpit/ui/list'
 import { MAX_CHIPS, MachineChipView, machineChips } from './repository-machines'
 import { RepositoryPanelView } from './repository-panel'
 import { SORT_PRESETS, SortPreset, activePreset } from './repository-sort'
@@ -37,7 +37,7 @@ const countCell = (value: number | undefined, link: LinkResult): CountCell => ({
  */
 @Component({
   selector: 'app-repositories-page',
-  imports: [RouterLink, ListView, ListCell, ListPanelTemplate, RepoName, CopyIcon, CountLink, StateBadge, AgeText, Glyph, RepositoryPanelView],
+  imports: [RouterLink, FitChips, ListView, ListCell, ListPanelTemplate, RepoName, CopyIcon, CountLink, StateBadge, AgeText, Glyph, RepositoryPanelView],
   templateUrl: './repositories-page.html',
   styleUrl: './repositories-page.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
