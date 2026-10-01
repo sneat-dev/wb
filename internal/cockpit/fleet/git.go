@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -127,8 +126,7 @@ func gitOutputLimited(ctx context.Context, binary, dir string, limit int, args .
 func runCapped(ctx context.Context, binary string, env []string, limit int, args []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, binary, args...)
 	command.Env = env
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	killWithDescendants(command)
 	command.WaitDelay = gitWaitDelay
 	out := &cappedBuffer{max: limit}
 	command.Stdout = out

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -163,7 +162,7 @@ func TestGitCommandThatSpawnsAChildHoldingStdoutIsReapedOnTimeout(t *testing.T) 
 		pid = pid*10 + int(digit-'0')
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
+	for processAlive(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the child process %d outlived its command", pid)
 		}
