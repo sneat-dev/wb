@@ -16,7 +16,11 @@ func TestArchiveCopyRespectsUmaskForNewFilesAndPreservesExistingModes(t *testing
 	if err := os.MkdirAll(filepath.Join(source, "empty"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(source, "new-record"), []byte("new bytes"), 0o644); err != nil {
+	newSource := filepath.Join(source, "new-record")
+	if err := os.WriteFile(newSource, []byte("new bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(newSource, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "existing-record"), []byte("replacement"), 0o600); err != nil {
@@ -27,6 +31,9 @@ func TestArchiveCopyRespectsUmaskForNewFilesAndPreservesExistingModes(t *testing
 	}
 	existing := filepath.Join(destination, "existing-record")
 	if err := os.WriteFile(existing, []byte("old bytes"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(existing, 0o640); err != nil {
 		t.Fatal(err)
 	}
 	oldUmask := syscall.Umask(0o077)

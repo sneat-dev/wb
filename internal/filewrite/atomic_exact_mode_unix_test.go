@@ -16,6 +16,9 @@ func TestWriteBytesAtomicAtExactModeRetainsPermissionsUnderUmask(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	oldUmask := syscall.Umask(0o077)
 	defer syscall.Umask(oldUmask)
 	if err := WriteBytesAtomicAtExactMode(directory, "existing", []byte("new"), 0o640); err != nil {
