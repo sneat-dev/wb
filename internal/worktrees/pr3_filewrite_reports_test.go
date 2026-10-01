@@ -176,7 +176,7 @@ func TestWriteRetiredStageReceiptInjectedHonoursAnInjectedRenameFailure(t *testi
 func TestWriteRetiredStageReceiptPublishesReadableJSON(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "receipt.json")
-	if err := writeRetiredStageReceipt(path, RetiredStageRecoveryOutcome{}); err != nil {
+	if err := writeRetiredStageReceiptInjected(path, RetiredStageRecoveryOutcome{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
