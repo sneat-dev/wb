@@ -45,9 +45,6 @@ func NewPayload(identity []byte, compress func([]byte) []byte) Payload {
 	return Payload{identity: identity, gzipped: compress(identity), tag: `"` + hex.EncodeToString(sum[:12]) + `"`}
 }
 
-// Identity returns the uncompressed bytes and their strong ETag.
-func (payload Payload) Identity() (body []byte, etag string) { return payload.identity, payload.tag }
-
 // gzipTag is the strong ETag of the gzip encoding.
 func (payload Payload) gzipTag() string {
 	return strings.TrimSuffix(payload.tag, `"`) + gzipSuffix + `"`

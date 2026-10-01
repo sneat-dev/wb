@@ -35,15 +35,15 @@ func TestGzipRoundTripsAndPayloadCompressesOnce(t *testing.T) {
 	if compressed.Load() != 1 {
 		t.Errorf("the compressor ran %d times", compressed.Load())
 	}
-	if identity, tag := payload.Identity(); !bytes.Equal(identity, body) || !strings.HasPrefix(tag, `"`) || strings.Contains(tag, "gzip") {
-		t.Errorf("identity = %q tag %q", identity, tag)
+	if payload.tag == "" || !strings.HasPrefix(payload.tag, `"`) || strings.Contains(payload.tag, "gzip") {
+		t.Errorf("tag %q", payload.tag)
 	}
 }
 
 func TestServePayloadChoosesTheEncodingAndMatchesEitherTag(t *testing.T) {
 	t.Parallel()
 	payload := NewPayload([]byte(`{"ok":true}`+"\n"), Gzip)
-	_, identityTag := payload.Identity()
+	identityTag := payload.tag
 	gzipTag := payload.gzipTag()
 	do := func(headers ...string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "/", nil)

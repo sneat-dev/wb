@@ -297,6 +297,8 @@ func compressedTree(t *testing.T) fs.FS {
 		"chunk-ZZZZZZZZ.js":       {Data: []byte("export const chunk = 1")},
 		"media/logo-1A2B3C4D.svg": {Data: []byte("<svg/>")},
 		"favicon.ico":             {Data: []byte("i")},
+		"chunk-kBDg_m1u.js":       {Data: []byte("export const mixed = 1")},
+		"theme-standard.css":      {Data: []byte("lowercase")},
 	}
 }
 
@@ -332,6 +334,8 @@ func TestAssetsWithoutAHashOrACompressedFileAreHandledHonestly(t *testing.T) {
 		"/cockpit/chunk-ZZZZZZZZ.js":       {"", "public, max-age=31536000, immutable"}, // hashed, no .gz: identity
 		"/cockpit/media/logo-1A2B3C4D.svg": {"", "public, max-age=31536000, immutable"},
 		"/cockpit/favicon.ico":             {"", ""},
+		"/cockpit/chunk-kBDg_m1u.js":       {"", "public, max-age=31536000, immutable"}, // Angular's mixed-case hash with an underscore
+		"/cockpit/theme-standard.css":      {"", ""},                                    // a lower-case word is not a hash
 	} {
 		request := httptest.NewRequest(http.MethodGet, target, nil)
 		request.Header.Set("Accept-Encoding", "gzip")

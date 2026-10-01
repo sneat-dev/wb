@@ -62,9 +62,19 @@ func FreshPolicy() string { return PolicyFor(rand.Text()) }
 const gzipExtension = ".gz"
 
 // hashedAsset matches the name of a content-hashed build output: a base name,
-// a hyphen, the build's eight-character hash and an extension. Its content
-// never changes under that name, so it may be cached for a year.
-var hashedAsset = regexp.MustCompile(`-[A-Z0-9]{8}\.[A-Za-z0-9]+$`)
+// a hyphen, the build's eight-character hash (letters, digits and underscore,
+// as in `main-SS4IWIAX.js` and `chunk-BzbuF09_.js`) and an extension.
+var hashedAsset = regexp.MustCompile(`-([A-Za-z0-9_]{8})\.[A-Za-z0-9]+$`)
+
+// isHashedAsset reports whether name is a content-hashed build output, whose
+// content never changes under that name, so it may be cached for a year. The
+// hash must hold a digit or an upper-case letter, so an ordinary lower-case
+// word of eight letters after a hyphen is not taken for one: caching a file
+// that can change as immutable would be the costly mistake.
+func isHashedAsset(name string) bool {
+	match := hashedAsset.FindStringSubmatch(name)
+	return match != nil && strings.ContainsFunc(match[1], func(character rune) bool { return character < 'a' || character > 'z' })
+}
 
 // immutableCache is the Cache-Control of a content-hashed asset.
 const immutableCache = "public, max-age=31536000, immutable"
@@ -180,7 +190,7 @@ func HandlerFor(files fs.FS) http.Handler {
 		switch {
 		case !isFile || name == indexPage:
 			header.Set("Cache-Control", "no-cache")
-		case hashedAsset.MatchString(name):
+		case isHashedAsset(name):
 			header.Set("Cache-Control", immutableCache)
 		}
 		if name == indexPage {
