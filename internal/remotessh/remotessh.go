@@ -18,9 +18,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -71,6 +74,49 @@ type Options struct {
 	// says: a background call carries no credential to the remote and opens no
 	// listener.
 	NoForwarding bool
+	// Unattended is for a call no person watches, such as a daemon's. It
+	// neutralises the directives of the user's ssh configuration that would
+	// change what such a call does: the call never becomes a connection-sharing
+	// master (ControlMaster=no; a master that already exists is still used
+	// through the configured ControlPath), so killing it at its timeout cannot
+	// drop a session of the user's that shares it; a RemoteCommand configured for
+	// the host does not replace the remote words (RemoteCommand=none); a
+	// LocalCommand is not run on this machine (PermitLocalCommand=no); and ssh
+	// writes only errors to stderr, not banners (LogLevel=ERROR).
+	Unattended bool
+}
+
+// SystemExecutable is where the operating system's own ssh client is on the
+// platforms that ship one.
+const SystemExecutable = "/usr/bin/ssh"
+
+// ResolveTrusted finds the ssh a background caller runs without anyone watching.
+// It is the system's own (preferred, normally SystemExecutable) when that is a
+// regular executable file. Otherwise it is what lookPath finds, held to
+// Resolve's rule and to two more: neither the file nor its directory may be
+// writable by its group or by everyone, and it may not be under home (the
+// user's home directory; empty means unknown and is not checked), so that a
+// program a less trusted process could have put on the PATH is never run in
+// the user's name. Windows has no such mode bits and no system path; there the
+// lookup's result is held to Resolve's rule and the home rule.
+func ResolveTrusted(lookPath func(string) (string, error), preferred, home string) (string, error) {
+	if info, err := os.Stat(preferred); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		return preferred, nil
+	}
+	executable, err := Resolve(lookPath)
+	if err != nil {
+		return "", err
+	}
+	if home != "" && strings.HasPrefix(executable, filepath.Clean(home)+string(filepath.Separator)) {
+		return "", fmt.Errorf("resolve ssh executable: %q is under the home directory", executable)
+	}
+	for _, path := range []string{executable, filepath.Dir(executable)} {
+		// Resolve has already found the file, so both exist.
+		if info, _ := os.Stat(path); runtime.GOOS != "windows" && (info == nil || info.Mode().Perm()&0o022 != 0) {
+			return "", fmt.Errorf("resolve ssh executable: %q can be written by its group or by everyone", path)
+		}
+	}
+	return executable, nil
 }
 
 // Build returns the argv for one remote WB call with the default options. host
@@ -98,6 +144,9 @@ func BuildWith(options Options, host, user string, remote []string) []string {
 	if options.NoForwarding {
 		arguments = append(arguments, "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes")
 	}
+	if options.Unattended {
+		arguments = append(arguments, "-o", "ControlMaster=no", "-o", "RemoteCommand=none", "-o", "PermitLocalCommand=no", "-o", "LogLevel=ERROR")
+	}
 	if user != "" {
 		arguments = append(arguments, "-l", user)
 	}
@@ -120,19 +169,25 @@ func (ExecRunner) Run(ctx context.Context, executable string, args []string, std
 	return run(ctx, executable, args, stdin, stdout, stderr, false)
 }
 
-// run is the one place this package starts a process. With group it runs the
-// command in a process group of its own, which the end of ctx kills whole, and
-// bounds the wait for its output pipes.
+// run is the one place this package starts a process.
 func run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer, group bool) error {
+	return prepare(ctx, executable, args, stdin, stdout, stderr, group).Run()
+}
+
+// prepare is the command run starts. With group it is given
+// AllowedEnvironment, runs in a process group of its own, which the end of ctx
+// kills whole, and has a bounded wait for its output pipes.
+func prepare(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer, group bool) *exec.Cmd {
 	command := exec.CommandContext(ctx, executable, args...)
 	command.Stdin = bytes.NewReader(stdin)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	if group {
+		command.Env = AllowedEnvironment(os.Environ(), executable)
 		command.WaitDelay = groupWaitDelay
 		ownGroup(command)
 	}
-	return command.Run()
+	return command
 }
 
 // groupWaitDelay is how long GroupRunner waits, after it has killed the
@@ -144,9 +199,42 @@ const groupWaitDelay = 2 * time.Second
 // group (ssh and any helper it started, a ProxyCommand say), not ssh alone. Run
 // returns only after the process has been waited for, so no call leaves a
 // zombie, and a helper that survives with the output pipes open cannot hold Run
-// for longer than groupWaitDelay. On Windows there is no process group to
-// signal, and the process itself is killed.
+// for longer than groupWaitDelay. The command is given AllowedEnvironment, not
+// the caller's environment. On Windows there is no process group to signal:
+// only the process itself (ssh.exe) is killed, and a helper it started (a
+// ProxyCommand, say) may outlive it.
 type GroupRunner struct{}
+
+// safePath is the PATH a GroupRunner's command is given, before the directory
+// of the executable itself.
+const safePath = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+// passedEnvironment is the variables a GroupRunner's command inherits.
+var passedEnvironment = []string{"HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK"}
+
+// AllowedEnvironment is the environment a GroupRunner gives its command, made
+// from environ (the caller's, as os.Environ returns it): HOME, USER, LOGNAME
+// and SSH_AUTH_SOCK as they are, when set; a fixed PATH of the system
+// directories and the directory of executable; and LANG=C, so that what ssh
+// says is not translated. Everything else is dropped: DISPLAY and SSH_ASKPASS
+// (nothing may prompt), GIT_* and WB_* variables, tokens and whatever else the
+// daemon was started with.
+func AllowedEnvironment(environ []string, executable string) []string {
+	path := safePath
+	if directory := filepath.Dir(executable); filepath.IsAbs(directory) && !slices.Contains(filepath.SplitList(safePath), directory) {
+		path += string(os.PathListSeparator) + directory
+	}
+	allowed := []string{"PATH=" + path, "LANG=C"}
+	for _, name := range passedEnvironment {
+		for _, entry := range environ {
+			if value, found := strings.CutPrefix(entry, name+"="); found && value != "" {
+				allowed = append(allowed, entry)
+				break
+			}
+		}
+	}
+	return allowed
+}
 
 // Run executes the command as ExecRunner does, in its own process group.
 func (GroupRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
@@ -188,14 +276,44 @@ func (b *LimitedBuffer) Write(value []byte) (int, error) {
 // Bytes returns what was retained.
 func (b *LimitedBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
+// TailBuffer keeps the last limit bytes written to it and records whether
+// anything before them was discarded. It is for output whose end matters: a
+// long banner cannot push the line that says why a call failed out of it. Like
+// LimitedBuffer it reports every write as successful.
+type TailBuffer struct {
+	kept      []byte
+	limit     int
+	discarded bool
+}
+
+// NewTailBuffer returns a buffer that keeps the last limit bytes.
+func NewTailBuffer(limit int) *TailBuffer { return &TailBuffer{limit: limit} }
+
+func (b *TailBuffer) Write(value []byte) (int, error) {
+	b.kept = append(b.kept, value...)
+	if over := len(b.kept) - b.limit; over > 0 {
+		b.kept = append(b.kept[:0], b.kept[over:]...)
+		b.discarded = true
+	}
+	return len(value), nil
+}
+
+// Bytes returns the bytes that were kept.
+func (b *TailBuffer) Bytes() []byte { return b.kept }
+
+// Discarded reports whether earlier output was dropped.
+func (b *TailBuffer) Discarded() bool { return b.discarded }
+
 // Exceeded reports whether output past the limit was discarded.
 func (b *LimitedBuffer) Exceeded() bool { return b.exceeded }
 
-// SanitizeDiagnostic renders remote stderr as one bounded, control-character-free
-// line safe to include in a local error message.
+// SanitizeDiagnostic renders remote stderr as one bounded line safe to include
+// in a local error message or log: every character that is not printable (a
+// control, a format character such as a bidirectional override or a zero-width
+// space, a line or paragraph separator, an invalid byte) becomes a space.
 func SanitizeDiagnostic(raw []byte, truncated bool) string {
 	diagnostic := strings.Map(func(value rune) rune {
-		if unicode.IsControl(value) {
+		if !unicode.IsPrint(value) || value == utf8.RuneError {
 			return ' '
 		}
 		return value

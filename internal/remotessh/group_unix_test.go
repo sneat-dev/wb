@@ -3,61 +3,44 @@
 package remotessh
 
 import (
-	"context"
 	"errors"
+	"io"
 	"os"
-	"strconv"
-	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
-func TestGroupRunnerDeliversStdinAndReportsOutputAndExitStatus(t *testing.T) {
+// noSuchGroup is above every platform's largest process id, so no process
+// group has it.
+const noSuchGroup = 0x7ffffff0
+
+func TestKillGroupSignalsTheGroupAndReportsOneThatIsGoneAsTheProcessBeingDone(t *testing.T) {
 	t.Parallel()
-	stdout, stderr := NewLimitedBuffer(1024), NewLimitedBuffer(1024)
-	err := GroupRunner{}.Run(context.Background(), "/bin/sh", []string{"-c", "cat; echo boom >&2; exit 3"}, []byte("payload"), stdout, stderr)
-	var exited interface{ ExitCode() int }
-	if !errors.As(err, &exited) || exited.ExitCode() != 3 {
-		t.Fatalf("Run error = %v, want exit status 3", err)
+	var signalled []int
+	record := func(pid int, signal syscall.Signal) error {
+		signalled = append(signalled, pid, int(signal))
+		return nil
 	}
-	if string(stdout.Bytes()) != "payload" || !strings.Contains(string(stderr.Bytes()), "boom") {
-		t.Fatalf("stdout = %q, stderr = %q", stdout.Bytes(), stderr.Bytes())
+	// The group is addressed by the negated id of its leader.
+	if err := killGroup(record, 4242); err != nil || len(signalled) != 2 || signalled[0] != -4242 || signalled[1] != int(syscall.SIGKILL) {
+		t.Fatalf("killGroup = %v, signalled %v", err, signalled)
+	}
+	if err := killGroup(syscall.Kill, noSuchGroup); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("killGroup of no group = %v, want os.ErrProcessDone", err)
 	}
 }
 
-func TestGroupRunnerKillsTheWholeProcessGroupWhenItsContextEnds(t *testing.T) {
+// TestAGroupedCommandHasAGroupOfItsOwnThatTheEndOfItsContextKills inspects the
+// command without starting it: it is its own group's leader, and what its
+// context's end calls is the kill of that group.
+func TestAGroupedCommandHasAGroupOfItsOwnThatTheEndOfItsContextKills(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	t.Cleanup(cancel)
-	stdout := NewLimitedBuffer(64)
-	started := time.Now()
-	// The shell starts a helper that would outlive it, says its process id and
-	// waits: both hold the output pipe open.
-	err := GroupRunner{}.Run(ctx, "/bin/sh", []string{"-c", "sleep 60 & echo $!; wait"}, nil, stdout, NewLimitedBuffer(64))
-	if err == nil {
-		t.Fatal("a killed command must be reported")
+	command := prepare(t.Context(), "/nonexistent/bin/ssh", nil, nil, io.Discard, io.Discard, true)
+	if command.SysProcAttr == nil || !command.SysProcAttr.Setpgid || command.Cancel == nil {
+		t.Fatalf("the command = %+v", command)
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("Run returned after %s: the command was not killed at its deadline", elapsed)
-	}
-	helper, convErr := strconv.Atoi(strings.TrimSpace(string(stdout.Bytes())))
-	if convErr != nil || helper <= 1 {
-		t.Fatalf("the helper's process id was not printed: %q", stdout.Bytes())
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for syscall.Kill(helper, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("the helper process %d outlived the command: the group was not killed", helper)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-func TestKillGroupReportsAGroupThatIsGoneAsTheProcessBeingDone(t *testing.T) {
-	t.Parallel()
-	// No process group has this id: it is above every platform's largest process id.
-	if err := killGroup(0x7ffffff0); !errors.Is(err, os.ErrProcessDone) {
-		t.Fatalf("killGroup = %v, want os.ErrProcessDone", err)
+	command.Process = &os.Process{Pid: noSuchGroup}
+	if err := command.Cancel(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("Cancel = %v, want the kill of a group that is gone", err)
 	}
 }
