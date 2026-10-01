@@ -556,7 +556,7 @@ func TestRunsAndSessionsBecomeAgentsWithRepositoryCounts(t *testing.T) {
 func TestRemoteMachinesAreCachedAndSkipOurOwnPublication(t *testing.T) {
 	t.Parallel()
 	published := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
-	view := mapRemote(testMachine, "", "/projects", []remotestate.Entry{
+	view := mapRemoteForTest("", "/projects", []remotestate.Entry{
 		{Snapshot: remotestate.Snapshot{Login: "me", Machine: testMachine, PublishedAt: published, ProjectsRoot: "/projects"}},
 		{Snapshot: remotestate.Snapshot{Login: "a", Machine: "broken", PublishedAt: published}, Error: "bad yaml"},
 		{Snapshot: remotestate.Snapshot{
@@ -669,7 +669,7 @@ func TestPullRequestRecordsAttachOnlyToAUniqueRepository(t *testing.T) {
 	if byNumber[1].Repository != "" || byNumber[4].Repository != "" || byNumber[2].Repository != gadgets.ID || byNumber[2].Worktree == "" || byNumber[2].Branch != "g" || byNumber[3].Repository != gadgets.ID || byNumber[3].Worktree != "" {
 		t.Errorf("pull requests = %+v", byNumber)
 	}
-	if byNumber[2].State != PullRequestUnknown || gadgets.OpenPullRequestCount != nil {
+	if byNumber[2].State != "" || gadgets.OpenPullRequestCount != nil {
 		t.Errorf("state %q and open pull request count %v on the repository, want unknown and no count", byNumber[2].State, gadgets.OpenPullRequestCount)
 	}
 }
@@ -1073,15 +1073,15 @@ func TestRemoteEntriesThatAreUnusableOrOurOwnAreSkipped(t *testing.T) {
 		}
 		return strings.Join(listed, ",")
 	}
-	byLogin := names(mapRemote(testMachine, "me", "/projects", entries))
+	byLogin := names(mapRemoteForTest("me", "/projects", entries))
 	if byLogin != testMachine+"@"+remotePublish+",desk@"+remotePublish {
 		t.Errorf("machines when the login is known = %s, want another login's machine of the same name kept", byLogin)
 	}
-	byRoot := names(mapRemote(testMachine, "", "/projects", entries))
+	byRoot := names(mapRemoteForTest("", "/projects", entries))
 	if byRoot != testMachine+"@"+remotePublish+",desk@"+remotePublish {
 		t.Errorf("machines when the login is unknown = %s, want only the one with our projects root skipped", byRoot)
 	}
-	if byName := names(mapRemote(testMachine, "", "", entries)); !strings.Contains(byName, "desk@") || strings.Count(byName, testMachine+"@") != 2 {
+	if byName := names(mapRemoteForTest("", "", entries)); !strings.Contains(byName, "desk@") || strings.Count(byName, testMachine+"@") != 2 {
 		t.Errorf("machines when neither login nor projects root is known = %s, want none skipped", byName)
 	}
 }

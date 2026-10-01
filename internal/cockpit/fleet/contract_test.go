@@ -355,7 +355,7 @@ func TestOwnerStateFollowsTheOwnerProcessOnEveryRoute(t *testing.T) {
 		{Task: "empty", Repository: "o/r", Branch: "e"},
 	}}
 	cached := map[string]string{}
-	for _, worktree := range mapRemote(testMachine, "", "", []remotestate.Entry{{Snapshot: published}}).worktrees {
+	for _, worktree := range mapRemoteForTest("", "", []remotestate.Entry{{Snapshot: published}}).worktrees {
 		cached[worktree.Task] = worktree.OwnerState
 	}
 	if cached["unknown"] != OwnerUnknown || cached["idle"] != OwnerIdle || cached["hostile"] != "" || cached["empty"] != "" {
@@ -472,9 +472,9 @@ func TestDocumentCarriesTheRefreshInterval(t *testing.T) {
 func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 	t.Parallel()
 	long := strings.Repeat("é", 300)
-	view := mapRemote(testMachine, "", "", []remotestate.Entry{{Snapshot: remotestate.Snapshot{
+	view := mapRemoteForTest("", "", []remotestate.Entry{{Snapshot: remotestate.Snapshot{
 		Login: "a", Machine: "desk", PublishedAt: remotePublishedAt(), WBVersion: "v1\x00\u202e.2",
-		KnownRepositories: []string{"github.com/Sneat-Co/sneat-go", "acme/widgets", "gitlab.com/group/sub/proj", "a.b/c"},
+		KnownRepositories: []string{"github.com/Sneat-Co/sneat-go", "acme/widgets", "gitlab.com/group/sub/proj", "a.b/c", "github.com//x/y", "1.2/a/b"},
 		Worktrees: []remotestate.WorktreeState{
 			{Task: "t\u202ex", Stream: long, Repository: "github.com/Sneat-Co/sneat-go", Branch: "b\x01", Lifecycle: "review", PullRequest: &remotestate.PullRequestState{Number: 1, State: "OPEN", URL: "https://github.com/Sneat-Co/sneat-go/pull/1"}},
 			{Task: "u", Repository: "acme/widgets", Branch: "u", Lifecycle: "<img>", PullRequest: &remotestate.PullRequestState{Number: 2, State: "open", URL: "javascript:alert(1)"}},
@@ -483,8 +483,19 @@ func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 			{Task: "x", Repository: "acme/widgets", Branch: "x", PullRequest: &remotestate.PullRequestState{Number: 5, State: "open", URL: "https://evil.example/a b"}},
 			{Task: "y", Repository: "acme/widgets", Branch: "y", PullRequest: &remotestate.PullRequestState{Number: 6, State: "open", URL: "https://%zz/"}},
 			{Task: "z", Repository: "acme/widgets", Branch: "z", PullRequest: &remotestate.PullRequestState{Number: 7, State: "merged", URL: "https://github.com/z"}},
+			{Task: "ip", Repository: "acme/widgets", Branch: "ip", PullRequest: &remotestate.PullRequestState{Number: 10, State: "open", URL: "https://127.0.0.1/x"}},
+			{Task: "lh", Repository: "acme/widgets", Branch: "lh", PullRequest: &remotestate.PullRequestState{Number: 11, State: "open", URL: "https://localhost/x"}},
+			{Task: "lh2", Repository: "acme/widgets", Branch: "lh2", PullRequest: &remotestate.PullRequestState{Number: 12, State: "open", URL: "https://a.localhost/x"}},
+			{Task: "num", Repository: "acme/widgets", Branch: "num", PullRequest: &remotestate.PullRequestState{Number: 13, State: "open", URL: "https://1.2/x"}},
+			{Task: "long", Repository: "acme/widgets", Branch: "long", PullRequest: &remotestate.PullRequestState{Number: 14, State: "open", URL: "https://github.com/" + strings.Repeat("a", 2100)}},
+			{Task: "upper", Repository: "acme/widgets", Branch: "upper", PullRequest: &remotestate.PullRequestState{Number: 15, State: "open", URL: "HTTPS://github.com/u"}},
 		},
-	}}})
+	}}, {Snapshot: remotestate.Snapshot{
+		Login: "a", Machine: "hos\u2028tile\x00" + strings.Repeat("m", 1<<20), PublishedAt: remotePublishedAt(),
+		BootTime: time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC), OS: "linux",
+	}}, {Snapshot: remotestate.Snapshot{Login: "a", Machine: "\u202e\x00", PublishedAt: remotePublishedAt()}},
+		{Snapshot: remotestate.Snapshot{Login: "a", Machine: "future", PublishedAt: remotePublishedAt(), BootTime: newClock().Now().Add(time.Hour)}},
+	})
 	names := map[string]Repository{}
 	for _, repository := range view.repositories {
 		names[repository.Name] = repository
@@ -498,11 +509,21 @@ func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 	if repository := names["group/sub/proj"]; repository.Host != "gitlab.com" {
 		t.Errorf("nested name = %+v", names)
 	}
+	for _, name := range []string{"github.com//x/y", "1.2/a/b"} {
+		if repository, found := names[name]; !found || repository.Host != "" {
+			t.Errorf("%q must keep its whole name and have no host: %+v", name, names)
+		}
+	}
 	if repository := names["a.b/c"]; repository.Host != "" {
 		t.Errorf("two segments with a dot = %+v", repository)
 	}
-	if len(view.machines) != 1 || view.machines[0].WBVersion != "v1.2" {
-		t.Errorf("version = %+v", view.machines)
+	if len(view.machines) != 3 || view.machines[0].WBVersion != "v1.2" {
+		t.Fatalf("machines = %+v, want the hostile-named one kept (sanitised), the empty-named one skipped", view.machines)
+	}
+	for _, machine := range view.machines {
+		if len([]rune(machine.Machine)) > maxRemoteText || strings.ContainsAny(machine.Machine, "\x00\u2028") || machine.Machine == "" || !machine.BootTime.IsZero() {
+			t.Errorf("machine %q boot %v: name not sanitised or boot time out of range", machine.Machine[:min(20, len(machine.Machine))], machine.BootTime)
+		}
 	}
 	byTask := map[string]Worktree{}
 	for _, worktree := range view.worktrees {
@@ -518,10 +539,10 @@ func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 	for _, pull := range view.pullRequests {
 		urls[pull.Number] = pull
 	}
-	if urls[1].URL != "https://github.com/Sneat-Co/sneat-go/pull/1" || urls[1].State != "open" || len(urls) != 6 {
+	if urls[1].URL != "https://github.com/Sneat-Co/sneat-go/pull/1" || urls[1].State != "open" || urls[15].URL != "https://github.com/u" || len(urls) != 12 {
 		t.Errorf("pull requests = %+v", urls)
 	}
-	for number := 2; number <= 6; number++ {
+	for _, number := range []int{2, 3, 4, 5, 6, 10, 11, 12, 13, 14} {
 		if urls[number].URL != "" {
 			t.Errorf("pull request %d kept the unsafe URL %q", number, urls[number].URL)
 		}

@@ -170,7 +170,7 @@ func plainText(text string) string {
 		if len(kept) == maxRemoteText {
 			break
 		}
-		if !unicode.IsControl(character) && !unicode.Is(unicode.Cf, character) {
+		if !unicode.IsControl(character) && !unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
 			kept = append(kept, character)
 		}
 	}
@@ -189,21 +189,46 @@ func publishedLifecycle(lifecycle string) string {
 	return ""
 }
 
-// safeHTTPSURL is rawURL when it is an https address of printable ASCII whose
-// host passes the hostname rule, with no port and no user information, else
-// empty. Another
-// machine's pull request address reaches the browser as a link, so only this
-// shape does.
+// maxURLLength bounds an address taken from a pull request record.
+const maxURLLength = 2048
+
+// safeHTTPSURL is rawURL, with its scheme in lower case, when it is an https
+// address of printable ASCII, at most maxURLLength long, whose host passes the
+// hostname rule and is neither an IP literal nor localhost, with no port and no
+// user information; else empty. A pull request address reaches the browser as a
+// link, so only this shape does. A GitHub Enterprise address with a port loses
+// its link by design.
 func safeHTTPSURL(rawURL string) string {
-	if strings.ContainsFunc(rawURL, func(character rune) bool { return character <= ' ' || character > '~' }) {
+	if len(rawURL) > maxURLLength || len(rawURL) < len("https") ||
+		strings.ContainsFunc(rawURL, func(character rune) bool { return character <= ' ' || character > '~' }) {
 		return ""
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" || parsed.Opaque != "" ||
-		len(parsed.Host) > 253 || !hostnamePattern.MatchString(parsed.Host) {
+		len(parsed.Host) > 253 || !hostnamePattern.MatchString(parsed.Host) || !hasLetterLabel(parsed.Host) ||
+		parsed.Host == "localhost" || strings.HasSuffix(parsed.Host, ".localhost") {
 		return ""
 	}
-	return rawURL
+	return "https" + rawURL[len("https"):]
+}
+
+// hasLetterLabel reports whether the last label of host holds a letter, which
+// no IP literal does (a numeric dotted host is an address, not a name).
+func hasLetterLabel(host string) bool {
+	last := host[strings.LastIndex(host, ".")+1:]
+	return strings.ContainsFunc(last, unicode.IsLetter)
+}
+
+// earliestBootTime is the oldest boot time a snapshot may publish.
+var earliestBootTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// publishedBootTime is bootTime when it lies between 2000-01-01 and now, else
+// the zero time.
+func publishedBootTime(bootTime, now time.Time) time.Time {
+	if bootTime.Before(earliestBootTime) || bootTime.After(now) {
+		return time.Time{}
+	}
+	return bootTime
 }
 
 // hostnamePattern is a dotted DNS name: labels of letters, digits and inner
@@ -268,7 +293,8 @@ func publishedOwnerState(state string) string {
 // the rest, and returns the name unchanged with no host otherwise.
 func splitForgeName(name string) (host, rest string) {
 	first, remainder, found := strings.Cut(name, "/")
-	if found && strings.Contains(first, ".") && strings.Contains(remainder, "/") && hostnamePattern.MatchString(first) {
+	if found && strings.Contains(first, ".") && hostnamePattern.MatchString(first) && hasLetterLabel(first) && strings.Contains(remainder, "/") &&
+		!slices.Contains(strings.Split(remainder, "/"), "") {
 		return first, remainder
 	}
 	return "", name
@@ -283,7 +309,7 @@ func mapPullRequests(machine string, bindings []worktrees.RegisteredPullRequestB
 	for _, binding := range bindings {
 		pull := PullRequest{
 			Entry:  localEntry(entryID(kindPR, machine, binding.Repository, strconv.Itoa(binding.PullRequest)), machine, at),
-			Number: binding.PullRequest, State: PullRequestUnknown, URL: safeHTTPSURL(binding.URL),
+			Number: binding.PullRequest, URL: safeHTTPSURL(binding.URL),
 		}
 		if ids := repositories[binding.Repository]; len(ids) == 1 {
 			pull.Repository = ids[0]
@@ -376,7 +402,7 @@ type remoteView struct {
 // subjects, task summaries, head SHAs, owners, attention text and login are not
 // read, so they cannot reach the document. Every entry is cached and observed
 // at its snapshot's publish time.
-func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) remoteView {
+func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, now time.Time) remoteView {
 	var view remoteView
 	for _, entry := range entries {
 		snapshot := entry.Snapshot
@@ -384,7 +410,8 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 		// machine's, so the projects root (compared here, never emitted) must
 		// be this machine's too.
 		own := snapshot.Machine == local && ((login != "" && snapshot.Login == login) || (login == "" && projectsRoot != "" && snapshot.ProjectsRoot == projectsRoot))
-		unusable := entry.Error != "" || snapshot.PublishedAt.IsZero() || snapshot.Machine == "" || strings.ContainsAny(snapshot.Machine, `/\`)
+		machineName := plainText(snapshot.Machine)
+		unusable := entry.Error != "" || snapshot.PublishedAt.IsZero() || machineName == "" || strings.ContainsAny(snapshot.Machine, `/\`)
 		if own || unusable {
 			continue
 		}
@@ -392,7 +419,7 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 		published := snapshot.PublishedAt
 		machineID := entryID(kindMachine, key)
 		cached := func(id string) Entry {
-			return Entry{ID: id, Machine: snapshot.Machine, MachineID: machineID, Route: RouteCached, ObservedAt: published}
+			return Entry{ID: id, Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published}
 		}
 		repositoryNames := map[string]bool{}
 		for _, name := range snapshot.KnownRepositories {
@@ -406,8 +433,8 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 		for name := range repositoryNames {
 			id := entryID(kindRepository, key, name)
 			repositoryIDs[name] = id
-			host, shortName := splitForgeName(name)
-			repositories = append(repositories, Repository{Entry: cached(id), Host: host, Name: plainText(shortName)})
+			host, repositoryName := splitForgeName(name)
+			repositories = append(repositories, Repository{Entry: cached(id), Host: host, Name: plainText(repositoryName)})
 		}
 		var worktreeViews []Worktree
 		var pullRequests []PullRequest
@@ -434,7 +461,7 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) r
 		view.machines = append(view.machines, Machine{
 			Entry: cached(machineID), WBVersion: plainText(snapshot.WBVersion),
 			RepositoryCount: len(repositories), WorktreeCount: len(worktreeViews),
-			OS: shortName(snapshot.OS), Arch: shortName(snapshot.Arch), CPUCount: cpuCount(snapshot.CPUCount), BootTime: snapshot.BootTime,
+			OS: shortName(snapshot.OS), Arch: shortName(snapshot.Arch), CPUCount: cpuCount(snapshot.CPUCount), BootTime: publishedBootTime(snapshot.BootTime, now),
 		})
 		view.repositories = append(view.repositories, repositories...)
 		view.worktrees = append(view.worktrees, worktreeViews...)

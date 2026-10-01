@@ -882,7 +882,7 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 			s.logf("cockpit fleet: read other machines: %v", err)
 			return
 		}
-		view := mapRemote(s.machine, s.login, s.projectsRoot, entries)
+		view := mapRemote(s.machine, s.login, s.projectsRoot, entries, s.now())
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.remote, s.remoteBranches = view, nil
