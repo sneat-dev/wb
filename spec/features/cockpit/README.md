@@ -161,7 +161,10 @@ is this closed set of fields:
   remote's error text, the transport that supplied a machine's live entries
   (`transport`: `http` or `ssh`), the number of another machine's entries that were
   left out of its export or cut at this daemon's caps (`export_dropped`) and whether
-  its agents were cut (`agents_truncated`);
+  its agents were cut (`agents_truncated`), and, on the local machine's entry only,
+  the code of its last failed or degraded periodic publish (`publish_error`:
+  `collect_failed`, `store_unavailable`, `publish_failed` or
+  `optional_fields_dropped`), never an error text;
 - a machine's resource samples, served only by the `machine-metrics` route and
   never in the fleet document, which are numbers and times only: CPU percent,
   one-minute load, memory used and total bytes, free and total bytes of the
