@@ -327,7 +327,27 @@ Three further cleanup batches removed **41 private test-only adapters and 143 wo
 
 The retirement cleanup initially exposed a detector blind spot: direct leaf Git calls stopped matching the old private helper names. The accepted change recognizes `GitBytes` and `GitObjectSHA`, includes an aliased-import regression, and retains the original three-call unit-tier baseline. Focused affected tests, race, default/e2e compilation, vet, pinned lint and the named quality guards pass for these batches. These receipts do not supersede the last exact dead-code finding count or establish a whole-repository CI verdict.
 
-A logging test batch remains outside the accepted integration: review found weak error-boundary assertions and reproduced source-side and destination-side archive symlink escapes. The fix and permission-preservation tests are in progress in an isolated lane. Do not treat that batch's preliminary gain as integrated coverage or the archive behavior as fixed until exact-source checks and independent review pass. Legacy claim recovery tests are also in progress. The latest hourly account check was 85%, below the authorized 90% stop; usage remains checked no more than hourly.
+At that snapshot, a logging test batch remained outside the accepted integration: review found weak error-boundary assertions and reproduced source-side and destination-side archive symlink escapes. The fix and permission-preservation tests were in progress in an isolated lane. Do not treat that batch's preliminary gain as integrated coverage or the archive behavior as fixed until exact-source checks and independent review pass. Legacy claim recovery tests were also in progress. That hourly account check was 85%, below the authorized 90% stop; usage remains checked no more than hourly.
+
+### Secure archive and recovery checkpoint — cd46438d
+
+The next shared profile is bound to clean local source `cd46438db050b821fdccef1bf6eb96db76dfc1ed`. It includes the reviewed receive, relocation and legacy-recovery tests, all three adapter cleanup batches, and the archive security fix. The e2e-enabled two-shard run passed; log creation to final write was approximately 607 seconds. Publication remains deferred.
+
+| Measured scope | Covered / statements | Coverage | Uncovered |
+| --- | ---: | ---: | ---: |
+| Original 11-package worktree group | 20,557 / 21,418 | 95.9800% | 861 |
+| `internal/worktrees` facade | 15,636 / 16,497 | 94.7809% | 861 |
+| Stable 12-package group, including `internal/gitcli` | 20,644 / 21,505 | 95.9963% | 861 |
+| Comparable 13-package group | 20,872 / 21,736 | 96.0250% | 864 |
+| Expanded 14-package group, adding `internal/filewrite` | 21,139 / 22,003 | 96.0733% | 864 |
+
+Against the 360 checkpoint, the comparable group and facade each have **84 fewer missed statements and six fewer total statements**. The three test-only batch unions account for 60 of those misses: receive 21, relocation 19 and legacy recovery 20. The adapter deletions removed covered code and claim no missed-statement gain. The facade now contains **1,270 named compiled functions: 992 fully covered, 278 partially covered, and none completely uncovered**. Twelve supporting packages, including filewrite, are at 100%; checkout-marker remains 228/231. These are scoped worktree measurements, not a fresh whole-CLI result.
+
+Archive copying now rejects source and destination symlink redirects through held, no-follow directory operations. Existing regular files are replaced atomically while retaining their mode; new files honor umask, and new archive directories remain 0700. The shared filewrite implementation handles exact-mode publication before rename, rather than duplicating atomic-write logic in worktrees. Tests prove refusal preserves protected data, hardlink replacement leaves outside bytes unchanged, and modes remain correct under an inherited restrictive umask. Unix-only umask tests are separated from portable tests; exact-source Windows filewrite test compilation passes. Native refusal tests also pin event parsing, projection syntax and symlink error boundaries.
+
+All **13 changed or new compiled production bodies since 360 are 153/153 covered**. The currently retained cumulative set since `d4aba76d` is **212 compiled bodies, 4,480/4,480 covered**; deleted bodies are excluded. One non-Darwin checkout-marker body and the separately measured quality profile reader are outside this shared runtime scope. Pinned tagged lint and all six explicitly named quality guards pass. The exact dead-code check remains red with **255 findings**, down from 297 with no additions: 41 private adapters were deleted and one existing directory-opening helper gained a live archive caller. The gate baseline was not increased; these receipts do not establish a green whole-repository CI verdict.
+
+The merged archive payload is `fd12f4c6` plus corrective commits `33fc7925`, `7a8c13c8` and test-fixture correction `9c8e38bf`; legacy recovery is `732addd5` plus `8bd78ade` and `c16572b2`. Independent review passed before local integration. Profile SHA-256: `740380777649100bc77b85f09bdbbfb428f69be1eef75d4438fbf1a21092e38b`. Local receipts are `/private/tmp/wb-cd46438d-summary.json`, `/private/tmp/wb-cd46438d-checkpoint-receipt.json`, and `/private/tmp/wb-cd46438d-{new,cumulative,facade}-audit.log`. The hourly account check at 2026-10-01 03:51 UTC was 87%, below the authorized 90% stop. The next clone-migration batch is outside this checkpoint; accumulate reviewed local work and coalesce broad checks.
 
 ## Evidence and limits
 
