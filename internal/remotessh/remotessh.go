@@ -19,14 +19,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
 const (
 	// ExecutableName is the local SSH client WB invokes.
 	ExecutableName = "ssh"
-	// ConnectTimeoutSeconds bounds connection establishment, so an unreachable
-	// host fails in seconds rather than hanging a supervisor.
+	// ConnectTimeoutSeconds is the default bound of connection establishment, so
+	// an unreachable host fails in seconds rather than hanging a supervisor.
 	ConnectTimeoutSeconds = 10
 	// DefaultWBCommand is the remote command name used when a target configures
 	// no exact path.
@@ -59,14 +60,43 @@ func Resolve(lookPath func(string) (string, error)) (string, error) {
 	return executable, nil
 }
 
-// Build returns the argv for one remote WB call. host and user must already
-// have passed the caller's validation; remote is the fixed remote command line,
-// whose first element is the remote wb executable.
+// Options are the fixed OpenSSH options of one call. None of them is caller
+// data: they are constants of the calling package.
+type Options struct {
+	// ConnectTimeoutSeconds bounds connection establishment; zero or less means
+	// ConnectTimeoutSeconds, the package's default.
+	ConnectTimeoutSeconds int
+	// NoForwarding refuses agent and X11 forwarding and every port forward the
+	// user's ssh configuration names for the host, whatever that configuration
+	// says: a background call carries no credential to the remote and opens no
+	// listener.
+	NoForwarding bool
+}
+
+// Build returns the argv for one remote WB call with the default options. host
+// and user must already have passed the caller's validation; remote is the fixed
+// remote command line, whose first element is the remote wb executable.
 func Build(host, user string, remote []string) []string {
+	return BuildWith(Options{}, host, user, remote)
+}
+
+// BuildWith is Build with the given options. The call never has a terminal
+// (-T) and never prompts (BatchMode=yes). Host key checking is left to the
+// user's ssh configuration and is never switched off here. The user is passed
+// as a fixed `-l` pair and the host after `--`, so neither can be read as an
+// option.
+func BuildWith(options Options, host, user string, remote []string) []string {
+	timeout := options.ConnectTimeoutSeconds
+	if timeout <= 0 {
+		timeout = ConnectTimeoutSeconds
+	}
 	arguments := []string{
 		"-T",
 		"-o", "BatchMode=yes",
-		"-o", fmt.Sprintf("ConnectTimeout=%d", ConnectTimeoutSeconds),
+		"-o", fmt.Sprintf("ConnectTimeout=%d", timeout),
+	}
+	if options.NoForwarding {
+		arguments = append(arguments, "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes")
 	}
 	if user != "" {
 		arguments = append(arguments, "-l", user)
@@ -87,11 +117,40 @@ type ExecRunner struct{}
 // Run executes the command with the caller's context, so a caller-supplied
 // deadline reaches the SSH process itself and not just its output readers.
 func (ExecRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
+	return run(ctx, executable, args, stdin, stdout, stderr, false)
+}
+
+// run is the one place this package starts a process. With group it runs the
+// command in a process group of its own, which the end of ctx kills whole, and
+// bounds the wait for its output pipes.
+func run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer, group bool) error {
 	command := exec.CommandContext(ctx, executable, args...)
 	command.Stdin = bytes.NewReader(stdin)
 	command.Stdout = stdout
 	command.Stderr = stderr
+	if group {
+		command.WaitDelay = groupWaitDelay
+		ownGroup(command)
+	}
 	return command.Run()
+}
+
+// groupWaitDelay is how long GroupRunner waits, after it has killed the
+// process group, for the output pipes to close before it closes them itself.
+const groupWaitDelay = 2 * time.Second
+
+// GroupRunner is the runner for a background caller, such as a daemon. It runs
+// the command in a process group of its own and, when ctx ends, kills the whole
+// group (ssh and any helper it started, a ProxyCommand say), not ssh alone. Run
+// returns only after the process has been waited for, so no call leaves a
+// zombie, and a helper that survives with the output pipes open cannot hold Run
+// for longer than groupWaitDelay. On Windows there is no process group to
+// signal, and the process itself is killed.
+type GroupRunner struct{}
+
+// Run executes the command as ExecRunner does, in its own process group.
+func (GroupRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
+	return run(ctx, executable, args, stdin, stdout, stderr, true)
 }
 
 // LimitedBuffer accumulates output up to a byte limit and records whether the

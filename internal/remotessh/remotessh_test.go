@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,27 @@ func TestBuildProducesAFixedArgvShape(t *testing.T) {
 	want = []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-l", "ai", "--", "178.104.41.143", "wb", "--internal"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("Build with user = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildWithSetsTheConnectTimeoutAndRefusesForwarding(t *testing.T) {
+	t.Parallel()
+	got := BuildWith(Options{ConnectTimeoutSeconds: 5, NoForwarding: true}, "vm.example", "alex", []string{"/usr/local/bin/wb", "cockpit", "export"})
+	want := []string{
+		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+		"-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+		"-l", "alex", "--", "vm.example", "/usr/local/bin/wb", "cockpit", "export",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("BuildWith = %#v, want %#v", got, want)
+	}
+	for _, argument := range got {
+		if strings.Contains(argument, "StrictHostKeyChecking") || strings.Contains(argument, "UserKnownHostsFile") {
+			t.Fatalf("host key checking must be left to the user's ssh configuration, got %q", argument)
+		}
+	}
+	if got := BuildWith(Options{ConnectTimeoutSeconds: -1}, "vm.example", "", []string{"wb"}); !slices.Equal(got, Build("vm.example", "", []string{"wb"})) {
+		t.Fatalf("BuildWith with no timeout = %#v, want the default options", got)
 	}
 }
 
