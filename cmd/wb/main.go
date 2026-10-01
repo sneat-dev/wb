@@ -248,6 +248,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"sync-report publish": true,
 		"dashboard":           true,
 		"cockpit":             true,
+		"cockpit export":      true,
 		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true, "daemon recover": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		// The verb-first spellings run the same implementations, so they take
