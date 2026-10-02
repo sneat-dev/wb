@@ -127,7 +127,8 @@ describe('entity panels', () => {
     expect(runPanel?.related.task?.name).toBe('fix-ci')
     const session = buildAgentPanel(model, 's1')
     expect(session?.summary).toMatchObject({ controllable: false, task: undefined, repository: 'sneat-dev/wb' })
-    expect(session?.commands).toEqual([])
+    expect(session?.commands.map((c) => c.title)).toEqual(['List sessions'])
+    expect(session?.summary.nextStep).toBeUndefined()
     expect(session?.related).toEqual({ task: undefined, worktrees: [], pullRequests: [] })
     const remote = buildAgentPanel(model, 's2')
     expect(remote?.summary).toMatchObject({ remote: true, machine: 'vm', repository: undefined })
@@ -136,6 +137,53 @@ describe('entity panels', () => {
     // A run with no run_id uses its entry id.
     const bare = new FleetModel({ ...model.document, agents: [run('only', 'running', { run_id: undefined })] }, { now: () => NOW })
     expect(buildAgentPanel(bare, 'only')?.commands[0].command).toMatchObject({ text: "wb agent status 'only'" })
+  })
+
+  // cockpit-views#ac:blocked-agent-has-a-next-step
+  it('gives a blocked session its next step: the send command to edit when it is here, where to run it and the read command when it is another machine\'s', () => {
+    const base = modelOf().document
+    const sessions = [
+      agent('b1', 'r1', 'live', { activity: 'blocked', session_id: 'wb-b1' }),
+      { ...agent('b2', undefined, 'live', { activity: 'blocked', session_id: 'wb-b2' }), route: 'cached' as const, machine: 'vm', machine_id: 'mach-vm' },
+      agent('b3', 'r1', 'live', { activity: 'blocked', session_id: undefined }),
+    ]
+    const model = new FleetModel({ ...base, agents: sessions }, { now: () => NOW, machineRoutes: ROUTES })
+    const local = buildAgentPanel(model, 'b1')
+    expect(local?.commands.map((c) => [c.title, c.command.ok && c.command.text, c.command.ok && c.command.needsEdit])).toEqual([
+      ['Send a message (edit it first)', "wb session send 'wb-b1' --message=<<<edit:message>>>", true],
+      ['List sessions', 'wb session list', false],
+    ])
+    expect(local?.summary.nextStep).toMatch(/Answer it with the command below/)
+    const remote = buildAgentPanel(model, 'b2')
+    // Nothing that changes something for another machine's session: where to run it, and the read command over ssh.
+    expect(remote?.commands.map((c) => [c.title, c.command.ok && c.command.text])).toEqual([['List sessions', 'ssh alex@vm.example /usr/local/bin/wb session list']])
+    expect(remote?.summary.nextStep).toMatch(/run "wb session send" in a terminal on vm/)
+    // A session without a recorded id has no command to send to.
+    expect(buildAgentPanel(model, 'b3')?.commands.map((c) => c.title)).toEqual(['List sessions'])
+  })
+
+  // cockpit-views#ac:remote-entities-have-no-mutating-command
+  it('offers no command that changes something for an entry of another machine, whichever panel it is in', () => {
+    const base = modelOf().document
+    const vmRun = { ...run('run-vm', 'running', { task: 'fix-ci', worktrees: ['w3'] }), route: 'cached' as const, machine: 'vm', machine_id: 'mach-vm' }
+    const model = new FleetModel(
+      { ...base, agents: [vmRun], pull_requests: [...base.pull_requests, { ...pullRequest('p3', 'r3', 'w3', { number: 33 }), route: 'cached' as const, machine: 'vm', machine_id: 'mach-vm' }] },
+      { now: () => NOW, machineRoutes: ROUTES },
+    )
+    const titles = (panel: { commands: { title: string }[] } | undefined): string[] => (panel?.commands ?? []).map((c) => c.title)
+    // The worktree of the other machine: its commands are the read ones.
+    expect(titles(buildWorktreePanel(model, 'w3'))).toEqual(['List worktrees', 'Plan cleanup (dry run)'])
+    // Its pull request has no land command, its run no stop.
+    expect(buildPullRequestPanel(model, 'p3')?.commands).toEqual([])
+    expect(titles(buildAgentPanel(model, 'run-vm'))).toEqual(['Status', 'Logs'])
+    // A task with a local worktree and a pull request of the other machine lands only the local one.
+    expect(titles(buildTaskPanel(model, 'fix-ci'))).toEqual(['List worktrees', 'Commit and open pull request', 'Plan cleanup (dry run)', 'Land sneat-dev/wb#12'])
+    // A task whose only worktree is the other machine's cannot push from here, even when it counts as decided here.
+    const cachedOnly = new FleetModel({ ...base, worktrees: [base.worktrees[2]], pull_requests: [], agents: [] }, { now: () => NOW })
+    expect(titles(buildTaskPanel(cachedOnly, 'fix-ci'))).toEqual(['List worktrees', 'Plan cleanup (dry run)'])
+    // A repository checked out only on another machine has no create command.
+    const repoOnVm = new FleetModel({ ...base, repositories: [base.repositories[1]] }, { now: () => NOW })
+    expect(titles(buildRepositoryPanel(repoOnVm, 'sneat-dev/wb'))).toEqual(['List branches', 'Fleet status'])
   })
 
   it('has a machine panel with its running agents and recent worktrees, and no commands', () => {

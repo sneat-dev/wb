@@ -62,7 +62,7 @@ function reasonOf(model: FleetModel, task: TaskView): string {
     case 'blocked':
       return sentence('Blocked', [
         ...task.agents.filter((agent) => agent.activity === 'blocked').map((agent) => `${agentTitle(agent)} is waiting on you`),
-        ...blockingRuns(task.agents, model.now).map((run) => `the ${agentTitle(run)} run ${run.state === 'timeout' ? 'timed out' : 'failed'}${run.exit_code === undefined ? '' : ` (exit ${run.exit_code})`}`),
+        ...blockingRuns(task.agents, model.now, task.stateSource === 'local').map((run) => `the ${agentTitle(run)} run ${run.state === 'timeout' ? 'timed out' : 'failed'}${run.exit_code === undefined ? '' : ` (exit ${run.exit_code})`}`),
       ])
     case 'ready':
       return `Ready to land: ${plural(task.openPullRequests.length, 'pull request')} green and mergeable`

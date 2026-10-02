@@ -32,13 +32,16 @@ export const PLACEHOLDERS = {
 
 const PLACEHOLDER_VALUES: ReadonlySet<string> = new Set(Object.values(PLACEHOLDERS))
 
-// Control characters, and the bidirectional and invisible characters that can reorder or hide text.
-const INVISIBLE = '\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff'
+// Control characters, the bidirectional and invisible characters that can reorder or hide text, the no-break and
+// other space look-alikes (U+00A0, U+2000-200A, U+3000), soft hyphen, word joiners and invisible operators
+// (U+2060-2064), the blank Hangul fillers (U+115F, U+3164), variation selectors and the tag characters.
+const INVISIBLE =
+  '\\u007f-\\u009f\\u00a0\\u00ad\\u061c\\u115f\\u2000-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\u3000\\u3164\\ufe00-\\ufe0f\\ufeff\\u{e0000}-\\u{e007f}\\u{e0100}-\\u{e01ef}'
 // eslint-disable-next-line no-control-regex
-const FORBIDDEN = new RegExp(`[\\u0000-\\u001f\\u2028\\u2029${INVISIBLE}]`)
+const FORBIDDEN = new RegExp(`[\\u0000-\\u001f\\u2028\\u2029${INVISIBLE}]`, 'u')
 // A multi-line text (a brief) may hold tabs and line breaks, and nothing else of the above.
 // eslint-disable-next-line no-control-regex
-const FORBIDDEN_IN_TEXT = new RegExp(`[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029${INVISIBLE}]`)
+const FORBIDDEN_IN_TEXT = new RegExp(`[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029${INVISIBLE}]`, 'u')
 
 /** Why a value cannot be copied into a command; undefined when it can. `multiline` allows tabs and line breaks (a brief). */
 export function valueProblem(value: string, multiline = false): string | undefined {
@@ -96,6 +99,12 @@ export type CopyCommand =
       label?: string
       /** The text holds a placeholder the operator must replace: pasted unedited it is a shell syntax error. */
       needsEdit: boolean
+      /**
+       * An ssh command with a placeholder: the remote shell splits the arguments again, so what the operator types
+       * in place of the placeholder must be quoted twice (a placeholder cannot sit inside quotes of its own: it
+       * would then parse unedited, which is what it exists to prevent). The page says so beside the command.
+       */
+      quoteTwice?: boolean
     }
   | { ok: false; reason: string }
 
@@ -143,6 +152,7 @@ function sshCommand(route: SshRoute, words: readonly string[], needsEdit: boolea
   return {
     ok: true,
     needsEdit,
+    ...(needsEdit ? { quoteTwice: true } : {}),
     text: [
       'ssh',
       SHELL_SAFE.test(destination) ? destination : shellQuote(destination),
@@ -166,12 +176,23 @@ export function command(target: CommandTarget, parts: readonly Part[]): CopyComm
   return target.machine === undefined ? { ok: true, text, needsEdit } : { ok: true, text, needsEdit, label: `run on ${target.machine}` }
 }
 
+/**
+ * The one place that keeps a command which changes something on this machine's own entries. A target with a machine
+ * (another machine, with or without an SSH route) gets a refusal instead of a command, so no page can offer to push,
+ * land, stop or send from here to a machine it only reads. Reading commands never go through this.
+ */
+export function onThisMachine(target: CommandTarget, build: () => CopyCommand): CopyCommand {
+  if (target.machine === undefined && target.ssh === undefined) return build()
+  return { ok: false, reason: `this changes things, so it is only offered for this machine's own entries${target.machine === undefined ? '' : `: it is ${target.machine}'s, run it there`}` }
+}
+
 export const wb = (...words: string[]): Part[] => ['wb', ...words].map((word) => ({ word }))
 
 // ---- the templates the first page needs: Home's ready-to-land and fleet-health lines ----
 
+/** `wb pr land`: only for a pull request of this machine (a refusal for another machine's). */
 export function pullRequestLand(repository: string, number: number, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('pr', 'land'), { value: `${repository}#${number}` }])
+  return onThisMachine(target, () => command(target, [...wb('pr', 'land'), { value: `${repository}#${number}` }]))
 }
 
 export function fleetStatus(repository: string, target: CommandTarget = {}): CopyCommand {

@@ -4,7 +4,7 @@
 // first page needs, which this module re-exports). Pages import this entry point
 // (`@cockpit/fleet-data/commands`) lazily.
 
-import { CommandTarget, CopyCommand, PLACEHOLDERS, Part, command, wb } from './command-core'
+import { CommandTarget, CopyCommand, PLACEHOLDERS, Part, command, onThisMachine, wb } from './command-core'
 import { MatchEnv, matchesTerms } from './match'
 import { MAX_QUERY_LENGTH, parseQuery } from './matcher'
 
@@ -18,7 +18,7 @@ export function worktreeList(task: string, target: CommandTarget = {}): CopyComm
 
 /** `wb pr create 'task' --commit-all --message='<message>'`: commits and opens the pull request. */
 export function pullRequestCreate(task: string, message: string = PLACEHOLDERS.message, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('pr', 'create'), { value: task }, { word: '--commit-all' }, { flag: '--message', value: message }])
+  return onThisMachine(target, () => command(target, [...wb('pr', 'create'), { value: task }, { word: '--commit-all' }, { flag: '--message', value: message }]))
 }
 
 /**
@@ -85,12 +85,17 @@ export function agentLogs(agentId: string, target: CommandTarget = {}): CopyComm
 }
 
 export function agentStop(agentId: string, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('agent', 'stop'), { value: agentId }])
+  return onThisMachine(target, () => command(target, [...wb('agent', 'stop'), { value: agentId }]))
+}
+
+/** The sessions registered on a machine (read only): where a session's id and state can be seen. */
+export function sessionList(target: CommandTarget = {}): CopyCommand {
+  return command(target, wb('session', 'list'))
 }
 
 /** A recorded successor session only: `wb session send '<wb-session-id>' --message='<message>'`. */
 export function sessionSend(sessionId: string, message: string = PLACEHOLDERS.message, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('session', 'send'), { value: sessionId }, { flag: '--message', value: message }])
+  return onThisMachine(target, () => command(target, [...wb('session', 'send'), { value: sessionId }, { flag: '--message', value: message }]))
 }
 
 // ---- new task ----

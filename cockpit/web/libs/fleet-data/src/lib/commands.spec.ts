@@ -25,6 +25,7 @@ import {
   remotePublishDryRun,
   remoteStatus,
   selfUpdate,
+  sessionList,
   sessionSend,
   shellQuote,
   valueProblem,
@@ -133,6 +134,7 @@ const TEMPLATES: Record<string, CopyCommand> = {
   agentLogs: agentLogs('run-1'),
   agentStop: agentStop('run-1'),
   sessionSend: sessionSend('wb-session-1'),
+  sessionList: sessionList(),
   agentDispatch: agentDispatch('sneat-dev/wb', 'fix-ci'),
   agentDispatchBase: agentDispatch('sneat-dev/wb', 'fix-ci', { base: 'main', profile: 'deep', brief: 'do it' }),
   worktreeListSsh: worktreeList('fix-ci', { ssh: { host: 'h', user: 'u' } }),
@@ -233,8 +235,8 @@ describe('Copy command texts', () => {
     expect(agentDispatch('o/r', 't', { brief: 'do it' })).toMatchObject({ needsEdit: true })
     expect(text(agentDispatch('o/r', 't', { profile: 'deep', brief: 'do it' }))).toBe("wb agent dispatch --repo='o/r' --task='do it' --profile='deep' --new-worktree='t'")
     // Also through ssh: a bare placeholder is a redirection in the remote shell, which fails.
-    expect(text(sessionSend('s-1', undefined, { ssh: { host: 'h', user: 'u' } }))).toBe("ssh u@h wb session send 's-1' --message=<<<edit:message>>>")
-    expect(sessionSend('s-1', undefined, { ssh: { host: 'h' } })).toMatchObject({ needsEdit: true })
+    expect(text(worktreeCreate('t', ['o/r'], { promptFile: 'p.md' }, { ssh: { host: 'h', user: 'u' } }))).toBe("ssh u@h wb worktree create 't' 'o/r' --model=<<<edit:model>>> --original-prompt-file='p.md'")
+    expect(worktreeCreate('t', ['o/r'], {}, { ssh: { host: 'h' } })).toMatchObject({ needsEdit: true })
   })
 
   it('label the command for a machine without an SSH route "run on <machine>", and not for this one', () => {
@@ -248,8 +250,8 @@ describe('Copy command texts', () => {
     expect(text(worktreeList('fix-ci', vm))).toBe("ssh alex@vm.example /usr/local/bin/wb worktree list 'fix-ci'")
     expect(text(worktreeList('fix-ci', { ssh: { host: 'vm.example', user: 'alex' } }))).toBe("ssh alex@vm.example wb worktree list 'fix-ci'")
     // The remote shell splits the arguments again, so a value that is not shell-safe is quoted twice.
-    expect(text(pullRequestCreate('fix ci', 'a b', { ssh: { host: 'h', user: 'u' } }))).toBe(
-      "ssh u@h wb pr create ''\\''fix ci'\\''' --commit-all --message=''\\''a b'\\'''",
+    expect(text(worktreeCreate('fix ci', ['o/r'], { model: 'a b', promptFile: 'p.md' }, { ssh: { host: 'h', user: 'u' } }))).toBe(
+      "ssh u@h wb worktree create ''\\''fix ci'\\''' 'o/r' --model=''\\''a b'\\''' --original-prompt-file='p.md'",
     )
     // The user may be empty: the destination is then just the host.
     expect(text(worktreeList('x', { ssh: { host: 'vm.example', user: '' } }))).toBe("ssh vm.example wb worktree list 'x'")
@@ -383,6 +385,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
     { name: 'agentStatus', open: agentStatus('a', to), filled: agentStatus('a', to) },
     { name: 'agentLogs', open: agentLogs('a', to), filled: agentLogs('a', to) },
     { name: 'agentStop', open: agentStop('a', to), filled: agentStop('a', to) },
+    { name: 'sessionList', open: sessionList(to), filled: sessionList(to) },
     { name: 'sessionSend', open: sessionSend('s', undefined, to), filled: sessionSend('s', 'hello there', to) },
     { name: 'agentDispatch', open: agentDispatch('o/r', 't', { base: 'main' }, to), filled: agentDispatch('o/r', 't', { profile: 'deep', brief: "do it\nit's fine", base: 'main' }, to) },
     { name: 'agentDispatch no base', open: agentDispatch('o/r', 't', {}, to), filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
@@ -434,6 +437,51 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
         }
       }
     }
+  })
+
+  // cockpit-views#ac:copy-command-for-an-ssh-machine
+  it('builds a command that changes something only for this machine: another machine, with or without an ssh route, gets a refusal', () => {
+    const remote: CommandTarget[] = [{ machine: 'vm' }, { machine: 'vm', ssh: { host: 'h', user: 'u' } }, { ssh: { host: 'h' } }]
+    for (const to of remote) {
+      for (const built of [pullRequestCreate('t', undefined, to), pullRequestLand('o/r', 1, to), agentStop('a', to), sessionSend('s', undefined, to)]) {
+        expect(built.ok).toBe(false)
+        expect(built.ok ? '' : built.reason).toMatch(/only offered for this machine/)
+      }
+    }
+    expect(pullRequestCreate('t', undefined, { machine: 'vm' })).toEqual({ ok: false, reason: "this changes things, so it is only offered for this machine's own entries: it is vm's, run it there" })
+    // Reading commands, and the New task creation, stay available for another machine.
+    for (const to of remote) for (const built of [worktreeList('t', to), agentStatus('a', to), agentLogs('a', to), sessionList(to), worktreeCleanup('t', to), worktreeCreate('t', ['o/r'], {}, to)]) expect(built.ok).toBe(true)
+    expect(pullRequestLand('o/r', 1, {}).ok).toBe(true)
+  })
+
+  it('says an ssh command with a placeholder needs the typed text quoted twice, and that is what makes it one word on the remote', () => {
+    const ssh = { ssh: { host: 'h', user: 'u' } }
+    const open = worktreeCreate('t', ['o/r'], {}, ssh)
+    expect(open).toMatchObject({ ok: true, needsEdit: true, quoteTwice: true })
+    // A command with nothing to edit, or one run here, carries no such hint.
+    expect(worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f' }, ssh)).not.toHaveProperty('quoteTwice')
+    expect(worktreeCreate('t', ['o/r'], {}, {})).not.toHaveProperty('quoteTwice')
+    if (!open.ok) return
+    // `ssh` joins its arguments with spaces and the remote shell splits them again; `wb` prints what it was given.
+    const remote = (line: string): string[] | undefined => {
+      const script = ['ssh() { shift; eval "$*"; }', "wb() { printf '%s\\n' \"$@\"; }", line].join('\n')
+      const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' })
+      return result.error === undefined ? result.stdout.split('\n').slice(0, -1) : undefined
+    }
+    const typed = (replacement: string): string[] | undefined => remote(open.text.replace(PLACEHOLDERS.model, replacement).replace(PLACEHOLDERS.promptFile, "'f'"))
+    if (remote('wb a') === undefined) return
+    // Typed once-quoted (what the hint warns about) the remote shell splits it in two; quoted twice it stays one.
+    expect(typed("'two words'")).toContain('--model=two')
+    expect(typed("''\\''two words'\\'''")).toContain('--model=two words')
+  })
+
+  it('refuses the invisible look-alike characters of the review, in a value and in a text', () => {
+    for (const char of [' ', '­', ' ', ' ', '⁠', '⁤', '　', 'ᅟ', 'ㅤ', '️', '\u{e0100}', '\u{e0041}']) {
+      expect(valueProblem(`a${char}b`), char.codePointAt(0)?.toString(16)).toMatch(/control character/)
+      expect(valueProblem(`a${char}b`, true), char.codePointAt(0)?.toString(16)).toMatch(/control character/)
+    }
+    expect(valueProblem('a b')).toBeUndefined()
+    expect(valueProblem('a\tb\nc', true)).toBeUndefined()
   })
 
   it('keeps PLACEHOLDERS in the <<<edit:name>>> form the UI marks', () => {

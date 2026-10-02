@@ -460,7 +460,7 @@ export class FleetModel {
             link: agentDetailLink(blocked.id),
           }
         }
-        const run = blockingRuns(task.agents, this.now)[0]
+        const run = blockingRuns(task.agents, this.now, task.stateSource === 'local')[0]
         return { ...base, id: `run-failed:${task.name}`, kind: 'run-failed', rank: 2, agentId: run.id, machine: run.machine, runState: run.state, exitCode: run.exit_code, link: agentDetailLink(run.id) }
       }
       default:
@@ -471,7 +471,7 @@ export class FleetModel {
   /** The state an at-risk task would have without the at-risk row: `checks-failed`, `blocked`, or `idle` for the kinds beyond the failures. */
   private stateBelowAtRisk(task: TaskView): TaskStateId {
     if (task.openPullRequests.some((pullRequest) => failedChecks(pullRequest) > 0)) return 'checks-failed'
-    return isBlocked(task.agents, this.now) ? 'blocked' : 'idle'
+    return isBlocked(task.agents, this.now, task.stateSource === 'local') ? 'blocked' : 'idle'
   }
 
   /** The two kinds beyond the failures: a green pull request that cannot merge, and an agent that finished (within the window) with work not pushed. */

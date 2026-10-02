@@ -5,6 +5,7 @@
 // view model, so a panel and its detail page render the same thing.
 
 import {
+  CommandTarget,
   CopyCommand,
   PLACEHOLDERS,
   agentLogs,
@@ -14,6 +15,8 @@ import {
   fleetStatus,
   pullRequestCreate,
   pullRequestLand,
+  sessionList,
+  sessionSend,
   worktreeCleanup,
   worktreeCreate,
   worktreeList,
@@ -97,6 +100,8 @@ export interface AgentPanel extends PanelBase {
     repository?: string
     /** A session that cannot be controlled says so plainly: it offers no command. */
     controllable: boolean
+    /** For a session that waits for input: what to do next, and where. */
+    nextStep?: string
   }
   related: { task?: TaskView; worktrees: Worktree[]; pullRequests: PullRequest[] }
 }
@@ -148,6 +153,13 @@ function checkedPullRequest(pullRequest: PullRequest): PullRequest {
 
 const entry = (title: string, command: CopyCommand): PanelCommand => ({ title, command })
 
+/**
+ * A command that changes something: listed only when the library built it, which it does for this machine's own
+ * entries alone (`onThisMachine`); for another machine's entry the refusal is dropped, so the panel keeps its
+ * reading commands and shows no push, land, stop or send.
+ */
+const changing = (title: string, command: CopyCommand): PanelCommand[] => (command.ok ? [entry(title, command)] : [])
+
 /** The entry the task's commands run on: this machine's worktree if any, else the first. */
 function anchor(worktrees: readonly Worktree[]): Worktree | undefined {
   return worktrees.find((worktree) => worktree.route === 'local') ?? worktrees[0]
@@ -169,7 +181,7 @@ function taskCommands(model: FleetModel, task: TaskView): PanelCommand[] {
     // A pull request with no repository has no command to copy.
     return panel.commands.map((command) => ({ ...command, title: `${command.title} ${panel.summary.repository as string}#${pr.number}` }))
   })
-  return [reading[0], entry('Commit and open pull request', pullRequestCreate(task.name, PLACEHOLDERS.message, target)), reading[1], ...land]
+  return [reading[0], ...changing('Commit and open pull request', pullRequestCreate(task.name, PLACEHOLDERS.message, target)), reading[1], ...land]
 }
 
 /** A worktree's panel commands: its task's reading and pushing commands, run where this worktree is. */
@@ -177,7 +189,7 @@ function worktreeCommands(model: FleetModel, worktree: Worktree): PanelCommand[]
   const target = model.targetOf(worktree)
   return [
     entry('List worktrees', worktreeList(worktree.task, target)),
-    entry('Commit and open pull request', pullRequestCreate(worktree.task, PLACEHOLDERS.message, target)),
+    ...changing('Commit and open pull request', pullRequestCreate(worktree.task, PLACEHOLDERS.message, target)),
     entry('Plan cleanup (dry run)', worktreeCleanup(worktree.task, target)),
   ]
 }
@@ -247,12 +259,31 @@ export function buildRepositoryPanel(model: FleetModel, key: string): Repository
       agents: model.document.agents.filter((agent) => ids.has(agent.repository ?? '')),
     },
     commands: [
-      entry('Create a task worktree', worktreeCreate(PLACEHOLDERS.task, [repository.slug], {}, target)),
+      // Creating a worktree changes things: only where this machine has the checkout (another machine's is created from New task).
+      ...(repository.checkouts.some((checkout) => checkout.repository.route === 'local') ? [entry('Create a task worktree', worktreeCreate(PLACEHOLDERS.task, [repository.slug], {}))] : []),
       entry('List branches', branchList(repository.slug, undefined, target)),
       entry('Fleet status', fleetStatus(repository.slug, target)),
     ],
     raw: repository.checkouts.map((checkout) => checkout.repository),
   }
+}
+
+/**
+ * A session's commands. One that waits for input (`blocked`) gets the next step: `wb session send` with its message
+ * to edit, for a session of this machine; for another machine's, where to run it, and the reading command over ssh
+ * (or labelled with the machine). Other sessions have only the reading command.
+ */
+function sessionCommands(agent: Agent, target: CommandTarget): PanelCommand[] {
+  const list = entry('List sessions', sessionList(target))
+  if (agent.activity !== 'blocked' || agent.session_id === undefined) return [list]
+  return [...changing('Send a message (edit it first)', sessionSend(agent.session_id, PLACEHOLDERS.message, target)), list]
+}
+
+function nextStepOf(agent: Agent): string | undefined {
+  if (agent.kind !== 'session' || agent.activity !== 'blocked') return undefined
+  return agent.route === 'local'
+    ? 'This session waits for input. Answer it with the command below: replace the message, then run it in a terminal on this machine.'
+    : `This session waits for input on ${agent.machine}. Answering it changes things there, so run "wb session send" in a terminal on ${agent.machine}; from here you can only read it with the command below.`
 }
 
 export function buildAgentPanel(model: FleetModel, id: string): AgentPanel | undefined {
@@ -280,13 +311,14 @@ export function buildAgentPanel(model: FleetModel, id: string): AgentPanel | und
       task: taskName,
       repository: agent.repository === undefined ? undefined : model.repositoryName(agent.repository),
       controllable: run,
+      nextStep: nextStepOf(agent),
     },
     related: {
       task: taskName === undefined ? undefined : model.taskNamed(taskName),
       worktrees,
       pullRequests: [...new Set((agent.worktrees ?? []).flatMap((worktreeId) => model.worktreePullRequests.get(worktreeId) ?? []))].map(checkedPullRequest),
     },
-    commands: run ? [entry('Status', agentStatus(runId, target)), entry('Logs', agentLogs(runId, target)), entry('Stop', agentStop(runId, target))] : [],
+    commands: run ? [entry('Status', agentStatus(runId, target)), entry('Logs', agentLogs(runId, target)), ...changing('Stop', agentStop(runId, target))] : sessionCommands(agent, target),
     raw: [agent],
   }
 }
@@ -337,7 +369,7 @@ export function buildPullRequestPanel(model: FleetModel, id: string): PullReques
       worktree: pullRequest.worktree === undefined ? undefined : model.worktreeById(pullRequest.worktree),
       task: taskName === undefined ? undefined : model.taskNamed(taskName),
     },
-    commands: repository === undefined ? [] : [entry('Land', pullRequestLand(repository, pullRequest.number, model.targetOf(pullRequest)))],
+    commands: repository === undefined ? [] : changing('Land', pullRequestLand(repository, pullRequest.number, model.targetOf(pullRequest))),
     raw: [pullRequest],
   }
 }

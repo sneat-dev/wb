@@ -321,6 +321,86 @@ describe('task state: remote entries never decide a local task\'s good states (R
     expect(state({ worktrees: [local(), wt({ ...cached, id: 'r', owner_state: 'active' })] })).toBe('working')
   })
 
+  // cockpit-views#ac:task-state-ready-to-land
+  it('row 3: a later agent of another machine does not clear a failed run of this machine, so the task stays blocked and is never ready', () => {
+    const failed = run('r', 'failed', { started_at: at(3), finished_at: at(2) })
+    const green = [pr({ id: 'l' })]
+    for (const remote of [cached, liveRemote]) {
+      for (const later of [run('later', 'running', { ...remote, started_at: at(1) }), agent('s', 'r1', 'live', { ...remote, started_at: at(1) })]) {
+        expect(state({ worktrees: [local()], pullRequests: green, agents: [failed, later] })).toBe('blocked')
+        expect(blockingRuns([failed, later], NOW, true)).toEqual([failed])
+        expect(isBlocked([failed, later], NOW, true)).toBe(true)
+      }
+    }
+    // A later agent of this machine still clears it, and a task with no local worktree or pull request but a local failed run is also local.
+    expect(state({ worktrees: [local()], pullRequests: green, agents: [failed, run('mine', 'running', { started_at: at(1) })] })).toBe('ready')
+    expect(state({ pullRequests: green, agents: [failed, agent('s', 'r1', 'live', { ...cached, started_at: at(1) })] })).toBe('blocked')
+    // A failed run another machine reported is still superseded by that machine's later one, and by one of this machine.
+    const remoteFailed = run('rf', 'failed', { ...cached, started_at: at(3), finished_at: at(2) })
+    expect(state({ worktrees: [local()], pullRequests: green, agents: [remoteFailed, agent('s', 'r1', 'live', { ...cached, started_at: at(1) })] })).toBe('ready')
+    expect(state({ worktrees: [local()], pullRequests: green, agents: [remoteFailed] })).toBe('blocked')
+    // The default reads the task's agents: a task whose only local entry is a failed run is local.
+    expect(blockingRuns([failed, run('later', 'running', { ...cached, started_at: at(1) })], NOW)).toEqual([failed])
+    expect(blockingRuns([remoteFailed, run('later', 'running', { ...cached, started_at: at(1) })], NOW)).toEqual([])
+  })
+
+  // cockpit-views#ac:task-state-ready-to-land
+  it('property: adding entries of another machine to a task with an entry of this machine never makes it ready or landed, and never removes at risk, checks failed or blocked', () => {
+    const severity = ['at-risk', 'checks-failed', 'blocked']
+    const failedRun = run('r', 'failed', { started_at: at(5), finished_at: at(4) })
+    const bases: Partial<TaskInputs>[] = [
+      { worktrees: [local()] },
+      { worktrees: [wt({ id: 'mine', owner_state: 'orphaned', ahead: 2 })] },
+      { worktrees: [local()], pullRequests: [pr({ id: 'l' })] },
+      { worktrees: [local()], pullRequests: [pr({ id: 'l', checks_failed: 1, checks_green: false })] },
+      { worktrees: [local()], pullRequests: [pr({ id: 'l', state: 'merged' })] },
+      { worktrees: [wt({ id: 'mine', lifecycle: 'merged' })] },
+      { worktrees: [local()], agents: [failedRun] },
+      { worktrees: [local()], pullRequests: [pr({ id: 'l' })], agents: [failedRun] },
+      { worktrees: [local()], pullRequests: [pr({ id: 'l' })], agents: [agent('a', 'r1', 'live', { activity: 'blocked' })] },
+      { agents: [failedRun] },
+      { pullRequests: [pr({ id: 'l' })] },
+    ]
+    type Added = Partial<TaskInputs>
+    const poolOf = (route: typeof cached | typeof liveRemote): Added[] => [
+      { pullRequests: [pr({ ...route, id: 'x1' })] },
+      { pullRequests: [pr({ ...route, id: 'x2', state: 'merged' })] },
+      { pullRequests: [pr({ ...route, id: 'x3', checks_failed: 1, checks_green: false })] },
+      { worktrees: [wt({ ...route, id: 'x4', lifecycle: 'merged' })] },
+      { worktrees: [wt({ ...route, id: 'x5', owner_state: 'active' })] },
+      { agents: [run('later', 'running', { ...route, started_at: at(1) })] },
+      { agents: [agent('s', 'r1', 'live', { ...route, started_at: at(1), activity: 'working' })] },
+      { agents: [run('done', 'completed', { ...route, started_at: at(1), finished_at: at(0.5) })] },
+    ]
+    const violations: string[] = []
+    let checked = 0
+    for (const route of [cached, liveRemote]) {
+      const remote = poolOf(route)
+      for (const [index, base] of bases.entries()) {
+        const before = state(base)
+        for (let mask = 0; mask < 1 << remote.length; mask++) {
+          const added = remote.filter((_, bit) => mask & (1 << bit))
+          const after = taskState(
+            inputs({
+              worktrees: [...(base.worktrees ?? []), ...added.flatMap((entry) => entry.worktrees ?? [])],
+              pullRequests: [...(base.pullRequests ?? []), ...added.flatMap((entry) => entry.pullRequests ?? [])],
+              agents: [...(base.agents ?? []), ...added.flatMap((entry) => entry.agents ?? [])],
+            }),
+            NOW,
+          )
+          const lifted = (before !== 'ready' && after === 'ready') || (before !== 'landed' && after === 'landed')
+          const removed = severity.includes(before) && severity.indexOf(after) > severity.indexOf(before)
+          // The severity states are ordered worst first, so a worse state has a smaller index and `-1` (not one of them) is a removal.
+          const lost = severity.includes(before) && !severity.includes(after)
+          if (lifted || removed || lost) violations.push(`${route.route} base ${index} mask ${mask}: ${before} -> ${after}`)
+          checked++
+        }
+      }
+    }
+    expect(violations).toEqual([])
+    expect(checked).toBe(2 * bases.length * 256)
+  })
+
   it('a task with no local entry is computed from its remote entries, as before', () => {
     expect(state({ worktrees: [wt(cached)], pullRequests: [pr(cached)] })).toBe('ready')
     expect(state({ worktrees: [wt(cached)], pullRequests: [pr({ ...cached, state: 'merged' })] })).toBe('landed')

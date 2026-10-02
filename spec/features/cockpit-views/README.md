@@ -350,7 +350,8 @@ only when at least one of its open pull requests is local and every open pull re
 remote, is ready (a remote open pull request that is not ready still blocks, a remote ready one alone
 cannot make the task ready); row 7 (both arms and the unpushed-work veto) reads only local pull
 requests and local worktrees; remote entries may still worsen the state (rows 2, 3 and 5) or add
-`working` (row 6). A task with no local entry is computed from its remote entries, and its state is
+`working` (row 6), but never lift it: a failed run of this machine (row 3) is cleared only by a later agent of this
+machine, not by one that another machine reported. A task with no local entry is computed from its remote entries, and its state is
 that machine's report: the view model carries `stateSource` (`local` or `remote`) and `reportedBy`
 (the machines) so the page can say "as reported by <machine>", and every pull request in a Home row
 says which machine it came from. Home lists such a task, and offers no land or push action for it
@@ -416,7 +417,7 @@ Serves J2. The second section, "Ready to land", MUST list the tasks in state `re
 per task: the task, the number of repositories, the pull request numbers, the checks passed
 over total and the age of the pull request observation (`checked_at`, the oldest among them).
 A task whose `stateSource` is `remote` (REQ:task-state) is listed with "as reported by <machine>" and with no action at all, and the pull requests of a task decided here show the machine each one came from. The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
-task's pull requests, offering the registry's landing action, and otherwise "Copy command" with
+task's local pull requests (a pull request another machine reported has no land command: its row says "reported by <machine>"), offering the registry's landing action, and otherwise "Copy command" with
 `wb pr land '<owner/repository>#<number>'` for each. Tasks in state `not-ready` that wait only
 on checks are shown below them muted, with how long ago their checks were read and no action.
 

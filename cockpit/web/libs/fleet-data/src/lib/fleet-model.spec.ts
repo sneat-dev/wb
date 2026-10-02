@@ -769,7 +769,7 @@ describe('review fixes', () => {
     expect(reasonOf('zombie')).toBe('1 unpushed commit and owner state not reported')
   })
 
-  it('keeps an unobserved count on the ready row, and labels a land command for a pull request on another machine', () => {
+  it('keeps an unobserved count on the ready row, and offers no land command for a pull request another machine reported', () => {
     const model = modelOf({
       repositories: REPOS,
       worktrees: [wt('w1', 'a')],
@@ -777,7 +777,8 @@ describe('review fixes', () => {
     })
     const row = model.readyToLand.ready[0]
     expect(row.unobservedPullRequests).toBe(1)
-    expect(row.pullRequests[0]).toMatchObject({ landCommand: "wb pr land 'sneat-dev/wb#1'", landLabel: 'run on vm', machine: 'vm', machineId: 'mach-vm', remote: true })
+    expect(row.pullRequests[0]).toMatchObject({ landCommand: undefined, landLabel: undefined, machine: 'vm', machineId: 'mach-vm', remote: true })
+    expect(row.pullRequests[1].landCommand).toBe("wb pr land 'sneat-dev/wb#3'")
     expect(row.pullRequests[1]).toMatchObject({ machine: 'alpha', remote: false })
     expect(modelOf({ worktrees: [wt('w1', 'a')], pull_requests: [pr('p1', 'w1')] }).readyToLand.ready[0].pullRequests[0].landLabel).toBeUndefined()
   })
