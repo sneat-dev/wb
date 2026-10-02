@@ -14,6 +14,7 @@
 package testenv
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -254,4 +255,140 @@ func InitBareRemoteForTest(t testing.TB, path string) string {
 // and internal/envguard importing internal/testenv back would be a cycle.
 func WriteExecutableFile(path string, content []byte, perm os.FileMode) error {
 	return execfile.WriteExecutableFile(path, content, perm)
+}
+
+// userStateVariables are, with the home directory itself, the variables that
+// select where WB and the tools it drives read a user's own configuration and
+// state. Left ambient, a test binary run on a developer's machine reads that
+// developer's real wb.yaml, which names the fleet's shared claim store, and
+// resolves ~/projects as its projects root.
+var userStateVariables = []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME"}
+
+// realStateSelectors are ambient WB variables that point a process at real
+// state. They are removed outright: a test that wants one sets it itself.
+var realStateSelectors = []string{"WB_HOME", "WB_PROJECTS_ROOT"}
+
+// goToolVariables keep the Go toolchain's caches and settings where they were.
+// They default to locations under the user's home, and a test that builds a
+// binary must not rebuild the world because its home moved.
+var goToolVariables = []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOENV"}
+
+var (
+	userStateRoot string
+	makeTempDir   = os.MkdirTemp
+	// goEnvironmentValue asks the Go command for one of its settings.
+	goEnvironmentValue = productionGoEnvironmentValue
+)
+
+func productionGoEnvironmentValue(name string) (string, error) {
+	output, err := exec.Command("go", "env", name).Output()
+	return strings.TrimSpace(string(output)), err
+}
+
+// IsolateUserState gives the whole test process a private, empty user: HOME,
+// XDG_CONFIG_HOME and XDG_STATE_HOME point into one fresh temporary root, and
+// the ambient WB variables that select real state are unset. Call it from
+// TestMain before any test runs; the returned function removes the root.
+//
+// It exists because a stubbed command is not an isolated one: on 2026-10-02 a
+// cmd/wb test that stubbed the cleanup engine still ran the command's
+// post-apply claim release, which read the developer's real wb.yaml and
+// released a real claim in the fleet's state repository.
+//
+// Two things a test legitimately inherits survive the move. The Go toolchain's
+// caches are pinned to where they already were, and the private home's
+// .gitconfig includes the developer's own global Git configuration, so Git
+// keeps the identity and settings it had.
+func IsolateUserState() (remove func(), err error) {
+	pinned := resolvedGoToolVariables()
+	gitConfigs := globalGitConfigFiles()
+	root, err := makeTempDir("", "wb-test-user-")
+	if err != nil {
+		return nil, err
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = resolved
+	}
+	home, config, state := filepath.Join(root, "home"), filepath.Join(root, "config"), filepath.Join(root, "state")
+	include := ""
+	for _, path := range gitConfigs {
+		include += "[include]\n\tpath = " + strconv.Quote(path) + "\n"
+	}
+	if err := errors.Join(os.Mkdir(home, 0o700), os.Mkdir(config, 0o700), os.Mkdir(state, 0o700),
+		os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(include), 0o600)); err != nil {
+		_ = os.RemoveAll(root)
+		return nil, err
+	}
+	for name, value := range pinned {
+		_ = os.Setenv(name, value)
+	}
+	for _, name := range realStateSelectors {
+		_ = os.Unsetenv(name)
+	}
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("USERPROFILE", home)
+	_ = os.Setenv("XDG_CONFIG_HOME", config)
+	_ = os.Setenv("XDG_STATE_HOME", state)
+	userStateRoot = root
+	return func() { _ = os.RemoveAll(root) }, nil
+}
+
+// resolvedGoToolVariables asks the Go command where its caches and settings
+// are, for each variable the environment does not already pin. Without a Go
+// command there is nothing to keep, and nothing is pinned.
+func resolvedGoToolVariables() map[string]string {
+	pinned := map[string]string{}
+	for _, name := range goToolVariables {
+		if os.Getenv(name) != "" {
+			continue
+		}
+		if value, err := goEnvironmentValue(name); err == nil && value != "" {
+			pinned[name] = value
+		}
+	}
+	return pinned
+}
+
+// globalGitConfigFiles are the user-level Git configuration files that exist
+// now, in the order Git reads them.
+func globalGitConfigFiles() []string {
+	home, _ := os.UserHomeDir()
+	xdg := os.Getenv("XDG_CONFIG_HOME")
+	if xdg == "" {
+		xdg = filepath.Join(home, ".config")
+	}
+	var files []string
+	for _, path := range []string{filepath.Join(xdg, "git", "config"), filepath.Join(home, ".gitconfig")} {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			files = append(files, path)
+		}
+	}
+	return files
+}
+
+// UserStateViolations lists every way the current process could still reach a
+// real user's configuration or state. It is empty only after IsolateUserState
+// and for as long as nothing has pointed the process back outside its root;
+// extra are further resolved paths a package wants held to the same root.
+func UserStateViolations(extra ...string) []string {
+	if userStateRoot == "" {
+		return []string{"IsolateUserState was not called for this test binary"}
+	}
+	var violations []string
+	home, _ := os.UserHomeDir()
+	paths := append([]string{home}, extra...)
+	for _, name := range userStateVariables {
+		paths = append(paths, os.Getenv(name))
+	}
+	for _, path := range paths {
+		if relative, err := filepath.Rel(userStateRoot, path); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			violations = append(violations, path+" is outside the test user root "+userStateRoot)
+		}
+	}
+	for _, name := range realStateSelectors {
+		if _, set := os.LookupEnv(name); set {
+			violations = append(violations, name+" is set")
+		}
+	}
+	return violations
 }

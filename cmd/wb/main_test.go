@@ -56,6 +56,15 @@ func TestMain(m *testing.M) {
 	// WB_AGENT_* exports would otherwise leak into every worktree/session
 	// assertion below. See internal/testenv and internal/envguard.
 	testenv.IsolateProcess()
+	// Give the whole test binary a private, empty user before anything can
+	// resolve a path: without it wb.yaml is the developer's own (and names
+	// the fleet's real claim store) and the default projects root is their
+	// ~/projects. Running un-isolated is not an option, so a failure exits.
+	removeUserState, userStateErr := testenv.IsolateUserState()
+	if userStateErr != nil {
+		fmt.Fprintf(os.Stderr, "fatal: could not isolate the test user's configuration and state: %v\n", userStateErr)
+		os.Exit(1)
+	}
 	// Disable git's detached gc/maintenance for every git this binary
 	// starts, including remote_test.go's own fixture clones/pushes and any
 	// production git call under test, so no background writer can race
@@ -94,6 +103,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	restoreQueueRoot()
 	_ = os.RemoveAll(queueDir)
+	removeUserState()
 	// #751: cli_smoke_test.go's buildWB compiles the real `wb` binary once
 	// per test binary run into its own os.MkdirTemp("", "wb-smoke-")
 	// directory; smokeBuildDir records that path (empty if no smoke test in

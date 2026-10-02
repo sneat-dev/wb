@@ -1123,7 +1123,7 @@ The default is a dry-run plan.`,
 			var releaseLeaked bool
 			switch {
 			case apply && releasable && remaining == 0:
-				result := tryAutoRelease(defaultRemoteDeps(), inv.projectsRoot, args[0], remoteClaimWriter(command))
+				result := releaseRemoteClaim(inv.projectsRoot, args[0], remoteClaimWriter(command))
 				releaseLeaked = exitNonZeroOnReleaseLeak && result.Leaked()
 			case apply && releasable && remaining > 0:
 				skippedAutoRelease(remoteClaimWriter(command), fmt.Sprintf("%d repositories excluded by --filter still remain", remaining))
@@ -1351,7 +1351,7 @@ wb worktree create improve-login owner/repository --resume \
 			// channel rather than this command's result, so it must not
 			// land in the json document or in text stdout. In json mode the
 			// outcome also travels structurally in the remote_claim field.
-			claimResult := worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, inv.projectsRoot, args[0], remoteClaimWriter(command))
+			claimResult := claimRemoteTask(noClaim, inv.projectsRoot, args[0], remoteClaimWriter(command))
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
 				ProjectsRoot:       inv.projectsRoot,
 				Operation:          args[0],
@@ -2440,7 +2440,7 @@ required to remove anything.`,
 						shouldRelease = true
 					}
 					if shouldRelease {
-						result := tryAutoRelease(defaultRemoteDeps(), inv.projectsRoot, task, remoteClaimWriter(command))
+						result := releaseRemoteClaim(inv.projectsRoot, task, remoteClaimWriter(command))
 						if result.Leaked() {
 							leakedReleases = append(leakedReleases, task)
 						}

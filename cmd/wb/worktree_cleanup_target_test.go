@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"slices"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -13,21 +15,49 @@ import (
 // stubCleanupEngine replaces the cleanup engine for one test and returns the
 // options every invocation handed it.
 //
-// It also points XDG_CONFIG_HOME at an empty directory. The cleanup command
-// releases a task's remote claim after an apply, through the remote configured
-// in the operator's own wb.yaml; a test must never reach a real state store,
-// whatever task names it uses.
-func stubCleanupEngine(t *testing.T, outcome worktrees.CleanupOutcome) *[]worktrees.CleanupOptions {
+// A stubbed engine must not leave the command's real side effects in place:
+// after an apply the command releases each task's claim in the fleet's shared
+// store. The stub therefore replaces that release too and returns the tasks it
+// was asked to release, so a test of the command can never write to a real
+// claim store, whatever task names it uses.
+func stubCleanupEngine(t *testing.T, outcome worktrees.CleanupOutcome) (requested *[]worktrees.CleanupOptions, released *[]string) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	previous := cleanupWorktreeTasks
-	t.Cleanup(func() { cleanupWorktreeTasks = previous })
-	requested := &[]worktrees.CleanupOptions{}
+	previousEngine, previousRelease := cleanupWorktreeTasks, releaseRemoteClaim
+	t.Cleanup(func() { cleanupWorktreeTasks, releaseRemoteClaim = previousEngine, previousRelease })
+	requested, released = &[]worktrees.CleanupOptions{}, &[]string{}
 	cleanupWorktreeTasks = func(_ context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
 		*requested = append(*requested, options)
 		return outcome, nil
 	}
-	return requested
+	releaseRemoteClaim = func(_, task string, _ io.Writer) autoReleaseResult {
+		*released = append(*released, task)
+		return autoReleaseResult{Outcome: "released"}
+	}
+	return requested, released
+}
+
+// The exact invocation that released a real claim on 2026-10-02: a stubbed
+// engine reporting an applied named task. The release now goes to the stub.
+//
+//nolint:paralleltest // swaps the package-level cleanup engine and claim release.
+func TestStubbedWorktreeCleanupApplyReleasesClaimsOnlyThroughTheStub(t *testing.T) {
+	requested, released := stubCleanupEngine(t, worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{
+		{ListResult: worktrees.ListResult{Task: "fixture-landed-task", Repository: "acme/app"}, Eligible: true, Applied: true, RemoteDeleted: true},
+	}})
+	command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"fixture-landed-task", "fixture-skipped-task", "--apply", "--remote"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*requested) != 1 || !(*requested)[0].Apply || !(*requested)[0].DeleteRemote {
+		t.Fatalf("cleanup options = %#v, want one apply with remote retirement", *requested)
+	}
+	// Only the task the engine actually retired has its claim released.
+	if !slices.Equal(*released, []string{"fixture-landed-task"}) {
+		t.Fatalf("released claims = %v, want only the applied task", *released)
+	}
 }
 
 // A base the operator names is the target the head is judged against; a base
@@ -35,7 +65,7 @@ func stubCleanupEngine(t *testing.T, outcome worktrees.CleanupOutcome) *[]worktr
 // one. Reported 2026-10-02: `wb worktree cleanup <task> --base main` answered
 // with the base recorded in the task's claim.
 //
-//nolint:paralleltest // swaps the package-level cleanup engine and sets the environment.
+//nolint:paralleltest // swaps the package-level cleanup engine and claim release.
 func TestWorktreeCleanupTreatsOnlyANamedBaseAsTheExplicitTarget(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -49,7 +79,7 @@ func TestWorktreeCleanupTreatsOnlyANamedBaseAsTheExplicitTarget(t *testing.T) {
 		{name: "fleet sweep", args: []string{"--all-merged", "--base", "main"}, base: "main", explicit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			requested := stubCleanupEngine(t, worktrees.CleanupOutcome{})
+			requested, released := stubCleanupEngine(t, worktrees.CleanupOutcome{})
 			command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
 			command.SetOut(&bytes.Buffer{})
 			command.SetErr(&bytes.Buffer{})
@@ -59,6 +89,9 @@ func TestWorktreeCleanupTreatsOnlyANamedBaseAsTheExplicitTarget(t *testing.T) {
 			}
 			if len(*requested) != 1 || (*requested)[0].Apply || (*requested)[0].Base != test.base || (*requested)[0].ExplicitBase != test.explicit {
 				t.Fatalf("cleanup options = %#v, want a dry run with base %q explicit %t", *requested, test.base, test.explicit)
+			}
+			if len(*released) != 0 {
+				t.Fatalf("a dry run released claims: %v", *released)
 			}
 		})
 	}
@@ -99,5 +132,17 @@ func TestWorktreeCleanupReportNamesTheTargetThatProvedTheWork(t *testing.T) {
 				t.Fatalf("cleanup report = %q, want %q", stdout.String(), test.want)
 			}
 		})
+	}
+}
+
+// `wb worktree end` releases the fleet-wide claim through the same seam as
+// every other command, so stubbing the seam covers it too.
+//
+//nolint:paralleltest // swaps the package-level claim release.
+func TestWorktreeEndReleasesTheClaimThroughTheSharedSeam(t *testing.T) {
+	_, released := stubCleanupEngine(t, worktrees.CleanupOutcome{})
+	message := claimReleaser{writer: &bytes.Buffer{}}.Release(t.TempDir(), "fixture-ended-task")
+	if !slices.Equal(*released, []string{"fixture-ended-task"}) || message != "released through the remote-claim path" {
+		t.Fatalf("released = %v, message = %q", *released, message)
 	}
 }
