@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktreejournal"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
 )
@@ -97,3 +98,9 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	}
 	return filewrite.WriteBytesAtomic(filepath.Dir(path), filepath.Base(path), append(content, '\n'), mode)
 }
+
+// ValidEffortPath accepts a dot-separated effort path of unbounded depth. Dots
+// carry parentage, so an empty component, a leading or trailing dot, and an
+// over-long path are all rejected rather than normalized: a silently repaired
+// identity is worse than a refused one.
+func ValidEffortPath(value string) bool { return worktreeclaims.ValidEffortPath(value) }
