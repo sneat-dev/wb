@@ -167,3 +167,37 @@ func TestDeadcodeBinaryNameCarriesTheWindowsSuffix(t *testing.T) {
 		t.Fatalf("linux binary = %q", got)
 	}
 }
+
+// A function newly dead on every supported platform and absent from the
+// baseline fails the gate; dead on only two of three, it does not.
+func TestDeadcodeGateFailsOnANewFunctionDeadOnAllThreePlatformsOnly(t *testing.T) {
+	t.Parallel()
+	known := deadFunctionJSON("example.com/m/old", "Known")
+	fresh := deadFunctionJSON("example.com/m/new", "Fresh")
+	baseline := filepath.Join(t.TempDir(), "baseline.txt")
+	if err := WriteDeadcodeBaseline(baseline, []DeadcodeFinding{{Identity: "example.com/m/old.Known"}}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(linux, darwin, windows string) DeadcodeReport {
+		t.Helper()
+		fake := runnertest.New(t)
+		expectPlatformRun(fake, "analyzer", "linux", linux)
+		expectPlatformRun(fake, "analyzer", "darwin", darwin)
+		expectPlatformRun(fake, "analyzer", "windows", windows)
+		report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
+			Tool: []string{"analyzer"}, Platforms: DefaultDeadcodePlatforms, Runner: fake, BaselinePath: baseline,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	all := "[" + known + "," + fresh + "]"
+	if report := run(all, all, all); len(report.New) != 1 || report.New[0].Identity != "example.com/m/new.Fresh" {
+		t.Fatalf("dead on all three: new = %#v, want example.com/m/new.Fresh", report.New)
+	}
+	two := "[" + known + "]"
+	if report := run(all, all, two); len(report.New) != 0 {
+		t.Fatalf("dead on two of three: new = %#v, want none", report.New)
+	}
+}

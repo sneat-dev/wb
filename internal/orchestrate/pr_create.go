@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/repopath"
@@ -771,31 +772,62 @@ func (entry worktreeStatusEntry) String() string {
 // field holding the original path, which is skipped. Nothing is trimmed: the
 // first status column is blank for an unstaged change, and a path may begin
 // with a dot or a space.
-func parsePorcelainStatusZ(output string) []worktreeStatusEntry {
+//
+// It fails closed: any non-empty field that is not "XY path", or a rename with
+// no original path, is an error, never a skipped entry. A status the caller
+// cannot fully read must refuse the operation rather than look like a clean
+// tree. An unrecognised XY code is still an entry, so it counts as dirty.
+func parsePorcelainStatusZ(output string) ([]worktreeStatusEntry, error) {
 	var entries []worktreeStatusEntry
 	fields := strings.Split(output, "\x00")
 	for position := 0; position < len(fields); position++ {
 		field := fields[position]
-		if len(field) < 4 || field[2] != ' ' {
+		if field == "" {
 			continue
+		}
+		if len(field) < 4 || field[2] != ' ' {
+			return nil, fmt.Errorf("unparseable git status entry %q", field)
 		}
 		entry := worktreeStatusEntry{index: field[0], worktree: field[1], path: field[3:]}
 		if strings.ContainsRune("RC", rune(entry.index)) || strings.ContainsRune("RC", rune(entry.worktree)) {
 			position++ // the original path of a rename or copy
+			if position >= len(fields) || fields[position] == "" {
+				return nil, fmt.Errorf("git status rename entry %q has no original path", field)
+			}
 		}
 		entries = append(entries, entry)
 	}
-	return entries
+	return entries, nil
+}
+
+// readPorcelainStatus runs `git status --porcelain=v1 -z` and parses stdout
+// alone. Stderr is kept apart so a git warning cannot fuse with the first
+// entry, and anything on it, even with exit 0, is an error: a status git only
+// partly read (an unreadable directory) must not pass as clean.
+func readPorcelainStatus(ctx context.Context, run runner.Runner, timeout time.Duration, worktree string) ([]worktreeStatusEntry, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	result, err := run.RunOpts(ctx, worktree, runner.RunOptions{Env: console.Env()}, "git", "status", "--porcelain=v1", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("git status in %s: %w: %s", worktree, err, strings.TrimSpace(result.Stderr))
+	}
+	if diagnostic := strings.TrimSpace(result.Stderr); diagnostic != "" {
+		return nil, fmt.Errorf("git status in %s reported: %s", worktree, diagnostic)
+	}
+	return parsePorcelainStatusZ(result.Stdout)
 }
 
 // pullRequestCreateDirtyPaths lists every uncommitted entry in worktree, or
 // nil for a clean one.
 func pullRequestCreateDirtyPaths(ctx context.Context, worktree string) ([]worktreeStatusEntry, error) {
-	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "status", "--porcelain=v1", "-z")
+	entries, err := readPorcelainStatus(ctx, defaultRunner, 0, worktree)
 	if err != nil {
 		return nil, fmt.Errorf("read worktree status: %w", err)
 	}
-	return parsePorcelainStatusZ(output), nil
+	return entries, nil
 }
 
 // describeStatusEntries renders entries for a refusal message.

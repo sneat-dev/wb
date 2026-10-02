@@ -62,7 +62,7 @@ The Workbench Hub MUST subscribe to `workflow_run.completed` GitHub webhook even
 
 #### REQ: host-independent-deadcode
 
-`wb deadcode` MUST give the same verdict on every host. It MUST analyse each supported platform (`linux`, `darwin`, `windows`) with a fixed architecture and cgo disabled, and MUST report a function as unreachable only when it is unreachable on every one of them.
+`wb deadcode` MUST give the same verdict on every host. It MUST analyse each supported platform (`linux`, `darwin`, `windows`) with a fixed architecture and cgo disabled, and MUST report a function as unreachable only when it is unreachable on every one of them. Functions that exist in files built for a single OS, or that are reachable only with cgo enabled, are therefore not reported.
 
 #### REQ: fleet-metrics-web-dashboard
 

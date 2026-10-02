@@ -357,7 +357,7 @@ func (engineReportedHandler) AppliedFiles(string) []string { return []string{"re
 func TestEngineChangedFilesSinceIncludesReportedAndRenamedFiles(t *testing.T) {
 	t.Parallel()
 	fake := runnertest.New(t)
-	fake.ExpectArgv([]string{"git", "status", "--porcelain=v1", "-z"}, runner.Result{Stdout: "R  old.txt -> new.txt\x00"}, nil)
+	fake.ExpectArgv([]string{"git", "status", "--porcelain=v1", "-z"}, runner.Result{Stdout: "R  new.txt\x00old.txt\x00"}, nil)
 	files, err := changedFilesSince(context.Background(), t.TempDir(), nil,
 		engineReportedHandler{}, "metadata", Options{run: fake})
 	if err != nil || len(files) != 2 || files[0] != "new.txt" || files[1] != "reported.txt" {
