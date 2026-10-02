@@ -1386,7 +1386,7 @@ wb worktree create improve-login owner/repository --resume \
 			// channel rather than this command's result, so it must not
 			// land in the json document or in text stdout. In json mode the
 			// outcome also travels structurally in the remote_claim field.
-			claimResult := claimRemoteTask(noClaim, inv.projectsRoot, args[0], remoteClaimWriter(command))
+			claimResult := claimRemoteTask(noClaim, inv.projectsRoot, args[0], outcomeClaimWriter(command, inv.quiet))
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
 				ProjectsRoot:       inv.projectsRoot,
 				Operation:          args[0],
@@ -1432,6 +1432,7 @@ wb worktree create improve-login owner/repository --resume \
 		},
 	}
 	setDiscoveryTerms(command, "start begin create new work task agent isolated worktree branch implement edit code save tokens multi repo multiple repositories cross-repository repo")
+	markQuietVerb(command)
 	command.Flags().StringVar(&branch, "branch", "", "exact feature branch (overrides branch-prefix configuration)")
 	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
@@ -2462,7 +2463,7 @@ required to remove anything.`,
 					return err
 				}
 			}
-			for _, artifact := range outcome.Artifacts {
+			for _, artifact := range quietArtifacts(inv, outcome.Artifacts) {
 				if _, err := fmt.Fprintf(command.ErrOrStderr(), "info: cleanup WB internal %s %s: disposition=%s eligible=%t applied=%t reason=%s\n",
 					artifact.Kind, artifact.Path, artifact.Disposition, artifact.Eligible, artifact.Applied, artifact.Reason); err != nil {
 					return err
@@ -2504,7 +2505,7 @@ required to remove anything.`,
 						shouldRelease = true
 					}
 					if shouldRelease {
-						result := releaseRemoteClaim(inv.projectsRoot, task, remoteClaimWriter(command))
+						result := releaseRemoteClaim(inv.projectsRoot, task, outcomeClaimWriter(command, inv.quiet))
 						if result.Leaked() {
 							leakedReleases = append(leakedReleases, task)
 						}
@@ -2539,7 +2540,9 @@ required to remove anything.`,
 	command.Flags().IntVar(&workers, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect, and to apply, concurrently")
 	command.Flags().IntVarP(&workers, "workers", "j", worktrees.DefaultInspectWorkers, "maximum repositories to inspect, and to apply, concurrently")
 	_ = command.Flags().MarkDeprecated("workers", "use --parallel instead")
-	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream per-candidate inspection progress to stderr, even when not on a terminal")
+	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream per-candidate inspection progress to stderr, even when not on a terminal (--quiet wins)")
+	setDiscoveryTerms(command, "cleanup clean up retire remove landed merged worktrees branches tasks")
+	markQuietVerb(command)
 	return command
 }
 

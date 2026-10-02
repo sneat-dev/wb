@@ -46,10 +46,10 @@ func TestLandingWalkAndResidue(t *testing.T) {
 	if !LandedWithResidue(got) || LandedWithResidue(nil) || LandedWithResidue(&LandingEvidence{LandedSHA: "x"}) {
 		t.Fatal("residue eligibility")
 	}
-	if !strings.Contains(ResidueReason(got), "via https://example.test/1") || !strings.Contains(ResidueReason(got), "2 residual commits") || got.ResidueSummary() != "newsha fix one; other another subject" {
-		t.Fatalf("residue reason %q, summary %q", ResidueReason(got), got.ResidueSummary())
+	if !strings.Contains(ResidueReason(got, "my-task"), "via https://example.test/1") || !strings.Contains(ResidueReason(got, "my-task"), "2 residual commits") || got.ResidueSummary() != "newsha fix one; other another subject" {
+		t.Fatalf("residue reason %q, summary %q", ResidueReason(got, "my-task"), got.ResidueSummary())
 	}
-	if ResidueReason(nil) != "" || (*LandingEvidence)(nil).ResidueSummary() != "" || (&LandingEvidence{}).ResidueSummary() != "" {
+	if ResidueReason(nil, "my-task") != "" || (*LandingEvidence)(nil).ResidueSummary() != "" || (&LandingEvidence{}).ResidueSummary() != "" {
 		t.Fatal("empty residue output")
 	}
 	if PluralCommits(1) != "1 residual commit" || PluralCommits(2) != "2 residual commits" {
@@ -124,7 +124,7 @@ func TestLandingWalkRefusalsAndFailures(t *testing.T) {
 	if got != nil || err != nil {
 		t.Fatalf("head-only %#v %v", got, err)
 	}
-	if got := ResidueReason(&LandingEvidence{LandedSHA: "a", LandingSHA: "b"}); !strings.Contains(got, "0 residual commits") {
+	if got := ResidueReason(&LandingEvidence{LandedSHA: "a", LandingSHA: "b"}, "my-task"); !strings.Contains(got, "0 residual commits") {
 		t.Fatalf("no PR reason %q", got)
 	}
 }
@@ -215,5 +215,19 @@ func TestRemoteQueriesAndTargetCache(t *testing.T) {
 		return "", fetchCtx.Err()
 	}); err == nil || !strings.Contains(err.Error(), "did not answer") {
 		t.Fatalf("timeout %v", err)
+	}
+}
+
+// A finding that tells the operator what to run must name a verb that accepts
+// it (sneat-dev/wb#814: `wb worktree cleanup` printed "rerun with
+// --allow-residue", a flag only `wb worktree gc` has).
+func TestResidueReasonNamesTheVerbThatRetiresTheCheckoutWithItsResidue(t *testing.T) {
+	t.Parallel()
+	reason := ResidueReason(&LandingEvidence{LandedSHA: "a", LandingSHA: "b", Residue: []ResidualCommit{{SHA: "c", Subject: "s"}}}, "founder-rulings-1002b")
+	if !strings.Contains(reason, "wb worktree gc founder-rulings-1002b --allow-residue --apply") {
+		t.Fatalf("reason does not name the retiring command:\n%s", reason)
+	}
+	if strings.Contains(reason, "rerun with") {
+		t.Fatalf("reason still tells the operator to rerun the verb that printed it:\n%s", reason)
 	}
 }

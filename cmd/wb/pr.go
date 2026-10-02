@@ -185,8 +185,9 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
-			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
-			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
+			// Quiet implies non-interactive: no terminal UI, and no savings footer.
+			nonInteractive = nonInteractive || inv.quiet
+			progress := newLandingProgress(inv, command, nonInteractive)
 			progress.start(repository, number, "", "")
 			// The landing guard runs before anything else, including the
 			// GitHub read: a worktree of this repository still building against
@@ -238,8 +239,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				return err
 			}
 			// The savings footer is an interactive courtesy: under
-			// --non-interactive the same figures are in the envelope, and a
-			// script must not have to strip prose to read them.
+			// --non-interactive or --quiet the same figures are in the
+			// envelope, and a script must not have to strip prose to read them.
 			if format == "text" && !nonInteractive && console.IsTerminal(command.OutOrStdout()) {
 				if _, err := fmt.Fprintln(command.OutOrStdout(), result.FooterLine()); err != nil {
 					return err
@@ -275,6 +276,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	addLandingLaneTakeoverFlag(command, &takeOverLane)
 	command.Flags().StringVar(&laneReason, "lane-reason", "", "required with --take-over-lane: why a landing lane held by a different session is being taken over")
 	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump take over lane")
+	markQuietVerb(command)
 	return markLandingGuard(command, landingGuardByPullRequest)
 }
 

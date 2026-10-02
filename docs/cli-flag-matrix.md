@@ -219,6 +219,22 @@ reason. `--apply` records which tasks an inclusion covered in its manifest;
   `WB_NON_INTERACTIVE=1` has the same rendering effect; it is not a universal
   JSON mode. Structured command output remains on stdout while interactive
   progress uses stderr.
+- `--quiet` prints only the outcome and any refusal: no progress, heartbeat,
+  inspection-progress, remote-claim success, `info:` (bar the `applied=true`
+  cleanup line, which says a mutation happened) or `suggestion:` lines.
+  Stdout outcome lines, refusal blocks (`refusal:`, `resolve with:`), warnings,
+  errors, exit codes, and the `--format json` document are unchanged. It is
+  consumed only by `create`, `worktree create`, `land`, `worktree land`,
+  `worktree merge` (and `prepare`, `land`, `resume`, `revert`), `pr create`,
+  `pr land`, and `worktree cleanup`; every other command rejects it before it
+  starts, except `run` and `worktree guard`, which keep their own local
+  `--quiet`. `WB_QUIET=1` has the same effect on the consuming verbs and none
+  elsewhere. It differs from `--non-interactive`: that removes terminal-only UI
+  while a non-terminal agent still receives newline-delimited progress; quiet
+  removes the progress too. It exists so a caller never has to pipe a verb
+  through `tail`, which hides the verb's exit status
+  (spec/features/quiet-verbs-and-masked-status-guard); the agent pre-tool-use
+  hook refuses that pipe.
 - `--format`/`--json`, `--dry-run`, `--apply`, `--check`, and config flags are
   command-specific. They are never advertised as root flags. Commands that
   mutate default to their documented dry-run/plan behavior unless their own

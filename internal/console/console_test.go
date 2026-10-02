@@ -104,3 +104,13 @@ func TestInteractiveIsAlwaysFalseWithoutATerminal(t *testing.T) {
 		t.Error("Interactive(non-terminal) = true, want false")
 	}
 }
+
+//nolint:paralleltest // sets a process environment variable.
+func TestQuietRequestedReadsTheEnvironmentLikeTheOtherSwitches(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "0": false, "false": false, "1": true, "true": true, "yes": true} {
+		t.Setenv(EnvQuiet, value)
+		if got := QuietRequested(); got != want {
+			t.Errorf("%s=%q: QuietRequested() = %v, want %v", EnvQuiet, value, got, want)
+		}
+	}
+}

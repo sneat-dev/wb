@@ -280,6 +280,7 @@ func TestPersistentFlagMatrix(t *testing.T) {
 		"filter":          "acme",
 		"org":             "acme",
 		"non-interactive": "true",
+		"quiet":           "true",
 	}
 	for flag, value := range values {
 		for _, commandID := range leafCommandIDs(newRootCmd()) {
