@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -36,7 +38,7 @@ func remoteBranchExists(t *testing.T, fixture *landFixture, branch string) bool 
 // has checked out, clean or dirty (sneat-dev/wb#824).
 //
 //nolint:paralleltest // newLandFixture installs a process-wide fake gh and Git environment.
-func TestLandCleansUpWhileTheCanonicalCloneIsOnAnotherBranch(t *testing.T) {
+func TestE2ELandCleansUpWhileTheCanonicalCloneIsOnAnotherBranch(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		dirty bool
@@ -90,7 +92,7 @@ func TestLandCleansUpWhileTheCanonicalCloneIsOnAnotherBranch(t *testing.T) {
 // command works.
 //
 //nolint:paralleltest // newLandFixture installs a process-wide fake gh and Git environment.
-func TestLandWhoseCleanupFailedReportsLandedIncompleteAndResumes(t *testing.T) {
+func TestE2ELandWhoseCleanupFailedReportsLandedIncompleteAndResumes(t *testing.T) {
 	fixture := newLandFixture(t, "bump/resume", "go.sum")
 	worktree := createLandedTaskWorktree(t, fixture, "resume-task", "bump/resume")
 
@@ -151,7 +153,7 @@ func TestLandWhoseCleanupFailedReportsLandedIncompleteAndResumes(t *testing.T) {
 // exit status rather than "findings".
 //
 //nolint:paralleltest // newCreateFixture installs a process-wide fake gh and Git environment.
-func TestCreateLandMapsALandedIncompleteLandingToItsOwnOutcome(t *testing.T) {
+func TestE2ECreateLandMapsALandedIncompleteLandingToItsOwnOutcome(t *testing.T) {
 	fixture := newCreateFixture(t)
 	fixture.writeState(t, "files", `[{"filename":"go.sum","status":"modified","patch":"@@ -1,1 +1,1 @@\n-old h1:x=\n+new h1:y=\n"}]`)
 	worktree := fixture.createWorktree(t, "create-incomplete-task", "feature/create-incomplete", "main", "go.sum")

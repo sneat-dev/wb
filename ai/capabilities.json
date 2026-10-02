@@ -12733,6 +12733,7 @@
                 "--base",
                 "--claim",
                 "--cli",
+                "--closed-pr",
                 "--disposition",
                 "--format",
                 "--model",
@@ -12745,6 +12746,7 @@
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
                 "a proven unclaimed pre-apply recycle reservation is terminalized without --remote while its immutable prompt archive remains retained",
                 "discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
+                "discarded --closed-pr verifies a closed unmerged pull request whose head equals the clean checkout's exact head, re-proves it under the task lock, and records a durable audit file before removal",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
@@ -12770,6 +12772,7 @@
                 "--provider",
                 "--remote",
                 "--absorbed-by",
+                "--closed-pr",
                 "--all",
                 "resumable",
                 "discarded",
@@ -12790,6 +12793,7 @@
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
                 "wb worktree abort next-task --disposition discarded --apply",
                 "wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
+                "wb worktree abort fair-split --disposition discarded --closed-pr <closed-pr> --reason <why-closed> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }

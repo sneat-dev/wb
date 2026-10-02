@@ -1901,15 +1901,6 @@ func TestGuardCanonicalFreshnessReportsFreshlyFetchedRemoteState(t *testing.T) {
 	}
 }
 
-func TestGuardCanonicalFreshnessIsNotReportedOffTheBaseBranch(t *testing.T) {
-	fixture := newGitFixture(t)
-	gitTest(t, fixture.canonical, "switch", "-c", "feature")
-	result, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot, CheckFreshness: true})
-	if err != nil || result.Freshness != nil {
-		t.Fatalf("guard on a feature branch = (%#v, %v), want a result with no freshness receipt", result, err)
-	}
-}
-
 func TestGuardCanonicalFreshnessReportsOfflineExplicitly(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(filepath.Dir(fixture.remote), "missing.git"))

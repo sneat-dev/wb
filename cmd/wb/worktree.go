@@ -1012,7 +1012,7 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 }
 
 func newWorktreeAbortCmd(inv *invocation) *cobra.Command {
-	var base, disposition, successor, absorbedBy, format string
+	var base, disposition, successor, absorbedBy, closedPR, format string
 	var claimID, actor, reason string
 	var model, cli, provider string
 	var apply, deleteRemote, all bool
@@ -1057,6 +1057,19 @@ terminal instead of trying to reseal the immutable "landed" terminal as
 terminal conflicts with requested transition". The original finalize
 terminal is never rewritten.
 
+For a checkout whose pull request was CLOSED WITHOUT MERGING (a duplicate whose
+twin landed, a superseded attempt), --disposition discarded --closed-pr
+<pr-number|pr-url> --reason <why> is the supported discard. WB reads the pull
+request from GitHub and proceeds only when it is closed and unmerged, in this
+repository, with head branch and head commit exactly equal to the checkout's;
+a checkout with any commit the closed pull request never carried, or any
+uncommitted byte, is refused. The check is repeated under the task lock
+immediately before removal, the remote branch is retired only at that exact
+head (--remote, as for every discard), and a durable audit record naming the
+task, repository, head commit, pull request, and your --reason is written under
+WB home in closed-pr-discards/ before anything is removed. --closed-pr does
+not combine with --absorbed-by: a pull request is either merged or not.
+
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
 explicit --actor and --reason. Dry run and apply both prove the worktree path,
@@ -1082,8 +1095,8 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: inv.projectsRoot, Task: args[0], Base: base, Filter: inv.filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
-				AbsorbedBy: absorbedBy,
-				ClaimID:    claimID, Actor: actor, Reason: reason,
+				AbsorbedBy: absorbedBy, ClosedPullRequest: closedPR,
+				ClaimID: claimID, Actor: actor, Reason: reason,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -1152,6 +1165,13 @@ The default is a dry-run plan.`,
 					continue
 				}
 				state := "would seal"
+				if !result.Eligible {
+					// A dry run must not promise a seal the apply will refuse.
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "cannot seal %s %s: %s\n", result.Repository, result.Disposition, result.Reason); err != nil {
+						return err
+					}
+					continue
+				}
 				if result.Applied && result.Disposition == worktrees.AbortOrphaned {
 					state = "sealed absent claim"
 				} else if result.Applied && result.WorktreeGone {
@@ -1161,6 +1181,12 @@ The default is a dry-run plan.`,
 				}
 				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s\n", state, result.Repository, result.Disposition); err != nil {
 					return err
+				}
+				if closed := result.ClosedPullRequest; closed != nil {
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "  closed pull request %s#%d head %s (%s)%s\n",
+						closed.Repository, closed.Number, closed.HeadSHA, closed.Reason, closedAuditSuffix(closed.AuditPath)); err != nil {
+						return err
+					}
 				}
 			}
 			if remaining > 0 {
@@ -1178,9 +1204,10 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, discarded, or orphaned")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "merged pull request that proves a clean squash-absorbed source before discarded removal")
+	command.Flags().StringVar(&closedPR, "closed-pr", "", "pull request number or URL that GitHub reports closed unmerged with head exactly equal to this clean checkout's head; with discarded and --reason")
 	command.Flags().StringVar(&claimID, "claim", "", "exact immutable Work Log claim ID (required for orphaned)")
 	command.Flags().StringVar(&actor, "actor", "", "approving person or agent identity (required for orphaned)")
-	command.Flags().StringVar(&reason, "reason", "", "audit reason for sealing an absent orphaned claim")
+	command.Flags().StringVar(&reason, "reason", "", "audit reason: required for an orphaned claim and for discarded --closed-pr")
 	command.Flags().StringVar(&model, "model", "", "required with applied handoff/not_landed: exact successor model or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
@@ -1189,6 +1216,13 @@ The default is a dry-run plan.`,
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged remote source branch when applying discarded")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+func closedAuditSuffix(path string) string {
+	if path == "" {
+		return ""
+	}
+	return "; audit " + path
 }
 
 func newWorktreeCreateCmd(inv *invocation) *cobra.Command {

@@ -675,6 +675,55 @@ func (service ReceiptService) ResolveAbsorbedByPullRequestWithGet(
 	return candidate.MergeCommitSHA, service.MergedPullRequestReceipt(slug, candidate), "", nil
 }
 
+// ResolveClosedPullRequest reads the pull request a discarding operator names
+// as the superseded home of a checkout's work and returns it only when GitHub
+// reports it closed WITHOUT merging, in the requested repository. The pointer
+// is a pull request number, "#"-prefixed number, or full GitHub URL. A non-empty
+// rejection explains a verifiable mismatch; an error means GitHub could not be
+// read. Whether the pull request's head equals the checkout's head is the
+// caller's decision: it is the proof that no commit of the checkout is unique.
+func (service ReceiptService) ResolveClosedPullRequest(
+	ctx context.Context,
+	worktree, slug, base, pointer string,
+) (*GitHubPullRequest, string, error) {
+	trimmed := strings.TrimSpace(pointer)
+	numberText := strings.TrimPrefix(trimmed, "#")
+	if match := absorbedByPullRequestURLPattern.FindStringSubmatch(trimmed); match != nil {
+		if !strings.EqualFold(match[1], slug) {
+			return nil, fmt.Sprintf("--closed-pr URL %s names repository %q, not the requested %q", trimmed, match[1], slug), nil
+		}
+		numberText = match[2]
+	}
+	number, err := strconv.Atoi(numberText)
+	if err != nil || number <= 0 {
+		return nil, fmt.Sprintf("--closed-pr %q is not a pull request number or GitHub pull request URL", pointer), nil
+	}
+	response, err := service.Ports.GitHubGet(ctx, GitHubGetRequest{
+		Dir: worktree, Repository: slug, Target: base,
+		Endpoint: "repos/" + slug + "/pulls/" + strconv.Itoa(number),
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s pull request %d: %w", slug, number, err)
+	}
+	var candidate GitHubPullRequest
+	if err := json.Unmarshal(response, &candidate); err != nil {
+		return nil, "", fmt.Errorf("decode %s pull request %d: %w", slug, number, err)
+	}
+	if !strings.EqualFold(candidate.State, "closed") {
+		return nil, fmt.Sprintf("--closed-pr pull request %s#%d is not closed", slug, number), nil
+	}
+	if candidate.MergedAt != nil {
+		return nil, fmt.Sprintf("--closed-pr pull request %s#%d was merged; use --absorbed-by for a merged pull request", slug, number), nil
+	}
+	if !worktreeproof.IsGitObjectID(candidate.Head.SHA) {
+		return nil, fmt.Sprintf("--closed-pr pull request %s#%d has invalid head commit %q", slug, number, candidate.Head.SHA), nil
+	}
+	if candidate.Number != number {
+		candidate.Number = number
+	}
+	return &candidate, "", nil
+}
+
 func (service ReceiptService) MergedPullRequestReceipt(repository string, candidate GitHubPullRequest) *PullRequest {
 	return &PullRequest{
 		Number: candidate.Number, URL: candidate.URL, Repository: repository, State: "MERGED",

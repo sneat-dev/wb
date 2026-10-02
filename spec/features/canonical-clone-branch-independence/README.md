@@ -47,6 +47,15 @@ landed, name the failing step, and print the exact resume command (`wb pr land
 <owner/repo#n>` on the merged pull request, `wb worktree merge resume
 <receipt>`), which finishes the tail.
 
+A checkout of a rebase-merged pull request has an original head that is never an
+ancestor of the target; the relocation preflight accepts it on the merged pull
+request evidence instead of refusing it as "no longer contained". A checkout
+whose pull request was closed without merging (a duplicate whose twin landed)
+is discarded with `wb worktree abort <task> --disposition discarded --closed-pr
+<pr> --reason <text> --apply --remote`: WB proves the pull request closed and
+unmerged with head branch and commit equal to the clean checkout's, repeats the
+proof under the task lock, and writes an audit record before removal.
+
 ### Audit of every on-base enforcement point
 
 | Place | What it did | Now |
@@ -92,6 +101,23 @@ branch retirement or cleanup failed MUST exit 3 (never 1), report outcome
 naming the exact command that finishes it; running that command MUST complete
 the cleanup. Exit code 3 MUST be documented in the root help.
 
+#### REQ: rebase-merged-head-needs-no-ancestry
+
+The legacy repository-relocation cleanup preflight MUST NOT refuse a head
+proved by a rebase-merged or absorbed pull request for not being an ancestor of
+the fetched target, and MUST still refuse an unproved head that is not
+contained.
+
+#### REQ: closed-duplicate-discard-is-audited
+
+`wb worktree abort --disposition discarded --closed-pr <pr> --reason <text>` MUST
+refuse unless GitHub reports the pull request closed and unmerged in the
+checkout's repository with head branch and head commit exactly equal to the
+checkout's, the checkout is clean, and `--reason` is given; MUST repeat the proof
+under the task lock; MUST write a durable audit record (task, repository,
+branch, head commit, pull request, reason) before removal; and MUST NOT combine
+with `--absorbed-by`.
+
 ## Acceptance Criteria
 
 ### AC: guard-accepts-any-branch-and-refuses-dirty
@@ -100,7 +126,7 @@ the cleanup. Exit code 3 MUST be documented in the root help.
 
 **Verifies:** `TestGuardAcceptsAnyBranchInACanonicalCloneAndRejectsChanges`,
 `TestGuardCanonicalRefusesFailedQueriesAndUnsafeState`, and the freshness test
-`TestGuardCanonicalFreshnessIsNotReportedOffTheBaseBranch`.
+`TestE2EGuardCanonicalFreshnessIsNotReportedOffTheBaseBranch`.
 
 ### AC: deletion-push-from-a-canonical-clone-on-another-branch
 
@@ -109,28 +135,45 @@ the cleanup. Exit code 3 MUST be documented in the root help.
 With real Git hooks and the built binary, a lease-checked deletion push from a
 canonical clone on another branch, clean or dirty, succeeds; publishing the
 branch from a dirty clone is still refused. **Verifies:**
-`TestPrePushGuardInACanonicalCloneOnAnotherBranch`,
-`TestCheckoutOfAnotherBranchInACanonicalCloneRaisesNoGuardWarning`,
+`TestE2EPrePushGuardInACanonicalCloneOnAnotherBranch`,
+`TestE2ECheckoutOfAnotherBranchInACanonicalCloneRaisesNoGuardWarning`,
 `TestOnlyRemoteRefDeletionsAcceptsAPushThatSendsNothingFromTheCheckout`.
 
 ### AC: landing-cleanup-with-the-canonical-clone-on-a-feature-branch
 
 **Requirements:** canonical-clone-branch-independence#req:cleanup-independent-of-the-canonical-branch
 
-**Verifies:** `TestLandCleansUpWhileTheCanonicalCloneIsOnAnotherBranch` (clean and
+**Verifies:** `TestE2ELandCleansUpWhileTheCanonicalCloneIsOnAnotherBranch` (clean and
 dirty; remote branch deleted, worktree retired, task released, canonical branch
 and uncommitted work untouched) and
-`TestLandedWorktreeIsRetiredWhileTheCanonicalCloneIsOnAnotherBranch` (real hooks,
+`TestE2ELandedWorktreeIsRetiredWhileTheCanonicalCloneIsOnAnotherBranch` (real hooks,
 real binary).
 
 ### AC: landed-but-incomplete-has-its-own-exit-status
 
 **Requirements:** canonical-clone-branch-independence#req:landed-incomplete-exit-status
 
-**Verifies:** `TestLandWhoseCleanupFailedReportsLandedIncompleteAndResumes`,
-`TestCreateLandMapsALandedIncompleteLandingToItsOwnOutcome`,
+**Verifies:** `TestE2ELandWhoseCleanupFailedReportsLandedIncompleteAndResumes`,
+`TestE2ECreateLandMapsALandedIncompleteLandingToItsOwnOutcome`,
 `TestWorktreeLandExitsDistinctlyWhenTheMergeLandedButTheTailDidNot`,
 `TestRootHelpDocumentsTheLandedIncompleteExitCode`.
+
+### AC: rebase-merged-head-is-provable-without-ancestry
+
+**Requirements:** canonical-clone-branch-independence#req:rebase-merged-head-needs-no-ancestry
+
+**Verifies:** `TestE2ELegacyRepositoryRelocationProvesARebaseMergedHeadWithoutAncestry`
+and `TestE2ELegacyRepositoryRelocationRefusesMissingLiveProof`.
+
+### AC: closed-duplicate-checkout-is-discarded-with-an-audit-record
+
+**Requirements:** canonical-clone-branch-independence#req:closed-duplicate-discard-is-audited
+
+**Verifies:** `TestE2EAbortDiscardedClosedPullRequestRetiresADuplicateWithAnAuditRecord`,
+`TestE2EAbortDiscardedClosedPullRequestRefusesUnprovenShapes`,
+`TestE2EAbortDiscardedClosedPullRequestReprovesUnderTheTaskLock`,
+`TestE2EWorktreeAbortClosedPullRequestDiscardsADuplicateAndReportsTheAudit`,
+`TestResolveClosedPullRequestRefusesWhatIsNotAClosedUnmergedPullRequest`.
 
 ## Open Questions
 

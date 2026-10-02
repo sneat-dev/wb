@@ -31,7 +31,7 @@ func TestPushOnlyDeletesRemoteRefsNeverReadsATerminal(t *testing.T) {
 	if err != nil {
 		t.Skipf("no controlling terminal: %v", err)
 	}
-	defer func() { _ = tty.Close() }()
+	t.Cleanup(func() { _ = tty.Close() })
 	if pushOnlyDeletesRemoteRefs(tty) {
 		t.Fatal("a terminal was treated as a pushed-ref list")
 	}

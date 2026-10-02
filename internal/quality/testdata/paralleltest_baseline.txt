@@ -2523,6 +2523,11 @@ internal/worktrees::TestDependencyCampaignDetectionUsesMarkerAndLegacyDiffs/#1	s
 internal/worktrees::TestDependencyCampaignReceiptCannotBypassDeltaProof	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestDependencyReceiptRequiresAuthoritativeSourcePullRequest	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/worktrees::TestE2EAbortDiscardedClosedPullRequestRefusesUnprovenShapes	kept serial because a nested subtest must stay serial: #1
+internal/worktrees::TestE2EAbortDiscardedClosedPullRequestRefusesUnprovenShapes/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/worktrees::TestE2EAbortDiscardedClosedPullRequestReprovesUnderTheTaskLock	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/worktrees::TestE2EAbortDiscardedClosedPullRequestRetiresADuplicateWithAnAuditRecord	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/worktrees::TestE2EGuardCanonicalFreshnessIsNotReportedOffTheBaseBranch	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestEnsureExternalSourceOfferEvidenceRejectsForgedMatchingSubset	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestEnsureExternalSourceOfferEvidenceRepairsEveryCheckpointBoundary	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestExactBranchPullRequestsIgnoresUnknownState	serial pending case-by-case review (sneat-dev/wb#623 baseline)

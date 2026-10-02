@@ -1,3 +1,5 @@
+//go:build e2e
+
 package main
 
 import (
@@ -65,7 +67,7 @@ func (fixture canonicalBranchFixture) leaveCanonicalOnAnotherBranch(t *testing.T
 }
 
 //nolint:paralleltest // builds and runs the real wb binary against real Git hooks.
-func TestPrePushGuardInACanonicalCloneOnAnotherBranch(t *testing.T) {
+func TestE2EPrePushGuardInACanonicalCloneOnAnotherBranch(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		dirty bool
@@ -109,7 +111,7 @@ func TestPrePushGuardInACanonicalCloneOnAnotherBranch(t *testing.T) {
 }
 
 //nolint:paralleltest // builds and runs the real wb binary against real Git hooks.
-func TestCheckoutOfAnotherBranchInACanonicalCloneRaisesNoGuardWarning(t *testing.T) {
+func TestE2ECheckoutOfAnotherBranchInACanonicalCloneRaisesNoGuardWarning(t *testing.T) {
 	fixture := newCanonicalBranchFixture(t)
 	output, err := runUpgradeGit(fixture.canonical, fixture.hookEnv, "checkout", "-b", "feat/other")
 	if err != nil {
@@ -127,7 +129,7 @@ func TestCheckoutOfAnotherBranchInACanonicalCloneRaisesNoGuardWarning(t *testing
 // deleted and the worktree retired, and the other agent's work is untouched.
 //
 //nolint:paralleltest // builds and runs the real wb binary against real Git hooks.
-func TestLandedWorktreeIsRetiredWhileTheCanonicalCloneIsOnAnotherBranch(t *testing.T) {
+func TestE2ELandedWorktreeIsRetiredWhileTheCanonicalCloneIsOnAnotherBranch(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		dirty bool

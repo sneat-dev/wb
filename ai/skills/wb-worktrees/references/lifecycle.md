@@ -283,6 +283,7 @@ wb worktree abort <task> --disposition not_landed --successor <agent-or-session>
   --provider <routing-or-billing-provider-if-known> --apply
 wb worktree abort <task> --disposition discarded --apply --remote
 wb worktree abort <task> --disposition discarded --absorbed-by <merged-pr> --apply --remote
+wb worktree abort <task> --disposition discarded --closed-pr <closed-pr> --reason <why-closed> --apply --remote
 wb worktree abort <task> --disposition orphaned --claim <claim-id> \
   --actor <approving-person-or-agent> --reason <audit-reason>
 wb worktree abort <task> --disposition orphaned --claim <claim-id> \
@@ -290,6 +291,7 @@ wb worktree abort <task> --disposition orphaned --claim <claim-id> \
 wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown
 wb worktree abort fair-split --disposition discarded --apply --remote
 wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote
+wb worktree abort fair-split --disposition discarded --closed-pr <closed-pr> --reason <why-closed> --apply --remote
 wb worktree abort fair-split --disposition discarded --all --apply --remote
 wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply
 ```
@@ -305,6 +307,16 @@ authorization to seal first, retire an exact unchanged remote source branch,
 then remove a clean unlocked worktree and its exact local branch. WB repeats
 the clean/head/registration checks at the removal boundary; a concurrent write
 makes it refuse.
+
+For a checkout whose pull request was closed WITHOUT merging (a duplicate whose
+twin landed, a superseded attempt), use `--closed-pr <pr-number|pr-url> --reason
+<why-closed>` instead of ad-hoc git or the GitHub API. WB proves GitHub reports
+that pull request closed and unmerged in this repository with head branch and
+head commit exactly equal to the clean checkout's, repeats the proof under the
+task lock, and writes a durable record to `closed-pr-discards/` under WB home
+before removing anything. A checkout with a commit the pull request never
+carried, or any uncommitted byte, is refused; it does not combine with
+`--absorbed-by`.
 
 For a clean source retained after a squash merge, add `--absorbed-by <merged-pr>`.
 WB fetches the PR head from the configured origin and proves the source ancestry,
