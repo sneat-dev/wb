@@ -4,14 +4,13 @@ import { FleetModel, FleetStore } from '@cockpit/fleet-data'
 import { GLYPH_CHEVRON_DOWN, Glyph } from '@cockpit/ui/control'
 import { watchMetrics } from '../../metrics/metrics-poller'
 import { HomeMore } from './home-more'
+import { PHONE_QUERY } from './home-phone'
 import { HomeRegistry } from './home-registry'
 import { InFlightSection } from './in-flight-section'
 import { needsYouRows } from './needs-you-rows'
 import { ReadySection } from './ready-section'
 import { ResumeSection } from './resume-section'
 
-/** The width at and below which Home is a phone: sections 1 to 3 are cards and the rest is behind "More". */
-export const PHONE_QUERY = '(max-width: 480px)'
 
 /**
  * The capabilities that cockpit-actions adds. A session that holds one has a daemon with an action registry.
@@ -31,8 +30,9 @@ export function registryTargets(model: FleetModel): string[] {
 /**
  * Everything on Home after "Needs you", as one lazy chunk that the page requests as soon as it is
  * created (REQ:initial-script-size keeps it out of the first page): "Ready to land", "In flight"
- * with the machine strip, "Resume", and below the fold "Cleanup", "Fleet health" and the charts (which wait until the
- * daemon's first scan is done: counts of a partial scan mean nothing, and nothing below the first three sections may move). It
+ * with the machine strip, "Resume", and below the fold "Cleanup" and "Fleet health" (which wait until the
+ * daemon's first scan is done: counts of a partial scan mean nothing, and nothing below the first three sections may move).
+ * Throughput is not here: it is the first section of Home, in the page (REQ:home-charts). This chunk
  * also asks the registry for the actions of the rows that can show them. On a phone (480 px or
  * less) sections 1 to 3 are cards and the rest sits behind one "More" disclosure (REQ:home-phone).
  */

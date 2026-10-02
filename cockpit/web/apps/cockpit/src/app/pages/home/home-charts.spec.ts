@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing'
 import { buildThroughput } from '@cockpit/fleet-data/home-details'
 import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { fleet, modelOf } from './home-testing'
-import { HomeCharts, durationCaption, seriesNames, throughputSpecs } from './home-charts'
+import { CAPPED_NOTE, HomeCharts, durationCaption, seriesNames, throughputSpecs } from './home-charts'
 
 const series = (document = fleet()) => buildThroughput(modelOf(document))!
 
@@ -83,11 +83,21 @@ describe('HomeCharts', () => {
     expect(root.querySelectorAll('.data button')).toHaveLength(0)
   })
 
-  it('says when the daemon capped its scan, and has no caption when no task finished', async () => {
+  it('says in a word on the caption line, and in full for a screen reader and as a tooltip, that the daemon capped its scan, and adds no line to the card', async () => {
     const capped = { ...series(), capped: true, medianSeconds: undefined, p90Seconds: undefined, slowest: [] }
     const { root } = await render(capped)
-    const legends = [...root.querySelectorAll('.chart-legend')].map((legend) => text(legend))
-    expect(legends).toEqual(['finished dropped', 'The daemon capped its scan: older sealed tasks may be missing.'])
+    const legends = [...root.querySelectorAll('.chart-legend')]
+    expect(legends.map((legend) => text(legend))).toEqual(['finished dropped', `scan capped ${CAPPED_NOTE}`])
+    expect(legends[1].getAttribute('title')).toBe(CAPPED_NOTE)
+    expect(legends[1].querySelector('.visually-hidden')?.textContent).toBe(CAPPED_NOTE)
+    expect(root.querySelectorAll('.chart-legend')).toHaveLength(2)
+    const both = await render({ ...series(), capped: true })
+    expect(text(both.root.querySelectorAll('.chart-legend')[1])).toContain('median 15 min · p90 15 h · scan capped')
+  })
+
+  it('has no caption when no task finished and the scan was not capped', async () => {
+    const { root } = await render({ ...series(), medianSeconds: undefined, p90Seconds: undefined, slowest: [] })
+    expect([...root.querySelectorAll('.chart-legend')].map((legend) => text(legend))).toEqual(['finished dropped'])
   })
 
   it('says "No data" for a window with nothing finished or dropped', async () => {
@@ -102,5 +112,36 @@ describe('HomeCharts', () => {
     expect(perDay.querySelector('.overlay')).toBeNull()
     expect(text(slowest.querySelector('.overlay'))).toBe('No data')
     expect([...root.querySelectorAll('.chart-legend')].map((legend) => text(legend))[0]).toBe('finished dropped')
+  })
+})
+
+describe('HomeCharts on a phone', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stubMedia(matches: boolean) {
+    const listeners: Array<(event: { matches: boolean }) => void> = []
+    const remove = vi.fn()
+    vi.stubGlobal('matchMedia', () => ({ matches, addEventListener: (_: string, listener: (event: { matches: boolean }) => void) => listeners.push(listener), removeEventListener: remove }))
+    return { listeners, remove }
+  }
+  const plots = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('.plot')].map((plot) => plot.style.height)
+
+  it('draws shorter plots at 480 px and less, and follows the viewport when it changes', async () => {
+    const media = stubMedia(true)
+    const { fixture, root } = await render()
+    expect(plots(root)).toEqual(['5.5rem', '5.75rem'])
+    expect(throughputSpecs(series(), true).perDay.fitAxis).toBe(true)
+    expect(throughputSpecs(series()).perDay.fitAxis).toBe(false)
+    media.listeners[0]({ matches: false })
+    await fixture.whenStable()
+    expect(plots(root)).toEqual(['9rem', '9rem'])
+    fixture.destroy()
+    expect(media.remove).toHaveBeenCalled()
+  })
+
+  it('draws full plots on a wide viewport', async () => {
+    stubMedia(false)
+    const { root } = await render()
+    expect(plots(root)).toEqual(['9rem', '9rem'])
   })
 })

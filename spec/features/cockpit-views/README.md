@@ -388,7 +388,7 @@ agents, ending with the "Raw data" block.
 
 #### REQ: home-needs-you
 
-Serves J1 and J4. Home's first section, "Needs you", MUST show one row per task, at most 5
+Serves J1 and J4. Home's first decision section, "Needs you" (directly below the fixed slot of "Throughput", REQ:home-charts), MUST show one row per task, at most 5
 rows, each task for its worst kind and with exactly one primary action, then "+n more" that
 opens Tasks with chip `needs-you` (the same set); when there are none it shows one line saying
 nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. "Needs
@@ -484,19 +484,46 @@ REQ:remote-error-is-visible for a remote error.
 
 #### REQ: home-charts
 
-Serves J2 and J6. Below the sections above, and hidden behind "more" on a phone, Home MUST show
-two charts drawn with Chart.js from the document's `throughput` block (REQ:throughput-block):
-"Finished per day" over the last 30 days (stacked bars of `finished` and `dropped`) and
-"Time to finish" (the slowest five finished tasks named, with the `median_seconds` and
-`p90_seconds` in the caption). They are non-linking
-(REQ:every-number-is-a-link). When the block is absent the charts are not rendered. Each chart
-has a text alternative, a visually hidden table of the same numbers, and uses the theme's colours
-in light and dark. The charts never sit above sections 1 to 3.
+Serves J2 and J6. Home MUST show "Throughput" as its very first section, above "Needs you", always:
+whatever the document says, the section has the same heading and one slot whose height is fixed at
+each breakpoint and never depends on what the slot holds. The daemon's first complete document may
+come without the `throughput` block and gain it on a later publish, so the block coming and going
+MUST NOT move any other part of Home by a pixel (REQ:look-layout holds with no exception). The slot
+holds exactly one of four things:
+
+1. While no document is loaded or the daemon's first scan is running, a skeleton, with the section
+   marked `aria-busy` and a visually hidden status "Loading throughput charts".
+2. When a complete document has a `throughput` block with a day or a task in it, two charts drawn
+   with Chart.js from it (REQ:throughput-block): "Finished per day" over the last 30 days (stacked
+   bars of `finished` and `dropped`) and "Time to finish" (the slowest five finished tasks named,
+   with the `median_seconds` and `p90_seconds` in the caption, and "scan capped" there when the
+   block says `capped`, in full as a tooltip and to a screen reader, so no line is added to a card
+   of fixed height). They are non-linking (REQ:every-number-is-a-link). Each chart has a text
+   alternative, a visually hidden table of the same numbers, and uses the theme's colours in light
+   and dark.
+3. When a complete document has no block, or a block with no day and no task, the calm line "No
+   charts: the daemon reports no throughput (finished and dropped work) yet.", real text centred in
+   the slot.
+4. When the charts' chunk cannot be fetched, the text "Charts unavailable." and a "Retry" button
+   that loads the page again (a browser remembers a module that failed until the page is loaded
+   again).
+
+The heading and the slot are part of the first page; the charts and Chart.js are a lazy chunk
+requested as soon as the section is created, so they arrive right after the first paint, and the
+first-page script stays within REQ:initial-script-size. The cards are as tall as the slot says
+whatever they hold: no title, legend or caption of a card overlaps another or is cut below the card.
+On a phone (480 px or less) the section stays on top, not behind "more", and is dense: each
+chart's legend or caption shares its title's row (cut with an ellipsis when it does not fit), the
+cards are close together and tightly padded, the "Time to finish" plot is as tall as its five rows
+of labels (11 px) need, and at 375 x 812 px the "Needs you" heading is at or above y 425 with both
+charts readable. The sections after Throughput keep their order: Needs you, Ready to land, In
+flight, Resume, Cleanup, Fleet health.
 
 #### REQ: home-phone
 
 Serves J1 and J2. At a viewport 360 px wide, in hosted mode as well, Home MUST show
-sections 1 to 3 as cards and sections 4 to 6 and the charts behind "more". Every
+sections 1 to 3 as cards and sections 4 to 6 behind "more"; the Throughput charts, when there are
+any, stay on top, compact (REQ:home-charts). Every
 other page MUST merely not break at that width (REQ:responsive-to-360).
 
 ### Repositories
@@ -2380,10 +2407,10 @@ Then the first shows no Fleet health line, the second shows one line per problem
 
 **Requirements:** cockpit-views#req:home-charts
 
-Scenario: With and without throughput, and non-linking
-Given a document with a `throughput` block of 30 days and one without
-When Home is opened on a desktop viewport for each, and a bar and a number of the charts are clicked
-Then the first shows "Time to finish" with the slowest five named and the median and 90th percentile in its caption, and "Finished per day" as stacked finished and dropped bars, each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
+Scenario: The four states of the slot, and non-linking
+Given a daemon that publishes, in turn, a warming-up document, a complete document without a `throughput` block, one with a block of 30 days (also with `capped` true), one whose block has no day and no task, and one without a block again, and a charts chunk that cannot be fetched
+When Home is opened on a desktop, a 800 px, a 375 px and a 360 px viewport and each document arrives, and a bar and a number of the charts are clicked
+Then "Throughput" is the first section of Home in every state; the slot is a skeleton in a busy section while warming up, the two charts (each with a visually hidden table and theme colours, "Time to finish" with the slowest five named and the median and 90th percentile in its caption) for the block, the calm line "No charts: the daemon reports no throughput" centred for no block or an empty one, and "Charts unavailable." with a "Retry" that loads the page again when the chunk fails; nothing happens on a click because the charts do not link; the slot has the same height and the heading of "Needs you" the same position in every state, no card clips or overlaps its title, legend or caption, and Chart.js is in none of the scripts the first page is made of
 
 ### AC: home-phone-layout
 
@@ -2392,7 +2419,7 @@ Then the first shows "Time to finish" with the slowest five named and the median
 Scenario: 360 px wide
 Given a viewport 360 px wide, in hosted mode
 When Home and each other page are opened
-Then sections 1 to 3 are cards, sections 4 to 6 and the charts are behind "more", and no page scrolls horizontally or breaks
+Then sections 1 to 3 are cards, sections 4 to 6 are behind "more", the Throughput charts are on top, both shown, and compact so that the "Needs you" heading is at or above y 425 at 375 x 812 px, and no page scrolls horizontally or breaks
 
 ### AC: repository-identity-merges-local-and-cached
 
