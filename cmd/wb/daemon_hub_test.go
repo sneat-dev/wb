@@ -205,6 +205,20 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 		})
 	}
 
+	// The served hub refuses a write from an anonymous local caller and takes
+	// one with the owner's machine credential
+	// (self-hosted-bench#ac:hub-writes-need-a-credential), over the real listener.
+	const coverage = `{"repository":"sneat-dev/wb","statements":10,"covered":9}`
+	if status, body := postToServedHub(t, address, hub.CoveragePath, coverage, ""); status != http.StatusUnauthorized || !strings.Contains(body, "coverage_unauthorized") {
+		t.Fatalf("anonymous coverage write = %d %q, want 401", status, body)
+	}
+	if response, body := fetch(t, "http://"+address+hub.CoveragePath); response.StatusCode != http.StatusOK || strings.TrimSpace(body) != "[]" {
+		t.Fatalf("coverage after a refused write = %s %q, want an empty list", response.Status, body)
+	}
+	if status, body := postToServedHub(t, address, hub.CoveragePath, coverage, localHubBearer(t, configPath)); status != http.StatusCreated {
+		t.Fatalf("coverage write with the owner's machine bearer = %d %q, want 201", status, body)
+	}
+
 	if line := stderr.String(); !strings.Contains(line, "WB hub: engine=memory") || !strings.Contains(line, "dashboard=http://"+address+"/workbench/dashboard/") {
 		t.Fatalf("start line = %q", line)
 	}
