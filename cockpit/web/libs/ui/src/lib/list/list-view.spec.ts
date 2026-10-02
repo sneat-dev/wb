@@ -46,6 +46,14 @@ class Host {
 }
 
 @Component({
+  imports: [ListView],
+  template: `<app-list page="worktrees" [columns]="columns" />`,
+})
+class NoSortHost {
+  protected readonly columns: ListColumn<Worktree>[] = [{ id: 'worktree', header: 'Worktree', title: true, width: 'fill', value: (w) => w.task }]
+}
+
+@Component({
   imports: [ListView, ListCell, ListPanelTemplate],
   template: `<app-list page="worktrees" [columns]="columns" prefix="a">
     <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
@@ -299,6 +307,36 @@ describe('ListView', () => {
     expect(one.root.querySelector('[aria-label=Machines]')).toBeNull()
     const selected = await open('/list?machine=mach-alpha', { document: single })
     expect(selected.root.querySelector('[aria-label=Machines]')).not.toBeNull()
+  })
+
+  it('sorts from the keyboard: s takes the next sortable column and Shift S reverses, each said aloud, and the headers are out of the Tab order', async () => {
+    const page = await open('/list')
+    expect([...page.root.querySelectorAll('.head button.sort')].every((header) => header.getAttribute('tabindex') === '-1')).toBe(true)
+    expect(keydown(page.viewport, 's').defaultPrevented).toBe(true)
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=worktree&dir=asc')
+    expect(page.root.querySelector('.visually-hidden[role=status]')?.textContent).toBe('Sorted by worktree, ascending')
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=machine&dir=asc')
+    keydown(page.viewport, 'S')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=machine&dir=desc')
+    expect(page.root.querySelector('.visually-hidden[role=status]')?.textContent).toBe('Sorted by machine, descending')
+    keydown(page.viewport, 's')
+    await page.settle()
+    // Past the last column it wraps to the first.
+    expect(page.router.url).toBe('/list?sort=activity&dir=desc')
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=worktree&dir=asc')
+  })
+
+  it('has nothing to sort by from the keyboard when no column sorts', async () => {
+    const page = await open('/list', { host: NoSortHost as unknown as AHost })
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(page.router.url).toBe('/list')
   })
 
   it('sorts by a header, reverses on the second click, and shows the direction in the header', async () => {

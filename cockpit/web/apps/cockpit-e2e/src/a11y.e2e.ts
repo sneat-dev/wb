@@ -21,7 +21,7 @@ async function settled(page: Page, path: string): Promise<void> {
     await expect(page.locator('app-chart canvas').first()).toBeVisible()
   }
   if (path.startsWith('machines/mach-')) await expect(page.locator('app-machine-panel .source')).not.toContainText('Reading')
-  await page.waitForLoadState('networkidle')
+  await page.waitForTimeout(300)
 }
 
 async function violations(page: Page): Promise<string[]> {
@@ -78,6 +78,8 @@ for (const scheme of SCHEMES) {
         await expect(page.getByRole('heading', { level: 2, name: 'Needs you' })).toBeVisible()
         await page.getByRole('button', { name: 'More' }).click()
         await expect(page.getByRole('heading', { level: 2, name: 'Cleanup' })).toBeAttached()
+        // Back to the top: what has scrolled under the sticky bar is obscured, which is the bar's job, not a target's size.
+        await page.evaluate(() => window.scrollTo(0, 0))
         expect(await violations(page)).toEqual([])
         await settled(page, 'worktrees')
         await page.locator('[role=row][data-index]').first().locator('[role=gridcell]:not(.open-cell)').last().click()

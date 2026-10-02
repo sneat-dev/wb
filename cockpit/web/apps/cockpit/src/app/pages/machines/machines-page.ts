@@ -17,6 +17,8 @@ export interface MachineRow {
   stale: boolean
   /** The `remote_error` in words; none when the last read worked. */
   warning: string | undefined
+  /** The first read of this machine's metrics has not answered yet: the CPU and Memory columns hold their place meanwhile. */
+  reading: boolean
   /** The `publish_error` of this machine's own entry in words; none when publishing works or is off. */
   publishWarning: string | undefined
   load: ReturnType<typeof machineLoad>
@@ -74,6 +76,7 @@ export class MachinesPage {
             reach: reachWords(view, now),
             stale: view.state === 'stale',
             warning: code === undefined ? undefined : remoteErrorText(code),
+            reading: !entries.has(view.machine.id),
             publishWarning: publish === undefined ? undefined : publishErrorWords(publish),
             load,
             bars: barsOf(load),
@@ -88,12 +91,13 @@ export class MachinesPage {
   protected readonly row = (view: MachineView): MachineRow => this.rows().get(view.machine.id) as MachineRow
   protected readonly panelLabel = (view: MachineView): string => `Machine ${view.machine.machine}`
   private readonly cpu = (view: MachineView): string => {
-    const bars = this.row(view).bars
-    return bars === undefined ? '' : `${bars.cpu}%`
+    const { bars, reading } = this.row(view)
+    // While the first read is out the column keeps its place (a column that appears with the numbers moves the rows).
+    return bars === undefined ? (reading ? '…' : '') : `${bars.cpu}%`
   }
   private readonly memory = (view: MachineView): string => {
-    const bars = this.row(view).bars
-    return bars === undefined ? '' : `${bars.memory}%`
+    const { bars, reading } = this.row(view)
+    return bars === undefined ? (reading ? '…' : '') : `${bars.memory}%`
   }
   protected readonly target = linkTarget
   protected readonly detail = (view: MachineView) => machineDetailLink(view.machine.id)

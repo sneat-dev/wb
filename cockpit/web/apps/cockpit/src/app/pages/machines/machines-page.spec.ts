@@ -5,7 +5,7 @@ import { fleetDocument, machine } from '@cockpit/fleet-data/testing'
 import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
 import { MetricsPoller } from '../../metrics/metrics-poller'
 import { openPage } from '../test-harness'
-import { machinesDocument, metricsAnswers, metricsFetch } from './machines-fixture'
+import { machinesDocument, metricsAnswers, metricsFetch, openMachines } from './machines-fixture'
 import { MachinesPage } from './machines-page'
 
 const text = (element: Element | null) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -40,6 +40,15 @@ describe('MachinesPage', () => {
     const { root } = await open('/machines', fleetDocument({ machines: [], repositories: [], worktrees: [], agents: [] }))
     expect(rowsOf(root)).toHaveLength(0)
     expect(text(root)).toContain('Nothing has been observed')
+  })
+
+  // cockpit-views#ac:no-layout-shift-on-arrival: the columns do not change when the first metrics arrive
+  it('keeps the CPU and Memory columns while the first read is out, with nothing in their cells, and no bar before a sample', async () => {
+    const { root } = await openMachines('/machines', MachinesPage, { answers: 'never' })
+    expect(headersOf(root)).toContain('CPU')
+    expect(headersOf(root)).toContain('Memory')
+    expect(rowsOf(root).length).toBeGreaterThan(0)
+    expect(cell(root, 0, 'CPU').querySelector('.meter')).toBeNull()
   })
 
   // cockpit-views#ac:machines-table-title-and-links

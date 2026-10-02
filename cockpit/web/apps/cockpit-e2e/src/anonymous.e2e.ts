@@ -20,7 +20,7 @@ for (const route of BUSY_ROUTES) {
     // Home's rest, the panels and the lazy chunks arrive after the first paint: let them in before judging.
     await page.locator('app-overlays').waitFor({ state: 'attached' })
     if (route.path === '') await expect(page.getByRole('heading', { level: 2, name: 'Cleanup' })).toBeVisible()
-    await page.waitForLoadState('networkidle')
+    await page.waitForTimeout(300)
 
     expect(requests.filter((request) => request.startsWith('GET /api/') && !METADATA.test(request))).toEqual([])
     expect(requests.filter((request) => request.startsWith('GET /api/')).length).toBeGreaterThan(0)

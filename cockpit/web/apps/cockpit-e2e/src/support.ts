@@ -1,5 +1,7 @@
 import { expect, type Page } from '@playwright/test'
 import type { FleetDocument } from '@cockpit/fleet-data'
+// The fixtures of Home's states are the fleets the application is photographed against; the stubbed suite serves them too.
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { homeStates } from '../../cockpit/src/app/pages/home/home-fixtures'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 

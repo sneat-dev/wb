@@ -301,10 +301,42 @@ a.badge:hover {
     display: none;
   }
 
+  /* A finger needs 44 px: the controls of the bar are that big, the small badge and mark hold a target of their own. */
+  .palette-trigger,
+  .new-task {
+    flex: none;
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .session {
+    min-height: 2.75rem;
+  }
+
+  .brand {
+    position: relative;
+  }
+
+  .brand::after {
+    content: '';
+    position: absolute;
+    inset: 0 -0.625rem;
+  }
+
+  a.badge::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2.75rem;
+    height: 2.75rem;
+    transform: translate(-50%, -50%);
+  }
+
   .tabs {
     flex: 0 0 calc(100% + 2 * var(--space-3));
     order: 3;
-    height: 2.5rem;
+    height: calc(2.75rem + 1px);
     margin: 0 calc(-1 * var(--space-3));
     padding: 0 var(--space-2);
     overflow-x: auto;
@@ -314,5 +346,26 @@ a.badge:hover {
 
   .tabs::-webkit-scrollbar {
     display: none;
+  }
+}
+
+/* The narrowest phones: the session chip keeps its icon and says the rest in its title and to assistive technology, so the
+   freshness chip and the controls fit one row at 360 px. */
+@media (max-width: 30rem) {
+  .session {
+    justify-content: center;
+    width: 2.75rem;
+    padding: 0;
+    border-radius: var(--radius-md);
+  }
+
+  .session-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }

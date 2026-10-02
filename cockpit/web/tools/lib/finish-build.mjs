@@ -71,7 +71,7 @@ export function galleryLeaks(dist) {
 /**
  * `routesSource` is the text of apps/cockpit/src/app/app.routes.ts, whose lazy page routes are the routes measured.
  */
-export function finishBuild(dist, log, report = () => {}, routesSource = '') {
+export function finishBuild(dist, log, report, routesSource) {
   const index = join(dist, 'index.html')
   if (!existsSync(index)) {
     log('cockpit/web build emitted no dist/index.html')

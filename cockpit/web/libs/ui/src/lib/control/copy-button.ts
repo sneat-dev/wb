@@ -48,6 +48,11 @@ export const COPIED_FEEDBACK_MS = 2000
     .copy:hover {
       background: var(--surface-hover);
     }
+    @media (max-width: 30rem) {
+      .copy {
+        height: 2.75rem;
+      }
+    }
     .copy.done {
       border-color: var(--ok-border);
       background: var(--ok-soft);

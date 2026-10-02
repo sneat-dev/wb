@@ -392,10 +392,30 @@ export class ListView<T = unknown> {
       case 'c':
         if (rows.length > 0) void this.copyName(this.copied(rows[this.focused()].item))
         break
+      case 's':
+        this.sortNext()
+        break
+      case 'S':
+        this.sortAnnounced(this.sort().sort)
+        break
       default:
         return
     }
     event.preventDefault()
+  }
+
+  /** `s`: the next sortable column, the way the header buttons (outside the one Tab stop of the grid) sort with a pointer. */
+  private sortNext(): void {
+    const sortable = this.shown().flatMap((column) => (column.sort === undefined ? [] : [column.sort]))
+    if (sortable.length > 0) this.sortAnnounced(sortable[(sortable.indexOf(this.sort().sort) + 1) % sortable.length])
+  }
+
+  /** Sorts by a column and says so, for the keyboard, which has no header to look at. */
+  private sortAnnounced(column: string): void {
+    const query = sortedBy(this.page(), this.query(), column)
+    this.commit(query)
+    const now = effectiveSort(this.page(), query)
+    this.announcer.say(`Sorted by ${now.sort}, ${now.dir === 'asc' ? 'ascending' : 'descending'}`)
   }
 
   /** Enter selects the focused row; on the row that is already open it moves the focus into the panel. */

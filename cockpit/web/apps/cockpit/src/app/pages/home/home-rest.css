@@ -198,7 +198,7 @@ app-home-rest {
 
 .home-more-toggle {
   justify-self: start;
-  height: 2.5rem;
+  height: 2.75rem;
   padding: 0 var(--space-4);
   font-size: var(--fs-sm);
 }
@@ -259,5 +259,11 @@ app-home-rest {
 
   .home-tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 30rem) {
+  .home-toggle {
+    height: 2.75rem;
   }
 }

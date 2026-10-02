@@ -35,7 +35,7 @@
         @for (column of shown(); track column.id) {
           <div class="cell" role="columnheader" [class.end]="column.align === 'end'" [class.title]="column.title" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
             @if (column.sort; as sortId) {
-              <button type="button" class="sort" (click)="sortBy(sortId)">
+              <button type="button" class="sort" tabindex="-1" (click)="sortBy(sortId)">
                 {{ column.header }}
                 @if (sort().sort === sortId) {
                   <app-glyph [paths]="sort().dir === 'asc' ? up : down" />
