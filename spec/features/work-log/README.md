@@ -210,10 +210,29 @@ verb called it:
   landed `wb worktree merge`) MUST accept `removed`, and `landed` only with a
   complete `landed` proof.
 
-Known limit: a worktree whose branch was only fast-forwarded to a newer target
-commit, with no commit of its own, has a head past its `base_sha` and is sealed
-`landed` with proof `contained`. Git cannot tell that from a direct push of the
-claim's own commits.
+Known limits:
+
+- Any head that sits on the target, differs from the claim's `base_sha` and
+  carries no commit of the claim is sealed `landed` with proof `contained`: a
+  branch fast-forwarded to a newer target commit, one moved by
+  `git reset --hard origin/main`, or an empty branch that was rebased. Git
+  cannot tell these from a direct push of the claim's own commits.
+- `landed_sha` identifies where the work is, not a commit of the claim. With
+  proof `absorbed` it is the squash, merge or integration commit, shared by
+  every source of a batch, and for an acknowledged absorption it is only the
+  target head at seal time, not a commit that carries the work. Nothing may
+  deduplicate landings or attribute work by `landed_sha`.
+- `target` is the branch the landing was proved against: normally the claim's
+  base, which may be a stacked parent branch rather than the repository's
+  default branch. A `landed` terminal does not say the work reached the default
+  branch.
+
+Compatibility: the `landed` object is additive, and a `wb` that predates it
+ignores it when reading a terminal. One reader is not forward compatible: an
+older `wb` that resumes a landed `wb worktree merge` accepts only `removed` as
+proof that cleanup removed a source, so it refuses the sources a newer `wb`
+sealed `landed`. Resume such a merge with a `wb` at or after this requirement;
+machines that share a WB home must not mix the two versions across one merge.
 
 #### REQ: commit-admission-gate
 
