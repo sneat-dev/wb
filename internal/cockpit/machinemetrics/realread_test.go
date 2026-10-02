@@ -1,4 +1,4 @@
-//go:build linux || (darwin && e2e)
+//go:build (linux || darwin) && e2e
 
 package machinemetrics
 
