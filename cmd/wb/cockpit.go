@@ -17,11 +17,13 @@ import (
 )
 
 // cockpitOpenResult is the one JSON object `wb cockpit --format json` prints.
-// It never carries a login code or a session key: the URL has no query string
-// and no fragment.
+// URL never carries a login code or a session key: it has no query string and
+// no fragment. LoginURL is the credential, and is there only when --print-url
+// asked for it.
 type cockpitOpenResult struct {
-	URL   string `json:"url"`
-	Scope string `json:"scope"`
+	URL      string `json:"url"`
+	LoginURL string `json:"login_url,omitempty"`
+	Scope    string `json:"scope"`
 	// Opened is always false: only text output opens a browser, and text
 	// output prints a line rather than this object.
 	Opened bool `json:"opened"`
@@ -39,10 +41,15 @@ type cockpitLocalSession struct {
 	Key     string
 }
 
-// cockpitNoSessionKeyWarning is what the command says when the daemon minted a
-// login code with no session key: it is an older wb than this one, still
-// running from before an update.
-const cockpitNoSessionKeyWarning = "the running daemon is an older wb that issues no Cockpit session key; restart it (`wb daemon restart`, then `wb cockpit` again) so that the session cookie alone no longer makes an owner"
+// errCockpitNoSessionKey is the refusal of a login against a daemon that
+// minted a code and no session key: it is an older wb than this one, still
+// running from before an update, and a session it starts would make the cookie
+// alone an owner (cockpit#req:session-key). Nothing is printed or opened.
+var errCockpitNoSessionKey = errors.New("request a cockpit login code: the running daemon is an older wb that issues no Cockpit session key; restart it with `wb daemon restart`, then run `wb cockpit` again")
+
+// cockpitLoginURLHint is what the command says, on stderr, when it prints the
+// plain address because stdout is not a terminal.
+const cockpitLoginURLHint = "the login URL is a credential and is printed only on a terminal; pass --print-url to print it here"
 
 type cockpitCommandDependencies struct {
 	daemon daemonDependencies
@@ -52,7 +59,8 @@ type cockpitCommandDependencies struct {
 	isTerminal func(any) bool
 	configPath func() string
 	// local starts or reuses the daemon and, only when mint is true, requests
-	// a login code over the owner channel. JSON output never mints one.
+	// a login code over the owner channel. One is minted only when the login
+	// URL will be printed: on a terminal, or where --print-url asked for it.
 	local func(ctx context.Context, deps daemonDependencies, root, listen string, mint bool) (cockpitLocalSession, error)
 	// export is what `wb cockpit export` uses; it has no way to start anything.
 	export cockpitExportDependencies
@@ -118,6 +126,9 @@ func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, 
 	if issued.Code == "" {
 		return cockpitLocalSession{}, errors.New("request a cockpit login code: the daemon returned no code")
 	}
+	if issued.Key == "" {
+		return cockpitLocalSession{}, errCockpitNoSessionKey
+	}
 	if issued.Path != cockpit.LoginPath {
 		return cockpitLocalSession{}, fmt.Errorf("request a cockpit login code: the daemon named the login path %q, want %q", issued.Path, cockpit.LoginPath)
 	}
@@ -161,21 +172,24 @@ func newCockpitCmd(inv *invocation) *cobra.Command {
 }
 
 func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependencies) *cobra.Command {
-	var hosted, jsonOut bool
+	var hosted, jsonOut, printURL bool
 	var format, listen string
 	command := &cobra.Command{
 		Use:   "cockpit",
 		Short: "Open the Cockpit web workspace for this machine's fleet",
 		Long: "Open Cockpit. By default it starts or reuses this machine's loopback daemon, requests a " +
 			"single-use login code (valid for 60 seconds) and opens the login URL on the canonical origin. " +
-			"The URL's fragment carries the session key, which the page keeps and sends with each request: the " +
-			"session cookie alone, which every server on the loopback host receives, does not make an owner. " +
+			"The login URL is a credential: its fragment carries the session key, which the page keeps and sends with " +
+			"each request, because the session cookie alone, which every server on the loopback host receives, does " +
+			"not make an owner. It is printed only when stdout is a terminal, or with --print-url; otherwise the " +
+			"plain Cockpit URL is printed and no login code is requested. Do not paste it into a log or a transcript. " +
+			"A running daemon too old to issue a session key is refused: restart it with `wb daemon restart`. " +
 			"--listen names the loopback address of the daemon to start (default 127.0.0.1:8766); without it a daemon " +
 			"already running here is used wherever it listens. A running daemon on another address is never replaced: " +
 			"the command refuses and names it. Non-loopback addresses are refused before anything starts. " +
 			"--hosted opens the configured cockpit.hosted_url and starts nothing. " +
 			"JSON output and non-interactive invocations print the URL without launching a browser; " +
-			"JSON output never carries a login code or a session key.",
+			"JSON output carries a login code and a session key only in `login_url`, and only with --print-url.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
@@ -184,7 +198,14 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 			}
 			result := cockpitOpenResult{Scope: "hosted"}
 			target := ""
+			// The login URL is a credential. It is requested, and so printed,
+			// only where a person will read it: on a terminal, or where
+			// --print-url asked for it. JSON never has it unless asked.
+			login := printURL || (format == "text" && deps.isTerminal(command.OutOrStdout()))
 			if hosted {
+				if printURL {
+					return usageError("--print-url prints the local login URL and cannot be used with --hosted")
+				}
 				config, err := wbconfig.LoadCockpit(deps.configPath())
 				if err != nil {
 					return fmt.Errorf("load the cockpit configuration: %w", err)
@@ -196,7 +217,7 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 						return usageError(err.Error())
 					}
 				}
-				session, err := deps.local(command.Context(), deps.daemon, inv.projectsRoot, listen, format == "text")
+				session, err := deps.local(command.Context(), deps.daemon, inv.projectsRoot, listen, login)
 				if err != nil {
 					return err
 				}
@@ -212,16 +233,17 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 				plain.Path = cockpit.PagePrefix
 				result.URL, target = plain.String(), plain.String()
 				if session.Code != "" {
-					origin.Path, origin.RawQuery = session.Path, url.Values{"code": {session.Code}}.Encode()
 					// The key goes in the fragment, which a browser sends to no
 					// server: the page takes it from there
 					// (cockpit#req:session-key).
-					if session.Key != "" {
-						origin.Fragment = cockpit.LoginKeyFragment + "=" + session.Key
-					} else {
-						_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", cockpitNoSessionKeyWarning)
-					}
+					origin.Path, origin.RawQuery = session.Path, url.Values{"code": {session.Code}}.Encode()
+					origin.Fragment = cockpit.LoginKeyFragment + "=" + session.Key
 					target = origin.String()
+					if format == "json" {
+						result.LoginURL = target
+					}
+				} else if format == "text" {
+					_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", cockpitLoginURLHint)
 				}
 			}
 			if format == "json" {
@@ -242,6 +264,7 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 	}
 	command.Flags().StringVar(&listen, "listen", "", "loopback address of the daemon to start (default 127.0.0.1:8766, or the running daemon's address)")
 	command.Flags().BoolVar(&hosted, "hosted", false, "open the hosted Cockpit at cockpit.hosted_url and start no daemon")
+	command.Flags().BoolVar(&printURL, "print-url", false, "print the login URL, which is a credential, though stdout is not a terminal (in JSON: as login_url)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	command.AddCommand(newCockpitExportCmd(inv, deps.export))

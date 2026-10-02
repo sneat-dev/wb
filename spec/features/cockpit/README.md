@@ -62,6 +62,18 @@ daemon. It MUST obtain an owner login (REQ:owner-session) and print the login
 URL. It opens the platform browser only in text format on an interactive
 desktop session.
 
+The login URL is a credential: it carries the single-use code and the session
+key (cockpit#req:session-key). The command MUST request and print it only when
+stdout is a terminal, or when `--print-url` asks for it. Otherwise it requests
+no login code, prints the plain Cockpit URL and says on stderr that
+`--print-url` prints the login URL; it never writes the login URL to stderr or
+to a log. `--print-url` with `--hosted` is a usage error.
+
+A running daemon that answers a login code with no session key is an older wb.
+The command MUST refuse the login with exit code 1 and the advice to run
+`wb daemon restart`, and print and open nothing: a session that daemon starts
+would make the cookie alone an owner.
+
 `--listen <host:port>` names the loopback address of the daemon to start (default `127.0.0.1:8766`); without it a daemon already running on this machine is used wherever it listens. A running daemon recorded on a different address is never replaced: the command refuses and names that address. Non-loopback addresses are refused before anything starts.
 
 `--hosted` resolves the hosted Cockpit URL instead and starts no daemon. The
@@ -72,7 +84,8 @@ address.
 `--format json` and its `--json` shortcut MUST print
 `{url, scope, opened}`, where `scope` is `local` or `hosted`, and MUST NOT
 launch a browser. The JSON `url` never contains a login code or a session key
-(cockpit#req:session-key): it has no query string and no fragment.
+(cockpit#req:session-key): it has no query string and no fragment. With
+`--print-url`, and only then, the object also has `login_url`.
 
 #### REQ: dashboard-command-unchanged
 
@@ -349,11 +362,47 @@ halves itself: the `Cookie: wb_cockpit_session_<port>=<id>` the login set and
 cookie and cannot carry the header, so it is an anonymous reader's.
 
 What this does not cover. The login URL, with its key, is printed on the
-terminal and may be kept by the browser's history from the moment it is opened
-until the page replaces it; either copy is one half and is useless without the
-cookie, which only the browser that redeemed the single-use code holds. A
-process that runs as the owner on the machine can read both halves, as it can
+terminal (and only there, unless `--print-url` asks: cockpit#req:cockpit-command),
+is an argument of the command that opens the browser, and may be kept by the
+browser's history from the moment it is opened until the page replaces it. Each
+of those copies is one half. The key opens nothing until the single-use code
+beside it has been redeemed, which must happen within 60 seconds, and then only
+together with the cookie, which the browser that redeemed the code alone holds.
+A process that runs as the owner on the machine can read both halves, as it can
 read the owner token; that is outside what a loopback service defends.
+
+#### REQ: same-origin-pages-run-no-injected-script
+
+The key is in storage that every page of the daemon's origin can read, so a
+script injected into any of them would have it. Every page the daemon's listener
+serves is therefore held to three rules.
+
+- No data becomes markup. The dashboard's pages (`/` and `/metrics`) MUST build
+  what they show with `createElement` and `textContent`: no value read from a
+  route is concatenated into HTML, a class name is chosen from a closed set (an
+  unknown status is shown as `neutral`), a link's address is either built by the
+  page as `https://` and a repository name or accepted only when it parses as
+  `https`, and there is no inline event handler: a control names what it acts on
+  in `data-` attributes that one listener reads. This holds for any stored
+  value, including records written before the write side validated anything.
+- No inline script runs. Every response of the listener that does not set its
+  own policy carries `script-src 'self'` with no `'unsafe-inline'`,
+  `object-src 'none'` and `base-uri 'self'`; the dashboard's scripts are files
+  of the origin under `/dashboard-assets/`. The GitHub installation opener page
+  runs its one script by a nonce minted per response. The one exception is the
+  bench dashboard under `/workbench/`, whose Astro build emits inline scripts:
+  it sets its own policy, which still allows them, and it renders stored values
+  with `textContent` and takes a link's address only from a parser that accepted
+  it as an `http(s)` address.
+- The write side refuses markup. A metric or coverage record whose field is
+  outside its form is refused with status 400 and the closed code
+  `invalid_metric_record` or `invalid_coverage_record`, which repeats nothing of
+  the record, and is not stored: the repository is `owner/name`, the status one
+  of its closed set, the metric type, owner, name, ref and commit short
+  identifiers, the formatted value a number with a unit, the workflow run
+  address `https`, and metadata values and dimension details numbers, booleans
+  or short text with no angle bracket, quote, backtick, backslash or control
+  character and no nested value.
 
 #### REQ: owner-routes
 
@@ -664,7 +713,34 @@ Then a daemon is running on the loopback address, the printed URL is on `http://
 Scenario: An agent asks for the address
 Given a running daemon
 When `wb cockpit --format json` runs
-Then stdout is one JSON object with `url`, `scope` equal to `local` and `opened` equal to false, the URL has no query string, and no browser is launched
+Then stdout is one JSON object with `url`, `scope` equal to `local` and `opened` equal to false, the URL has no query string and no fragment, there is no `login_url`, no login code is requested, and no browser is launched
+
+### AC: login-url-is-printed-only-where-asked
+
+**Requirements:** cockpit#req:cockpit-command, cockpit#req:session-key
+
+Scenario: A terminal, a pipe and a request
+Given a running daemon that issues session keys, and one that is an older wb and issues none
+When `wb cockpit` runs with stdout a terminal, with stdout a pipe, with `--print-url` to a pipe, with `--format json`, with `--format json --print-url`, with `--hosted --print-url`, and against the older daemon
+Then the terminal and `--print-url` runs request one login code and print the login URL with its key in the fragment, the pipe run requests none, prints the plain Cockpit URL and names `--print-url` on stderr, the JSON run has no `login_url` and the JSON `--print-url` run has it, stderr never holds the code or the key, `--hosted --print-url` is a usage error with exit code 2, and the older daemon is refused with exit code 1 and the advice `wb daemon restart`, with nothing printed or opened
+
+### AC: dashboard-pages-create-nothing-from-data
+
+**Requirements:** cockpit#req:same-origin-pages-run-no-injected-script
+
+Scenario: A hostile value in every field
+Given the dashboard's `/` and `/metrics` pages as the daemon serves them, and routes that answer metric, coverage, metric type, worktree, command-cost and machine records with `<img src=x onerror=…>`, `'");alert(1)//`, an attribute break, a class break, a closing tag with a script and a `javascript:` address in every field, of every type the field could have
+When the pages load, every metric type tab is opened, every breakdown is expanded, a repository is opened from its Breakdown button and the filter is typed into
+Then every value is on the page as text, the document holds no element, attribute, class or address that the page's own markup and script do not create, the only script element is the page's own file, a status outside the closed set is the neutral pill, an address that is not `https` is not a link, each page's markup has no inline script and no inline event handler, and every response carries a policy whose `script-src` is `'self'` alone
+
+### AC: records-with-markup-are-refused
+
+**Requirements:** cockpit#req:same-origin-pages-run-no-injected-script
+
+Scenario: Markup in a metric or a coverage report
+Given a hub with a metrics store and a coverage store
+When a metric and a coverage report are posted with markup, a quote break, a backslash, a line break or a nested value in each field in turn, and the stores' save is called with the same records directly
+Then each post is answered status 400 with exactly `{"error":"invalid_metric_record"}` or `{"error":"invalid_coverage_record"}`, each save returns a refusal that names the field and never its value, nothing is stored, and a record as a real reporter sends it is stored
 
 ### AC: hosted-flag-uses-configured-url
 

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,28 +67,45 @@ func TestCockpitLocalOpensTheLoginURL(t *testing.T) {
 	}
 }
 
-// A daemon still running from before an update mints a code and no key. The
-// login URL then has no fragment and the command says how to get one.
-func TestCockpitSaysWhenAnOlderDaemonIssuesNoSessionKey(t *testing.T) {
+// The login URL is a credential (cockpit#ac:login-url-is-printed-only-where-asked):
+// it is requested and printed on a terminal or with --print-url, and nowhere
+// else. A pipe, a file and an agent's transcript get the plain address.
+func TestCockpitPrintsTheLoginURLOnlyOnATerminalOrWhenAsked(t *testing.T) {
+	const plain, login = "http://127.0.0.1:8766/cockpit/", "http://127.0.0.1:8766/cockpit/session/login?code=abc123#key=k3y_-K"
+	for name, test := range map[string]struct {
+		terminal   bool
+		args       []string
+		mints      int
+		stdout     string
+		hint       bool
+		wantOpened int
+	}{
+		"a terminal":                    {true, nil, 1, "cockpit: " + login + "\n", false, 1},
+		"a pipe":                        {false, nil, 0, "cockpit: " + plain + "\n", true, 0},
+		"a pipe with --print-url":       {false, []string{"--print-url"}, 1, "cockpit: " + login + "\n", false, 0},
+		"a terminal with --print-url":   {true, []string{"--print-url"}, 1, "cockpit: " + login + "\n", false, 1},
+		"JSON":                          {true, []string{"--json"}, 0, `{"url":"` + plain + `","scope":"local","opened":false}` + "\n", false, 0},
+		"JSON to a pipe":                {false, []string{"--format=json"}, 0, `{"url":"` + plain + `","scope":"local","opened":false}` + "\n", false, 0},
+		"JSON with --print-url":         {false, []string{"--json", "--print-url"}, 1, `{"url":"` + plain + `","login_url":"` + login + `","scope":"local","opened":false}` + "\n", false, 0},
+		"JSON on a terminal, asked for": {true, []string{"--json", "--print-url"}, 1, `{"url":"` + plain + `","login_url":"` + login + `","scope":"local","opened":false}` + "\n", false, 0},
+	} {
+		var opened []string
+		var mints int
+		deps := cockpitTestDependencies(t, &opened, &mints)
+		deps.isTerminal = func(any) bool { return test.terminal }
+		stdout, stderr, err := runCockpit(t, &invocation{}, deps, test.args...)
+		if err != nil || mints != test.mints || stdout != test.stdout || len(opened) != test.wantOpened {
+			t.Errorf("%s: err = %v, mints = %d, opened = %v, stdout = %q, want %d mints and %q", name, err, mints, opened, stdout, test.mints, test.stdout)
+		}
+		if hinted := strings.Contains(stderr, "--print-url"); hinted != test.hint || strings.Contains(stderr, "abc123") || strings.Contains(stderr, "k3y_-K") {
+			t.Errorf("%s: stderr = %q, want the --print-url hint: %v, and never the credential", name, stderr, test.hint)
+		}
+	}
+	// Hosted has no login URL to print.
 	var opened []string
-	deps := cockpitTestDependencies(t, &opened, new(int))
-	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
-		return cockpitLocalSession{Listen: "127.0.0.1:8766", Code: "abc123", Path: cockpit.LoginPath}, nil
-	}
-	stdout, stderr, err := runCockpit(t, &invocation{projectsRoot: "/root"}, deps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "cockpit: http://127.0.0.1:8766/cockpit/session/login?code=abc123\n"; stdout != want {
-		t.Fatalf("stdout = %q, want %q", stdout, want)
-	}
-	if !strings.Contains(stderr, "issues no Cockpit session key") || !strings.Contains(stderr, "wb daemon restart") {
-		t.Fatalf("stderr = %q, want the restart advice", stderr)
-	}
-	// With a key there is no such warning.
-	_, stderr, err = runCockpit(t, &invocation{projectsRoot: "/root"}, cockpitTestDependencies(t, &opened, new(int)))
-	if err != nil || stderr != "" {
-		t.Fatalf("stderr with a key = %q (%v), want nothing", stderr, err)
+	_, _, err := runCockpit(t, &invocation{}, cockpitTestDependencies(t, &opened, new(int)), "--hosted", "--print-url")
+	if err == nil || exitCodeFor(err, true) != 2 || !strings.Contains(err.Error(), "--hosted") || len(opened) != 0 {
+		t.Fatalf("--hosted --print-url: err = %v, want a usage error", err)
 	}
 }
 
@@ -116,6 +134,7 @@ func TestCockpitBrowserOpensOnlyForAnInteractiveTerminal(t *testing.T) {
 	}{
 		"terminal and interactive":    {&invocation{}, true, nil, 1},
 		"stdout is not a terminal":    {&invocation{}, false, nil, 0},
+		"not a terminal, URL asked":   {&invocation{}, false, []string{"--print-url"}, 0},
 		"non-interactive":             {&invocation{nonInteractive: true}, true, nil, 0},
 		"hosted terminal interactive": {&invocation{}, true, []string{"--hosted"}, 1},
 		"hosted non-interactive":      {&invocation{nonInteractive: true}, true, []string{"--hosted"}, 0},
@@ -125,7 +144,7 @@ func TestCockpitBrowserOpensOnlyForAnInteractiveTerminal(t *testing.T) {
 		var mints int
 		deps := cockpitTestDependencies(t, &opened, &mints)
 		deps.isTerminal = func(any) bool { return test.terminal }
-		if len(test.args) > 0 {
+		if slices.Contains(test.args, "--hosted") {
 			deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
 				return cockpitLocalSession{}, errors.New("unexpected daemon contact")
 			}
@@ -153,12 +172,12 @@ func TestCockpitUsesTheCanonicalIPv6Origin(t *testing.T) {
 	var mints int
 	deps := cockpitTestDependencies(t, &opened, &mints)
 	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
-		return cockpitLocalSession{Listen: "[::1]:9000", Code: "c", Path: cockpit.LoginPath}, nil
+		return cockpitLocalSession{Listen: "[::1]:9000", Code: "c", Path: cockpit.LoginPath, Key: "k"}, nil
 	}
 	if _, _, err := runCockpit(t, &invocation{}, deps); err != nil {
 		t.Fatal(err)
 	}
-	if len(opened) != 1 || opened[0] != "http://[::1]:9000/cockpit/session/login?code=c" {
+	if len(opened) != 1 || opened[0] != "http://[::1]:9000/cockpit/session/login?code=c#key=k" {
 		t.Fatalf("opened = %v", opened)
 	}
 }
@@ -176,7 +195,7 @@ func TestCockpitJSONCarriesNoCodeAndOpensNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(opened) != 0 || mints != 0 || result.Opened || result.Scope != "local" || result.URL != "http://127.0.0.1:8766/cockpit/" ||
-			strings.Contains(stdout, "?") || strings.Contains(stdout, "code") {
+			strings.Contains(stdout, "?") || strings.Contains(stdout, "code") || strings.Contains(stdout, "#") || strings.Contains(stdout, "login_url") {
 			t.Fatalf("opened = %v, mints = %d, stdout = %q", opened, mints, stdout)
 		}
 	}
@@ -332,7 +351,7 @@ func TestCockpitLocalFromDaemonMintsOverTheOwnerChannel(t *testing.T) {
 	command := newCockpitCmdWithDependencies(&invocation{projectsRoot: root}, cockpitCommandDependencies{
 		daemon: deps, isTerminal: func(any) bool { return false }, local: cockpitLocalFromDaemon,
 	})
-	command.SetArgs(nil)
+	command.SetArgs([]string{"--print-url"})
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	if err := command.Execute(); err != nil {
@@ -398,7 +417,14 @@ func TestCockpitLocalFromDaemonRefusesBadMintResponses(t *testing.T) {
 	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "no code") {
 		t.Fatalf("err = %v, want a no-code error", err)
 	}
-	status, body = http.StatusOK, `{"code":"c","path":"/elsewhere"}`
+	// A daemon still running from before an update mints a code and no key: a
+	// session it starts would make the cookie alone an owner, so the login is
+	// refused with the advice to restart it, and nothing is printed.
+	status, body = http.StatusOK, `{"code":"c","path":"`+cockpit.LoginPath+`"}`
+	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); !errors.Is(err, errCockpitNoSessionKey) || !strings.Contains(err.Error(), "wb daemon restart") || exitCodeFor(err, true) != 1 {
+		t.Fatalf("err = %v (exit %d), want the refusal that names `wb daemon restart`, exit 1", err, exitCodeFor(err, true))
+	}
+	status, body = http.StatusOK, `{"code":"c","key":"k","path":"/elsewhere"}`
 	if _, err := cockpitLocalFromDaemon(context.Background(), deps, root, daemonDefaultListen, true); err == nil || !strings.Contains(err.Error(), "/elsewhere") {
 		t.Fatalf("err = %v, want a login-path error", err)
 	}
@@ -482,7 +508,7 @@ func TestCockpitListenFlag(t *testing.T) {
 		if listen == "" {
 			listen = daemonDefaultListen
 		}
-		return cockpitLocalSession{Listen: listen, Code: map[bool]string{true: "c1"}[mint], Path: cockpit.LoginPath}, nil
+		return cockpitLocalSession{Listen: listen, Code: map[bool]string{true: "c1"}[mint], Key: map[bool]string{true: "k1"}[mint], Path: cockpit.LoginPath}, nil
 	}
 	// No flag: the command leaves the choice to the daemon lookup (empty), which defaults below.
 	if _, _, err := runCockpit(t, &invocation{}, deps, "--json"); err != nil || gotListen != "" {
@@ -490,7 +516,7 @@ func TestCockpitListenFlag(t *testing.T) {
 	}
 	// A custom loopback address reaches Start and builds the printed URL.
 	stdout, _, err := runCockpit(t, &invocation{}, deps, "--listen", "127.0.0.1:43211")
-	if err != nil || gotListen != "127.0.0.1:43211" || stdout != "cockpit: http://127.0.0.1:43211/cockpit/session/login?code=c1\n" {
+	if err != nil || gotListen != "127.0.0.1:43211" || stdout != "cockpit: http://127.0.0.1:43211/cockpit/session/login?code=c1#key=k1\n" {
 		t.Fatalf("listen = %q, stdout = %q, err = %v", gotListen, stdout, err)
 	}
 	// JSON output carries the right origin.

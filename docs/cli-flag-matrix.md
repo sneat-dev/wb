@@ -21,7 +21,8 @@ and rejected with `--ci` or `--resume`. `coverage baseline --include-e2e` record
 the same tier identity; a mismatched baseline triggers a fresh merge-base run.
 
 `cockpit` also has the command-specific `--listen <host:port>` (loopback only; names the
-address to start on, default `127.0.0.1:8766`, and never moves a running daemon), `--hosted`, `--format` and `--json`.
+address to start on, default `127.0.0.1:8766`, and never moves a running daemon), `--hosted`, `--format`, `--json` and
+`--print-url` (print the login URL, which is a credential, though stdout is not a terminal; in JSON as `login_url`).
 `cockpit export` has the command-specific `--format json` and `--metrics-only` (omit the fleet); it reads the
 running daemon's record under `--projects-root` and never starts a daemon.
 

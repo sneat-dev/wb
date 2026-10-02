@@ -24,6 +24,12 @@ export const LOGIN_KEY_FRAGMENT = 'key'
 /** A key is 256 random bits in unpadded URL-safe base64. */
 const KEY_SHAPE = /^[A-Za-z0-9_-]{43}$/
 
+/**
+ * A path of the page's own origin: one slash and then anything but a second slash or a backslash. A browser
+ * reads `//host` and `/\host` alike as an address on another host.
+ */
+const OWN_PATH = /^\/(?![/\\])/
+
 /** The host names the daemon's own page is served on. The hosted page is on none of them and never takes a key. */
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', '[::1]', 'localhost'])
 
@@ -102,7 +108,7 @@ export class SessionKeys {
    */
   sign(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
     const key = this.current()
-    if (key === null || typeof input !== 'string' || !input.startsWith('/') || input.startsWith('//')) return init
+    if (key === null || typeof input !== 'string' || !OWN_PATH.test(input)) return init
     const headers = new Headers(init?.headers)
     if (!headers.has(SESSION_KEY_HEADER)) headers.set(SESSION_KEY_HEADER, key)
     return { ...init, headers }

@@ -2520,7 +2520,8 @@ An owner session has two halves, and a request must carry both:
   prints it in the fragment of the login URL
   (`/cockpit/session/login?code=...#key=<key>`); the Cockpit page takes it from
   there, keeps it in the storage of its own origin and adds the header to its
-  own requests.
+  own requests. The login URL is a credential: it is printed only when stdout is
+  a terminal, or with `wb cockpit --print-url`.
 
 To read the log, read the file on the machine itself:
 `~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's

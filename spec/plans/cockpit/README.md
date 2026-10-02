@@ -227,7 +227,7 @@ log.
 ### Task 12: The session cookie alone is not an owner
 
 **Id:** task-12
-**Verifies:** cockpit#ac:replayed-cookie-is-not-the-owner, cockpit#ac:session-key-reaches-the-page-in-the-fragment, cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session, cockpit#ac:session-key-ends-with-its-session, cockpit#ac:session-key-is-never-served
+**Verifies:** cockpit#ac:replayed-cookie-is-not-the-owner, cockpit#ac:session-key-reaches-the-page-in-the-fragment, cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session, cockpit#ac:session-key-ends-with-its-session, cockpit#ac:session-key-is-never-served, cockpit#ac:login-url-is-printed-only-where-asked, cockpit#ac:dashboard-pages-create-nothing-from-data, cockpit#ac:records-with-markup-are-refused
 **Depends-On:** 2, 3, 10
 **Status:** complete
 
@@ -241,6 +241,16 @@ request by the `FETCH` token). `cockpit.Server` resolves the owner only from
 the cookie and the key together (`sessionID`), which `IsOwner` and so the
 daemon's log route share. `GET /api/v1/log` typed into the address bar is no
 longer the owner's: the documentation names the file and the two headers.
+
+The key is readable by every page of the origin, so the review's second round
+closed the ways a script could be injected into one: the dashboard's `/` and
+`/metrics` pages build what they show from elements and text
+(`internal/dashboard/assets`, tested in jsdom by
+`cockpit/web/tools/dashboard-pages.spec.mjs`), their scripts are files of the
+origin and the listener's policy refuses inline script, and the hub refuses a
+metric or coverage record that holds markup (`hub/record_validation.go`). The
+login URL is printed only on a terminal or with `--print-url`, and a daemon too
+old to issue a key is refused.
 
 ## Open Questions
 

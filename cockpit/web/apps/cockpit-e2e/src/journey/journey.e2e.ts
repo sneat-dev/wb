@@ -160,7 +160,8 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   // No daemon is running for this projects root: wb cockpit starts it.
   expect(existsSync(join(projects, '.wb', 'runtime', 'daemon-state.json'))).toBe(false)
   daemonStarted = true
-  const printed = wbRun('cockpit', '--listen', `127.0.0.1:${port}`)
+  // stdout is a pipe here, so the login URL, which is a credential, is printed only because it is asked for.
+  const printed = wbRun('cockpit', '--print-url', '--listen', `127.0.0.1:${port}`)
   const match = /^cockpit: (http:\/\/127\.0\.0\.1:\d+\/cockpit\/session\/login\?code=\S+)$/m.exec(printed)
   expect(match, printed).not.toBeNull()
   loginUrl = match![1]!
