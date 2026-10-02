@@ -1878,6 +1878,7 @@
             {
               "path": "wb coverage",
               "flags": [
+                "--affected-packages",
                 "--baseline-file",
                 "--baseline-timeout",
                 "--changed",
@@ -2021,7 +2022,7 @@
                 "--sha"
               ],
               "modes": [
-                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON go-ci's coverage job publishes as a build artifact on every push to main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
+                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON nightly coverage publishes as a full-module build artifact on main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
               ]
             }
           ],

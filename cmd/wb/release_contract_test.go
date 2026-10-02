@@ -190,18 +190,14 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		assert(name+" scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
 			"needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	}
-	// coverage is the per-change coverage ratchet's one and only baseline
-	// producer (spec/plans/coverage-to-100/README.md task-3(b)): it is
-	// deliberately exempt from the validation-reuse push-event skip the other
-	// validation jobs apply, so a baseline artifact is published for every
-	// Go-relevant push to main.
+	// Coverage shares exact trusted PR reuse; nightly publishes full artifacts.
 	coverageJob, ok := jobs["coverage"].(map[string]any)
 	if !ok {
 		t.Fatal("validation job coverage missing")
 	}
 	assert("coverage starts after eligibility, reuse and Go scope", coverageJob["needs"], []any{"release-eligibility", "validation-reuse", "go-scope"})
 	assert("coverage scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(coverageJob["if"])), " "),
-		"needs.go-scope.outputs.required == 'true'")
+		"needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	goScope, ok := jobs["go-scope"].(map[string]any)
 	if !ok {
 		t.Fatal("Go validation scope job missing")

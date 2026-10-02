@@ -17,6 +17,31 @@ is_zero_sha() {
 }
 
 go_input() {
+  # Assets (including Markdown embeds) and fixtures can change package
+  # behavior without a Go source diff. Walk to the nearest package owner.
+  local owner=${1%/*}
+  if [[ $owner == "$1" ]]; then owner=.; fi
+  while [[ $owner != / ]]; do
+    if compgen -G "$owner/*.go" >/dev/null; then
+      if [[ $1 != *.md ]]; then return 0; fi
+      # Ordinary package prose stays cheap; Markdown embedded by Go is a
+      # runtime input. Quoted patterns conservatively require validation.
+      local source line pattern relative=${1#"$owner/"}
+      for source in "$owner"/*.go; do
+        while IFS= read -r line; do
+          if [[ $line =~ ^[[:space:]]*//go:embed[[:space:]]+(.+) ]]; then
+            if [[ ${BASH_REMATCH[1]} == *'"'* || ${BASH_REMATCH[1]} == *'`'* ]]; then return 0; fi
+            for pattern in ${BASH_REMATCH[1]}; do
+              pattern=${pattern#all:}
+              if [[ $relative == $pattern || $relative == $pattern/* ]]; then return 0; fi
+            done
+          fi
+        done < "$source"
+      done
+    fi
+    if [[ $owner == . ]]; then break; fi
+    if [[ $owner != */* ]]; then owner=.; else owner=${owner%/*}; fi
+  done
   case "$1" in
     *.go|*.s|*.S|*.syso|*.c|*.h|*.cc|*.cpp|*.cxx|*.m|*.mm|*.f|*.F|*.for|*.f90|*.swig|*.swigcxx|\
     go.mod|go.sum|go.work|go.work.sum|*/go.mod|*/go.sum|*/go.work|*/go.work.sum|vendor/*|\
@@ -67,6 +92,13 @@ case "$event:$ref" in
             required=true
           elif contract_input "$path"; then
             contract_required=true
+          else
+            # Unrecognized opaque inputs may be shared fixtures or build
+            # configuration. Only known prose/documentation is cheap.
+            case "$path" in
+              *.md|docs/*|LICENSE*|NOTICE*|internal/*/domain_map.tsv) ;;
+              *) required=true ;;
+            esac
           fi
         done < "$changed"
       fi

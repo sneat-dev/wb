@@ -15,6 +15,24 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
 `json`.
 
+`coverage --changed --affected-packages` selects changed packages and transitive
+reverse dependents from the union of base/head default and native-tag import
+and test-import graphs. Both measurements use the same logical selection;
+new/deleted packages contribute only at revisions where they exist. Package
+fixtures and embedded assets retain owning-package ratchets; all production,
+test and external-test embedding consumers also own the asset change. Shared build inputs
+select the full module, and graph discovery errors fail validation. A selected
+package whose default/native tag membership differs also uses full-module
+measurement, so the Go tool handles excluded packages in each tier. Scope
+reports identify the exact base/head revisions and a private build-environment
+hash; differing effective Go versions or build flags fail the comparison. Selected runs
+reject `--minimum` and ignore published full-module baseline artifacts; their
+profiles are unsuitable for repository-wide coverage summaries. CI uses this
+selection unless it reuses an exact trusted PR receipt. Full-module coverage,
+the 94% floor, baseline and summary artifacts run in the nightly workflow on
+main (including manual dispatch from main). Core changes can select many
+dependents; this policy makes no latency guarantee.
+
 `coverage --include-e2e` measures the default tier and native E2E/contract tests
 separately, then merges their actual coverage profiles. It is disabled by default
 and rejected with `--ci` or `--resume`. `coverage baseline --include-e2e` records
