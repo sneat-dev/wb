@@ -20,7 +20,7 @@ describe('machine-words', () => {
     expect(machineWords(view('old'), model.now)).toEqual({ name: 'old', chip: '1 d · stale', stale: true, title: 'old: cached snapshot, older than the freshness window' })
   })
 
-  it('has no chip for a cached machine whose snapshot has no time and no transport', () => {
+  it('shows a cached machine whose snapshot has no time as stale, with no age: an unknown time is never fresh', () => {
     const document = fleet()
     const old = document.machines.find((machine) => machine.machine === 'old')!
     old.observed_at = undefined
@@ -29,7 +29,7 @@ describe('machine-words', () => {
       model.machines.find((candidate) => candidate.machine.machine === 'old')!,
       model.now,
     )
-    expect(words.chip).toBe('')
-    expect(words.title).toBe('old: cached snapshot')
+    expect(words.chip).toBe('stale')
+    expect(words.title).toBe('old: cached snapshot, older than the freshness window')
   })
 })

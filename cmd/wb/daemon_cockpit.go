@@ -346,7 +346,8 @@ func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot 
 	}
 	return periodic.New(periodic.Options{
 		Every: cfg.Publish.PublishEvery(), Agents: cfg.Publish.Agents, Metrics: cfg.Publish.Metrics, Logf: logf, Now: deps.now,
-		Published: func() { notePeriodicHardware(deps.configPath, logf) },
+		Published:  func() { notePeriodicHardware(deps.configPath, logf) },
+		OldestRead: scans.oldest,
 		Collect: func(ctx context.Context, now time.Time) (remotestate.Snapshot, error) {
 			if login == "" {
 				found, err := deps.login()

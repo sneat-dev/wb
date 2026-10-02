@@ -94,14 +94,14 @@ its API under `/api/v1/cockpit/`, whether or not `wb.yaml` has a `hub:`
 section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
 `/workbench/` and `/v0/workbench/` — are unchanged, with these exceptions.
 `GET /api/v1/log` requires an owner session (cockpit#req:daemon-log-is-owner-only).
-`GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
+`GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
 process id and the names of its worktrees (metadata, which a local reader may read without a
 session), MUST apply the Host check (cockpit#req:host-header-check, the same rule, from one shared
 function): a request whose `Host` does not name a loopback host is refused with status 421 and the
 JSON body `{schema_version, error: "misdirected_request", message}` with a fixed message, so a page
-that rebinds DNS to the loopback address reads neither. A daemon published through a tunnel must
-therefore have the tunnel send a loopback `Host` to reach them; the static pages `/` and `/metrics`
-hold nothing of the machine and are not checked. An overview that cannot be built is answered with
+that rebinds DNS to the loopback address reads neither; the three HTML routes are refused the same
+way. A daemon published through a tunnel must therefore have the tunnel send a loopback `Host` to
+reach any of them. An overview that cannot be built is answered with
 status 500, the closed code `overview_unavailable` and one fixed message; the error itself, which
 names a path under the projects root, goes to the daemon's log (once for a failure that repeats)
 and to no reader of the route, and the page shows a fixed text of its own.
@@ -131,14 +131,21 @@ The application MUST follow the browser's light or dark preference.
 #### REQ: host-header-check
 
 Every request to `/cockpit/` and `/api/v1/cockpit/` MUST carry a `Host`
-header naming a loopback host — `localhost`, `127.0.0.1` or `[::1]` — on any
-port. Any other host name is refused with status 421 before any handler runs.
+header naming a loopback host on any port: exactly `localhost` (any case, no trailing dot), any
+IPv4 address of `127.0.0.0/8` written as four decimal numbers, or `::1` in any spelling. A
+name such as `app.localhost` is refused, as are `127.1`, `2130706433`, octal and hex forms, a
+zone (`[::1%lo0]`) and userinfo. One function
+(`internal/loopbackhost`) decides this, and the daemon's `--listen` check uses the same one, so a
+daemon cannot listen on a loopback form that its own health check then refuses. After it binds, the
+daemon also refuses to serve unless the address the listener really holds is a loopback TCP address
+(a `localhost` that resolves elsewhere is a usage error naming that address, exit 2). Any other host name is refused with status 421 before any handler runs.
 This is what stops a page that rebinds DNS to the loopback address. The port
 is not checked, so an SSH forward to a different local port works.
 
-The canonical origin is `http://127.0.0.1:<port>`, or `http://[::1]:<port>`
-when the daemon listens on the IPv6 loopback address, with the port the request
-arrived on. A request for a page under `/cockpit/` on another loopback name
+The canonical origin is the address the daemon listens on: `http://127.0.0.1:<port>` for
+`127.0.0.1` or `localhost`, `http://[::1]:<port>` for the IPv6 loopback address, and
+`http://127.0.0.2:<port>` for a listener on `127.0.0.2` (any loopback IP literal), with the port the
+request arrived on; `wb cockpit` prints its login URL on that origin. A request for a page under `/cockpit/` on another loopback name
 is redirected to the same path on the canonical origin, so the session
 cookie, which browsers scope by host, is always set and read on one host.
 
@@ -394,7 +401,10 @@ state it read in the background from another machine over its configured HTTP ro
 over SSH as the fallback
 ([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch), and `cached` for
 state read from another machine's published snapshot. A `cached` entry's
-`observed_at` is the snapshot's publish time, and a `live-remote` entry's is the
+`observed_at` is the snapshot's publish time, taken as now when it is ahead of this machine's clock
+by 60 seconds or less. A snapshot published more than 60 seconds in the future is observed at an
+unknown time (`observed_at` is absent): the application shows it as stale, never as fresh, and the
+cap on cached machines cuts it before any snapshot with a known time. A `live-remote` entry's is the
 remote snapshot's time. The application MUST show the
 route and the age of every `cached` entry and MUST NOT render cached state as
 live.
@@ -618,8 +628,8 @@ Then each answers as it did before this Feature
 
 Scenario: A rebinding page, and an overview that fails
 Given a daemon serving its dashboard routes, and a worktree whose run telemetry cannot be read
-When `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each of the three loopback names, and the overview is requested twice
-Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback names are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
+When `GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each loopback form (`127.0.0.1`, `127.0.0.2`, `[::1]`, `localhost`), and the overview is requested twice
+Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback forms are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
 
 ### AC: manifest-rows-exist
 
@@ -719,6 +729,15 @@ Scenario: One repository, two worktrees, a pull request, a session and a remote 
 Given a projects root with one repository that has two WB worktrees, one of them with recorded open pull request evidence, one registered agent session, and a remote-state snapshot published by a second machine
 When the fleet read model is requested
 Then it lists both machines, the repository with a worktree count of two, both worktrees and their branches with route `local`, the pull request tied to its worktree, the session among agents, every entry with a stable `id`, and the second machine's entries with route `cached` and `observed_at` equal to the snapshot's publish time
+
+### AC: future-dated-snapshot-is-unknown-and-stale
+
+**Requirements:** cockpit#req:route-and-freshness-are-explicit
+
+Scenario: A snapshot that claims to be from the future
+Given published snapshots of a full complement of machines, and one more published a year ahead of this machine's clock, and another published 30 seconds ahead
+When the fleet read model is built
+Then the one a year ahead has no `observed_at`, shows as stale and is the one the machine cap cuts, and the one 30 seconds ahead is observed at now
 
 ### AC: request-does-not-scan
 

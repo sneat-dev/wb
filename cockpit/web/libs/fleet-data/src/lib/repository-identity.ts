@@ -23,11 +23,15 @@ export function repositorySlug(repository: Pick<Repository, 'name' | 'host'>): s
 /** A cached entry older than this is stale (REQ:home-fleet-health). */
 export const STALE_AFTER_MS = 24 * 60 * 60 * 1000
 
-/** Whether a cached entry observed at `observedAt` is stale at `now`; an unknown age is never claimed stale. */
+/**
+ * Whether a cached entry observed at `observedAt` is stale at `now`. A cached entry with no readable
+ * time was observed at an unknown time (the daemon sends none for a snapshot that claims to be from
+ * the future), and an unknown time is never shown as fresh, so it is stale.
+ */
 export function isStale(route: Route, observedAt: string | undefined, now: number): boolean {
-  if (route !== 'cached' || !observedAt) return false
-  const observed = Date.parse(observedAt)
-  return !Number.isNaN(observed) && now - observed > STALE_AFTER_MS
+  if (route !== 'cached') return false
+  const observed = Date.parse(observedAt ?? '')
+  return Number.isNaN(observed) || now - observed > STALE_AFTER_MS
 }
 
 /** One machine's checkout of a merged repository. */

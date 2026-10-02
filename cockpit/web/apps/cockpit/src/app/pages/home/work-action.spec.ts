@@ -7,13 +7,14 @@ import { WorkAction } from './work-action'
 
 const work: WorkOffer = {
   task: 'fix-ci',
+  target: {},
   worktrees: [
     { id: 'w1', branch: 'task/fix-ci', repository: 'acme/a' },
     { id: 'w2', branch: 'task/fix-ci-b', repository: 'acme/b' },
   ],
 }
 
-async function render(offered: Record<string, boolean>, copy = vi.fn().mockResolvedValue(true)) {
+async function render(offered: Record<string, boolean>, copy = vi.fn().mockResolvedValue(true), offer: WorkOffer = work) {
   const registry = { offered: (target: string) => (offered[target] ? [registryAction(PUSH_ACTION, 'Push')] : undefined) }
   TestBed.configureTestingModule({
     providers: [
@@ -22,7 +23,7 @@ async function render(offered: Record<string, boolean>, copy = vi.fn().mockResol
     ],
   })
   const fixture = TestBed.createComponent(WorkAction)
-  fixture.componentRef.setInput('action', work)
+  fixture.componentRef.setInput('action', offer)
   await fixture.whenStable()
   const root: HTMLElement = fixture.nativeElement
   return { fixture, root, copy }
@@ -41,6 +42,16 @@ describe('WorkAction', () => {
     buttons[0].click()
     await vi.waitFor(() => expect(copy).toHaveBeenCalledWith("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>"))
     fixture.detectChanges()
+  })
+
+  // cockpit#req:copy-the-command: the target comes from the model, so the library's local-only guard can refuse.
+  it("builds no command for work whose worktree is another machine's: the button says why and copies nothing", async () => {
+    const { fixture, root, copy } = await render({}, undefined, { ...work, target: { machine: 'vm' } })
+    root.querySelector('button')?.click()
+    await fixture.whenStable()
+    fixture.detectChanges()
+    expect(copy).not.toHaveBeenCalled()
+    expect(root.textContent).toContain('Not copyable')
   })
 
   // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it

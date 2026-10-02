@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { AppLink, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, chipLink, formatAge, linkTarget } from '@cockpit/fleet-data'
+import { AppLink, CommandTarget, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, chipLink, formatAge, linkTarget } from '@cockpit/fleet-data'
 import { GLYPH_CHECK_CIRCLE, Glyph, LazyCopy, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { isoOf } from './home-format'
@@ -29,8 +29,8 @@ export interface FlightRow {
   log: () => Promise<CopyCommand>
 }
 
-/** `wb agent <verb> '<agent-id>'`: the lazy entry point of the library, loaded when a button is pressed. */
-const agentCommand = (verb: 'agentStop' | 'agentLogs', id: string) => async (): Promise<CopyCommand> => (await import('@cockpit/fleet-data/commands'))[verb](id)
+/** `wb agent <verb> '<agent-id>'`: the lazy entry point of the library, loaded when a button is pressed. The target is the agent's machine, so that no mutating command is built for another one. */
+const agentCommand = (verb: 'agentStop' | 'agentLogs', id: string, target: CommandTarget) => async (): Promise<CopyCommand> => (await import('@cockpit/fleet-data/commands'))[verb](id, target)
 
 /** The words of the machine an agent runs on; undefined when the document does not list it. */
 function machineOf(model: FleetModel, machineId: string): MachineWords | undefined {
@@ -51,8 +51,8 @@ export function flightRows(model: FleetModel): FlightRow[] {
     runningFor: flight.startedAt === undefined ? undefined : spanText(model.now - flight.startedAt),
     activity: flight.activity,
     controllable: flight.controllable,
-    stop: agentCommand('agentStop', flight.agent.id),
-    log: agentCommand('agentLogs', flight.agent.id),
+    stop: agentCommand('agentStop', flight.agent.id, model.targetOf(flight.agent)),
+    log: agentCommand('agentLogs', flight.agent.id, model.targetOf(flight.agent)),
   }))
 }
 

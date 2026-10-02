@@ -11,15 +11,15 @@ import (
 )
 
 // TestAFutureDatedPublishedSnapshotIsNeverShownAsNewerThanNow holds a published
-// snapshot to the time rules an export is held to: a publish time in the future
-// is taken as now (it can never make the snapshot look fresh for ever), a last
+// snapshot to the time rules an export is held to: a publish time a little in the future
+// (clock skew, up to 60 seconds) is taken as now (it can never make the snapshot look fresh for ever), a last
 // activity is never later than its snapshot and one before 2000 is dropped, and
 // a snapshot published before 2000 is not used at all. A version that is not
 // one and a pull request number out of range are dropped too.
 func TestAFutureDatedPublishedSnapshotIsNeverShownAsNewerThanNow(t *testing.T) {
 	t.Parallel()
 	now := newClock().Now()
-	future := now.Add(365 * 24 * time.Hour)
+	future := now.Add(30 * time.Second) // within the clock skew a snapshot is taken as now for
 	ancient := time.Date(1999, 12, 31, 0, 0, 0, 0, time.UTC)
 	pull := func(number int) *remotestate.PullRequestState {
 		return &remotestate.PullRequestState{Number: number, State: "open", URL: "https://github.com/o/r/pull/1"}
@@ -62,6 +62,54 @@ func TestAFutureDatedPublishedSnapshotIsNeverShownAsNewerThanNow(t *testing.T) {
 	}
 	if len(view.pullRequests) != 1 || view.pullRequests[0].Number != maxCount {
 		t.Errorf("pull requests = %+v, want only the one whose number is within range", view.pullRequests)
+	}
+}
+
+// TestASnapshotPublishedFarInTheFutureIsObservedAtAnUnknownTimeAndLosesTheCut:
+// one that says it was published more than 60 seconds ahead is observed at no
+// known time (so a client shows it as stale, never as fresh), its last activity
+// is still no later than now, and in the machine cap it sorts last, so it takes
+// no place from a snapshot that is real.
+func TestASnapshotPublishedFarInTheFutureIsObservedAtAnUnknownTimeAndLosesTheCut(t *testing.T) {
+	t.Parallel()
+	now := newClock().Now()
+	snapshot := func(machine string, published time.Time) remotestate.Entry {
+		return remotestate.Entry{Snapshot: remotestate.Snapshot{
+			Login: "a", Machine: machine, PublishedAt: published,
+			Worktrees: []remotestate.WorktreeState{{Task: machine, Repository: "o/r", Branch: machine, LastActivityAt: now.Add(time.Hour)}},
+		}}
+	}
+	view := mapRemoteForTest("", "", []remotestate.Entry{
+		snapshot("ahead", now.Add(365*24*time.Hour)),
+		snapshot("just-over", now.Add(maxPublishedSkew+time.Second)),
+		snapshot("skewed", now.Add(maxPublishedSkew)),
+	})
+	observed := map[string]time.Time{}
+	for _, machine := range view.machines {
+		observed[machine.Machine] = machine.ObservedAt
+	}
+	if !observed["ahead"].IsZero() || !observed["just-over"].IsZero() || !observed["skewed"].Equal(now) {
+		t.Errorf("observed = %v, want an unknown time past 60 s ahead and now at 60 s", observed)
+	}
+	for _, worktree := range view.worktrees {
+		if !worktree.LastActivityAt.Equal(now) {
+			t.Errorf("worktree %s last activity = %s, want no later than now", worktree.Task, worktree.LastActivityAt)
+		}
+	}
+
+	var entries []remotestate.Entry
+	for index := range maxCachedMachines {
+		entries = append(entries, snapshot(fmt.Sprintf("m%03d", index), now.Add(-time.Duration(index+1)*time.Minute)))
+	}
+	entries = append(entries, snapshot("ahead", now.Add(365*24*time.Hour)))
+	crowd := mapRemoteForTest("", "", entries)
+	if len(crowd.machines) != maxCachedMachines || crowd.machinesCut != 1 {
+		t.Fatalf("machines = %d cut %d, want the cap kept and one cut", len(crowd.machines), crowd.machinesCut)
+	}
+	for _, machine := range crowd.machines {
+		if machine.Machine == "ahead" {
+			t.Fatal("a snapshot published in the future took a place from a real one")
+		}
 	}
 }
 
