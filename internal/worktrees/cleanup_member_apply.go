@@ -53,7 +53,7 @@ func (run *cleanupRun) applyCleanupMemberWithPorts(task *cleanupTaskHandle, inde
 	if refreshed.SupersededAtOrigin && refreshed.supersessionReceipt != nil {
 		sealErr = ports.SealSupersession(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, refreshed.supersessionReceipt)
 	} else {
-		sealErr = ports.SealCleanup(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA)
+		sealErr = ports.SealCleanup(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, cleanupLandedEvidence(refreshed))
 	}
 	if sealErr != nil {
 		return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, sealErr)
