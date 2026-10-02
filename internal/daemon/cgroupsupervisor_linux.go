@@ -15,14 +15,11 @@ import (
 // not parentage, is what is checked, and why expectedUnit — not a bare
 // ".service" substring match — is required.
 func ObservedCgroupSupervisor(pid int, expectedUnit string) (Supervisor, bool) {
-	if pid <= 0 {
+	contents, ok := readCgroupFromProcRoot("/proc", pid)
+	if !ok {
 		return "", false
 	}
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
-	if err != nil {
-		return "", false
-	}
-	return ParseCgroupSupervisor(string(data), expectedUnit)
+	return ParseCgroupSupervisor(contents, expectedUnit)
 }
 
 // ObservedCgroupUnit independently observes the raw systemd unit name (if
@@ -32,12 +29,22 @@ func ObservedCgroupSupervisor(pid int, expectedUnit string) (Supervisor, bool) {
 // later, separate `wb daemon status` invocation guessing from its own
 // environment.
 func ObservedCgroupUnit(pid int) (string, bool) {
+	contents, ok := readCgroupFromProcRoot("/proc", pid)
+	if !ok {
+		return "", false
+	}
+	return ParseCgroupUnit(contents)
+}
+
+// readCgroupFromProcRoot shares the process validation and cgroup-file read
+// used by both observations. Parsing decides whether readable data is known.
+func readCgroupFromProcRoot(procRoot string, pid int) (string, bool) {
 	if pid <= 0 {
 		return "", false
 	}
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cgroup"))
 	if err != nil {
 		return "", false
 	}
-	return ParseCgroupUnit(string(data))
+	return string(data), true
 }

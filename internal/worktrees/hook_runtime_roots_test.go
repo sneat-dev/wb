@@ -111,3 +111,49 @@ func environmentEntry(environment []string, name string) (value string, count in
 	}
 	return value, count
 }
+
+//nolint:paralleltest // Capability admission resolves process-wide Go cache environment.
+func TestSecureHookCapabilityRootsRejectBlockedRuntimeAndSkipBlockedCache(t *testing.T) {
+	t.Setenv("GOMODCACHE", "relative")
+	t.Setenv("GOCACHE", "relative")
+	for _, name := range []string{"blocked runtime", "blocked cache"} {
+		t.Run(name, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := filepath.Join(root, "acme", "app")
+			layout, err := hooks.ResolveExecutionLayout(repo, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocked := layout.Root
+			if name == "blocked cache" {
+				blocked = filepath.Join(root, "cache")
+			}
+			if err := os.MkdirAll(filepath.Dir(blocked), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(blocked, []byte("retained"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if name == "blocked cache" {
+				t.Setenv("GOCACHE", blocked)
+			}
+			roots, handles, err := appendSecureHookExecutionCapabilityRoots(repo, root, nil)
+			defer closeSecureHookRootHandles(handles)
+			if name == "blocked runtime" {
+				if err == nil || roots != nil || handles != nil {
+					t.Fatalf("blocked runtime admission = %v, %v, %v", roots, handles, err)
+				}
+			} else {
+				if err != nil || !capabilityRootsContain(roots, layout.Root) || capabilityRootsContain(roots, blocked) {
+					t.Fatalf("blocked cache admission = %v, %v", roots, err)
+				}
+			}
+			if contents, err := os.ReadFile(blocked); err != nil || string(contents) != "retained" {
+				t.Fatalf("blocked evidence = %q, %v", contents, err)
+			}
+		})
+	}
+}

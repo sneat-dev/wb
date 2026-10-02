@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// selfAndAncestorPIDs returns the current process's own pid together with
-// every ancestor pid up to (but not including) pid 1, by following /proc's
+// selfAndAncestorPIDsAt returns the starting pid together with every
+// ancestor pid up to (but not including) pid 1, by following procRoot's
 // stat ppid field. It is used to recognise when a busy-process refusal is
 // caused by the very process running this command's own working directory
 // (or its parent shell's) rather than by some unrelated agent or user
@@ -19,12 +19,11 @@ import (
 // unrelated process must finish or be asked to leave, but this process (or
 // its shell) just needs to `cd` out of the checkout before re-running the
 // same command.
-func selfAndAncestorPIDs() map[int]bool {
+func selfAndAncestorPIDsAt(procRoot string, pid int) map[int]bool {
 	pids := map[int]bool{}
-	pid := os.Getpid()
 	for i := 0; i < 64 && pid > 1 && !pids[pid]; i++ {
 		pids[pid] = true
-		ppid, ok := readPPID(pid)
+		ppid, ok := readPPIDAt(procRoot, pid)
 		if !ok {
 			break
 		}
@@ -33,12 +32,12 @@ func selfAndAncestorPIDs() map[int]bool {
 	return pids
 }
 
-// readPPID reads pid's parent pid from /proc/<pid>/stat. The comm field
+// readPPIDAt reads pid's parent pid from procRoot/<pid>/stat. The comm field
 // (2nd, in parentheses) may itself contain spaces or parentheses, so the
 // remaining fields are parsed starting just after the stat line's LAST ')',
-// where ppid is always the first of them regardless of comm's contents.
-func readPPID(pid int) (int, bool) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+// where ppid follows the state field regardless of comm's contents.
+func readPPIDAt(procRoot string, pid int) (int, bool) {
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return 0, false
 	}
@@ -72,7 +71,11 @@ const BusyProcessCheckSupported = true
 // user's process is expected on a shared machine and is silently skipped,
 // not treated as a refusal or a failure.
 func BusyProcessReason(paths []string) string {
-	entries, err := os.ReadDir("/proc")
+	return busyProcessReasonAt("/proc", os.Getpid(), paths)
+}
+
+func busyProcessReasonAt(procRoot string, startPID int, paths []string) string {
+	entries, err := os.ReadDir(procRoot)
 	if err != nil {
 		return ""
 	}
@@ -85,13 +88,13 @@ func BusyProcessReason(paths []string) string {
 	if len(cleaned) == 0 {
 		return ""
 	}
-	selfAndAncestors := selfAndAncestorPIDs()
+	selfAndAncestors := selfAndAncestorPIDsAt(procRoot, startPID)
 	for _, entry := range entries {
 		pid, convErr := strconv.Atoi(entry.Name())
 		if convErr != nil || pid <= 0 {
 			continue
 		}
-		cwd, readErr := os.Readlink(filepath.Join("/proc", entry.Name(), "cwd"))
+		cwd, readErr := os.Readlink(filepath.Join(procRoot, entry.Name(), "cwd"))
 		if readErr != nil {
 			// Permission denied (another user's process) or the process has
 			// already exited between ReadDir and here; neither is evidence.
@@ -103,7 +106,7 @@ func BusyProcessReason(paths []string) string {
 				continue
 			}
 			comm := "unknown"
-			if raw, commErr := os.ReadFile(filepath.Join("/proc", entry.Name(), "comm")); commErr == nil {
+			if raw, commErr := os.ReadFile(filepath.Join(procRoot, entry.Name(), "comm")); commErr == nil {
 				comm = strings.TrimSpace(string(raw))
 			}
 			if selfAndAncestors[pid] {
