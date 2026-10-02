@@ -111,12 +111,6 @@ type Classification struct {
 	Reason string
 }
 
-// RunLint reports whether the Tier 1 lint/vet block should run.
-func (c Classification) RunLint() bool { return c.Tier >= TierLint }
-
-// IsPublication reports whether the pushed refs require publication policy.
-func (c Classification) IsPublication() bool { return c.Tier >= TierPublication }
-
 // ExitCode is the fixed process-exit encoding `wb hooks push-tier` uses to
 // hand its decision to the calling shell template: 0, 1, or 2.
 func (c Classification) ExitCode() int { return int(c.Tier) }

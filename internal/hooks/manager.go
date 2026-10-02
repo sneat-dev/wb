@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -894,19 +894,6 @@ func validateManagedHooksDirectory(managed string) error {
 		return fmt.Errorf("managed hooks path is not a directory: %s", managed)
 	}
 	return nil
-}
-
-func writeExecutable(path string, content []byte) error {
-	directory, err := openManagedHooksDirectory("", filepath.Dir(path), nil)
-	if err != nil {
-		return err
-	}
-	defer directory.close()
-	identity, err := managedHookIdentityAt(directory.directory, filepath.Base(path))
-	if err != nil {
-		return err
-	}
-	return writeExecutableAt(directory, filepath.Base(path), content, identity, nil)
 }
 
 func managedHookIdentityAt(directory *os.File, name string) (managedHookIdentity, error) {

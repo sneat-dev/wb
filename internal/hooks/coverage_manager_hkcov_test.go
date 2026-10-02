@@ -500,37 +500,6 @@ func TestHkCovApplyCorruptionIsSeenByTheFinalCheck(t *testing.T) {
 	}
 }
 
-func TestHkCovWriteExecutableErrors(t *testing.T) {
-	t.Parallel()
-	missingDir := filepath.Join(t.TempDir(), "missing", "hooks")
-	if err := writeExecutable(filepath.Join(missingDir, "pre-commit"), []byte("#!/bin/sh\n")); err == nil {
-		t.Fatal("writeExecutable into a missing directory should fail")
-	}
-
-	dir := t.TempDir()
-	target := filepath.Join(t.TempDir(), "target")
-	mustWrite(t, target, "#!/bin/sh\necho target\n")
-	link := filepath.Join(dir, "pre-commit")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeExecutable(link, []byte("#!/bin/sh\n")); err == nil || !strings.Contains(err.Error(), "symlinked managed hook") {
-		t.Fatalf("writeExecutable over a symlink error = %v", err)
-	}
-
-	good := filepath.Join(t.TempDir(), "pre-commit")
-	if err := writeExecutable(good, []byte("#!/bin/sh\necho installed\n")); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(good)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o111 == 0 || mustReadFile(t, good) != "#!/bin/sh\necho installed\n" {
-		t.Fatalf("installed hook = %v, %q", info.Mode(), mustReadFile(t, good))
-	}
-}
-
 func TestHkCovManagedHookIdentityAt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
