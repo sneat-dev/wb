@@ -84,6 +84,24 @@ func (s *repositoryScans) of(path string, now time.Time) (gitops.RepoStatus, git
 	return status, tracking, nil
 }
 
+// oldest is the time of the oldest scan still kept, zero when none is: the
+// age of what the last scan took from earlier scans, which bounds how long a
+// whole scan may be taken again.
+func (s *repositoryScans) oldest() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var oldest time.Time
+	for _, kept := range s.kept {
+		if oldest.IsZero() || kept.at.Before(oldest) {
+			oldest = kept.at
+		}
+	}
+	return oldest
+}
+
 // keepOnly forgets every repository that is not among paths: one that left the
 // fleet is not kept for ever.
 func (s *repositoryScans) keepOnly(paths map[string]bool) {

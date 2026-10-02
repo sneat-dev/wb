@@ -1108,7 +1108,8 @@ tracking) is kept for as long as the clone's change fingerprint stays the same a
 keepalive, and taken again by the next scan, so a scan made because one repository changed reads
 that one with Git and not the fleet; a read that failed, and a clone whose fingerprint cannot be
 computed, are never kept. And when the snapshotter's change token is the one the last scan was made
-for, and that scan is younger than the keepalive, the attempt takes that scan again and runs none:
+for, and the oldest read that scan kept is younger than the keepalive (so nothing is ever published
+that is older than one keepalive, not two), the attempt takes that scan again and runs none:
 only the agents moved, which the scan does not read, so an agents-only change, and each attempt made
 while one is held back, costs no scan. What is kept is bounded by the same rule as the gate: a
 change no fingerprint sees reaches the store with the next change of that clone, or with the
@@ -2793,6 +2794,15 @@ Scenario: Opt-in, minimum, failure and no store
 Given a daemon with a fake remote store and a fake clock, first with `remote.publish.interval` unset, then set to 1 minute, then to 10 minutes, a store that fails once, and a daemon with no remote store
 When scans complete and time passes
 Then nothing is published while the interval is unset, publishes happen only after a successful scan and never closer than 5 minutes apart, the interval of 1 minute is raised to 5, a failed publish is retried at the next interval and the local snapshot is not delayed, and the daemon with no store publishes nothing
+
+### AC: periodic-scan-reuse-is-bounded-by-the-oldest-kept-read
+
+**Requirements:** cockpit-views#req:periodic-remote-publish
+
+Scenario: A scan that kept an old read is not taken again
+Given a publisher with a 1 hour keepalive whose last scan kept a repository read made 50 minutes before that scan, and a source whose change token has not moved
+When the next attempt is made 6 minutes later, and again 6 minutes after that
+Then the first takes the scan again and runs none, and the second runs a new scan, because the oldest read in the held scan is by then older than the keepalive
 
 ### AC: remote-snapshot-carries-optional-agents-and-metrics
 
