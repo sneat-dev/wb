@@ -312,6 +312,14 @@ describe('the New task form', () => {
     expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0])).toContain('--task=<<<edit:brief>>>')
   })
 
+  it('runs every command of the form on its target, when it has one', () => {
+    const target = { machine: 'vm', ssh: { host: 'vm.example', user: 'me' } }
+    const commands = newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r', 'o/s'], model: 'm', target })
+    expect([text(commands.create), ...commands.dispatch.map(text)].every((line) => line.startsWith('ssh me@vm.example '))).toBe(true)
+    expect(commands.dispatch).toHaveLength(2)
+    expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'm', target: {} }).create)).toMatch(/^wb worktree create/)
+  })
+
   it('accepts a multi-line brief but refuses control characters and a leading dash in it', () => {
     const refused = (brief: string) => agentDispatch('o/r', 't', { brief }).ok
     expect(refused('line one\nline two\tindented')).toBe(true)

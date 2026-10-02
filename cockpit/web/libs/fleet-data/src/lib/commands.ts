@@ -129,6 +129,8 @@ export interface NewTaskForm {
   base?: string
   /** Required: the verb requires `--model`, and `unknown` is its explicit value. */
   model: string
+  /** Where the commands run (an SSH route for another machine); none, or `{}`, for this machine. */
+  target?: CommandTarget
 }
 
 export interface NewTaskCommands {
@@ -154,8 +156,8 @@ export function newTaskCommands(form: NewTaskForm): NewTaskCommands {
     return { create: refusal, dispatch: [refusal] }
   }
   return {
-    create: worktreeCreate(form.task, form.repositories, { model: form.model, base: form.base }),
-    dispatch: form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base, brief: form.brief })),
+    create: worktreeCreate(form.task, form.repositories, { model: form.model, base: form.base }, form.target),
+    dispatch: form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base, brief: form.brief }, form.target)),
   }
 }
 

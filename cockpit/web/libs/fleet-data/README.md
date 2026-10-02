@@ -165,7 +165,7 @@ target; the shorter `<<edit:x>>` parses when another word follows), checked by a
 `worktreeList`, `pullRequestCreate`, `worktreeCleanup`, `pullRequestLand`, `worktreeCreate`,
 `branchList`, `fleetStatus`, `branchCleanup`, `agentStatus`, `agentLogs`, `agentStop`,
 `sessionSend`, `agentDispatch` (`options.brief` is the `--task` text, the task name goes to
-`--new-worktree`), `newTaskCommands({task, brief, repositories, base?, model})`, `pickRepositories(names, text, now)`,
+`--new-worktree`), `newTaskCommands({task, brief, repositories, base?, model, target?})`, `pickRepositories(names, text, now)`,
 `remotePublish`, `selfUpdate`, `daemonStart`, `remoteEnroll`, `cockpitExport`. Every interpolated
 value is POSIX single-quoted, flags are `--flag=value`, a value that starts with `-` or has a
 control or invisible character (U+061C, U+200B to U+200F, U+2028/2029, bidirectional controls, U+FEFF) is

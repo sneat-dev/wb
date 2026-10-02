@@ -1,6 +1,6 @@
 import { ParamMap } from '@angular/router'
 import { FleetDocument, FleetModel, PanelCommand, SshRoute } from '@cockpit/fleet-data'
-import { PICKABLE_REPOSITORY, agentDispatch, newTaskCommands, valueProblem, worktreeCreate } from '@cockpit/fleet-data/commands'
+import { PICKABLE_REPOSITORY, newTaskCommands, valueProblem } from '@cockpit/fleet-data/commands'
 
 /** The form's answers that live in the address (the brief does not: it stays in memory). */
 export interface NewTaskState {
@@ -74,24 +74,18 @@ const refusal = (reason: string): PanelCommand[] => [{ title: 'Commands', comman
  * The commands of the form, from the library's `newTaskCommands` (`wb worktree create` once for every repository,
  * then `wb agent dispatch` once for each), in that order. A field the library refuses (no model, a value that starts
  * with `-` or holds a control character) gives its reason and no command; nothing is ever run.
- *
- * TODO(fleet-data commands): `newTaskCommands` takes no target, so for another machine the same two templates it
- * calls are called again with the target once the library has accepted the form; a `target` in `NewTaskForm` would
- * make this one call.
+ * For another machine the form carries its `target`, and the library puts the SSH route in front of each command.
  */
 export function commandsOf(state: NewTaskState, brief: string, target: Target = {}): PanelCommand[] {
   if (state.task === '') return refusal('name the task: it is the worktree and the branch')
   const problem = nameProblem(state.task)
   if (problem !== undefined) return refusal(problem)
-  const form = { task: state.task, brief, repositories: state.repositories, base: state.base === '' ? undefined : state.base, model: state.model.trim() }
+  const form = { task: state.task, brief, repositories: state.repositories, base: state.base === '' ? undefined : state.base, model: state.model.trim(), target }
   const built = newTaskCommands(form)
   if (!built.create.ok) return refusal(built.create.reason)
-  const onTarget = target.ssh !== undefined || target.machine !== undefined
-  const create = onTarget ? worktreeCreate(form.task, form.repositories, { model: form.model, base: form.base }, target) : built.create
-  const dispatch = onTarget ? form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base, brief }, target)) : built.dispatch
   return [
-    { title: 'Create the worktrees', command: create },
-    ...dispatch.map((command, index) => ({ title: `Dispatch an agent in ${form.repositories[index]}`, command })),
+    { title: 'Create the worktrees', command: built.create },
+    ...built.dispatch.map((command, index) => ({ title: `Dispatch an agent in ${form.repositories[index]}`, command })),
   ]
 }
 
