@@ -50,7 +50,8 @@ type qualityOptions struct {
 	// non-moved line is uncovered.
 	changed bool
 	// target is the merge-base branch/ref --changed diffs against.
-	target string
+	affectedPackages bool
+	target           string
 	// baselineFile is the per-package uncovered-count baseline published by
 	// go-ci's coverage job as a build artifact. When empty or missing, the
 	// merge base is measured directly instead, bounded by baselineTimeout.
@@ -145,6 +146,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().StringVar(&options.coverageProfile, "coverage-profile", "", "retain the exact merged profile (single repository and Go module only)")
 	command.Flags().BoolVar(&options.includeE2E, "include-e2e", false, "merge native E2E and contract coverage with the default test tier")
 	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
+	command.Flags().BoolVar(&options.affectedPackages, "affected-packages", false, "scope --changed coverage to changed packages and affected dependents across both revisions")
 	command.Flags().BoolVar(&options.changed, "changed", false, "apply the per-change coverage ratchet against --target instead of a plain repository/fleet run")
 	command.Flags().StringVar(&options.target, "target", "", "merge-base branch or ref for --changed (required with --changed)")
 	command.Flags().StringVar(&options.baselineFile, "baseline-file", "", "per-package uncovered-count baseline JSON for --changed; measures the merge base directly when empty or missing")
@@ -176,8 +178,14 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 			return fmt.Errorf("--ci cannot be combined with --package")
 		}
 	}
+	if options.affectedPackages && (!options.changed || options.explicitGoTestPackages) {
+		return &exitError{code: exitUsage, message: "--affected-packages requires --changed and cannot be combined with --package"}
+	}
 	if options.changed && options.explicitGoTestPackages {
 		return fmt.Errorf("--changed cannot be combined with --package")
+	}
+	if options.affectedPackages && options.minimumCoverage >= 0 {
+		return &exitError{code: exitUsage, message: "scoped changed coverage cannot establish a repository-wide --minimum"}
 	}
 	if options.changed && options.explicitGoTestSharding {
 		return fmt.Errorf("--changed cannot be combined with --test-shards or --shard-package")

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 func TestManagedHookQuarantineRefusesLostDirectoryAuthority(t *testing.T) {
@@ -14,7 +14,7 @@ func TestManagedHookQuarantineRefusesLostDirectoryAuthority(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "pre-commit")
 	original := []byte("retained active hook")
-	if err := testenv.WriteExecutableFile(path, original, 0700); err != nil {
+	if err := filewrite.WriteBytesAtomic(filepath.Dir(path), filepath.Base(path), original, 0700); err != nil {
 		t.Fatal(err)
 	}
 	directory := openOwnedHookTestDirectory(t, root)
@@ -45,7 +45,7 @@ func TestManagedHookQuarantinePreservesSubstitutedContent(t *testing.T) {
 	root := t.TempDir()
 	active := filepath.Join(root, "pre-commit")
 	saved := filepath.Join(root, "original")
-	if err := testenv.WriteExecutableFile(active, []byte("original"), 0700); err != nil {
+	if err := filewrite.WriteBytesAtomic(filepath.Dir(active), filepath.Base(active), []byte("original"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	directory := openOwnedHookTestDirectory(t, root)
@@ -58,7 +58,7 @@ func TestManagedHookQuarantinePreservesSubstitutedContent(t *testing.T) {
 		if err := os.Rename(active, saved); err != nil {
 			t.Fatal(err)
 		}
-		if err := testenv.WriteExecutableFile(active, []byte("replacement"), 0700); err != nil {
+		if err := filewrite.WriteBytesAtomic(filepath.Dir(active), filepath.Base(active), []byte("replacement"), 0700); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -83,7 +83,7 @@ func TestManagedHookQuarantineRetainsBothFilesWhenSubstitutionRestoreIsBlocked(t
 	root := t.TempDir()
 	active := filepath.Join(root, "pre-commit")
 	saved := filepath.Join(root, "original")
-	if err := testenv.WriteExecutableFile(active, []byte("original"), 0700); err != nil {
+	if err := filewrite.WriteBytesAtomic(filepath.Dir(active), filepath.Base(active), []byte("original"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	directory := openOwnedHookTestDirectory(t, root)
@@ -97,14 +97,14 @@ func TestManagedHookQuarantineRetainsBothFilesWhenSubstitutionRestoreIsBlocked(t
 		if err := os.Rename(active, saved); err != nil {
 			t.Fatal(err)
 		}
-		if err := testenv.WriteExecutableFile(active, []byte("substituted"), 0700); err != nil {
+		if err := filewrite.WriteBytesAtomic(filepath.Dir(active), filepath.Base(active), []byte("substituted"), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}, func(fromFD int, from string, toFD int, to string) error {
 		err := renameNoReplace(fromFD, from, toFD, to)
 		moves++
 		if err == nil && moves == 1 {
-			if err := testenv.WriteExecutableFile(active, []byte("new occupant"), 0700); err != nil {
+			if err := filewrite.WriteBytesAtomic(filepath.Dir(active), filepath.Base(active), []byte("new occupant"), 0700); err != nil {
 				t.Fatal(err)
 			}
 		}
