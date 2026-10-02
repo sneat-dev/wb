@@ -202,18 +202,46 @@ hand-roll either sweep: a `git branch --merged` or `git push --delete` loop
 has no audit trail, no lease protection, and cannot distinguish work that
 landed from work that landed and was then reverted.
 
-## Trap 3: `--base` defaults to `main`
+## Trap 3: which target a head is judged against
 
-`--base` defaults to `main` on `cleanup`, `list`, `orphans`, and `backfill`. A
-task branched from a feature branch is `awaiting_push` against `main` forever
-until you say so:
+`wb worktree cleanup` judges each repository against the base recorded when its
+worktree was created, not against `main`. Two things change that, and the plan
+names the target that proved the work whenever it is not the recorded base
+(`integration_proof` in JSON, in parentheses on the `would remove` line):
+
+- **The recorded base cannot answer.** Origin no longer has it (an integration
+  branch that landed and was deleted), or it is still there and has itself
+  landed in the default branch (a task stacked on another task's branch). The
+  head is then judged against the freshly fetched default branch and is
+  eligible only when it is a plain Git ancestor of it:
+  `contained in origin/main at 0123456789ab, via recorded base cockpit-ux (absent)`.
+  A head that is not contained stays in the plan with the reason; an absent
+  base never hides the task from `list`, `end`, `abort`, or `gc`.
+- **You name `--base <branch>`.** That is then the exact origin target, and
+  nothing else: the recorded base is only reported (`recorded_base`), no other
+  branch is substituted, and a branch origin does not have is an error. The
+  plan line then reads `contained in origin/<branch> at <sha>, the base named
+  with --base`.
 
 ```sh
-wb worktree cleanup <task> --base <feature-branch>
+wb worktree cleanup <task>                    # recorded base, or the default branch as above
+wb worktree cleanup <task> --base <branch>    # exactly this branch
 ```
 
-This is the same rule as `wb worktree cleanup --base`: the receipt is checked
-against the exact origin target you name, and nothing else.
+`--base` left at its default is only the fallback for a worktree with no
+recorded base. `--absorbed-by <pr|commit>` is verified against the target
+actually judged, so a pull request or merge commit into the default branch is
+accepted for a task recorded against an integration branch.
+
+One run that retires a stack (`wb worktree cleanup --all-merged`, or several
+named tasks) finishes each stacked task before the task whose branch it is
+stacked on, so no hand-rolled leaf-first loop is needed. To clean every
+integrated task of one repository in one call:
+
+```sh
+wb --filter <owner/repository> worktree cleanup --all-merged --older-than 0
+wb --filter <owner/repository> worktree cleanup --all-merged --older-than 0 --apply --remote
+```
 
 ## Trap 4: dry run is the default, and `--apply` is not enough
 
@@ -259,8 +287,19 @@ through a normal cleanup.
 A fleet sweep reports far more skipped tasks than eligible ones, and every skip
 is WB being correct rather than WB being stuck:
 
-- `current branch head is not integrated into the exact origin target
-  (awaiting push)` — the work exists only locally. Land it, do not delete it.
+- `current branch head <sha> is not integrated into the exact origin target
+  origin/<base> at <sha> (awaiting push)` — the source branch is not on origin
+  at this head: the work exists only locally. Land it, do not delete it.
+- `... (pushed to origin/<branch>, awaiting merge)` — the branch is pushed and
+  the named target does not contain it. Merge it, or check that the target
+  named is the one you meant (Trap 3). `; recorded base <branch> is absent`
+  says the default branch was judged because the recorded base is gone.
+- `held: branch <b> is the recorded base of <task> (<repo>), which is not
+  eligible: ...` — another listed task is recorded against this task's branch
+  and cannot be retired yet. Retiring the base would delete that branch and
+  close any pull request into it, so the base waits; resolve the named task.
+  `held: <task> is stacked on a branch of <base> and was not retired in this
+  run` is the same hold when the stacked task failed during apply.
 - `branch still has an open pull request: <url>` — close or merge the PR first.
 - `worktree has local changes` — uncommitted work. WB never removes it.
 - `coordinated task blocked by <repository>` — one repository in a
