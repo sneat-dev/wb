@@ -17,7 +17,10 @@ export const beta = { machine: 'beta', machine_id: 'mach-beta', route: 'cached',
 
 export const fleet = {
   schema_version: 2,
-  snapshot_at: now,
+  // Read each time the document is served or copied, as a daemon stamps it: a slow runner reaches a test minutes after this file loaded.
+  get snapshot_at(): string {
+    return new Date().toISOString()
+  },
   warming_up: false,
   repositories_total: 3,
   repositories_scanned: 3,
@@ -44,9 +47,8 @@ export const fleet = {
 }
 
 export async function stub(page: Page, codeBrowserUrl = 'https://codegrapher.dev/') {
-  // The snapshot is stamped when it is served, as a daemon does: a slow runner reaches a test minutes after this file loaded.
   await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: { ...fleet, snapshot_at: new Date().toISOString() }, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache' } }),
+    route.fulfill({ json: fleet, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache' } }),
   )
   await page.route('**/api/v1/cockpit/session', (route) =>
     route.fulfill({
