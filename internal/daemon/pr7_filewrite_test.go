@@ -16,7 +16,7 @@ import (
 var errBoomPR7 = errors.New("pr7 boom")
 
 func validPR7State() State {
-	return NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC))
+	return NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC))
 }
 
 func TestStoreSaveInjectedHonoursInjectedFailures(t *testing.T) {

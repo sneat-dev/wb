@@ -181,7 +181,7 @@ func TestCwWtDaemonServeCmdValidationAndShortLivedServe(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ready := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "token-a", deps.now())
+	ready := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "token-a", "", "", deps.now())
 	ready.MarkReady(4242, deps.now())
 	if err := (daemon.Store{Path: statePath}).Save(ready); err != nil {
 		t.Fatal(err)

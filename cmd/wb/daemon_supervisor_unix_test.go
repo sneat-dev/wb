@@ -32,7 +32,7 @@ func TestManagedServeRecordsSupervisorAndSurvivesStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := mustDaemonPath(t, daemonStatePath, root)
-	starting := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", deps.now())
+	starting := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", "", "", deps.now())
 	if err := (daemon.Store{Path: statePath}).Save(starting); err != nil {
 		t.Fatal(err)
 	}
