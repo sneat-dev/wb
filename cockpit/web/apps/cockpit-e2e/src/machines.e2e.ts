@@ -26,9 +26,23 @@ const sample = (minutesAgo: number, cpu: number) => ({
   disk_total_bytes: 500 * 2 ** 30,
   sampled_at: ago(minutesAgo * MINUTE),
 })
+// The samples are read when the answer is served (a getter), never at module load: CI starts a test minutes after the file loaded,
+// and a sample's age, and with it the load verdict and "30 min ago", must not drift with that.
 const answers: Record<string, unknown> = {
-  'mach-alpha': { machine: 'mach-alpha', route: 'local', samples: Array.from({ length: 360 }, (_, index) => sample((359 - index) / 6, 20 + (index % 40))) },
-  'mach-beta': { machine: 'mach-beta', route: 'cached', samples: [sample(30, 35)] },
+  'mach-alpha': {
+    machine: 'mach-alpha',
+    route: 'local',
+    get samples() {
+      return Array.from({ length: 360 }, (_, index) => sample((359 - index) / 6, 20 + (index % 40)))
+    },
+  },
+  'mach-beta': {
+    machine: 'mach-beta',
+    route: 'cached',
+    get samples() {
+      return [sample(30.5, 35)]
+    },
+  },
   'mach-gamma': { machine: 'mach-gamma', route: 'none', samples: [], reason: 'not_reported' },
 }
 

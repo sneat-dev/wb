@@ -255,6 +255,29 @@ test('a short list has no empty strip under its rows, and the cells of the workt
   }
 })
 
+// A chip is whole or it is not shown: at 1024 with the panel open the State column is narrow, and no sync chip may be cut at its edge.
+test('no sync chip of the State column is cut at 1024 with the panel open', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await stubFixture(page)
+  await page.goto('/cockpit/worktrees')
+  await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+  await expect(page.getByRole('complementary')).toBeVisible()
+  await expect(page.locator('app-owner-state-cell .sync').first()).toBeAttached()
+  const cut = await page.evaluate(() => {
+    const out: string[] = []
+    for (const cell of document.querySelectorAll('app-owner-state-cell')) {
+      const box = cell.getBoundingClientRect()
+      for (const chip of cell.querySelectorAll('.sync')) {
+        const at = chip.getBoundingClientRect()
+        const wrappedOut = at.top >= box.bottom - 1
+        if (!wrappedOut && at.right > box.right + 0.5) out.push(`${chip.textContent}: ${at.right} > ${box.right}`)
+      }
+    }
+    return out
+  })
+  expect(cut).toEqual([])
+})
+
 // A closed phone sheet leaves focus on the list, never on the page's top: the keyboard user keeps their place.
 test('closing the phone sheet, by Esc or by its close button, puts focus back on the list', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })

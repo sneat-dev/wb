@@ -67,6 +67,8 @@ export async function everyTabListsRows(page: Page, fleet: JourneyFleet): Promis
     await expect(page).toHaveURL(new RegExp(`/cockpit/${path}(\\?|$)`))
     await expect(tabs(page).getByRole('link', { name: exact(label) })).toHaveAttribute('aria-current', 'page')
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(label)
+    // Tasks leaves out at-risk work idle for over 14 days (or with no time) unless the Older chip is on: a real daemon's fresh worktrees may be either, so count with it on.
+    if (path === 'tasks' && count > 0) await page.getByRole('button', { name: 'Older at-risk', exact: true }).click()
     if (count === 0) {
       await expect(page.getByText('Nothing has been observed'), label).toBeVisible()
       await expect(rows(page)).toHaveCount(0)

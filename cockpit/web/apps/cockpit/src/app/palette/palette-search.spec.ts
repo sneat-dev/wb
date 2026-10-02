@@ -102,21 +102,24 @@ describe('searchPalette', () => {
   })
 
   // cockpit-views#ac:default-sorts
-  it('leaves out a task at risk for over 14 days, as Home does, unless the search asks for state:at-risk', () => {
+  it('ranks a task at risk for over 14 days last, never out of the results, and offers none for an empty query', () => {
     const days = (count: number): string => new Date(Date.now() - count * 86_400_000).toISOString()
     const risky = { owner_state: 'orphaned' as const, ahead: 1 }
     const doc = fleetDocument({
       worktrees: [
-        { ...worktree('w1', 'r1', 'alpha'), task: 'risk-new', last_activity_at: days(2), ...risky },
-        { ...worktree('w2', 'r1', 'alpha'), task: 'risk-old', last_activity_at: days(20), ...risky },
-        { ...worktree('w3', 'r1', 'alpha'), task: 'risk-idle', last_activity_at: days(20), owner_state: 'idle' as const },
+        { ...worktree('w1', 'r1', 'alpha'), task: 'risk-old', last_activity_at: days(20), ...risky },
+        { ...worktree('w2', 'r1', 'alpha'), task: 'risk-new', last_activity_at: days(2), ...risky },
+        { ...worktree('w3', 'r1', 'alpha'), task: 'risk-idle', last_activity_at: days(30), owner_state: 'idle' as const },
       ],
     })
     const tasks = (text: string) => searchPalette(model(doc), text, NOW).find((group) => group.kind === 'task')?.results.map((result) => result.label)
-    expect(tasks('risk')).toEqual(['risk-new', 'risk-idle'])
+    // The old at-risk task comes after a task that is less recent and matches no better.
+    expect(tasks('risk')).toEqual(['risk-new', 'risk-idle', 'risk-old'])
+    // Finding by name always works, with or without the state term.
+    expect(tasks('risk-old')).toEqual(['risk-old'])
     expect(tasks('state:at-risk')).toEqual(['risk-new', 'risk-old'])
-    expect(tasks('risk-old')).toBeUndefined()
-    // A remembered result still resolves: the window is for searching.
+    // An empty query suggests nothing from the fleet (the palette shows what was opened before).
+    expect(searchPalette(model(doc), '', NOW)).toEqual([])
     expect(resolveResult(model(doc), 'task:risk-old')?.label).toBe('risk-old')
   })
 

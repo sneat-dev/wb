@@ -211,7 +211,7 @@ hint (its tooltip), so a list renders its chips from the page's vocabulary alone
 tasks in state `at-risk` whose last activity is outside the Needs you window (14 days; no recorded
 activity is not recent), as Home does, because older at-risk work is a cleanup matter; with `older` on,
 or with a `state:at-risk` term in the filter, they are listed too, and the result count still says "n of
-all". The palette applies the same window to its task results, with the same `state:at-risk` way in.
+all". The palette never hides such a task from a search that matches it: it ranks it after the others of its kind, and an empty query suggests none.
 The Worktrees chips `safe` and `look` are the two cleanup counts of
 REQ:home-cleanup, `stale` on Machines is a state older than 24 hours and `outdated` a WB
 older than the newest in the fleet. The Repositories sort ids `activity`, `worktrees` and

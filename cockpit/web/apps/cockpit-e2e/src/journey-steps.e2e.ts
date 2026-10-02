@@ -62,8 +62,21 @@ async function serve(page: Page, metrics: JourneyMetrics & { machine: string }) 
 }
 
 const origin = () => new URL(test.info().project.use.baseURL as string).origin
-const withCpu = { machine: 'mach-runner', route: 'local', samples: [sample(2, false), sample(1.8, true), sample(1.5, true)] }
-const withoutCpu = { machine: 'mach-runner', route: 'local', samples: [sample(0.2, false)] }
+// Read when served (a getter), so a sample is as old as the page believes however long after the file loaded the test starts.
+const withCpu = {
+  machine: 'mach-runner',
+  route: 'local',
+  get samples() {
+    return [sample(2, false), sample(1.8, true), sample(1.5, true)]
+  },
+}
+const withoutCpu = {
+  machine: 'mach-runner',
+  route: 'local',
+  get samples() {
+    return [sample(0.2, false)]
+  },
+}
 
 // cockpit-views#ac:every-tab-lists-its-collection
 test('Home holds its sections and every tab lists the rows of the fleet', async ({ page }) => {

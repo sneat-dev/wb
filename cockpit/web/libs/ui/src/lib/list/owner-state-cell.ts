@@ -20,15 +20,18 @@ import { SyncBadges } from '../control/sync-badges'
       <app-sync-badges [ahead]="worktree().ahead" [behind]="worktree().behind" [upstreamGone]="worktree().upstream_gone" [hasUpstream]="worktree().has_upstream" />
     }`,
   styles: `
+    /* The badges are items of this one line. One that does not fit wraps to a second line this cell clips whole: the cell never shows a cut chip, and the panel has every fact. */
     :host {
       display: flex;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
       gap: var(--space-1);
+      align-content: flex-start;
       align-items: center;
+      max-height: 1.375rem;
       overflow: hidden;
     }
     :host app-sync-badges {
-      flex-wrap: nowrap;
+      display: contents;
     }
     app-state-badge {
       flex: none;
