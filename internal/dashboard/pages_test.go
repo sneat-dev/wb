@@ -22,7 +22,10 @@ func TestDashboardPagesRunOnlyScriptFilesOfTheirOwnOrigin(t *testing.T) {
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
 	get := func(target string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		// The pages and their scripts answer only on a loopback Host.
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Host = "127.0.0.1:8766"
+		handler.ServeHTTP(recorder, request)
 		return recorder
 	}
 

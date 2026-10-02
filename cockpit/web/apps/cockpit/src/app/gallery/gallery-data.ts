@@ -100,7 +100,7 @@ export function galleryCommandLists(): { title: string; entries: PanelCommand[] 
       title: 'Refused values',
       entries: [
         { title: 'Task named with a leading dash', command: worktreeList('-x') },
-        { title: 'Task with a line break', command: pullRequestCreate('a\nb') },
+        { title: 'Task with a line break', command: pullRequestCreate('a\nb', {}) },
         { title: 'Branch named like an option', command: branchCleanup('acme/web', '--upstream') },
         { title: 'Task with a quote (copied, quoted)', command: worktreeList("a'; rm -rf ~; '") },
       ],

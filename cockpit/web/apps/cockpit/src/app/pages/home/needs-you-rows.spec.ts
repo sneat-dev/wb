@@ -1,5 +1,5 @@
 import { fleet, modelOf, only } from './home-testing'
-import { needsYouRows } from './needs-you-rows'
+import { needsYouRows, targetOfWork } from './needs-you-rows'
 
 describe('needsYouRows', () => {
   it('lists one row per task, worst first, with the reason in words and its one action', () => {
@@ -34,6 +34,7 @@ describe('needsYouRows', () => {
     expect(rows[5].work).toBeUndefined()
     expect(rows[0].work).toEqual({
       task: 'refactor-cache',
+      target: {},
       worktrees: [
         { id: 'wt-1', branch: 'task/refactor-cache', repository: 'sneat-dev/wb' },
         { id: 'wt-2', branch: 'task/refactor-cache', repository: 'sneat-co/sneat-go' },
@@ -43,6 +44,21 @@ describe('needsYouRows', () => {
     expect(rows[3].action).toMatchObject({ kind: 'route', text: 'Open agent', link: { path: '/agents/vm-blocked', query: {} } })
     expect(rows[4].action).toMatchObject({ kind: 'route', text: 'Open agent' })
     expect(rows[5].action).toMatchObject({ kind: 'route', text: 'Open agents', link: { path: '/agents', query: { chips: 'blocked' } } })
+  })
+
+  // cockpit#req:copy-the-command: a mutating command is never built for another machine's work.
+  it("offers the work of a task only for this machine's worktrees, and targets another machine's when one is named", () => {
+    const document = fleet()
+    const remote = document.worktrees.filter((worktree) => worktree.task === 'refactor-cache')[1]
+    Object.assign(remote, { route: 'live-remote', machine: 'vm', machine_id: 'mach-vm' })
+    const model = modelOf(document)
+    const offer = needsYouRows(model)[0].work
+    expect(offer?.worktrees.map((worktree) => worktree.id)).not.toContain(remote.id)
+    expect(offer?.target).toEqual({})
+    expect(targetOfWork(model, [])).toEqual({ machine: 'an unknown machine' })
+    expect(targetOfWork(model, ['gone'])).toEqual({ machine: 'an unknown machine' })
+    expect(targetOfWork(model, ['gone', ...offer!.worktrees.map((worktree) => worktree.id)])).toEqual({})
+    expect(targetOfWork(model, [offer!.worktrees[0].id, remote.id])).toMatchObject({ machine: 'vm' })
   })
 
   it('says a task another machine reported, with that machine named', () => {

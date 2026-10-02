@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -109,8 +111,8 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		}
 	}
 	response, body = get("attacker.example:"+port, "/")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "WB operations") {
-		t.Fatalf("/ on a foreign host = %s %q, want it unchanged", response.Status, body)
+	if response.StatusCode != http.StatusMisdirectedRequest || strings.Contains(body, "WB operations") {
+		t.Fatalf("/ on a foreign host = %s %q, want 421 and no page", response.Status, body)
 	}
 	response, body = get(address, "/metrics")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "WB Metrics") {
@@ -458,6 +460,40 @@ func TestCockpitInvalidConfigurationStopsTheDaemonFromServing(t *testing.T) {
 		t.Fatalf("serveDashboard = %v, want an error naming the cockpit section", err)
 	}
 }
+
+// TestDaemonRefusesToServeOnAListenerBoundOutsideLoopback: whatever the
+// --listen name resolved to, a listener that holds a non-loopback address is
+// closed unserved and the start fails with a usage error naming it.
+func TestDaemonRefusesToServeOnAListenerBoundOutsideLoopback(t *testing.T) {
+	root := daemonTestRoot(t)
+	deps := daemonTestDependencies(t, root)
+	real, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &fakeBoundListener{Listener: real, bound: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 8766}}
+	deps.listen = func(string, string) (net.Listener, error) { return wrapped, nil }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	err = serveDashboard(&invocation{projectsRoot: root}, command, deps, "localhost:8766", daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "192.0.2.10:8766") {
+		t.Fatalf("serveDashboard = %v, want a usage error naming the bound address", err)
+	}
+	if _, acceptErr := real.Accept(); acceptErr == nil {
+		t.Fatal("the listener was left open")
+	}
+}
+
+// fakeBoundListener reports another address than the one it holds.
+type fakeBoundListener struct {
+	net.Listener
+	bound net.Addr
+}
+
+func (listener *fakeBoundListener) Addr() net.Addr { return listener.bound }
 
 // TestCockpitServerKeepsSessionsInMemorySoARestartEndsThem pins what the
 // daemon builds: a session established on one run's server is unknown to the

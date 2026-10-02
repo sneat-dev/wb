@@ -1,4 +1,4 @@
-import { Agent, AppLink, FleetModel, NeedsYouItem, TaskStateId, TaskView, formatAge } from '@cockpit/fleet-data'
+import { Agent, AppLink, CommandTarget, FleetModel, NeedsYouItem, TaskStateId, TaskView, Worktree, formatAge } from '@cockpit/fleet-data'
 import { isoOf } from './home-format'
 import { MachineWords, machineWords } from './machine-words'
 
@@ -10,6 +10,8 @@ export type RowAction =
 /** What work at risk offers besides opening its task: the registry's Push per worktree when it offers one, otherwise a "Copy template" icon button. */
 export interface WorkOffer {
   task: string
+  /** Where the task's commands run (REQ:copy-the-command): a mutating one is refused for another machine's work. */
+  target: CommandTarget
   worktrees: { id: string; branch: string; repository: string }[]
 }
 
@@ -84,8 +86,26 @@ function actionOf(item: NeedsYouItem): RowAction {
   }
 }
 
-function workOf(item: NeedsYouItem): WorkOffer | undefined {
-  return item.kind === 'work-at-risk' ? { task: item.task, worktrees: item.worktrees.map((worktree) => ({ id: worktree.id, branch: worktree.branch, repository: worktree.repository })) } : undefined
+/**
+ * Where the work's commands run: here only when every worktree is known and this machine's; otherwise the machine of
+ * the first worktree that is not, and when none of the ids is a worktree of the document, an unknown machine's, so that a
+ * mutating command is refused and never built on a guess.
+ */
+export function targetOfWork(model: FleetModel, ids: readonly string[]): CommandTarget {
+  const entries = ids.map((id) => model.worktreeById(id)).filter((entry): entry is Worktree => entry !== undefined)
+  if (entries.length === 0) return { machine: 'an unknown machine' }
+  const targets = entries.map((entry) => model.targetOf(entry))
+  return targets.find((target) => target.machine !== undefined || target.ssh !== undefined) ?? {}
+}
+
+function workOf(model: FleetModel, item: NeedsYouItem): WorkOffer | undefined {
+  return item.kind === 'work-at-risk'
+    ? {
+        task: item.task,
+        target: targetOfWork(model, item.worktrees.map((worktree) => worktree.id)),
+        worktrees: item.worktrees.map((worktree) => ({ id: worktree.id, branch: worktree.branch, repository: worktree.repository })),
+      }
+    : undefined
 }
 
 function reasonOf(item: NeedsYouItem): string {
@@ -142,7 +162,7 @@ export function needsYouRows(model: FleetModel): NeedsYouRow[] {
       at: isoOf(item.lastActivityAt),
       age: item.lastActivityAt === undefined ? undefined : formatAge(isoOf(item.lastActivityAt), model.now),
       action: actionOf(item),
-      work: workOf(item),
+      work: workOf(model, item),
     }
   })
   if (withoutTask !== undefined) {

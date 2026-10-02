@@ -1,11 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
-import { CopyCommand } from '@cockpit/fleet-data'
+import { CommandTarget, CopyCommand } from '@cockpit/fleet-data'
 import { ActionSlot, SlotCopy, copyLabel } from '@cockpit/ui/control'
 import { HomeRegistry, PUSH_ACTION } from './home-registry'
 import { WorkOffer } from './needs-you-rows'
 
 /** `wb pr create '<task>' --commit-all --message=<<<edit:message>>>`: the library's template, loaded when the button is pressed. */
-const commitAndOpen = (task: string) => async (): Promise<CopyCommand> => (await import('@cockpit/fleet-data/commands')).pullRequestCreate(task)
+const commitAndOpen = (task: string, target: CommandTarget) => async (): Promise<CopyCommand> => (await import('@cockpit/fleet-data/commands')).pullRequestCreate(task, target)
 
 /**
  * The secondary action of a work-at-risk row (REQ:home-needs-you), after its primary "Open task": one action slot.
@@ -31,7 +31,7 @@ export class WorkAction {
   protected readonly target = computed(() => `worktree:${this.pushable().id}`)
   protected readonly offered = computed(() => this.registry.offered(this.target(), PUSH_ACTION))
   protected readonly copy = computed<SlotCopy>(() => ({
-    build: commitAndOpen(this.action().task),
+    build: commitAndOpen(this.action().task, this.action().target),
     label: copyLabel(true, 'wb pr create', `commit everything and open the pull request${this.repositories().length > 1 ? ` of ${this.repositories().join(' and ')}` : ''}`),
     template: true,
     quiet: true,

@@ -99,7 +99,7 @@ flag-matrix line and the persistent-flag support declaration.
 ### Task 4: Fleet read model
 
 **Id:** task-4
-**Verifies:** cockpit#ac:read-model-lists-local-state, cockpit#ac:request-does-not-scan, cockpit#ac:anonymous-local-gets-metadata-only
+**Verifies:** cockpit#ac:read-model-lists-local-state, cockpit#ac:request-does-not-scan, cockpit#ac:anonymous-local-gets-metadata-only, cockpit#ac:future-dated-snapshot-is-unknown-and-stale
 **Depends-On:** 2
 **Status:** complete
 
