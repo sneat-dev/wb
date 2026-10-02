@@ -115,34 +115,57 @@ func TestDashboardLocalPrintsAProvenanceWarningToStderr(t *testing.T) {
 	}
 }
 
-func TestDashboardMetricsAndCoverageFlags(t *testing.T) {
-	var opened string
-	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
-		open: func(target string) error { opened = target; return nil },
-		localURL: func(_ context.Context, _ string) (string, string, error) {
-			return "http://127.0.0.1:9000/", "", nil
+func TestDashboardLocalSaysItIsDeprecatedInFavourOfCockpit(t *testing.T) {
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "http://127.0.0.1:9000/cockpit/", "", nil
 		},
 	})
-	command.SetArgs([]string{"--metrics"})
+	command.SetArgs([]string{"--local"})
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if opened != "http://127.0.0.1:9000/metrics" {
-		t.Fatalf("opened = %q, want http://127.0.0.1:9000/metrics", opened)
+	if !strings.Contains(stderr.String(), "deprecated") || !strings.Contains(stderr.String(), "wb cockpit") {
+		t.Fatalf("stderr = %q, want the deprecation naming wb cockpit", stderr.String())
 	}
+}
 
-	command = newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
-		open: func(target string) error { opened = target; return nil },
-		localURL: func(_ context.Context, _ string) (string, string, error) {
-			return "http://127.0.0.1:9000/", "", nil
+func TestDashboardHostedSaysNothingOnStderr(t *testing.T) {
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "", "", errors.New("unexpected local lookup")
 		},
 	})
-	command.SetArgs([]string{"--coverage"})
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if opened != "http://127.0.0.1:9000/coverage" {
-		t.Fatalf("opened = %q, want http://127.0.0.1:9000/coverage", opened)
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want none", stderr.String())
+	}
+}
+
+// The retired operations pages have no flag to open them: their routes answer
+// 404 and the daemon serves Cockpit instead.
+func TestDashboardHasNoFlagForTheRetiredPages(t *testing.T) {
+	for _, flag := range []string{"metrics", "coverage"} {
+		if newDashboardCmd(&invocation{}).Flags().Lookup(flag) != nil {
+			t.Errorf("wb dashboard still has --%s", flag)
+		}
+	}
+}
+
+func TestLocalCockpitURLIsTheCockpitMountOfTheDaemonAddress(t *testing.T) {
+	if got, want := localCockpitURL("127.0.0.1:9000"), "http://127.0.0.1:9000/cockpit/"; got != want {
+		t.Errorf("recorded listen = %q, want %q", got, want)
+	}
+	if got, want := localCockpitURL(""), "http://"+daemonDefaultListen+"/cockpit/"; got != want {
+		t.Errorf("default listen = %q, want %q", got, want)
 	}
 }
 

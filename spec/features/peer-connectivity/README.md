@@ -683,7 +683,8 @@ tokens, no chart library.
 `admin_available` is true. Otherwise the page shows the exact CLI command and
 the `wb dashboard --admin` hint.
 
-The laptop's own daemon page (`internal/dashboard`) shows its upstream peer
+The laptop's own daemon page, Cockpit (the former `internal/dashboard` page
+is retired: cockpit#req:legacy-dashboard-retired), shows its upstream peer
 with the same counters and a compact traffic chart. `wb daemon status` adds
 one line per peer.
 

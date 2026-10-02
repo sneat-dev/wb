@@ -15,9 +15,10 @@ status: Approved
 this machine's repositories, worktrees, branches, pull requests, agents and
 known machines, lets the operator drill from any count to the entities behind
 it, and establishes the owner session that file content and actions require.
-It is the first slice of [WB Cockpit](../../ideas/wb-cockpit.md) and runs
-beside the two existing read-only dashboards until a later Feature retires
-them.
+It is the first slice of [WB Cockpit](../../ideas/wb-cockpit.md). It ran
+beside the daemon's server-rendered operations pages until 2026-10-02, when
+those pages were retired and Cockpit became the daemon's only web interface
+(cockpit#req:legacy-dashboard-retired).
 
 ## Problem
 
@@ -87,11 +88,25 @@ launch a browser. The JSON `url` never contains a login code or a session key
 (cockpit#req:session-key): it has no query string and no fragment. With
 `--print-url`, and only then, the object also has `login_url`.
 
-#### REQ: dashboard-command-unchanged
+#### REQ: legacy-dashboard-retired
 
-`wb dashboard` and its `--local`, `--metrics` and `--coverage` flags MUST
-keep their present behavior. Making `wb dashboard` an alias of `wb cockpit`
-belongs to the Feature that retires the existing dashboards.
+(Replaces the earlier requirement that `wb dashboard` and the daemon's
+operations pages keep their behavior, which held only until this retirement,
+decided by the founder on 2026-10-02: "retire old dashboard".)
+
+The daemon's server-rendered operations pages MUST NOT be served: `GET /`
+redirects (status 302) to `/cockpit/`, and `GET /metrics`, `GET /coverage`,
+`GET /api/v1/overview` and the script files under `/dashboard-assets/` answer
+404 like any path nothing owns. The `/` redirect applies the Host check
+(cockpit#req:host-header-check). `GET /api/v1/health`, `GET /api/v1/log`,
+`GET /api/v1/peers` and the hub's mounts are unaffected. `wb dashboard`
+opens the hosted cross-machine dashboard as before; its `--metrics` and
+`--coverage` flags, which opened the retired pages, are removed, and its
+`--local` flag is deprecated: it prints a notice naming `wb cockpit`, starts or
+reuses the daemon and opens the plain Cockpit URL, without a sign-in. The
+fleet metrics and coverage tables of the retired metrics page have no Cockpit
+page yet; they remain readable through `wb coverage` and the hub's
+`/v0/workbench/metrics` API.
 
 #### REQ: command-manifest-rows
 
@@ -105,20 +120,17 @@ declaration, as every public WB leaf does.
 
 The loopback daemon MUST serve the Cockpit application under `/cockpit/` and
 its API under `/api/v1/cockpit/`, whether or not `wb.yaml` has a `hub:`
-section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
-`/workbench/` and `/v0/workbench/` — are unchanged, with these exceptions.
+section. The existing routes — `/api/v1/*`, `/workbench/` and `/v0/workbench/` —
+are unchanged, with these exceptions. The retired operations pages are gone
+(cockpit#req:legacy-dashboard-retired).
 `GET /api/v1/log` requires an owner session (cockpit#req:daemon-log-is-owner-only).
-`GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
-process id and the names of its worktrees (metadata, which a local reader may read without a
+`GET /` and `GET /api/v1/health`, which answer the machine's name and the daemon's
+process id (metadata, which a local reader may read without a
 session), MUST apply the Host check (cockpit#req:host-header-check, the same rule, from one shared
 function): a request whose `Host` does not name a loopback host is refused with status 421 and the
 JSON body `{schema_version, error: "misdirected_request", message}` with a fixed message, so a page
-that rebinds DNS to the loopback address reads neither; the three HTML routes are refused the same
-way. A daemon published through a tunnel must therefore have the tunnel send a loopback `Host` to
-reach any of them. An overview that cannot be built is answered with
-status 500, the closed code `overview_unavailable` and one fixed message; the error itself, which
-names a path under the projects root, goes to the daemon's log (once for a failure that repeats)
-and to no reader of the route, and the page shows a fixed text of its own.
+that rebinds DNS to the loopback address reads neither. A daemon published through a tunnel must
+therefore have the tunnel send a loopback `Host` to reach either of them.
 
 #### REQ: embedded-application
 
@@ -384,8 +396,10 @@ The key is in storage that every page of the daemon's origin can read, so a
 script injected into any of them would have it. Every page the daemon's listener
 serves is therefore held to three rules.
 
-- No data becomes markup. The dashboard's pages (`/` and `/metrics`) MUST build
-  what they show with `createElement` and `textContent`: no value read from a
+- No data becomes markup. (The daemon's own pages `/` and `/metrics`, which
+  this rule was first written for, are retired: cockpit#req:legacy-dashboard-retired.
+  It still binds the pages that remain, the hub's under `/workbench/`.) A page MUST build
+  what it shows with `createElement` and `textContent`: no value read from a
   route is concatenated into HTML, a class name is chosen from a closed set (an
   unknown status is shown as `neutral`), a link's address is either built by the
   page as `https://` and a repository name or accepted only when it parses as
@@ -394,8 +408,7 @@ serves is therefore held to three rules.
   value, including records written before the write side validated anything.
 - No inline script runs. Every response of the listener that does not set its
   own policy carries `script-src 'self'` with no `'unsafe-inline'`,
-  `object-src 'none'` and `base-uri 'self'`; the dashboard's scripts are files
-  of the origin under `/dashboard-assets/`. The GitHub installation opener page
+  `object-src 'none'` and `base-uri 'self'`. The GitHub installation opener page
   runs its one script by a nonce minted per response. The one exception is the
   bench dashboard under `/workbench/`, whose Astro build emits inline scripts:
   it sets its own policy, which still allows them, and it renders stored values
@@ -680,14 +693,13 @@ All code this Feature adds MUST reach 100% test coverage (founder,
 
 ## Not Doing
 
-- Retiring `internal/dashboard` or `hub/web`, or porting their pages — a
-  later Feature, after the port is complete.
+- Retiring `hub/web` or porting its pages — a later Feature. (`internal/dashboard`'s
+  operations pages are retired: cockpit#req:legacy-dashboard-retired. Its Go package
+  keeps its name and now serves only the JSON routes and the mounts.)
 - Protecting the existing `/api/v1/*` routes other than `GET /api/v1/log`
-  (cockpit#req:daemon-log-is-owner-only) — they keep today's behavior
-  until that Feature. They share an origin with Cockpit and their pages allow
-  inline scripts; they render no repository content. A script injected into
-  one of those pages would run in the origin that holds the owner session;
-  retiring them, or giving them the strict policy, closes that.
+  (cockpit#req:daemon-log-is-owner-only) — they keep today's behavior. They
+  render no repository content, and the retired operations pages that shared
+  this origin no longer exist.
 - Reaching Cockpit through a host name other than loopback. Remote access is
   an SSH port forward, to any local port, which keeps the `Host` on
   loopback. Exposure through a
@@ -734,15 +746,6 @@ Given a running daemon that issues session keys, and one that is an older wb and
 When `wb cockpit` runs with stdout a terminal, with stdout a pipe, with `--print-url` to a pipe, with `--format json`, with `--format json --print-url`, with `--hosted --print-url`, and against the older daemon
 Then the terminal and `--print-url` runs request one login code and print the login URL with its key in the fragment, the pipe run requests none, prints the plain Cockpit URL and names `--print-url` on stderr, the JSON run has no `login_url` and the JSON `--print-url` run has it, stderr never holds the code or the key, `--hosted --print-url` is a usage error with exit code 2, and the older daemon is refused with exit code 1 and the advice `wb daemon restart`, with nothing printed or opened
 
-### AC: dashboard-pages-create-nothing-from-data
-
-**Requirements:** cockpit#req:same-origin-pages-run-no-injected-script
-
-Scenario: A hostile value in every field
-Given the dashboard's `/` and `/metrics` pages as the daemon serves them, and routes that answer metric, coverage, metric type, worktree, command-cost and machine records with `<img src=x onerror=…>`, `'");alert(1)//`, an attribute break, a class break, a closing tag with a script and a `javascript:` address in every field, of every type the field could have
-When the pages load, every metric type tab is opened, every breakdown is expanded, a repository is opened from its Breakdown button and the filter is typed into
-Then every value is on the page as text, the document holds no element, attribute, class or address that the page's own markup and script do not create, the only script element is the page's own file, a status outside the closed set is the neutral pill, an address that is not `https` is not a link, each page's markup has no inline script and no inline event handler, and every response carries a policy whose `script-src` is `'self'` alone
-
 ### AC: records-with-markup-are-refused
 
 **Requirements:** cockpit#req:same-origin-pages-run-no-injected-script
@@ -761,23 +764,23 @@ Given `cockpit.hosted_url` is set to a test address
 When `wb cockpit --hosted --format json` runs
 Then `url` is that address, `scope` is `hosted`, and no daemon was started
 
-### AC: dashboard-command-is-unchanged
+### AC: legacy-dashboard-is-retired
 
-**Requirements:** cockpit#req:dashboard-command-unchanged, cockpit#req:cockpit-mount
+**Requirements:** cockpit#req:legacy-dashboard-retired, cockpit#req:cockpit-mount
 
-Scenario: Existing surfaces keep working
+Scenario: The old pages are gone and the root leads to Cockpit
 Given a daemon serving Cockpit
-When `wb dashboard --local --format json`, `GET /`, `GET /metrics` and `GET /api/v1/overview` are requested
-Then each answers as it did before this Feature
+When `GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/overview`, `GET /dashboard-assets/index.js` and `GET /dashboard-assets/metrics.js` are requested, and `wb dashboard --metrics` and `wb dashboard --local` run
+Then `/` answers 302 to `/cockpit/`, each other route answers 404, `--metrics` is a usage error, and `--local` prints a deprecation notice naming `wb cockpit` and opens the plain Cockpit URL
 
 ### AC: dashboard-json-routes-answer-only-on-loopback
 
 **Requirements:** cockpit#req:cockpit-mount, cockpit#req:host-header-check
 
-Scenario: A rebinding page, and an overview that fails
-Given a daemon serving its dashboard routes, and a worktree whose run telemetry cannot be read
-When `GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each loopback form (`127.0.0.1`, `127.0.0.2`, `[::1]`, `localhost`), and the overview is requested twice
-Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback forms are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
+Scenario: A rebinding page
+Given a daemon serving its root redirect and its health route
+When `GET /` and `GET /api/v1/health` are requested with a `Host` that names another host, and with each loopback form (`127.0.0.1`, `127.0.0.2`, `[::1]`, `localhost`)
+Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, and the loopback forms are served
 
 ### AC: manifest-rows-exist
 

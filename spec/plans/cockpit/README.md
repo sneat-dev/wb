@@ -44,7 +44,7 @@ coverage. Every task keeps the code it adds at 100% coverage: Go through `wb cov
 ### Task 1: Mount, configuration and request guard
 
 **Id:** task-1
-**Verifies:** cockpit#ac:unbuilt-application-says-so, cockpit#ac:foreign-host-is-refused, cockpit#ac:dashboard-command-is-unchanged
+**Verifies:** cockpit#ac:unbuilt-application-says-so, cockpit#ac:foreign-host-is-refused, cockpit#ac:legacy-dashboard-is-retired
 **Depends-On:** —
 **Status:** complete
 
@@ -58,6 +58,8 @@ built" page, as `hub/web/embed.go` does. Mount `/cockpit/` and
 whatever the port, and redirects page requests on a loopback alias to the canonical origin.
 Tests: the guard table, the unbuilt page, and a regression test that `/`,
 `/metrics`, `/api/v1/overview` and `wb dashboard --local` answer as before.
+(Superseded 2026-10-02: the operations pages and `/api/v1/overview` were
+retired; that test now asserts the retirement, cockpit#req:legacy-dashboard-retired.)
 
 ### Task 2: Owner session, principals and cross-origin rule
 
@@ -219,15 +221,16 @@ no path.
 **Status:** complete
 
 Added 2026-10-02, from the whole-branch security review. `GET /api/v1/health`
-and `GET /api/v1/overview` apply the Host check, by the rule Cockpit's guard
+and, then, `GET /api/v1/overview` apply the Host check, by the rule Cockpit's guard
 applies (package `internal/loopbackhost`, which both ask), and a failed overview
 answers a closed code and a fixed message while its reason goes to the daemon's
-log.
+log. (2026-10-02: the overview route and the operations pages are retired; the
+root redirect and `GET /api/v1/health` keep the Host check.)
 
 ### Task 12: The session cookie alone is not an owner
 
 **Id:** task-12
-**Verifies:** cockpit#ac:replayed-cookie-is-not-the-owner, cockpit#ac:session-key-reaches-the-page-in-the-fragment, cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session, cockpit#ac:session-key-ends-with-its-session, cockpit#ac:session-key-is-never-served, cockpit#ac:login-url-is-printed-only-where-asked, cockpit#ac:dashboard-pages-create-nothing-from-data, cockpit#ac:records-with-markup-are-refused
+**Verifies:** cockpit#ac:replayed-cookie-is-not-the-owner, cockpit#ac:session-key-reaches-the-page-in-the-fragment, cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session, cockpit#ac:session-key-ends-with-its-session, cockpit#ac:session-key-is-never-served, cockpit#ac:login-url-is-printed-only-where-asked, cockpit#ac:records-with-markup-are-refused
 **Depends-On:** 2, 3, 10
 **Status:** complete
 

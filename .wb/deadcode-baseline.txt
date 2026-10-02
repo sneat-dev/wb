@@ -88,7 +88,6 @@ github.com/sneat-dev/wb/internal/checkoutmarker.Result.Changed
 github.com/sneat-dev/wb/internal/ciaudit.WorkflowMechanisms
 github.com/sneat-dev/wb/internal/daemon.LegacyStatePath
 github.com/sneat-dev/wb/internal/daemon.NewStarting
-github.com/sneat-dev/wb/internal/dashboard.BuildOverview
 github.com/sneat-dev/wb/internal/deps.BumpOperationID
 github.com/sneat-dev/wb/internal/deps.DriftFailed
 github.com/sneat-dev/wb/internal/deps.RepositoryReportFromResult

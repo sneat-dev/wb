@@ -111,16 +111,18 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		}
 	}
 	response, body = get("attacker.example:"+port, "/")
-	if response.StatusCode != http.StatusMisdirectedRequest || strings.Contains(body, "WB operations") {
-		t.Fatalf("/ on a foreign host = %s %q, want 421 and no page", response.Status, body)
+	if response.StatusCode != http.StatusMisdirectedRequest || strings.Contains(body, "cockpit") {
+		t.Fatalf("/ on a foreign host = %s %q, want 421 and no redirect", response.Status, body)
 	}
-	response, body = get(address, "/metrics")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "WB Metrics") {
-		t.Fatalf("/metrics = %s %q", response.Status, body)
+	// The listener's root is Cockpit's mount; the retired pages and their
+	// overview route are gone (cockpit#ac:legacy-dashboard-is-retired).
+	if response, _ = get(address, "/"); response.StatusCode != http.StatusFound || response.Header.Get("Location") != cockpit.PagePrefix {
+		t.Fatalf("/ = %s %q, want a redirect to %s", response.Status, response.Header.Get("Location"), cockpit.PagePrefix)
 	}
-	response, body = get(address, "/api/v1/overview")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, `"schema_version"`) {
-		t.Fatalf("/api/v1/overview = %s %q", response.Status, body)
+	for _, retired := range []string{"/metrics", "/coverage", "/api/v1/overview", "/dashboard-assets/index.js", "/dashboard-assets/metrics.js"} {
+		if response, body = get(address, retired); response.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s = %s %q, want 404: the page is retired", retired, response.Status, body)
+		}
 	}
 
 	// The owner session (cockpit#ac:login-code-is-single-use,

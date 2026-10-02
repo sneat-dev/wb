@@ -6,12 +6,19 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sneat-dev/wb/internal/cockpit"
 )
 
 const hostedDashboardURL = "https://sneat.work/bench/dashboard/"
+
+// dashboardLocalDeprecation is what `wb dashboard --local` says on stderr: the
+// operations pages this flag once opened are retired, and Cockpit replaces
+// them. The flag still starts or reuses the daemon and opens Cockpit, without
+// the sign-in that `wb cockpit` performs.
+const dashboardLocalDeprecation = "--local is deprecated: the local operations dashboard is retired and Cockpit replaces it; run `wb cockpit`, which also signs you in"
 
 type dashboardOpenResult struct {
 	URL    string `json:"url"`
@@ -37,13 +44,18 @@ func defaultDashboardCommandDependencies() dashboardCommandDependencies {
 			if err != nil {
 				return "", "", err
 			}
-			address := result.State.Listen
-			if address == "" {
-				address = daemonDefaultListen
-			}
-			return (&url.URL{Scheme: "http", Host: address, Path: "/"}).String(), result.Warning, nil
+			return localCockpitURL(result.State.Listen), result.Warning, nil
 		},
 	}
+}
+
+// localCockpitURL is the plain Cockpit address of a daemon that listens on
+// listen (the default address when the state recorded none).
+func localCockpitURL(listen string) string {
+	if listen == "" {
+		listen = daemonDefaultListen
+	}
+	return (&url.URL{Scheme: "http", Host: listen, Path: cockpit.PagePrefix}).String()
 }
 
 func newDashboardCmd(inv *invocation) *cobra.Command {
@@ -51,22 +63,23 @@ func newDashboardCmd(inv *invocation) *cobra.Command {
 }
 
 func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDependencies) *cobra.Command {
-	var local, metricsFlag, coverageFlag, jsonOut bool
+	var local, jsonOut bool
 	var format string
 	command := &cobra.Command{
 		Use:   "dashboard",
 		Short: "Open the hosted cross-machine Workbench dashboard",
-		Args:  cobra.NoArgs,
+		Long: "Open the hosted cross-machine Workbench dashboard. This machine's own web interface is Cockpit: " +
+			"run `wb cockpit`. The local operations pages that --local, --metrics and --coverage used to open " +
+			"are retired; --local now opens Cockpit and is deprecated in favour of `wb cockpit`.",
+		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
 			if err != nil {
 				return usageError(err.Error())
 			}
 			target, scope := hostedDashboardURL, "hosted"
-			if metricsFlag || coverageFlag {
-				local = true
-			}
 			if local {
+				_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", dashboardLocalDeprecation)
 				var warning string
 				target, warning, err = deps.localURL(command.Context(), inv.projectsRoot)
 				if err != nil {
@@ -76,13 +89,6 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 					_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", warning)
 				}
 				scope = "local"
-				if metricsFlag {
-					target = strings.TrimSuffix(target, "/") + "/metrics"
-					scope = "metrics"
-				} else if coverageFlag {
-					target = strings.TrimSuffix(target, "/") + "/coverage"
-					scope = "coverage"
-				}
 			}
 			result := dashboardOpenResult{URL: target, Scope: scope}
 			if format == "text" && !inv.nonInteractive {
@@ -94,9 +100,7 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 			return writeDashboardOpenResult(command.OutOrStdout(), format, result)
 		},
 	}
-	command.Flags().BoolVar(&local, "local", false, "open this machine's loopback daemon dashboard")
-	command.Flags().BoolVar(&metricsFlag, "metrics", false, "open this machine's fleet metrics dashboard")
-	command.Flags().BoolVar(&coverageFlag, "coverage", false, "open this machine's fleet coverage dashboard")
+	command.Flags().BoolVar(&local, "local", false, "deprecated: open this machine's Cockpit (use `wb cockpit`)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
 	return command
