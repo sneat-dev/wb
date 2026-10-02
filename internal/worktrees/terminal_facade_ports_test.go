@@ -159,6 +159,8 @@ func TestCleanupSealDistinguishesExactAdvancedAndNewTerminal(t *testing.T) {
 		stage := stage
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
+			proof := &worktreeclaims.LandedEvidence{Target: "main"}
+			sealed := false
 			ports := cleanupSealPorts{
 				readProjection: func(string, string) (workLogProjection, error) {
 					if stage == "legacy" {
@@ -182,14 +184,18 @@ func TestCleanupSealDistinguishesExactAdvancedAndNewTerminal(t *testing.T) {
 					}
 					return nil
 				},
-				sealRecycle: func(_, _, _, disposition string) error {
-					if disposition != "removed" {
-						t.Fatalf("new cleanup disposition = %q", disposition)
+				sealRemoval: func(_, _, _ string, landed *worktreeclaims.LandedEvidence) error {
+					if stage != "new" || landed != proof {
+						t.Fatalf("%s sealed a new terminal with %#v", stage, landed)
 					}
+					sealed = true
 					return nil
 				},
 			}
-			err := ports.sealWorkLogForCleanup("home", "worktree", "head")
+			err := ports.sealWorkLogForCleanup("home", "worktree", "head", proof)
+			if sealed != (stage == "new") {
+				t.Fatalf("%s: new terminal sealed = %t", stage, sealed)
+			}
 			if stage == "projection" && !errors.Is(err, failure) {
 				t.Fatalf("projection = %v", err)
 			}

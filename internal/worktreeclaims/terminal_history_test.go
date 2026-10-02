@@ -72,17 +72,24 @@ func terminalHistoryFixture(t *testing.T) (string, TerminalWorkLogExpectation, C
 
 func addRemovedHistoryRun(t *testing.T, home string, expectation TerminalWorkLogExpectation, claim Claim) {
 	t.Helper()
+	addSealedHistoryRun(t, home, expectation, claim, "removed", nil)
+}
+
+// addSealedHistoryRun writes a claim, its terminal and the outbox receipt of
+// the seal, as cleanup leaves them.
+func addSealedHistoryRun(t *testing.T, home string, expectation TerminalWorkLogExpectation, claim Claim, disposition string, landed *LandedEvidence) {
+	t.Helper()
 	run := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID)
 	writeHistoryJSON(t, filepath.Join(run, "claims", claim.ClaimID+".json"), claim)
 	terminalClaim := claim
 	terminalClaim.Lifecycle = "terminal"
 	sealedAt := time.Unix(123, 0).UTC()
-	terminal := TerminalRecord{Claim: terminalClaim, FinalCommit: expectation.FinalCommit, Disposition: "removed", SealedAt: sealedAt}
+	terminal := TerminalRecord{Claim: terminalClaim, FinalCommit: expectation.FinalCommit, Disposition: disposition, SealedAt: sealedAt, Landed: landed}
 	writeHistoryJSON(t, filepath.Join(run, "terminals", claim.ClaimID+".json"), terminal)
 	event := PublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: expectation.FinalCommit,
-		Lifecycle: "terminal", Disposition: "removed"}
+		Lifecycle: "terminal", Disposition: disposition, Landed: landed}
 	writeHistoryJSON(t, filepath.Join(home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json"), event)
 }
 
@@ -281,5 +288,48 @@ func TestRemovedTerminalHistoryRefusesIncompleteScans(t *testing.T) {
 	writeHistoryJSON(t, filepath.Join(home, "worklogs", "task", "runs", "run", "claims", claim.ClaimID+".json"), other)
 	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "missing exact") {
 		t.Fatalf("nonmatching immutable claim = %v", err)
+	}
+}
+
+func TestRemovedTerminalHistoryAcceptsALandingOnlyWithCleanupsProof(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		disposition string
+		landed      *LandedEvidence
+		accepted    bool
+	}{
+		"landed with its proof":    {"landed", landedTestEvidence(), true},
+		"landed by finalize alone": {"landed", nil, false},
+		"removed":                  {"removed", nil, true},
+		"removed carrying a proof": {"removed", landedTestEvidence(), false},
+		"discarded":                {"discarded", nil, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			home, expectation, claim := terminalHistoryFixture(t)
+			addSealedHistoryRun(t, home, expectation, claim, tc.disposition, tc.landed)
+			base, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation)
+			if tc.accepted && (err != nil || base != claim.BaseSHA) {
+				t.Fatalf("a worktree cleanup removed was not proved: %q, %v", base, err)
+			}
+			if !tc.accepted && (err == nil || !strings.Contains(err.Error(), "does not exactly corroborate")) {
+				t.Fatalf("a terminal cleanup did not seal proved a removal: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemovedTerminalHistoryRefusesAnOutboxThatOmitsTheLanding(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addSealedHistoryRun(t, home, expectation, claim, "landed", landedTestEvidence())
+	outbox := filepath.Join(home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json")
+	writeHistoryJSON(t, outbox, PublicEvent{Version: 1, Type: "worktree.sealed", At: time.Unix(123, 0).UTC(), EffortID: claim.EffortID,
+		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
+		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: expectation.FinalCommit,
+		Lifecycle: "terminal", Disposition: "landed"})
+	if _, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "outbox") {
+		t.Fatalf("an outbox receipt without the landing corroborated it: %v", err)
 	}
 }

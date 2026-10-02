@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
@@ -61,6 +63,13 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 				Task: "task", Repository: "acme/app", CanonicalDir: "/repo",
 				WorktreeDir: "/worktree", Branch: "topic", Base: "main",
 				HeadSHA: "abc", RemoteHeadSHA: "abc",
+			}
+			// The plain success case removes merged work: the seal must be
+			// handed the proof the recheck established, and no other case has one.
+			var wantLanded *worktreeclaims.LandedEvidence
+			if tc.fault == "success" {
+				refreshed.IntegratedAtOrigin, refreshed.AbsorbedAtOrigin, refreshed.AbsorbedBySHA = true, true, strings.Repeat("c", 40)
+				wantLanded = &worktreeclaims.LandedEvidence{Target: "main", LandedSHA: refreshed.AbsorbedBySHA, Proof: worktreeclaims.LandedProofAbsorbed}
 			}
 			if strings.HasPrefix(tc.fault, "seal supersession") {
 				refreshed.SupersededAtOrigin = true
@@ -153,7 +162,10 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 					}
 					return nil
 				},
-				SealCleanup: func(string, string, string) error {
+				SealCleanup: func(_, worktree, head string, landed *worktreeclaims.LandedEvidence) error {
+					if worktree != "/worktree" || head != "abc" || !worktreeclaims.SameLandedEvidence(landed, wantLanded) {
+						t.Errorf("seal of %s at %s was handed %#v, want %#v", worktree, head, landed, wantLanded)
+					}
 					if tc.fault == "seal cleanup" {
 						return denied
 					}
