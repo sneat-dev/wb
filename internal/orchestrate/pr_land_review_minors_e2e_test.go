@@ -17,7 +17,7 @@ import (
 	"testing"
 )
 
-// TestLandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate is required test
+// TestE2ELandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate is required test
 // M1 (pr_land.go:498-501): result.LocalSync must be recorded even when a
 // later step in the same landing attempt (the post-update-branch wait) fails
 // hard, not only on the success path. Before the fix, LandPullRequest set
@@ -26,7 +26,7 @@ import (
 // most needs right when something went wrong.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate(t *testing.T) {
+func TestE2ELandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate(t *testing.T) {
 	fixture := newLandFixture(t, "feature")
 	worktree := addLandWorktree(t, fixture, "feature")
 	advanceLandTarget(t, fixture)
@@ -44,14 +44,14 @@ func TestLandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate(t *testing.T) {
 	}
 }
 
-// TestLandDoesNotLeakLocalSyncIntoEvidence is required test M2
+// TestE2ELandDoesNotLeakLocalSyncIntoEvidence is required test M2
 // (pr_land_engine.go:127): the update-branch fast-forward note must reach
 // the typed LocalSync field only, not also survive as a stray
 // evidence["local_sync"] key that would leak into `wb pr land --json`
 // alongside it.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandDoesNotLeakLocalSyncIntoEvidence(t *testing.T) {
+func TestE2ELandDoesNotLeakLocalSyncIntoEvidence(t *testing.T) {
 	fixture := newLandFixture(t, "feature")
 	_ = addLandWorktree(t, fixture, "feature")
 	advanceLandTarget(t, fixture)
@@ -71,7 +71,7 @@ func TestLandDoesNotLeakLocalSyncIntoEvidence(t *testing.T) {
 	}
 }
 
-// TestAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable
+// TestE2EAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable
 // is required test Minor 5 (review round on #614,
 // verifyUpdateBranchMergeProof's commitTreeSHA fallback): a transient
 // GitHub read failure while computing the update-branch merge proof must
@@ -81,7 +81,7 @@ func TestLandDoesNotLeakLocalSyncIntoEvidence(t *testing.T) {
 // classifies it as WorktreeMergeChecksPending, never Conflict.
 //
 //nolint:paralleltest // calls t.Setenv("WB_TEST_COMMIT_TREE_TRANSIENT", ...), which Go's testing package forbids combined with t.Parallel
-func TestAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable(t *testing.T) {
+func TestE2EAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "m5-transient-proof-source", "feature/m5-transient-proof", "m5.txt", "m5\n")
 	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{

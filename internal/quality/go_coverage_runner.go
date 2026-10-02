@@ -154,7 +154,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	if err != nil {
 		return output, attempts, err
 	}
-	arguments := goCoverageArgumentsWithTimeout(nativeProfile, options.Timeout, "-tags=e2e", "-count=1", "-run=^Test(E2E|Contract)", "-covermode="+mode)
+	arguments := goCoverageArgumentsWithTimeout(nativeProfile, options.Timeout, "-tags=e2e", "-count=1", "-run="+NativeGoTestSelector, "-covermode="+mode)
 	arguments = appendCoverageInstrumentation(arguments, packages)
 	arguments = append(arguments, packages...)
 	nativeOptions := options

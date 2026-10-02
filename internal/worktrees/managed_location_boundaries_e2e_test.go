@@ -64,6 +64,7 @@ func TestE2EManagedLocationBindsEveryLayoutToCanonicalGitIdentity(t *testing.T) 
 		{"central repository rename", storeRoot, "rename-task/github.com/acme/old-app", "", "old-app", false, false},
 		{"central accepted", storeRoot, "central-task/github.com/acme/app", "", "", false, true},
 		{"three-level stage accepted", storeRoot, "stage-task/.wb-stage-candidate/checkout", "", "", false, true},
+		{"three-level owner mismatch", storeRoot, "three-owner-task/other/app", "path owner \"other\" but canonical clone owner \"acme\"", "", false, false},
 		{"three-level invalid repository", storeRoot, "invalid-task/acme/bad!repo", "must be at", "", false, false},
 		{"three-level repository rename", storeRoot, "old-task/acme/old-app", "", "old-app", false, false},
 		{"legacy direct repository mismatch", storeRoot, "legacy-task/old-app", "legacy direct worktree", "", false, false},
@@ -98,5 +99,44 @@ func TestE2EManagedLocationBindsEveryLayoutToCanonicalGitIdentity(t *testing.T) 
 		if got := gitTestOutput(t, path, "rev-parse", "HEAD"); got != mainSHA {
 			t.Errorf("%s: linked checkout HEAD = %q, want canonical main %q", tc.name, got, mainSHA)
 		}
+	}
+}
+
+//nolint:paralleltest // newGitFixture pins process-wide Git and WB environment.
+func TestE2EManagedLocationRejectsCanonicalCloneOutsideProjectsAuthority(t *testing.T) {
+	fixture := newGitFixture(t)
+	projects := t.TempDir()
+	store := filepath.Join(projects, ".worktrees")
+	path := filepath.Join(store, "outside-canonical", "github.com", "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/outside-canonical", path, "main")
+	_, common, err := gitDirectories(context.Background(), path)
+	if err != nil || filepath.Dir(common) != fixture.canonical {
+		t.Fatalf("linked checkout common directory = %q, %v", common, err)
+	}
+	_, _, _, cause := canonicalCoordinates(projects, fixture.canonical)
+	if cause == nil {
+		t.Fatal("outside clone unexpectedly satisfies configured projects authority")
+	}
+	head := gitTestOutput(t, path, "rev-parse", "HEAD")
+	registry := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	host, storeHost, owner, repository, err := managedWorktreeCanonicalCoordinates(context.Background(), projects, path)
+	if host != "" || storeHost != "" || owner != "" || repository != "" || err == nil || err.Error() != cause.Error() {
+		t.Fatalf("outside canonical coordinates = %q/%q/%q/%q, %v; cause %v", host, storeHost, owner, repository, err, cause)
+	}
+	location, err := locateManagedWorktree(context.Background(), projects, path, []wbhome.Layout{{WorktreesRoot: store}})
+	if location != (managedWorktreeLocation{}) || err == nil || err.Error() != cause.Error() {
+		t.Fatalf("outside canonical admission = %+v, %v; cause %v", location, err, cause)
+	}
+	if got := gitTestOutput(t, path, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("admission changed linked HEAD: %s -> %s", head, got)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain"); got != registry {
+		t.Fatalf("admission changed Git worktree registry: %s", got)
+	}
+	if got := gitTestOutput(t, path, "status", "--porcelain"); got != "" {
+		t.Fatalf("admission changed clean checkout: %s", got)
 	}
 }

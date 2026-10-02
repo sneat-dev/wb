@@ -127,8 +127,11 @@ func FetchRemoteCheckpoint(ctx context.Context, options FetchRemoteCheckpointOpt
 		return RemoteCheckpointFetchResult{}, fmt.Errorf("fetch remote checkpoint %s: %w", ref, err)
 	}
 	sha, err := git(ctx, options.Root, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil || !isGitObjectID(sha) {
+	if err != nil {
 		return RemoteCheckpointFetchResult{}, fmt.Errorf("resolve fetched checkpoint %s: %w", ref, err)
+	}
+	if !isGitObjectID(sha) {
+		return RemoteCheckpointFetchResult{}, fmt.Errorf("resolve fetched checkpoint %s: Git returned an invalid commit object ID", ref)
 	}
 	return RemoteCheckpointFetchResult{Ref: ref, SHA: sha, LocalRef: ref, Notice: NotALandingReceiptNotice}, nil
 }
