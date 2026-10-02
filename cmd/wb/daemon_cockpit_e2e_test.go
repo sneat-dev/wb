@@ -115,7 +115,7 @@ func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
 	})
 	snapshotter := cockpitfleet.New(options)
 	stop := snapshotter.Start(t.Context())
-	defer stop()
+	t.Cleanup(stop)
 	var machine string
 	deadline := time.Now().Add(40 * time.Second)
 	for machine == "" {

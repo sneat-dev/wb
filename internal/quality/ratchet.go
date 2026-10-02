@@ -656,7 +656,7 @@ type PackageRatchet struct {
 // file is reported as attributable (the original, pre-5a7d0df6 behavior,
 // before the blanket touched-file skip existed — this is the LEAST
 // conservative option, not a conservative one).
-func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string) ([]PackageRatchet, []RatchetWarning) {
+func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string, changedOwners ...[]string) ([]PackageRatchet, []RatchetWarning) {
 	uncovered := PackageUncoveredCounts(blocks, modulePath)
 	findingsByPackage := make(map[string][]RatchetFinding)
 	reported := make(map[string]map[string]bool) // pkg -> "file:line" already reported
@@ -686,6 +686,11 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 	// `go test`/`go vet` should run over; the ratchet's ownership question
 	// is different and stays as wide as it was before task-19.
 	changedPackages := packageDirsFromFiles(touchedFiles, false)
+	for _, owners := range changedOwners {
+		for _, owner := range owners {
+			changedPackages[strings.TrimPrefix(owner, "./")] = true
+		}
+	}
 
 	blocksByPackage := make(map[string][]CoverageBlock)
 	for _, block := range blocks {
@@ -858,7 +863,9 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("git worktree add %s: %w: %s", sha, err, string(output)))
 	}
 	defer func() {
-		removeCmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancelCleanup()
+		removeCmd := exec.CommandContext(cleanupCtx, "git", "worktree", "remove", "--force", worktreeDir)
 		removeCmd.Dir = repoRoot
 		_ = removeCmd.Run()
 	}()
@@ -873,6 +880,19 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	if err != nil {
 		return PackageBaseline{}, err
 	}
+	if len(options.GoTestPackages) > 0 {
+		selected, err := ExistingCoveragePackages(worktreeDir, options.GoTestPackages)
+		if err != nil {
+			return PackageBaseline{}, err
+		}
+		if len(selected) == 0 {
+			baseline := BaselineFromProfile(nil, modulePath, sha)
+			baseline.IncludeE2E = options.IncludeE2E
+			return baseline, nil
+		}
+		repoOptions = SelectedCoverageOptions(repoOptions, selected)
+	}
+
 	report := CoverWithOptions(ctx, "merge-base", worktreeDir, repoOptions)
 	if report.Status == StatusFailed {
 		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("measure coverage at merge base %s: %s", sha, report.Error))
