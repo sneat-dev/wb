@@ -6,6 +6,7 @@ import { DOCUMENT } from '@angular/common'
 import { FleetClient, FleetRead, FleetRequestError, FleetSchemaError } from './fleet-client'
 import { EXPECTED_SCHEMA, FleetStore, MODEL_OPTIONS, POLL_INTERVALS } from './fleet-store'
 import { Session } from './fleet.types'
+import { LOGIN_KEY, SESSION_KEY_STORAGE, SESSION_KEY_STORE } from './session-key'
 import { fleetDocument, worktree } from './test-data'
 
 const session: Session = { principal: 'anonymous-local', capabilities: [], code_browser_url: 'https://c.test/' }
@@ -30,6 +31,109 @@ const changed = (warming: boolean, etag: string): FleetRead => ({
 describe('FleetStore', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
+
+  // cockpit#req:session-key
+  describe('the session key', () => {
+    const OFFERED = 'f'.repeat(43)
+    const HELD = 'h'.repeat(43)
+    const owner: Session = { ...session, principal: 'owner' }
+
+    /** A store whose origin holds `held`, opened from a login URL that offered `offered`; the daemon takes `good` as the owner's key. */
+    function signedIn(options: { held?: string; offered?: string; good?: string; fail?: number }) {
+      const held = new Map<string, string>(options.held === undefined ? [] : [[SESSION_KEY_STORAGE, options.held]])
+      const storage = { getItem: (name: string) => held.get(name) ?? null, setItem: (name: string, value: string) => void held.set(name, value), removeItem: (name: string) => void held.delete(name) }
+      let failures = options.fail ?? 0
+      // The daemon: the key a read names, else the one the origin holds (which the fetch adds), opens the owner session or does not.
+      const readSession = vi.fn(async (key?: string): Promise<Session> => {
+        if (failures-- > 0) throw new Error('offline')
+        return options.good !== undefined && (key ?? held.get(SESSION_KEY_STORAGE)) === options.good ? owner : session
+      })
+      TestBed.configureTestingModule({
+        providers: [
+          { provide: FleetClient, useValue: { readFleet: async () => changed(false, '"a"'), readSession } },
+          { provide: POLL_INTERVALS, useValue: { warmingUp: 10, steady: 100 } },
+          { provide: SESSION_KEY_STORE, useValue: storage },
+          { provide: LOGIN_KEY, useValue: options.offered ?? null },
+        ],
+      })
+      return { store: TestBed.inject(FleetStore), readSession, key: () => held.get(SESSION_KEY_STORAGE) }
+    }
+
+    // cockpit#ac:session-key-reaches-the-page-in-the-fragment
+    it('keeps the key the login URL offered once the daemon says it opens an owner session', async () => {
+      const { store, readSession, key } = signedIn({ offered: OFFERED, good: OFFERED })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(readSession.mock.calls).toEqual([[OFFERED]])
+      expect(store.session()?.principal).toBe('owner')
+      expect(key()).toBe(OFFERED)
+      store.stop()
+    })
+
+    it('replaces the key of an earlier login with the one a new login offers', async () => {
+      const { store, key } = signedIn({ held: HELD, offered: OFFERED, good: OFFERED })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.session()?.principal).toBe('owner')
+      expect(key()).toBe(OFFERED)
+      store.stop()
+    })
+
+    // An address anybody can make up must not sign the owner out.
+    it('does not let an offered key the daemon does not take replace the key of a signed-in owner', async () => {
+      const { store, readSession, key } = signedIn({ held: HELD, offered: OFFERED, good: HELD })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(readSession.mock.calls).toEqual([[OFFERED], []])
+      expect(store.session()?.principal).toBe('owner')
+      expect(key()).toBe(HELD)
+      store.stop()
+    })
+
+    it('keeps no offered key the daemon does not take, and is an anonymous reader', async () => {
+      const { store, key } = signedIn({ offered: OFFERED })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.session()?.principal).toBe('anonymous-local')
+      expect(store.sessionStatus()).toBe('ready')
+      expect(key()).toBeUndefined()
+      store.stop()
+    })
+
+    it('offers the key again when the read that would have answered it failed', async () => {
+      const { store, readSession, key } = signedIn({ offered: OFFERED, good: OFFERED, fail: 1 })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.sessionStatus()).toBe('failed')
+      expect(key()).toBeUndefined()
+      // The session read is retried with the next poll.
+      await vi.advanceTimersByTimeAsync(100)
+      expect(readSession.mock.calls).toEqual([[OFFERED], [OFFERED]])
+      expect(store.session()?.principal).toBe('owner')
+      expect(key()).toBe(OFFERED)
+      store.stop()
+    })
+
+    // cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session
+    it('is the owner on a load with no fragment while the origin holds the key', async () => {
+      const { store, readSession, key } = signedIn({ held: HELD, good: HELD })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(readSession.mock.calls).toEqual([[]])
+      expect(store.session()?.principal).toBe('owner')
+      expect(key()).toBe(HELD)
+      store.stop()
+    })
+
+    it('forgets the key the origin holds when the daemon says it no longer opens an owner session', async () => {
+      const { store, key } = signedIn({ held: HELD })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.session()?.principal).toBe('anonymous-local')
+      expect(key()).toBeUndefined()
+      store.stop()
+    })
+  })
 
   it('loads the document and session, and exposes what the pages need', async () => {
     const store = storeWith({ readFleet: async () => changed(false, '"a"'), readSession: async () => session })

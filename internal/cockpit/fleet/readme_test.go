@@ -72,6 +72,30 @@ func TestOwnerReadsTheCommittedReadmeAsInertMarkdown(t *testing.T) {
 	}
 }
 
+// TestReadmeIsRefusedToTheSessionCookieWithoutItsKey: the README is content,
+// and the cookie another server on the loopback host could replay does not read
+// it (cockpit#ac:replayed-cookie-is-not-the-owner). The fixture forgets the
+// session's key, so its requests carry the cookie alone, as that server's would.
+func TestReadmeIsRefusedToTheSessionCookieWithoutItsKey(t *testing.T) {
+	t.Parallel()
+	const content = "# SENTINEL-README-CONTENT\n"
+	f := newReadmeFixture(t, func(repo *fakeRepo) { repo.readme["main"] = fakeReadme{Content: content} })
+	key, _ := f.server.keys.LoadAndDelete(f.cookie.Value)
+	for name, headers := range map[string][]string{
+		"the cookie alone":             nil,
+		"the cookie and a wrong key":   {cockpit.SessionKeyHeader, "not-the-key"},
+		"the cookie, claiming a fetch": {"Origin", "http://" + testHost, "Sec-Fetch-Site", "same-origin"},
+	} {
+		if status, body, _ := f.readme(f.cookie, headers...); status != http.StatusUnauthorized || strings.Contains(body, "SENTINEL") {
+			t.Errorf("%s: README = %d %q, want 401 and no content", name, status, body)
+		}
+	}
+	// The same cookie with its key reads it.
+	if status, body, _ := f.readme(f.cookie, cockpit.SessionKeyHeader, key.(string)); status != http.StatusOK || body != content {
+		t.Errorf("the cookie and its key: README = %d %q, want the content", status, body)
+	}
+}
+
 // TestReadmeCommittedAsASymbolicLinkOrNotAFileIsNotServed covers the entries
 // that are not a regular file (a symbolic link, a directory and a submodule);
 // the executable bit is fine.
