@@ -14,6 +14,10 @@ import (
 
 const repositoryMetricsCollection = "workbench_repository_metrics"
 
+// errInvalidMetricRecord marks a metric the store refuses for what it says, as
+// distinct from a store that could not write it.
+var errInvalidMetricRecord = errors.New("invalid metric record")
+
 var errRepositoryMetricsStoreUnavailable = errors.New("workbench repository metrics store is unavailable")
 
 // DefaultMetricTypes returns standard built-in metric type definitions.
@@ -116,10 +120,10 @@ func (s repositoryMetricsStore) SaveMetric(ctx context.Context, metric Repositor
 	}
 	canonical := canonicalRepository(metric.Repository)
 	if canonical == "" || canonical == "github.com/" {
-		return errors.New("repository is required for metric record")
+		return fmt.Errorf("%w: repository is required", errInvalidMetricRecord)
 	}
 	if metric.MetricType == "" {
-		return errors.New("metric_type is required for metric record")
+		return fmt.Errorf("%w: metric_type is required", errInvalidMetricRecord)
 	}
 	metric.Repository = canonical
 	parts := strings.Split(strings.TrimPrefix(canonical, "github.com/"), "/")

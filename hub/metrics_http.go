@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -75,7 +76,7 @@ func (h apiHandler) getMetric(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) saveMetric(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizedForCoverage(r) {
+	if !h.authorizedForCoverage(r) || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "metrics_unauthorized")
 		return
 	}
@@ -95,7 +96,12 @@ func (h apiHandler) saveMetric(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.options.Metrics.SaveMetric(r.Context(), record); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// As for coverage: a closed code, never the store's own text.
+		if errors.Is(err, errInvalidMetricRecord) {
+			writeError(w, http.StatusBadRequest, "invalid_metric_record")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "metrics_failed")
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, record)
