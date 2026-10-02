@@ -151,7 +151,7 @@ func Add(a, b int) int {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly one package", results)
@@ -197,7 +197,7 @@ func NewlyAdded(a, b int) int {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly one package", results)
@@ -283,7 +283,7 @@ func TestFoo(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath, nil)
 
 	var pkgA *PackageRatchet
 	for i := range results {
@@ -313,7 +313,7 @@ func TestEvaluateRatchetFailsWhenPackageUncoveredCountRisesWithoutChangedLineOve
 	// touched, which is enough to make "." a changed package.
 	touched := map[string]bool{"app_test.go": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -341,7 +341,7 @@ func TestEvaluateRatchetWarnsInsteadOfFailingWhenAnUnchangedPackagesCountRises(t
 	// The PR touches a wholly different package ("other"), not "." (app.go).
 	touched := map[string]bool{"other/thing.go": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -381,7 +381,7 @@ func TestEvaluateRatchetFailsWhenOnlyANonGoFixtureChangedInAPackageThatRose(t *t
 	changed := ChangedLines{} // the diff touched no .go line at all
 	touched := map[string]bool{"cases.json": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -402,7 +402,7 @@ func TestEvaluateRatchetPassesForNewPackageWithNoBaseline(t *testing.T) {
 	blocks := []CoverageBlock{
 		{File: "fixture.test/app/new/pkg.go", StartLine: 1, EndLine: 1, Statements: 1, Count: 1},
 	}
-	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app", nil)
 	if len(results) != 1 || !results[0].Pass || results[0].HasBaseline {
 		t.Fatalf("results = %#v, want one passing package with no baseline entry", results)
 	}
@@ -423,7 +423,7 @@ func TestEvaluateRatchetFailsForChangedNewPackageWithUncoveredStatements(t *test
 		{File: "fixture.test/app/n/n.go", StartLine: 1, StartCol: 1, EndLine: 3, EndCol: 2, Statements: 3, Count: 0},
 	}
 	touched := map[string]bool{"n/n.go": true}
-	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -449,7 +449,7 @@ func TestEvaluateRatchetPassesForChangedNewPackageFullyCovered(t *testing.T) {
 		{File: "fixture.test/app/n/n.go", StartLine: 1, StartCol: 1, EndLine: 3, EndCol: 2, Statements: 3, Count: 1},
 	}
 	touched := map[string]bool{"n/n.go": true}
-	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1027,7 +1027,7 @@ func TestEvaluateRatchetSortsFindingsByFileThenLine(t *testing.T) {
 		"pkg/b.go": {5: true},
 		"pkg/a.go": {9: true, 2: true},
 	}
-	results, _ := EvaluateRatchet(blocks, changed, nil, nil, PackageBaseline{Packages: map[string]int{}}, "m")
+	results, _ := EvaluateRatchet(blocks, changed, nil, nil, PackageBaseline{Packages: map[string]int{}}, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want 1 package", results)
 	}
@@ -1307,7 +1307,7 @@ func TestEvaluateRatchetNamesFileLineForACountOnlyRise(t *testing.T) {
 	// "pkg" a changed package, while leaving a.go's block position
 	// trustworthy for the exact-match attribution below.
 	touched := map[string]bool{"pkg/a_test.go": true}
-	results, warnings := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m")
+	results, warnings := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1356,7 +1356,7 @@ func TestEvaluateRatchetDoesNotBlameLineShiftedBlocksInFilesThePRTouched(t *test
 	offsets := map[string]FileLineOffsets{
 		"pkg/a.go": {hunks: []lineOffsetHunk{{oldStart: 5, oldCount: 0, newStart: 5, newCount: 15}}},
 	}
-	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, offsets, baseline, "m")
+	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, offsets, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1384,7 +1384,7 @@ func TestEvaluateRatchetDedupesAFindingReportedByBothTheDirectAndRoseRules(t *te
 	// pkg/other.go (not a.go) is what the PR touched, so "pkg" is a changed
 	// package, but a.go's own block position is still trustworthy.
 	touched := map[string]bool{"pkg/other.go": true}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "m")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1409,7 +1409,7 @@ func TestEvaluateRatchetSortsWarningsByPackageThenFileThenLine(t *testing.T) {
 	baseline := PackageBaseline{Packages: map[string]int{"x": 0, "y": 0}}
 	// touchedFiles is nil: neither package is one the PR changes, so every
 	// rise becomes a warning, exercising all three tie-break levels.
-	_, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, baseline, "m")
+	_, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, baseline, "m", nil)
 	want := []RatchetWarning{
 		{Package: "x", File: "x/a.go", Line: 2, Reason: ReasonNewlyUncoveredAtBase},
 		{Package: "x", File: "x/a.go", Line: 9, Reason: ReasonNewlyUncoveredAtBase},
@@ -1442,7 +1442,7 @@ func TestEvaluateRatchetDoesNotRefindABlockTheBaselineAlreadyHad(t *testing.T) {
 		{File: "m/pkg/a.go", StartLine: 9, StartCol: 1, EndLine: 9, EndCol: 10, Statements: 1, Count: 0},
 	}
 	touched := map[string]bool{"pkg/a_test.go": true}
-	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m")
+	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
