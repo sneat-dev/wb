@@ -1209,10 +1209,17 @@ is served what is held and gets the fresh entries one request later. The read th
 the request header `X-Wb-Cockpit-Export`, without which two machines that read each other would
 keep each other in demand for ever. While any client has requested
 that machine's metrics within the last 60 seconds, a metrics-only export runs every 30 seconds.
-When every transport fails the delay doubles up to 5 minutes, and up to 1 hour for `auth_failed`
-(a refused SSH login or host key stays refused until a person repairs it, and every attempt is a
-line in the remote's authentication log); with no reader a failing machine is retried no sooner
-than its keepalive. At the default 60 second interval that is 4 connections an hour to a machine
+Every export, of either kind, is a login to the machine, so no two exports of a machine start within
+30 seconds of each other, whichever kind each is and whatever came of the first: a wake-up by a
+read, a metrics-only export next to a fleet export, or a refresh interval that is not a multiple of
+30 seconds cannot bring two logins closer than that.
+When every transport fails the delay doubles up to 5 minutes; with no reader a failing machine is
+retried no sooner than its keepalive. A refused SSH login (`auth_failed`, a refused host key
+included) stays refused until a person repairs it, and every attempt is a line in the remote's
+authentication log: it bars SSH for that machine, for both kinds of export, for a delay that doubles
+up to 1 hour, and an export that SSH answers lifts the bar. The bar is SSH's alone: a machine that
+also has an HTTP route is still asked over HTTP on the 5 minute backoff, and SSH is tried again at
+the first attempt after its bar has passed. At the default 60 second interval that is 4 connections an hour to a machine
 nobody looks at, 60 while a client reads the fleet document, 120 while a Machines page also polls
 its metrics, and 1 to a machine whose login is refused. A slow or failing remote
 never delays the local snapshot. Both transports yield the same strictly validated envelope
@@ -1315,13 +1322,21 @@ session that shares it; `ControlPath` is left alone, so a master that already ex
 run on this machine, and `ssh` writes errors only, not banners. Host key checking is left to the
 user's ssh configuration and is never switched off. The child process is given an allow-listed
 environment, not the daemon's: `HOME`, `USER`, `LOGNAME` and `SSH_AUTH_SOCK` as they are, a fixed
-`PATH` (`/usr/bin:/bin:/usr/sbin:/sbin` and the directory of the resolved `ssh`) and `LANG=C`;
-everything else is dropped, `DISPLAY`, `SSH_ASKPASS`, `GIT_*`, `WB_*` and any token included. The route is held to `SSHConfig.Validate` again by the exporter before anything is
+`PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`, and the directory of the resolved `ssh` only when that
+directory is root's and not writable by its group or by everyone) and `LANG=C`;
+everything else is dropped, `DISPLAY`, `SSH_ASKPASS`, `GIT_*`, `WB_*` and any token included. On
+Windows, where `ssh.exe` cannot start without them, `SystemRoot` and `USERPROFILE` are passed too
+and the `PATH` is `%SystemRoot%\System32\OpenSSH`, `%SystemRoot%\System32` and the directory of
+the resolved `ssh`. The child also gets a session of its own (`setsid`), so neither `ssh` nor a
+helper it starts (the inner `ssh` of a `ProxyJump`, an askpass program) has a terminal to prompt
+on, even when the daemon was started in one. The route is held to `SSHConfig.Validate` again by the exporter before anything is
 started (a host, user or `wb_path` that starts with `-` or holds a space, a control character or
 a shell character has no SSH route), and that rule keeps every remote word to characters no shell
 interprets. The local `ssh` is the system's own, `/usr/bin/ssh`, when that exists; otherwise the
-one on the `PATH`, taken only when neither the file nor its directory is writable by its group or
-by everyone and it is not under the user's home directory (`remotessh.ResolveTrusted`). It is
+one on the `PATH`, followed through every symbolic link to the file itself and taken only when
+that file and its directory are owned by root or by the daemon's user, neither is writable by its
+group or by everyone, and the file is not under the user's home directory
+(`remotessh.ResolveTrusted`; Windows has no such owner or mode, and only the home rule applies there). It is
 resolved once and kept; a search that fails is made again at the next export, and so is one after
 a call that could not be started. The call has a connect timeout of 5 seconds (a parameter of
 `remotessh.BuildWith`; `remotessh.Build` keeps its 10 seconds for the other callers), a total
@@ -1331,13 +1346,16 @@ at most 2 more seconds; on Windows only `ssh.exe` is killed and a `ProxyCommand`
 survive), and the export returns only once the process has been waited for; stdout
 capped at 8 MiB and read only through `fleet.DecodeEnvelope`; and stderr, of which the last
 `remotessh.MaxDiagnosticBytes` are held (so a long banner cannot push the line that says why out
-of it), sanitised (`remotessh.SanitizeDiagnostic`: every character that is not printable, the
-controls, the format and bidirectional characters and the line separators included, becomes a
-space), never forwarded to any reader and kept only in the daemon's own log, one line each time a
-machine's failure code changes, however the remote words its stderr each time. A daemon that is
+of it) only to tell a refused login from an unreachable host, and which is then dropped: it is
+never forwarded to any reader and never written to the daemon's log. The log line of a failed
+export is the machine's configured key and the code (with a fixed cause for one case, below),
+written once each time a machine's failure code changes. That is because the daemon's log is not
+private to the owner: the dashboard's `GET /api/v1/log` serves its tail on the daemon's listener
+with no session, so the log is held to the same rule as the fleet document (no host name, no
+remote text). The operator who needs ssh's own words runs the copied command by hand. A daemon that is
 stopping while `ssh` runs records and logs nothing of that call. A remote login shell that prints
 to stdout (a profile that echoes, a banner script) puts text before the envelope: the export is
-then `bad_payload`, and the log line says "output before the envelope". A failure
+then `bad_payload`, and the log line says "output before the envelope" (those fixed words, not the output). A failure
 is told by the exit status, not by text: a call that did not end with a status (no local `ssh`,
 `ssh` that cannot be executed or was killed by a signal) is `ssh_unavailable`; status 255, which
 is `ssh`'s own, is `auth_failed` when stderr holds one of four fixed OpenSSH phrases compared
@@ -1353,7 +1371,18 @@ the total timeout is `timeout`; any other status or reason is `bad_payload`. `ss
 remote command's status on, so a remote command that itself exits 255, 127, 126 or 2 picks the
 code: the remote login already has that machine's full authority, and the choice is among the codes
 of one closed set. How often `ssh` runs is the scheduler's rule
-(REQ:remote-exporter-transports), the same for both transports. A daemon run by
+(REQ:remote-exporter-transports), the same for both transports.
+
+What the user's SSH configuration can still do. The options above neutralise the directives that
+would change what the call is, not the ones that decide how the host is reached, which stay the
+user's: `ProxyCommand`, `ProxyJump`, `Match exec` and `KnownHostsCommand` run local commands, as
+they do for the user's own `ssh`, here with the reduced environment and no terminal. An
+`IdentityAgent`, or an agent that asks for approval of each use, may show its own prompt on every
+unattended login, the 15 minute keepalive included, and a FIDO key that wants a touch blocks until
+the 15 second timeout, which is then shown as `timeout`. A connection-sharing master that already
+exists at the configured `ControlPath` is reused, so an export may travel over the owner's open
+session. A host for which any of this is unwanted is given no `ssh` section, or
+`cockpit.remote_ssh: false` is set. A daemon run by
 launchd or systemd may have no SSH agent socket: the daemon does not look for one, and the login
 then fails as `auth_failed`. The SSH login already carries full shell authority on the remote, so this adds no
 privilege; the daemon never forwards request-supplied text to the remote command and the
@@ -2653,7 +2682,7 @@ Then fleet exports run once per refresh interval throughout, metrics-only export
 Scenario: Idle, viewed, Machines page, refused login
 Given a configured target read over SSH on a fake runner, the default 60 second refresh interval and a fake clock
 When nobody reads the fleet document for hours, then a client reads it once a minute, then a client also requests the machine's metrics every 10 seconds, and, on another daemon, the machine's SSH login is refused
-Then the machine is read 4 times an hour with nobody looking and its entries stay live with their age, the first read of the fleet document after the quiet time is answered from what is held and starts one export at once, a read by the export verb starts none, the machine is read 60 times an hour while the document is read and 120 times an hour with the metrics requested, a refresh interval of 10 seconds still reads it at most every 30 seconds, and the refused login is retried after 2, 4, 8, 16, 32 and then every 60 minutes
+Then the machine is read 4 times an hour with nobody looking and its entries stay live with their age, the first read of the fleet document after the quiet time is answered from what is held and starts one export at once, a read by the export verb starts none, the machine is read 60 times an hour while the document is read and 120 times an hour with the metrics requested, with refresh intervals of 10, 45 and 70 seconds and both demands no two exports of either kind start within 30 seconds of each other, a refused login met by a metrics-only export holds the fleet export back too, the refused login is retried after 2, 4, 8, 16, 32 and then every 60 minutes, and a machine that also has an HTTP route is still asked over HTTP every 5 minutes meanwhile
 
 ### AC: ssh-argument-vector-contains-only-configured-values
 
@@ -2844,6 +2873,10 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 - A daemon run by launchd or systemd may have no SSH agent socket, so the key used for
   `session_move.targets.<machine>.ssh` must work non-interactively (an unencrypted key or
   a key in a keychain the service can read); a failure shows as `auth_failed`.
+- The dashboard's `GET /api/v1/log` serves the tail of the daemon's log on the daemon's listener to
+  any caller, with no owner session and no `Host` guard of its own. The Cockpit therefore writes
+  nothing to that log that the fleet document may not hold; whether that route should require an
+  owner session is a question for the dashboard, not specified here.
 - `auth_failed` is told from `ssh_unavailable` by four fixed OpenSSH phrases on stderr, because
   `ssh` exits 255 for every failure of its own. A client that words them differently is shown as
   `ssh_unavailable`; both codes offer the same command to try by hand.
