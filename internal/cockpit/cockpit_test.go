@@ -73,7 +73,8 @@ func TestGuardDecidesByHostMethodAndPath(t *testing.T) {
 		{"foreign host page", "127.0.0.1", "GET", "attacker.example:8766", "/cockpit/", 421, ""},
 		{"foreign host api", "127.0.0.1", "GET", "attacker.example:8766", "/api/v1/cockpit/fleet", 421, ""},
 		{"foreign host without port", "127.0.0.1", "GET", "attacker.example", "/cockpit/", 421, ""},
-		{"other loopback address", "127.0.0.1", "GET", "127.0.0.2:8766", "/cockpit/", 421, ""},
+		{"other loopback address is an alias", "127.0.0.1", "GET", "127.0.0.2:8766", "/cockpit/", 307, "http://127.0.0.1:8766/cockpit/"},
+		{"non-loopback address", "127.0.0.1", "GET", "128.0.0.1:8766", "/cockpit/", 421, ""},
 		{"loopback name as a suffix", "127.0.0.1", "GET", "localhost.attacker.example:8766", "/cockpit/", 421, ""},
 		{"loopback name as a prefix of a label", "127.0.0.1", "GET", "127.0.0.1.attacker.example", "/cockpit/", 421, ""},
 		{"empty host", "127.0.0.1", "GET", "", "/cockpit/", 421, ""},
@@ -209,13 +210,10 @@ func TestExistingRoutesAnswerAsBeforeWithCockpitMounted(t *testing.T) {
 				t.Errorf("%s: %s changed: %d %q %v -> %d %q %v", name, target, want.Code, want.Body.String(), want.Header(), got.Code, got.Body.String(), got.Header())
 			}
 		}
-		// The existing pages are not subject to the Cockpit guard: they are static
-		// and hold nothing of the machine. The two JSON routes that do hold the
-		// Host check of their own (cockpit#req:cockpit-mount), Cockpit mounted or not.
-		if recorder := do(after, "attacker.example:8766", "/"); recorder.Code != 200 {
-			t.Errorf("%s: / with a foreign host = %d, want unchanged 200", name, recorder.Code)
-		}
-		for _, target := range []string{"/api/v1/health", "/api/v1/overview"} {
+		// Every dashboard route that answers the machine's own pages and data
+		// carries the Host check of its own (cockpit#req:cockpit-mount), Cockpit
+		// mounted or not.
+		for _, target := range []string{"/", "/metrics", "/coverage", "/api/v1/health", "/api/v1/overview"} {
 			for _, handler := range []http.Handler{before, after} {
 				if recorder := do(handler, "attacker.example:8766", target); recorder.Code != http.StatusMisdirectedRequest || strings.Contains(recorder.Body.String(), "1.2.3") {
 					t.Errorf("%s: %s with a foreign host = %d %s, want 421 and nothing of the machine", name, target, recorder.Code, recorder.Body.String())

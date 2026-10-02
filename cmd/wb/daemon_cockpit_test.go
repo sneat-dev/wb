@@ -109,8 +109,8 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		}
 	}
 	response, body = get("attacker.example:"+port, "/")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "WB operations") {
-		t.Fatalf("/ on a foreign host = %s %q, want it unchanged", response.Status, body)
+	if response.StatusCode != http.StatusMisdirectedRequest || strings.Contains(body, "WB operations") {
+		t.Fatalf("/ on a foreign host = %s %q, want 421 and no page", response.Status, body)
 	}
 	response, body = get(address, "/metrics")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "WB Metrics") {

@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// TestOnlyTheThreeLoopbackNamesAreLoopbackHosts is the rule of
-// cockpit#req:host-header-check: localhost, 127.0.0.1 and ::1, with or without
-// a numeric port and in any case, and nothing else, not even another address of
-// the loopback network.
-func TestOnlyTheThreeLoopbackNamesAreLoopbackHosts(t *testing.T) {
+// TestLoopbackHostsAreTheLoopbackNamesAndAddresses is the rule of
+// cockpit#req:host-header-check, shared with the daemon's --listen check: any
+// address of 127.0.0.0/8, ::1 in any spelling, localhost and *.localhost, with
+// or without a numeric port and in any case, and nothing else.
+func TestLoopbackHostsAreTheLoopbackNamesAndAddresses(t *testing.T) {
 	t.Parallel()
 	for value, want := range map[string]struct {
 		host, port string
@@ -21,7 +21,15 @@ func TestOnlyTheThreeLoopbackNamesAreLoopbackHosts(t *testing.T) {
 		"LOCALHOST":             {"LOCALHOST", "", true},
 		"[::1]:8766":            {"::1", "8766", true},
 		"[::1]":                 {"::1", "", true},
-		"127.0.0.2:8766":        {"127.0.0.2", "8766", false},
+		"127.0.0.2:8766":        {"127.0.0.2", "8766", true},
+		"127.255.255.254":       {"127.255.255.254", "", true},
+		"[0:0:0:0:0:0:0:1]:80":  {"0:0:0:0:0:0:0:1", "80", true},
+		"[::ffff:127.0.0.1]":    {"::ffff:127.0.0.1", "", true},
+		"app.localhost:8766":    {"app.localhost", "8766", true},
+		".localhost":            {".localhost", "", false},
+		"128.0.0.1:8766":        {"128.0.0.1", "8766", false},
+		"[::2]":                 {"::2", "", false},
+		"localhost.evil.test":   {"localhost.evil.test", "", false},
 		"attacker.example":      {"attacker.example", "", false},
 		"attacker.example:8766": {"attacker.example", "8766", false},
 		"127.0.0.1:http":        {"", "", false},

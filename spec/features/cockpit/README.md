@@ -94,14 +94,14 @@ its API under `/api/v1/cockpit/`, whether or not `wb.yaml` has a `hub:`
 section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
 `/workbench/` and `/v0/workbench/` — are unchanged, with these exceptions.
 `GET /api/v1/log` requires an owner session (cockpit#req:daemon-log-is-owner-only).
-`GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
+`GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
 process id and the names of its worktrees (metadata, which a local reader may read without a
 session), MUST apply the Host check (cockpit#req:host-header-check, the same rule, from one shared
 function): a request whose `Host` does not name a loopback host is refused with status 421 and the
 JSON body `{schema_version, error: "misdirected_request", message}` with a fixed message, so a page
-that rebinds DNS to the loopback address reads neither. A daemon published through a tunnel must
-therefore have the tunnel send a loopback `Host` to reach them; the static pages `/` and `/metrics`
-hold nothing of the machine and are not checked. An overview that cannot be built is answered with
+that rebinds DNS to the loopback address reads neither; the three HTML routes are refused the same
+way. A daemon published through a tunnel must therefore have the tunnel send a loopback `Host` to
+reach any of them. An overview that cannot be built is answered with
 status 500, the closed code `overview_unavailable` and one fixed message; the error itself, which
 names a path under the projects root, goes to the daemon's log (once for a failure that repeats)
 and to no reader of the route, and the page shows a fixed text of its own.
@@ -131,8 +131,10 @@ The application MUST follow the browser's light or dark preference.
 #### REQ: host-header-check
 
 Every request to `/cockpit/` and `/api/v1/cockpit/` MUST carry a `Host`
-header naming a loopback host — `localhost`, `127.0.0.1` or `[::1]` — on any
-port. Any other host name is refused with status 421 before any handler runs.
+header naming a loopback host on any port: `localhost` or any name under
+`.localhost`, any IPv4 address of `127.0.0.0/8`, or `::1` in any spelling. One function
+(`internal/loopbackhost`) decides this, and the daemon's `--listen` check uses the same one, so a
+daemon cannot listen on a loopback form that its own health check then refuses. Any other host name is refused with status 421 before any handler runs.
 This is what stops a page that rebinds DNS to the loopback address. The port
 is not checked, so an SSH forward to a different local port works.
 
@@ -618,8 +620,8 @@ Then each answers as it did before this Feature
 
 Scenario: A rebinding page, and an overview that fails
 Given a daemon serving its dashboard routes, and a worktree whose run telemetry cannot be read
-When `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each of the three loopback names, and the overview is requested twice
-Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback names are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
+When `GET /`, `GET /metrics`, `GET /coverage`, `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each loopback form (`127.0.0.1`, `127.0.0.2`, `[::1]`, `localhost`), and the overview is requested twice
+Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback forms are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
 
 ### AC: manifest-rows-exist
 

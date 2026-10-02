@@ -30,6 +30,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/hubconfig"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 	"github.com/sneat-dev/wb/internal/nodeidentity"
 	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -2795,11 +2796,7 @@ func requireLoopbackAddress(address string) error {
 	if err != nil {
 		return fmt.Errorf("invalid --listen address %q: %w", address, err)
 	}
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
+	if !loopbackhost.Named(host) {
 		return fmt.Errorf("--listen must use localhost or a loopback IP; publish it through an authenticated tunnel")
 	}
 	return nil

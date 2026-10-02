@@ -12,16 +12,20 @@ import (
 	"strings"
 )
 
-// Named reports whether a Host header's host part names the loopback
-// interface. Only the three names localhost, 127.0.0.1 and ::1 (written [::1]
-// in a Host header) qualify; an address such as 127.0.0.2 is refused like any
-// other host.
+// Named reports whether a host (a Host header's host part, or the host of a
+// listen address) names the loopback interface: the name localhost or any
+// name under .localhost, any IPv4 address of 127.0.0.0/8, and the IPv6
+// address ::1 in any spelling. The one rule serves the Host check and the
+// daemon's own --listen check, so a daemon cannot listen on a loopback form
+// that its own health check then refuses. Anything else, including a trailing
+// dot name, is refused.
 func Named(host string) bool {
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
+	host = strings.ToLower(host)
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") && len(host) > len(".localhost") {
 		return true
 	}
-	return false
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Split separates a Host header into its host name and optional port. A

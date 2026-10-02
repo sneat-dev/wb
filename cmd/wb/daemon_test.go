@@ -21,7 +21,7 @@ import (
 )
 
 func TestDaemonRequiresLoopbackListener(t *testing.T) {
-	for _, address := range []string{"127.0.0.1:8766", "localhost:8766", "[::1]:8766"} {
+	for _, address := range []string{"127.0.0.1:8766", "localhost:8766", "[::1]:8766", "127.0.0.2:8766", "[0:0:0:0:0:0:0:1]:8766", "app.localhost:8766"} {
 		if err := requireLoopbackAddress(address); err != nil {
 			t.Errorf("%s rejected: %v", address, err)
 		}
