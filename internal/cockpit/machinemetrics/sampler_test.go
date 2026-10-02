@@ -191,13 +191,35 @@ func TestStopDoesNotWaitForAHungReading(t *testing.T) {
 	}
 }
 
+// TestCancelStopsTheLoop: the context the sampler was started with ending is
+// enough to end its loop, without its stop function: the loop gives its ticker
+// back, and takes no reading after that.
 func TestCancelStopsTheLoop(t *testing.T) {
 	t.Parallel()
-	_, sampler, _, _ := newScripted(&scriptSource{})
+	source := &scriptSource{}
+	clock := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	source.clock = &clock
+	ticks, ended := make(chan time.Time), make(chan struct{})
+	sampler := New(Options{Source: source, Now: func() time.Time { return clock }, Tick: func(time.Duration) (<-chan time.Time, func()) {
+		return ticks, func() { close(ended) }
+	}})
 	ctx, cancel := context.WithCancel(t.Context())
 	stop := sampler.Start(ctx)
+	ticks <- time.Time{} // the loop is running: it took its first reading and this tick
 	cancel()
-	stop()
+	select {
+	case <-ended:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the loop did not end when its context did")
+	}
+	if got := source.count(); got != 2 {
+		t.Fatalf("the source was read %d times, want the first reading and the one tick", got)
+	}
+	read := source.count()
+	stop() // a stop after the loop ended returns and starts nothing
+	if source.count() != read {
+		t.Fatal("a reading was taken after the loop ended")
+	}
 }
 
 // TestASamplerWithOnlyASourceSamplesWithTheRealClock proves the defaults: the

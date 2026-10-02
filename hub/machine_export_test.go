@@ -180,12 +180,15 @@ func TestMachineExportRouteRefusesEveryOtherCaller(t *testing.T) {
 // it is answered 429 and the exporter is not reached; another credential of the
 // owner has a bucket of its own; and a refused caller spends nothing.
 func TestMachineExportRouteLimitsTheRateOfEachCredential(t *testing.T) {
+	// The requirement's numbers, not the code's constants: a test that read the
+	// constants would pass whatever they were set to.
+	const burst, refill = 5, time.Second
 	fixture := newExportHub(t)
 	for range 20 {
 		fixture.get(t, MachineExportPath, bearer(fixture.stranger))
 		fixture.get(t, MachineExportPath, nil)
 	}
-	for attempt := range exportBurst {
+	for attempt := range burst {
 		if response := fixture.get(t, MachineExportPath, bearer(fixture.owner)); response.Code != http.StatusOK {
 			t.Fatalf("request %d of the burst = %d", attempt+1, response.Code)
 		}
@@ -194,13 +197,18 @@ func TestMachineExportRouteLimitsTheRateOfEachCredential(t *testing.T) {
 	if limited.Code != http.StatusTooManyRequests || coverageErrorCode(t, limited) != "rate_limited" || limited.Header().Get("Retry-After") != "1" || strings.Contains(limited.Body.String(), "schema_version") {
 		t.Fatalf("the request over the burst = %d %s", limited.Code, limited.Body.String())
 	}
-	if len(fixture.exported) != exportBurst {
-		t.Errorf("the exporter was reached %d times, want %d", len(fixture.exported), exportBurst)
+	if len(fixture.exported) != burst {
+		t.Errorf("the exporter was reached %d times, want %d", len(fixture.exported), burst)
 	}
 	if other := fixture.get(t, MachineExportPath, bearer(fixture.second)); other.Code != http.StatusOK {
 		t.Errorf("another credential is limited by the first: %d", other.Code)
 	}
-	fixture.now = fixture.now.Add(exportInterval)
+	// Half a second allows nothing more; the full second allows one.
+	fixture.now = fixture.now.Add(refill / 2)
+	if early := fixture.get(t, MachineExportPath, bearer(fixture.owner)); early.Code != http.StatusTooManyRequests {
+		t.Errorf("half a second later = %d, want 429", early.Code)
+	}
+	fixture.now = fixture.now.Add(refill / 2)
 	if again := fixture.get(t, MachineExportPath, bearer(fixture.owner)); again.Code != http.StatusOK {
 		t.Errorf("a second later = %d, want one more request allowed", again.Code)
 	}
@@ -210,10 +218,13 @@ func TestMachineExportRouteLimitsTheRateOfEachCredential(t *testing.T) {
 	// A long quiet time refills the bucket to its burst and no further, and a
 	// clock that steps back takes nothing away.
 	fixture.now = fixture.now.Add(time.Hour)
-	for attempt := range exportBurst {
+	for attempt := range burst {
 		if response := fixture.get(t, MachineExportPath, bearer(fixture.owner)); response.Code != http.StatusOK {
 			t.Fatalf("request %d after the quiet hour = %d", attempt+1, response.Code)
 		}
+	}
+	if over := fixture.get(t, MachineExportPath, bearer(fixture.owner)); over.Code != http.StatusTooManyRequests {
+		t.Errorf("the request after the refilled burst = %d, want 429: the bucket holds no more than its burst", over.Code)
 	}
 	fixture.now = fixture.now.Add(-time.Minute)
 	if back := fixture.get(t, MachineExportPath, bearer(fixture.owner)); back.Code != http.StatusTooManyRequests {

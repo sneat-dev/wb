@@ -216,6 +216,22 @@ type countingRunner struct {
 	ran   chan struct{}
 }
 
+// lineSignal is a log writer that tells seen of each write that carries needle.
+type lineSignal struct {
+	needle string
+	seen   chan struct{}
+}
+
+func (l *lineSignal) Write(line []byte) (int, error) {
+	if bytes.Contains(line, []byte(l.needle)) {
+		select {
+		case l.seen <- struct{}{}:
+		default:
+		}
+	}
+	return len(line), nil
+}
+
 type exitStatus int
 
 func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
@@ -264,13 +280,16 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 	if err := os.WriteFile(tokenFile, []byte("the-vm-credential\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// exported is told when the daemon's log says how an export of vm ended: the
+	// export goroutine writes that line after the last transport it would try.
+	exported := &lineSignal{needle: "the export of vm failed (http_unavailable)", seen: make(chan struct{}, 8)}
 	start := func(yaml string, config wbconfig.CockpitConfig) (runner *countingRunner, lookups *atomic.Int64, refresh, remote chan time.Time, stop func()) {
 		runner, lookups = &countingRunner{ran: make(chan struct{}, 1)}, &atomic.Int64{}
 		ssh := cockpitSSH{runner: runner, find: func() (string, error) {
 			lookups.Add(1)
 			return executable, nil
 		}}
-		options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, io.Discard, func() (string, error) { return "laptop", nil }, ssh)
+		options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, exported, func() (string, error) { return "laptop", nil }, ssh)
 		options.Collectors, options.Sampler = emptyMachineCollectors(), nil
 		refresh, remote = make(chan time.Time), make(chan time.Time)
 		options.Tick = func(time.Duration) (<-chan time.Time, func()) { return refresh, func() {} }
@@ -292,9 +311,13 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 		refresh <- exportTestNow
 		if strings.Contains(test.yaml, "http:") {
 			// Only a daemon with a machine to read runs the loop that takes this tick.
+			// The export has ended, with the hub's failure as its outcome, before
+			// anything is asserted: a fallback to ssh would have run by then.
 			remote <- exportTestNow
-			for deadline := time.Now().Add(10 * time.Second); hubRequests.Load() == 0 && time.Now().Before(deadline); {
-				time.Sleep(time.Millisecond)
+			select {
+			case <-exported.seen:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s: the export of vm never ended in the hub's failure", name)
 			}
 		}
 		refresh <- exportTestNow.Add(time.Minute)
