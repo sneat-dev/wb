@@ -165,3 +165,110 @@ func TestBranchCleanupRechecksOpenPullRequestsBeforeRemoteDeletion(t *testing.T)
 		})
 	}
 }
+
+func TestExactBranchPullRequestsSeparatesRolesStatesAndRepository(t *testing.T) {
+	head := `[{"number":4,"html_url":"https://example.test/4","state":"open","head":{"ref":"feature/shared","sha":"old","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}},` +
+		`{"number":5,"html_url":"https://example.test/5","state":"closed","merged_at":"2026-09-01T00:00:00Z","head":{"ref":"feature/shared","sha":"older","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}},` +
+		`{"number":6,"html_url":"https://example.test/6","state":"closed","head":{"ref":"feature/shared","sha":"oldest","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}},` +
+		`{"number":7,"html_url":"https://example.test/7","state":"open","head":{"ref":"feature/shared","sha":"fork","repo":{"full_name":"elsewhere/fork"}},"base":{"ref":"main"}}]`
+	base := `[{"number":8,"html_url":"https://example.test/8","state":"open","head":{"ref":"child"},"base":{"ref":"feature/shared","repo":{"full_name":"acme/app"}}},` +
+		`{"number":10,"html_url":"https://example.test/10","state":"open","head":{"ref":"fork-child"},"base":{"ref":"feature/shared","repo":{"full_name":"elsewhere/fork"}}}]`
+	installBranchPullRequestFixture(t, head, base)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/shared")
+	if evidence.err != nil {
+		t.Fatal(evidence.err)
+	}
+	if len(evidence.requests) != 4 {
+		t.Fatalf("requests = %#v, want three head and one open base row", evidence.requests)
+	}
+	if evidence.openHead == nil || evidence.openHead.Number != 4 || evidence.openBase == nil || evidence.openBase.Number != 8 {
+		t.Fatalf("open roles = head %#v, base %#v", evidence.openHead, evidence.openBase)
+	}
+	states := map[int]string{}
+	for _, request := range evidence.requests {
+		states[request.Number] = request.Role + ":" + request.State
+	}
+	for number, want := range map[int]string{4: "head:open", 5: "head:merged", 6: "head:closed", 8: "base:open"} {
+		if states[number] != want {
+			t.Errorf("PR #%d = %q, want %q", number, states[number], want)
+		}
+	}
+}
+
+func TestExactBranchPullRequestsReadsEveryPaginatedArray(t *testing.T) {
+	head := `[{"number":1,"html_url":"https://example.test/1","state":"closed","merged_at":"2026-09-01T00:00:00Z","head":{"ref":"feature/paged","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]` + "\n" +
+		`[{"number":2,"html_url":"https://example.test/2","state":"open","head":{"ref":"feature/paged","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`
+	installBranchPullRequestFixture(t, head, `[]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/paged")
+	if evidence.err != nil {
+		t.Fatal(evidence.err)
+	}
+	if len(evidence.requests) != 2 || evidence.requests[0].Number != 1 || evidence.requests[1].Number != 2 ||
+		evidence.openHead == nil || evidence.openHead.Number != 2 {
+		t.Fatalf("second page was not included: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsNamesQueryFailure(t *testing.T) {
+	installPoisonedGitHubFixture(t)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/fail")
+	if evidence.err == nil || !strings.Contains(evidence.err.Error(), "head pull requests") {
+		t.Fatalf("query error = %v, want named head query failure", evidence.err)
+	}
+}
+
+func TestExactBranchPullRequestsRejectsUnverifiableRepositoryIdentity(t *testing.T) {
+	installBranchPullRequestFixture(t,
+		`[{"number":11,"state":"open","head":{"ref":"feature/ambiguous"},"base":{"ref":"main"}}]`,
+		`[]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/ambiguous")
+	if evidence.err == nil || !strings.Contains(evidence.err.Error(), "no repository identity") {
+		t.Fatalf("missing same-repository identity did not fail closed: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsRejectsUnverifiableBaseIdentity(t *testing.T) {
+	installBranchPullRequestFixture(t, `[]`,
+		`[{"number":13,"state":"open","head":{"ref":"child"},"base":{"ref":"feature/ambiguous"}}]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/ambiguous")
+	if evidence.err == nil || !strings.Contains(evidence.err.Error(), "base pull request #13") {
+		t.Fatalf("missing base repository identity did not fail closed: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsRejectsInvalidIdentityAndBaseQueryFailure(t *testing.T) {
+	if evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme", "feature/x"); evidence.err == nil {
+		t.Fatal("invalid repository was accepted")
+	}
+	installBranchPullRequestFixture(t, `[]`, `not-json`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/x")
+	if evidence.err == nil || !strings.Contains(evidence.err.Error(), "query base pull requests") {
+		t.Fatalf("base query failure was hidden: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsIgnoresUnknownState(t *testing.T) {
+	installBranchPullRequestFixture(t,
+		`[{"number":14,"state":"drafting","head":{"ref":"feature/x","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}]`,
+		`[]`)
+	evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/x")
+	if evidence.err != nil || len(evidence.requests) != 0 {
+		t.Fatalf("unknown PR state was reported as actionable: %#v", evidence)
+	}
+}
+
+func TestExactBranchPullRequestsRejectsMalformedOrEmptyPages(t *testing.T) {
+	for _, test := range []struct{ name, body, want string }{
+		{"malformed", `[{`, "decode"},
+		{"null", `null`, "got null"},
+		{"empty", ``, "empty response"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installBranchPullRequestFixture(t, test.body, `[]`)
+			evidence := exactBranchPullRequests(context.Background(), t.TempDir(), "acme/app", "feature/x")
+			if evidence.err == nil || !strings.Contains(evidence.err.Error(), test.want) {
+				t.Fatalf("invalid GitHub payload %q was accepted: %#v", test.body, evidence)
+			}
+		})
+	}
+}

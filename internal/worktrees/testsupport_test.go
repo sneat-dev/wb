@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktreejournal"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
@@ -104,3 +105,18 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 // over-long path are all rejected rather than normalized: a silently repaired
 // identity is worse than a refused one.
 func ValidEffortPath(value string) bool { return worktreeclaims.ValidEffortPath(value) }
+
+// attachParkedLocalSuccessor runs the same composition `wb session resume`
+// uses (cmd/wb/session_park.go): hold local custody for the attempt, then
+// attach the prepared successor to every member.
+func attachParkedLocalSuccessor(ctx context.Context, options ParkedLocalSuccessorOptions) error {
+	return WithParkedLocalResumeCustodyForAttempt(ctx, options.ProjectsRoot, options.Bundle, options.AttemptID, func(custody *ParkedLocalCustody) error {
+		return custody.Attach(ctx, options.Successor, options.AttemptID, options.AttemptIndex)
+	})
+}
+
+// exactBranchPullRequests reads both PR roles through the same inventory
+// service wiring the branch sweep uses.
+func exactBranchPullRequests(ctx context.Context, worktree, repository, branch string) branchPullRequestEvidence {
+	return facadePullRequestEvidence(branchInventoryService().ExactBranchPullRequests(ctx, worktreebranches.Repository{Slug: repository, Path: worktree}, branch))
+}

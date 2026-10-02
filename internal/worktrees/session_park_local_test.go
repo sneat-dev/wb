@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
@@ -80,4 +83,178 @@ func useIdentityRemote(t *testing.T, fixture *gitFixture, worktree string) {
 	gitTest(t, filepath.Dir(fixture.remote), "clone", "--bare", fixture.remote, remote)
 	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	gitTest(t, worktree, "remote", "set-url", "origin", remote)
+}
+
+func TestAttachParkedLocalSuccessorRequiresExactLatestSourceOwner(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-exact-owner")
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
+	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-owner",
+		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
+	for _, acquire := range []struct {
+		name string
+		run  func(func(*ParkedLocalCustody) error) error
+	}{
+		{name: "ordinary", run: func(proceed func(*ParkedLocalCustody) error) error {
+			return WithParkedLocalResumeCustody(context.Background(), fixture.projectsRoot, bundle, proceed)
+		}},
+		{name: "replay attempt", run: func(proceed func(*ParkedLocalCustody) error) error {
+			return WithParkedLocalResumeCustodyForAttempt(context.Background(), fixture.projectsRoot, bundle,
+				"000001-11111111111111111111111111111111", proceed)
+		}},
+	} {
+		if err := acquire.run(func(custody *ParkedLocalCustody) error {
+			resolved := custody.ResolvedWorktreeDirs()
+			if len(resolved) != 1 || resolved[member.WorktreeDir] != worktree {
+				t.Fatalf("%s resolved parked worktrees = %#v, want %s", acquire.name, resolved, worktree)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("%s parked custody: %v", acquire.name, err)
+		}
+	}
+	successor := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-successor", PredecessorWBSessionID: source.WBSessionID,
+		Machine: source.Machine, Runtime: source.Runtime, Model: source.Model, StartedAt: time.Now().UTC()}
+	options := ParkedLocalSuccessorOptions{ProjectsRoot: fixture.projectsRoot, Bundle: bundle, Successor: successor,
+		AttemptID: "000001-11111111111111111111111111111111", AttemptIndex: 1}
+	if err := attachParkedLocalSuccessor(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachParkedLocalSuccessor(context.Background(), options); err != nil {
+		t.Fatalf("identical retry: %v", err)
+	}
+	events, err := readLocalEvents(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCount := 0
+	for _, event := range events {
+		if event.Type == LocalEventOwner && event.Owner != nil && event.Owner.Agent == successor.Runtime+"/"+successor.WBSessionID {
+			ownerCount++
+		}
+	}
+	if ownerCount != 1 {
+		t.Fatalf("successor owner events = %d, want one: %#v", ownerCount, events)
+	}
+}
+
+func TestAttachParkedLocalSuccessorPreservesDirtyUnpushedBytes(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-dirty-unpushed")
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	if err := os.WriteFile(filepath.Join(worktree, "unpushed.txt"), []byte("committed locally\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "unpushed.txt")
+	gitTest(t, worktree, "commit", "-m", "local unpushed commit")
+	dirtyPath := filepath.Join(worktree, "dirty.txt")
+	if err := os.WriteFile(dirtyPath, []byte("exact dirty bytes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
+	if !member.Dirty || member.Head == member.RemoteHead {
+		t.Fatalf("parked member did not capture dirty/unpushed evidence: %#v", member)
+	}
+	headBefore := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	statusBefore := gitTestOutput(t, worktree, "status", "--porcelain=v1", "--untracked-files=all")
+	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-dirty-unpushed",
+		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
+	successor := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-dirty-successor", PredecessorWBSessionID: source.WBSessionID,
+		Machine: source.Machine, Runtime: source.Runtime, Model: source.Model, StartedAt: time.Now().UTC()}
+	if err := attachParkedLocalSuccessor(context.Background(), ParkedLocalSuccessorOptions{ProjectsRoot: fixture.projectsRoot,
+		Bundle: bundle, Successor: successor, AttemptID: "000001-33333333333333333333333333333333", AttemptIndex: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitTestOutput(t, worktree, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("local resume changed unpushed HEAD %s -> %s", headBefore, got)
+	}
+	if got := gitTestOutput(t, worktree, "status", "--porcelain=v1", "--untracked-files=all"); got != statusBefore {
+		t.Fatalf("local resume changed dirty status %q -> %q", statusBefore, got)
+	}
+	if raw, err := os.ReadFile(dirtyPath); err != nil || string(raw) != "exact dirty bytes\n" {
+		t.Fatalf("dirty bytes=%q err=%v", raw, err)
+	}
+}
+
+func TestAttachParkedLocalSuccessorRefusesNewerCustodyWithoutAppending(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-newer-owner")
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
+	if err := RecordCustody(worktree, "", "newer sequential session", AgentIdentity{Runtime: "codex", AgentID: "newer", Model: "gpt-5", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := readLocalEvents(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-conflict",
+		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
+	successor := session.Record{PID: os.Getpid(), WBSessionID: "wbs-refused-successor", PredecessorWBSessionID: source.WBSessionID,
+		Machine: source.Machine, Runtime: source.Runtime, Model: source.Model, StartedAt: time.Now().UTC()}
+	err = attachParkedLocalSuccessor(context.Background(), ParkedLocalSuccessorOptions{
+		ProjectsRoot: fixture.projectsRoot, Bundle: bundle, Successor: successor,
+		AttemptID: "000001-22222222222222222222222222222222", AttemptIndex: 1,
+	})
+	if err == nil {
+		t.Fatal("newer-session custody was stolen")
+	}
+	after, readErr := readLocalEvents(worktree)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("refusal mutated journal: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestAttachParkedLocalSuccessorConcurrentCandidatesHaveOneOwner(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "park-local-concurrent-owner")
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	_, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
+	bundle := sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-local-race",
+		Source: source, Continuation: "private continuation", Worktrees: []sessionpark.Worktree{member}, ParkedAt: time.Now().UTC()}
+	candidates := []session.Record{
+		{PID: os.Getpid(), WBSessionID: "wbs-local-race-a", PredecessorWBSessionID: source.WBSessionID,
+			Machine: source.Machine, Runtime: source.Runtime, Model: source.Model, StartedAt: time.Now().UTC()},
+		{PID: os.Getpid(), WBSessionID: "wbs-local-race-b", PredecessorWBSessionID: source.WBSessionID,
+			Machine: source.Machine, Runtime: source.Runtime, Model: source.Model, StartedAt: time.Now().UTC()},
+	}
+	errs := make(chan error, len(candidates))
+	var group sync.WaitGroup
+	for index, successor := range candidates {
+		group.Add(1)
+		go func(index int, successor session.Record) {
+			defer group.Done()
+			errs <- attachParkedLocalSuccessor(context.Background(), ParkedLocalSuccessorOptions{
+				ProjectsRoot: fixture.projectsRoot, Bundle: bundle, Successor: successor,
+				AttemptID: []string{"000001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "000001-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}[index], AttemptIndex: 1,
+			})
+		}(index, successor)
+	}
+	group.Wait()
+	close(errs)
+	succeeded, refused := 0, 0
+	for err := range errs {
+		if err == nil {
+			succeeded++
+		} else {
+			refused++
+		}
+	}
+	if succeeded != 1 || refused != 1 {
+		t.Fatalf("concurrent candidates: succeeded=%d refused=%d", succeeded, refused)
+	}
+	events, err := readLocalEvents(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := 0
+	for _, event := range events {
+		if event.Type == LocalEventOwner && event.Owner != nil &&
+			(event.Owner.Agent == source.Runtime+"/wbs-local-race-a" || event.Owner.Agent == source.Runtime+"/wbs-local-race-b") {
+			owners++
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("concurrent candidates published %d successor owners", owners)
+	}
 }

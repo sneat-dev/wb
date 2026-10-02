@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestRuntimeSegmentsKeepSafeSymbolsAndReplaceUntrustedCharacters(t *testing.T) {
@@ -45,5 +47,42 @@ func TestRuntimeDirectoryCreationRetainsOwnedBlockingFile(t *testing.T) {
 	bytes, err := os.ReadFile(block)
 	if err != nil || string(bytes) != "retained" {
 		t.Fatalf("blocking file=%q error=%v", bytes, err)
+	}
+}
+
+func TestEnsureExecutionLayoutCreatesPrivateRuntimeDirectories(t *testing.T) {
+	isolateEnvironment(t)
+	root := os.Getenv(wbhome.EnvOverride)
+	repo := initRepo(t)
+	layout, err := ResolveExecutionLayout(repo, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureExecutionLayout(layout); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{layout.Root, layout.ReportRoot, layout.PendingMetricsRoot} {
+		info, statErr := os.Stat(path)
+		if statErr != nil || !info.IsDir() {
+			t.Fatalf("runtime path %s was not created: %v", path, statErr)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("runtime path %s mode = %v, want 0700", path, info.Mode().Perm())
+		}
+	}
+}
+
+func TestEnsureExecutionLayoutRefusesARuntimeRootOccupiedByAFile(t *testing.T) {
+	isolateEnvironment(t)
+	root := os.Getenv(wbhome.EnvOverride)
+	repo := initRepo(t)
+	layout, err := ResolveExecutionLayout(repo, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustMkdirAll(t, filepath.Dir(layout.Root))
+	mustWrite(t, layout.Root, "occupied\n")
+	if err := ensureExecutionLayout(layout); err == nil || !strings.Contains(err.Error(), "create hook runtime path") {
+		t.Fatalf("ensureExecutionLayout(occupied root) error = %v", err)
 	}
 }
