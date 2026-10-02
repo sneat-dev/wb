@@ -56,6 +56,19 @@ func sentinelSources() *fakeSources {
 	failedRun.AgentID, failedRun.State, failedRun.FinishedAt = "agt-2", agents.StateFailed, &finished
 	two := 2
 	failedRun.ExitCode = &two
+	// The session registry and the run records are files a harness writes: a
+	// session and a run whose runtime and model are a sentinel (a path, an
+	// environment value) are kept with those fields blanked, and ones whose
+	// identifier is a sentinel are dropped whole.
+	planted := func(label string) string { return sentinel + label + " /Users/x HOME=/y" }
+	oddView := view
+	oddView.WBSessionID, oddView.PID, oddView.Runtime, oddView.Model = "wbs-odd", view.PID+1, planted("local-session-runtime"), planted("local-session-model")
+	droppedView := view
+	droppedView.WBSessionID, droppedView.PID, droppedView.Runtime = planted("local-session-id"), view.PID+2, "dropped-local-runtime"
+	oddRun := run
+	oddRun.AgentID, oddRun.Resolved.Harness, oddRun.Resolved.Model, oddRun.Worktree = "agt-odd", planted("local-run-runtime"), planted("local-run-model"), "task-a"
+	droppedRun := run
+	droppedRun.AgentID, droppedRun.Resolved.Harness = planted("local-run-id"), "dropped-local-runtime"
 
 	// herdr's fake agent has a sentinel in every field but its status and the
 	// harness session id that joins it to the session.
@@ -103,8 +116,8 @@ func sentinelSources() *fakeSources {
 		records:   map[string]WorktreeRecord{path: record},
 		branches:  map[string][]BranchRef{"acme/widgets": {ref}},
 		bindings:  []worktrees.RegisteredPullRequestBinding{binding},
-		sessions:  []session.View{view},
-		runs:      []agents.Result{run, failedRun},
+		sessions:  []session.View{view, oddView, droppedView},
+		runs:      []agents.Result{run, failedRun, oddRun, droppedRun},
 		remote:    []remotestate.Entry{entry},
 		activity:  HerdrActivity{Open: func() (HerdrLister, error) { return fakeHerdr{agents: []herdr.Agent{herdrAgent}}, nil }},
 	}
@@ -226,10 +239,14 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 		start := strings.Index(body, sentinel)
 		t.Fatalf("the document carries a forbidden source field: ...%s...", body[start:min(len(body), start+60)])
 	}
+	// An agent whose identifier fails its rule is dropped, not shown blanked.
+	if strings.Contains(body, "dropped-local-runtime") || strings.Contains(body, "dropped-runtime") {
+		t.Fatalf("an agent with an invalid identifier reached a response: %s", body)
+	}
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
 		`"route":"live-remote"`, `"transport":"http"`, `"remote_error":"http_unavailable"`, `"machine":"vm"`, `"machine":"broken"`,
-		`"desktop"`, `"v0.9.0"`, `"wbs-remote"`, `"agt-remote"`, `"route":"cached"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"desktop"`, `"v0.9.0"`, `"wbs-remote"`, `"agt-remote"`, `"wbs-odd"`, `"agt-odd"`, `"route":"cached"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)

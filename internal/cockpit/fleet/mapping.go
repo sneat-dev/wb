@@ -378,15 +378,25 @@ const (
 // session with no identifier gets an entry id hashed from its process id and
 // no session id, so a raw pid is never emitted. It reports whether the cap cut
 // anything.
+//
+// The session registry and the run records are files an agent harness writes,
+// so their strings are held to the one set of rules every agent string is
+// (package agentfields), with the publisher's semantics: an agent whose state
+// or identifier fails is dropped, and a runtime, model or task that fails is
+// blanked. A path, an environment value or prose in one of them therefore never
+// reaches a reader, and this machine's own export never refuses its agents.
 func mapAgents(machine string, sessions []session.View, runs []agents.Result, at time.Time) (mapped []agentRecord, truncated bool) {
 	for _, view := range sessions {
-		if view.State != session.StateLive && view.State != session.StateParked {
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: AgentSession, SessionID: view.WBSessionID, Runtime: view.Runtime, Model: view.Model, State: view.State,
+		}, agentfields.IsText)
+		if !ok {
 			continue
 		}
-		identity := firstNonEmpty(view.WBSessionID, "pid\x00"+strconv.Itoa(view.PID))
+		identity := firstNonEmpty(fields.SessionID, "pid\x00"+strconv.Itoa(view.PID))
 		mapped = append(mapped, agentRecord{agent: Agent{
 			Entry: localEntry(entryID(kindAgent, machine, AgentSession, identity), machine, at),
-			Kind:  AgentSession, SessionID: view.WBSessionID, Runtime: view.Runtime, Model: view.Model, State: view.State,
+			Kind:  AgentSession, SessionID: fields.SessionID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
 			StartedAt: view.StartedAt,
 		}, when: view.StartedAt, pid: view.PID, harness: firstNonEmpty(view.NativeHarnessID, view.AgentID)})
 	}
@@ -398,11 +408,18 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 		if run.State != agents.StateRunning && at.Sub(when) > agentRecent {
 			continue
 		}
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: AgentRun, RunID: run.AgentID, Runtime: run.Resolved.Harness, Model: run.Resolved.Model, State: string(run.State),
+			Task: plainText(run.Worktree),
+		}, agentfields.IsText)
+		if !ok {
+			continue
+		}
 		mapped = append(mapped, agentRecord{agent: Agent{
-			Entry: localEntry(entryID(kindAgent, machine, AgentRun, run.AgentID), machine, at),
-			Kind:  AgentRun, RunID: run.AgentID, Runtime: run.Resolved.Harness, Model: run.Resolved.Model, State: string(run.State),
-			Task: plainText(run.Worktree), StartedAt: run.StartedAt, FinishedAt: finishedAt(run), ExitCode: exitCodeOf(run),
-		}, slug: run.Repository, when: when, branch: run.Branch, taskOf: plainText(run.Worktree)})
+			Entry: localEntry(entryID(kindAgent, machine, AgentRun, fields.RunID), machine, at),
+			Kind:  AgentRun, RunID: fields.RunID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
+			Task: fields.Task, StartedAt: run.StartedAt, FinishedAt: finishedAt(run), ExitCode: exitCodeOf(run),
+		}, slug: run.Repository, when: when, branch: run.Branch, taskOf: fields.Task})
 	}
 	mapped = uniqueByID(mapped, func(item agentRecord) string { return item.agent.ID })
 	sort.Slice(mapped, func(i, j int) bool {
