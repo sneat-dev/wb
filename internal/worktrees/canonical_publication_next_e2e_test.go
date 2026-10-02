@@ -30,6 +30,7 @@ func TestE2ECanonicalPublicationRepositoryAdmission(t *testing.T) {
 		{"case identity", []string{"Owner/repo", "owner/Repo"}, "duplicates case-insensitive identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			before := append([]string(nil), tc.input...)
 			got, err := ValidateRepositories(tc.input)
 			if err == nil || got != nil || !strings.Contains(err.Error(), tc.diagnostic) {
@@ -113,6 +114,7 @@ func TestE2ECanonicalPublicationLookupBoundaryPreservesAuthority(t *testing.T) {
 			return runSecureStageCanonicalGitHelperWithExecutable(ctx, canonical.root, canonical, canonical.path, "unused-git", "branch", "revision", false, resolve)
 		}},
 	} {
+		//nolint:paralleltest // Serial cases share the resolver call counter and verify each exact increment before the final ownership control.
 		t.Run(tc.name, func(t *testing.T) {
 			before := calls
 			got, err := tc.run()
@@ -184,6 +186,7 @@ func TestE2ECanonicalPublicationEmptyOriginHeadResponse(t *testing.T) {
 	root := t.TempDir()
 	for _, response := range []string{"", "origin/", "origin/main", "origin/development"} {
 		t.Run(fmt.Sprintf("response-%q", response), func(t *testing.T) {
+			t.Parallel()
 			fake := runnertest.New(t)
 			fake.ExpectArgv([]string{"git", "-C", root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"}, runner.Result{CombinedOutput: response + "\n"}, nil)
 			ctx := withGitRunner(context.Background(), fake)

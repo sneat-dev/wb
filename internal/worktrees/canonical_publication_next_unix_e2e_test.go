@@ -93,6 +93,7 @@ func TestE2ECanonicalPublicationGuardAdmissionRefusals(t *testing.T) {
 	if err != nil || guarded.Kind != "linked" {
 		t.Fatalf("initial native linked admission = %+v, %v", guarded, err)
 	}
+	//nolint:paralleltest // The ancestor newGitFixture pins HOME/WB/XDG with t.Setenv; these refusals share its linked checkout and must remain serial.
 	t.Run("invalid base", func(t *testing.T) {
 		bad := options
 		bad.Base = "bad branch"
@@ -101,6 +102,7 @@ func TestE2ECanonicalPublicationGuardAdmissionRefusals(t *testing.T) {
 			t.Fatalf("invalid base = %+v, %v", got, err)
 		}
 	})
+	//nolint:paralleltest // The ancestor newGitFixture pins HOME/WB/XDG with t.Setenv; these refusals share its linked checkout and must remain serial.
 	t.Run("missing own claim", func(t *testing.T) {
 		bad := options
 		bad.Admission = AdmissionEnforce
@@ -113,6 +115,7 @@ func TestE2ECanonicalPublicationGuardAdmissionRefusals(t *testing.T) {
 			t.Fatalf("missing claim = %+v, %v", got, err)
 		}
 	})
+	//nolint:paralleltest // The ancestor newGitFixture pins HOME/WB/XDG with t.Setenv; these refusals share its linked checkout and must remain serial.
 	t.Run("invalid configured store", func(t *testing.T) {
 		config := t.TempDir()
 		t.Setenv("XDG_CONFIG_HOME", config)
@@ -310,6 +313,7 @@ func TestE2ECanonicalPublicationExistingCheckoutIdentity(t *testing.T) {
 		{"wrong branch", checkout, "feature/wanted", "on branch", canonical},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateExistingWorktree(context.Background(), tc.canonical, tc.path, tc.branch)
 			if tc.diagnostic == "" && err != nil || tc.diagnostic != "" && (err == nil || !strings.Contains(err.Error(), tc.diagnostic)) {
 				t.Fatalf("existing checkout %s = %v", tc.name, err)

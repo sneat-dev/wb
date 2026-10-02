@@ -48,6 +48,7 @@ func TestE2ECanonicalPublicationCapabilityDescriptors(t *testing.T) {
 		{"relative", []gitFilesystemCapabilityRoot{{path: "relative", directory: directory}}, "must be absolute"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := newGitFilesystemCapability(tc.roots...)
 			if err == nil || len(got.writeRoots) != 0 || !strings.Contains(err.Error(), tc.diagnostic) {
 				t.Fatalf("capability = %+v, %v", got, err)
@@ -114,6 +115,7 @@ func TestE2ECanonicalPublicationDarwinDeveloperGitAdmission(t *testing.T) {
 		{"regular", regular, "not executable"},
 		{"directory", path, "not executable"},
 	} {
+		//nolint:paralleltest // Serial cases inspect the shared non-executable file before the parent chmods it for the success control.
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := admitDarwinGitExecutable([]byte(tc.path))
 			if err == nil || got != "" || !strings.Contains(err.Error(), tc.diagnostic) {
@@ -485,6 +487,7 @@ func TestE2ECanonicalPublicationHookRootNativeAdmission(t *testing.T) {
 	t.Setenv("GOMODCACHE", "")
 	t.Setenv("GOCACHE", "")
 	for _, name := range []string{"runtime file", "unavailable cache"} {
+		//nolint:paralleltest // The ancestor pins HOME/cache configuration with t.Setenv; this case also changes GOCACHE and cannot run in parallel.
 		t.Run(name, func(t *testing.T) {
 			repo := wtLifeCovNewRepo(t)
 			projects := t.TempDir()
