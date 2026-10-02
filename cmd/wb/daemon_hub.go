@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp"
@@ -69,6 +70,9 @@ type hubMount struct {
 	// export backs the hub's machine export route with this daemon's fleet
 	// snapshotter, once serveExportOf has bound it.
 	export *machineExportSource
+	// owner is the owner-session check the hub's write routes ask, once
+	// authorizeOwnerWith has bound it.
+	owner  *hubOwnerCheck
 	closer io.Closer
 	status *hub.StatusService
 	viewer hub.Viewer
@@ -110,6 +114,30 @@ func (mount *hubMount) serveExportOf(snapshotter *cockpitfleet.Snapshotter, conf
 	// no transport: the route says export_refused, as the CLI verb does.
 	mount.export.refused.Store(!config.AnonymousMetadata)
 	mount.export.snapshotter.Store(snapshotter)
+}
+
+// hubOwnerCheck is the owner-session check the hub's write routes ask
+// (self-hosted-bench#req:hub-writes-need-a-credential). Cockpit's server is
+// built after the hub is mounted, so the check is bound once it exists; until
+// then, and on a mount nobody binds, no request is the owner's.
+type hubOwnerCheck struct {
+	check atomic.Pointer[func(*http.Request) bool]
+}
+
+func (owner *hubOwnerCheck) isOwner(request *http.Request) bool {
+	check := owner.check.Load()
+	return check != nil && (*check)(request)
+}
+
+// authorizeOwnerWith makes the hub's write routes accept what isOwner accepts:
+// the daemon passes Cockpit's own session check (cockpit.Server.IsOwner), the
+// same seam dashboard.Options.Owner is filled with. A nil receiver is the
+// no-hub case.
+func (mount *hubMount) authorizeOwnerWith(isOwner func(*http.Request) bool) {
+	if mount == nil || isOwner == nil {
+		return
+	}
+	mount.owner.check.Store(&isOwner)
 }
 
 // handlers returns the extra mounts, or nil when there is no hub. A nil
@@ -340,6 +368,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize(localIdentityID))
 
 	export := &machineExportSource{}
+	owner := &hubOwnerCheck{}
 
 	coverageStore := hub.NewRepositoryCoverageStore(store)
 	metricsStore := hub.NewRepositoryMetricsStore(store, coverageStore)
@@ -375,6 +404,10 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		// owner RPC enrols every other machine. Only a machine credential of that
 		// identity with machine_snapshot:read may read this machine's export.
 		MachineExport: &hub.MachineExport{OwnerIdentityID: localIdentityID, Serve: export.serve, Now: tuningNow(tuning)},
+		// The fixed viewer above answers for every caller, so it cannot be what
+		// lets a request write: a write needs a machine bearer of the host owner
+		// or the owner's Cockpit session.
+		OperatorWrites: &hub.OperatorWrites{OwnerIdentityID: localIdentityID, Owner: owner.isOwner},
 	})
 
 	if err := ensureLocalEnrollment(ctx, enrollment, resolver, viewer, configPath, machine, pepper, listenAddress); err != nil {
@@ -414,6 +447,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Enrollment:   enrollment,
 		PeersSource:  peersSource,
 		export:       export,
+		owner:        owner,
 		Mounts: map[string]http.Handler{
 			hub.APIPrefix + "/": composeWorkbenchAPI(readAPI, handler, peersAPI),
 			web.MountPath:       web.Handler(),

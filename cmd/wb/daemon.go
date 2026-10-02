@@ -2562,6 +2562,8 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	fleetOptions.Remotes = withoutOwnAddress(fleetOptions.Remotes, address, fleetOptions.Logf)
 	fleetSnapshotter := registerCockpitFleet(cockpitServer, fleetOptions)
 	mount.serveExportOf(fleetSnapshotter, cockpitConfig)
+	// A hub write is the owner's alone: the same session check the log uses.
+	mount.authorizeOwnerWith(cockpitServer.IsOwner)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,

@@ -18,6 +18,7 @@ type TerminalEvidence struct {
 	Orphaned        *worktreeproof.OrphanedEvidence
 	DirtyCapture    *worktreeproof.DirtyWorktreeEvidence
 	Supersession    *worktreeproof.SupersessionReceipt
+	Landed          *LandedEvidence
 	FinalizeReport  *FinalizeReport
 }
 
@@ -77,6 +78,9 @@ func (ports TerminalPorts) SealTerminal(home string, runDir *os.File, request Te
 			return time.Time{}, err
 		}
 	}
+	if request.Evidence.Landed != nil && (request.Disposition != "landed" || !ValidLandedEvidence(request.Evidence.Landed)) {
+		return time.Time{}, fmt.Errorf("landed evidence requires the landed disposition, a target, a commit and a known proof")
+	}
 	sealedAt := ports.Now().UTC()
 	claim := request.Claim
 	claim.Lifecycle = "terminal"
@@ -84,7 +88,8 @@ func (ports TerminalPorts) SealTerminal(home string, runDir *os.File, request Te
 		Disposition: request.Disposition, SealedAt: sealedAt, SuccessorClaimID: request.SuccessorClaimID,
 		SuccessorAgentID: request.SuccessorAgentID, ExternalHandoff: request.Evidence.ExternalHandoff,
 		Orphaned: request.Evidence.Orphaned, DirtyCapture: request.Evidence.DirtyCapture,
-		Supersession: request.Evidence.Supersession, FinalizeReport: request.Evidence.FinalizeReport}
+		Supersession: request.Evidence.Supersession, Landed: request.Evidence.Landed,
+		FinalizeReport: request.Evidence.FinalizeReport}
 	terminals, err := ports.OpenPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -99,6 +104,7 @@ func (ports TerminalPorts) SealTerminal(home string, runDir *os.File, request Te
 			!SameOrphanedEvidence(existing.Orphaned, request.Evidence.Orphaned) ||
 			!SameDirtyWorktreeEvidence(existing.DirtyCapture, request.Evidence.DirtyCapture) ||
 			!worktreeproof.SameSupersessionReceipt(existing.Supersession, request.Evidence.Supersession) ||
+			!SameLandedEvidence(existing.Landed, request.Evidence.Landed) ||
 			!SameFinalizeReport(existing.FinalizeReport, request.Evidence.FinalizeReport) {
 			return time.Time{}, ErrImmutableTerminalConflict
 		}
@@ -118,7 +124,7 @@ func (ports TerminalPorts) SealTerminal(home string, runDir *os.File, request Te
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: request.FinalCommit, Lifecycle: "terminal",
 		Disposition: request.Disposition, ExternalHandoff: request.Evidence.ExternalHandoff,
 		DirtyCapture: request.Evidence.DirtyCapture, Supersession: request.Evidence.Supersession,
-		FinalizeReport: request.Evidence.FinalizeReport}
+		Landed: request.Evidence.Landed, FinalizeReport: request.Evidence.FinalizeReport}
 	if err := ports.WriteJSONImmutable(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}
