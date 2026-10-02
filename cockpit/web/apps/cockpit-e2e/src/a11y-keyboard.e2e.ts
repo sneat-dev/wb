@@ -107,6 +107,30 @@ for (const width of [360, 390]) {
   })
 }
 
+// cockpit-views#ac:usable-at-360-wide: low-priority columns are dropped on a list, and the charts of Home are stacked.
+test('360 px: a list drops its low-priority columns, the tabs are a scrolling strip and the charts of Home are stacked', async ({ page }) => {
+  await stubBusy(page)
+  const headers = () => page.locator('.head [role=columnheader]:not(.open-cell)').count()
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/cockpit/worktrees')
+  await expect(page.locator('[role=row][data-index]').first()).toBeVisible()
+  const wide = await headers()
+  await page.setViewportSize({ width: 360, height: 800 })
+  await page.goto('/cockpit/worktrees')
+  await expect(page.locator('[role=row][data-index]').first()).toBeVisible()
+  expect(await headers()).toBeLessThan(wide)
+  const strip = await page.locator('.tabs').evaluate((element) => ({ overflowX: getComputedStyle(element).overflowX, scrolls: element.scrollWidth > element.clientWidth }))
+  expect(strip).toEqual({ overflowX: 'auto', scrolls: true })
+  await page.goto('/cockpit/')
+  await page.getByRole('button', { name: 'More' }).click()
+  await page.getByRole('heading', { level: 2, name: 'Throughput' }).scrollIntoViewIfNeeded()
+  const cards = page.locator('.charts-grid .chart-card')
+  await expect(cards).toHaveCount(2)
+  const [first, second] = await Promise.all([cards.nth(0).boundingBox(), cards.nth(1).boundingBox()])
+  expect(second!.y).toBeGreaterThanOrEqual(first!.y + first!.height - 1)
+  expect(Math.abs(second!.x - first!.x)).toBeLessThan(2)
+})
+
 // cockpit-views#ac:no-layout-shift-on-arrival, on every route: the skeleton stands where the data will.
 for (const route of BUSY_ROUTES) {
   test(`${route.name}: the layout shift from skeleton to data stays under 0.01`, async ({ page }) => {

@@ -38,11 +38,11 @@ describe('CleanupSection', () => {
     expect(text(review)).toBe('Review & clean')
     expect(review.getAttribute('href')).toBe('/worktrees?chips=safe')
     const button = root.querySelector('app-lazy-copy button') as HTMLButtonElement
-    expect(text(button)).toBe('Copy template')
+    expect(text(button)).toBe('Copy command')
     button.click()
     await fixture.whenStable()
     await new Promise((done) => setTimeout(done, 10))
-    expect(copy).toHaveBeenCalledWith('wb worktree cleanup <<<edit:task>>>')
+    expect(copy).toHaveBeenCalledWith('wb worktree gc')
   })
 
   it('expands to the worktree age bars, each linking to Worktrees with its age term, and creates the chart only then', async () => {

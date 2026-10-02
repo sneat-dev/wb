@@ -30,6 +30,7 @@ import {
   valueProblem,
   worktreeCleanup,
   worktreeCreate,
+  worktreeGc,
   worktreeList,
 } from './commands'
 
@@ -120,6 +121,7 @@ const TEMPLATES: Record<string, CopyCommand> = {
   worktreeList: worktreeList('fix-ci'),
   pullRequestCreate: pullRequestCreate('fix-ci'),
   worktreeCleanup: worktreeCleanup('fix-ci'),
+  worktreeGc: worktreeGc(),
   pullRequestLand: pullRequestLand('sneat-dev/wb', 12),
   worktreeCreate: worktreeCreate('fix-ci', ['sneat-dev/wb', 'sneat-co/sneat-go']),
   worktreeCreateFull: worktreeCreate('fix-ci', ['sneat-dev/wb'], { model: 'opus', promptFile: 'p.md', base: 'main' }),
@@ -197,6 +199,8 @@ describe('Copy command texts', () => {
     expect(text(pullRequestCreate('fix-ci'))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
     expect(text(pullRequestCreate('fix-ci', 'ship it'))).toBe("wb pr create 'fix-ci' --commit-all --message='ship it'")
     expect(text(worktreeCleanup('fix-ci'))).toBe("wb worktree cleanup 'fix-ci'")
+    expect(text(worktreeGc())).toBe('wb worktree gc')
+    expect(text(worktreeGc({ machine: 'vm' }))).toBe('wb worktree gc')
     expect(text(pullRequestLand('sneat-dev/wb', 12))).toBe("wb pr land 'sneat-dev/wb#12'")
     expect(text(worktreeCreate(PLACEHOLDERS.task, ['<owner/repository>']))).toBe(
       "wb worktree create <<<edit:task>>> '<owner/repository>' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>",
@@ -369,6 +373,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
     { name: 'worktreeList', open: worktreeList('t', to), filled: worktreeList('t', to) },
     { name: 'pullRequestCreate', open: pullRequestCreate('t', undefined, to), filled: pullRequestCreate('t', 'done', to) },
     { name: 'worktreeCleanup', open: worktreeCleanup('t', to), filled: worktreeCleanup('t', to) },
+    { name: 'worktreeGc', open: worktreeGc(to), filled: worktreeGc(to) },
     { name: 'pullRequestLand', open: pullRequestLand('o/r', 1, to), filled: pullRequestLand('o/r', 1, to) },
     { name: 'worktreeCreate', open: worktreeCreate('t', ['o/r', 'o/s'], {}, to), filled: worktreeCreate('t', ['o/r', 'o/s'], { model: 'opus', promptFile: 'p.md', base: 'main' }, to) },
     { name: 'worktreeCreate with base', open: worktreeCreate('t', ['o/r'], { base: 'main' }, to), filled: worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f', base: 'main' }, to) },

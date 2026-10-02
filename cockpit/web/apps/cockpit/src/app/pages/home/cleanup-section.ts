@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core'
 import { Router, RouterLink } from '@angular/router'
-import { AppLink, Cleanup, PLACEHOLDERS, chipLink } from '@cockpit/fleet-data'
-import { worktreeCleanup } from '@cockpit/fleet-data/commands'
+import { AppLink, Cleanup, chipLink } from '@cockpit/fleet-data'
+import { worktreeGc } from '@cockpit/fleet-data/commands'
 import { HorizontalBarsSpec } from '@cockpit/ui/chart'
 import { ChartView } from '@cockpit/ui/chart'
 import { GLYPH_CHECK_CIRCLE, GLYPH_CHEVRON_DOWN, Glyph } from '@cockpit/ui/control'
@@ -35,8 +35,8 @@ export class CleanupSection {
     valueLabel: 'Worktrees',
     bars: this.cleanup().bars.map((bar) => ({ label: bar.label, value: bar.count, link: bar.link })),
   }))
-  /** `wb worktree cleanup <<<edit:task>>>`: the dry-run plan for the task the operator names; never with `--apply`. */
-  protected readonly dryRun = async () => worktreeCleanup(PLACEHOLDERS.task)
+  /** `wb worktree gc`: the dry-run plan of the whole fleet's cleanup (it retires nothing without `--apply`, which no template holds). */
+  protected readonly dryRun = async () => worktreeGc()
 
   protected toggle(): void {
     this.open.update((open) => !open)

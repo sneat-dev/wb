@@ -19,7 +19,7 @@ Tokens come from `apps/cockpit/src/styles/tokens.css`.
 
 `<app-list>` does the filter box (the grammar of REQ:list-filter-and-matcher), the machine chips and the page's
 quick-filter chips (their labels and hints are the vocabulary's, `VOCABULARY[page].chips`, from `@cockpit/fleet-data/list`), sortable headers, the "37 of 438" count, virtual one-line rows under a sticky header, the keys `j` `k`
-PageUp PageDown Home End Enter `o` (open the entity's page) `c` (copy its name) Esc, the empty and no-match
+PageUp PageDown Home End Enter `o` (open the entity's page) `c` (copy its name) `s` (sort by the next column; Shift S reverses; the header buttons are outside the grid's one Tab stop) Esc, the empty and no-match
 states, the placeholder rows, the side panel and the whole address state (`q`, `sort`, `dir`, `machine`, `chips`,
 `sel`; `prefix` renames them for a second list on one page). The page gives its `page` id, the columns, and
 templates for the cells that are more than text and for the panel; the noun, the rows, the chips, the address of

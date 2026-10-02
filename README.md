@@ -550,7 +550,9 @@ session_move:
 private file holding a machine credential enrolled with it (`wb remote enroll
 --url <hub-url> --token-stdin`). `token_file` may be omitted when `url` is the
 hub this machine is already enrolled with (`remote.url`). Set
-`cockpit.remote_http: false` to read no machine over HTTP.
+`cockpit.remote_http: false` to read no machine over HTTP, and `cockpit.remote_ssh: false` to read none over SSH
+(the fallback for a machine with no HTTP route). How Cockpit is put together, its pages and routes,
+configuration keys, cadences and budgets are in [docs/cockpit.md](docs/cockpit.md).
 
 Run a same-harness move by omitting `--harness`, or explicitly move between
 the two supported harnesses, `codex` and `claude-code`:
