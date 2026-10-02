@@ -1,7 +1,7 @@
 import { Injectable, InjectionToken, computed, inject, signal } from '@angular/core'
 import { FleetClient, FleetSchemaError, SchemaMismatch } from './fleet-client'
 import { FleetModel, FleetModels, ModelOptions } from './fleet-model'
-import { canReadContent, emptyDocument, machineOptions, repositoryLabel } from './fleet-view'
+import { canReadContent, emptyDocument, machineOptions, ownerRoutes, repositoryLabel } from './fleet-view'
 import { FleetDocument, SCHEMA_VERSION, Session, SessionStatus } from './fleet.types'
 
 /** How often the store re-reads the fleet document, in milliseconds. */
@@ -53,7 +53,7 @@ export class FleetStore {
   readonly droppedEntries = signal(0)
   readonly schemaMismatch = signal<SchemaMismatch | null>(null)
   /** The view model of the current document: derived collections are computed once per document. */
-  readonly model = computed<FleetModel>(() => this.models.forDocument(this.document(), this.now(), this.session()?.machine_routes))
+  readonly model = computed<FleetModel>(() => this.models.forDocument(this.document(), this.now(), ownerRoutes(this.session())))
   readonly session = signal<Session | null>(null)
   /** Whether the session read is still going ('loading'), answered ('ready') or failed and will be retried ('failed'). */
   readonly sessionStatus = signal<SessionStatus>('loading')

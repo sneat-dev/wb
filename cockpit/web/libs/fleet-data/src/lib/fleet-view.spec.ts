@@ -1,5 +1,5 @@
 import { codeBrowserLink, codeIndexView, readmeFailureText, codeIndexText, agentLabel, filterMachines, filterRepositories, repositoryOptions, worktreeLabel } from './page-helpers'
-import { OWNER_SESSION_COMMAND, canReadContent, emptyDocument, filterAgents, filterWorktrees, formatAge, groupBy, machineOptions, mostRecentWorktrees, repositoryLabel, routeLabel } from './fleet-view'
+import { OWNER_SESSION_COMMAND, canReadContent, emptyDocument, ownerRoutes, filterAgents, filterWorktrees, formatAge, groupBy, machineOptions, mostRecentWorktrees, repositoryLabel, routeLabel } from './fleet-view'
 import { agent, fleetDocument, machine, repository, worktree } from './test-data'
 
 const doc = fleetDocument()
@@ -162,6 +162,18 @@ describe('canReadContent', () => {
     expect(canReadContent(session)).toBe(true)
     expect(canReadContent({ ...session, principal: 'anonymous-local', capabilities: ['fleet.read'] })).toBe(false)
     expect(canReadContent(null)).toBe(false)
+  })
+})
+
+describe('ownerRoutes', () => {
+  const routes = [{ machine_id: 'mach-beta', ssh: { host: 'beta.example' } }]
+  const session = { principal: 'owner', capabilities: ['fleet.read'], code_browser_url: '', machine_routes: routes }
+
+  it('gives the SSH routes to the owner only, whatever else a session response carried', () => {
+    expect(ownerRoutes(session)).toBe(routes)
+    expect(ownerRoutes({ ...session, principal: 'anonymous-local' })).toBeUndefined()
+    expect(ownerRoutes({ ...session, machine_routes: undefined })).toBeUndefined()
+    expect(ownerRoutes(null)).toBeUndefined()
   })
 })
 

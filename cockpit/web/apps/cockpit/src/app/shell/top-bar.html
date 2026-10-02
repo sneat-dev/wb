@@ -10,16 +10,27 @@
 
   <nav class="tabs" aria-label="Pages" #strip>
     @for (link of links; track link.path) {
-      <a class="tab" [routerLink]="link.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: link.path === '/' }" ariaCurrentWhenActive="page">
-        <span>{{ link.label }}</span>
+      <span class="tab-slot">
+        <a class="tab" [routerLink]="link.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: link.path === '/' }" ariaCurrentWhenActive="page">
+          <span>{{ link.label }}</span>
+          @if (link.signal) {
+            <!-- Holds the badge's room, as wide as it will be, so the tabs do not move when the number arrives; the badge itself is a link of its own, over it. -->
+            <span class="badge badge-pending" aria-hidden="true">{{ badge(link)?.label ?? '0' }}</span>
+          }
+        </a>
         @if (badge(link); as badge) {
-          <span class="badge tnum" [class.hot]="badge.hot" [attr.data-badge]="link.signal" [attr.title]="badge.count > badgeCap ? badge.count : null">{{ badge.label }}</span>
-          <span class="visually-hidden">{{ badge.hint }}</span>
-        } @else if (link.signal) {
-          <!-- Holds the badge's place until there is data to count, so the tabs do not move when it arrives. -->
-          <span class="badge badge-pending" aria-hidden="true">0</span>
+          <a
+            class="badge tnum"
+            [class.hot]="badge.hot"
+            [attr.data-badge]="link.signal"
+            [routerLink]="badge.link.path"
+            [queryParams]="badge.link.query"
+            [attr.aria-label]="badge.count + ' ' + badge.hint + ': open them'"
+            [attr.title]="badge.count > badgeCap ? badge.count : null"
+            >{{ badge.label }}</a
+          >
         }
-      </a>
+      </span>
     }
   </nav>
 

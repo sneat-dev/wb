@@ -21,6 +21,14 @@ export function pullRequestCreate(task: string, message: string = PLACEHOLDERS.m
   return command(target, [...wb('pr', 'create'), { value: task }, { word: '--commit-all' }, { flag: '--message', value: message }])
 }
 
+/**
+ * The fleet-wide cleanup's dry-run plan: `wb worktree gc`, which plans by default and retires only with `--apply`
+ * (never part of a template). It names no task, so nothing in it is left to edit.
+ */
+export function worktreeGc(target: CommandTarget = {}): CopyCommand {
+  return command(target, wb('worktree', 'gc'))
+}
+
 /** The dry-run plan; never with `--apply`. */
 export function worktreeCleanup(task: string, target: CommandTarget = {}): CopyCommand {
   return command(target, [...wb('worktree', 'cleanup'), { value: task }])

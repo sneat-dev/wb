@@ -104,12 +104,18 @@ describe('MachinePanelView', () => {
 
   it('says "1 entry" for one entry left out and a capped agent list when the document says so', async () => {
     const document = machinesDocument()
-    document.machines[1] = { ...document.machines[1], export_dropped: 1 }
-    document.agents_truncated = true
+    document.machines[1] = { ...document.machines[1], export_dropped: 1, agents_truncated: true }
     const { panel } = await open('mach-vm', { document })
     expect(facts(panel)['Left out']).toBe('1 entry of its export')
-    expect(facts(panel)['Agents']).toBe('The agent list is capped at the first 200 of each machine.')
+    expect(facts(panel)['Agents']).toBe('The agent list is capped at the first 200.')
     expect(facts((await open('mach-macbook')).panel)['Left out']).toBeUndefined()
+  })
+
+  it('reads the cap of this machine from the document and of another machine from its own entry, never the one for the other', async () => {
+    const document = machinesDocument()
+    document.agents_truncated = true
+    expect(facts((await open('mach-macbook', { document })).panel)['Agents']).toBe('The agent list is capped at the first 200.')
+    expect(facts((await open('mach-vm', { document })).panel)['Agents']).toBeUndefined()
   })
 
   // cockpit-views#ac:machines-table-title-and-links

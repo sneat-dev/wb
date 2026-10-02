@@ -38,6 +38,8 @@ export default defineConfig({
         'apps/*-e2e/src/**/*.e2e.ts',
         // What the stubbed Playwright tests share: run by them, as they are.
         'apps/*-e2e/src/support.ts',
+        // The page steps of the journey: run by Playwright, in the real-daemon journey and in the stubbed suite.
+        'apps/*-e2e/src/journey/steps.ts',
       ],
       thresholds: {
         statements: 100,

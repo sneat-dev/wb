@@ -1,4 +1,8 @@
 import { expect, type Page } from '@playwright/test'
+import type { FleetDocument } from '@cockpit/fleet-data'
+// The fixtures of Home's states are the fleets the application is photographed against; the stubbed suite serves them too.
+// eslint-disable-next-line @nx/enforce-module-boundaries
+import { homeStates } from '../../cockpit/src/app/pages/home/home-fixtures'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 
 // What the stubbed end-to-end tests share: a fleet document and the stubs of the
@@ -73,4 +77,58 @@ export async function watch(page: Page) {
     expect(unexplainedViolations(violations as Violation[])).toEqual([])
     expect(otherConsoleErrors(consoleErrors)).toEqual([])
   }
+}
+
+/** The busy fleet of Home's fixtures (every state the lists show), the routes of every page with the ids of its entries. */
+export const BUSY_ROUTES: { name: string; path: string }[] = [
+  { name: 'home', path: '' },
+  { name: 'tasks', path: 'tasks' },
+  { name: 'tasks-new', path: 'tasks/new' },
+  { name: 'task-detail', path: 'tasks/detail?task=refactor-cache' },
+  { name: 'repositories', path: 'repositories' },
+  { name: 'repository-by-name', path: 'repositories/github.com/sneat-dev/wb' },
+  { name: 'repository-by-id', path: 'repositories/r-wb' },
+  { name: 'worktrees', path: 'worktrees' },
+  { name: 'worktree-detail', path: 'worktrees/wt-1' },
+  { name: 'agents', path: 'agents' },
+  { name: 'agent-detail', path: 'agents/vm-blocked' },
+  { name: 'machines', path: 'machines' },
+  { name: 'machine-detail-local', path: 'machines/mach-mac' },
+  { name: 'machine-detail-live', path: 'machines/mach-vm' },
+  { name: 'machine-detail-stale', path: 'machines/mach-old' },
+]
+
+/**
+ * Stubs the daemon with the busy fleet of Home's fixtures and its machine metrics, for a session of `principal`
+ * (`machine_routes` are put in the session response of any principal, so a page that believed them for an anonymous
+ * one would show). Returns every address the page asked, as `METHOD /path`.
+ */
+export async function stubBusy(page: Page, principal: 'anonymous-local' | 'owner' = 'anonymous-local', change: (document: FleetDocument) => FleetDocument = (document) => document): Promise<string[]> {
+  const { metrics } = homeStates()['busy']
+  const document = change(homeStates()['busy'].document)
+  const requests: string[] = []
+  page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}${new URL(request.url()).search}`))
+  const routes = document.machines.filter((machine) => machine.route !== 'local').map((machine) => ({ machine_id: machine.id, ssh: { host: 'secret-host.example', user: 'secretuser', wb_path: '/opt/secret/wb' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...document, snapshot_at: new Date().toISOString() }, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/session', (route) =>
+    route.fulfill({
+      json: {
+        principal,
+        capabilities: principal === 'owner' ? ['fleet.read', 'repo.content.read'] : ['fleet.read'],
+        code_browser_url: 'https://codegrapher.dev/',
+        machine_routes: routes,
+      },
+    }),
+  )
+  await page.route('**/api/v1/cockpit/branches?**', (route) => route.fulfill({ json: { branches: [] } }))
+  await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => {
+    const id = new URL(route.request().url()).searchParams.get('machine') ?? ''
+    const answer = metrics.get(id)
+    // The sample times are those of the fixture's snapshot: moved to now, so the charts and the load verdict are current.
+    const shift = answer === undefined ? 0 : Date.now() - Date.parse(answer.samples[answer.samples.length - 1]?.sampled_at ?? new Date().toISOString())
+    return route.fulfill({
+      json: answer === undefined ? { machine: id, route: 'none', samples: [], reason: 'no_source' } : { ...answer, samples: answer.samples.map((sample) => ({ ...sample, sampled_at: new Date(Date.parse(sample.sampled_at) + shift).toISOString() })) },
+    })
+  })
+  return requests
 }

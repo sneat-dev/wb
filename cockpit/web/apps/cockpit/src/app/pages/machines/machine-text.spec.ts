@@ -59,6 +59,15 @@ describe('latestWords', () => {
     expect(latestWords(sample(0, 1, 4, { memory_total_bytes: 0, disk_total_bytes: 0, cpu_percent: Number.NaN, load1: Number.NaN }))).toEqual({ cpu: 'not reported', load: 'not reported', memory: 'not reported', disk: 'not reported' })
     expect(latestWords(sample(0, 1, 4, { memory_used_bytes: Number.NaN, disk_free_bytes: Number.NaN }))).toMatchObject({ memory: 'not reported', disk: 'not reported' })
   })
+
+  // The daemon omits what it could not read: the first sample after a start has no cpu_percent, never a zero.
+  it('says "not reported" for a measurement the sample leaves out, and never writes a zero for it', () => {
+    const bare = { sampled_at: '2026-10-01T10:00:00Z' }
+    expect(latestWords(bare)).toEqual({ cpu: 'not reported', load: 'not reported', memory: 'not reported', disk: 'not reported' })
+    const { cpu_percent: _cpu, ...noCpu } = sample(0, 12.4, 4)
+    expect(latestWords(noCpu)).toMatchObject({ cpu: 'not reported', load: '0.62', memory: '4 GB of 16 GB (25%)' })
+    expect(latestWords({ ...sample(0, 12.4, 4), memory_total_bytes: undefined, disk_total_bytes: undefined })).toMatchObject({ cpu: '12%', memory: 'not reported', disk: 'not reported' })
+  })
 })
 
 describe('metricsView', () => {

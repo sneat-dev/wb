@@ -38,8 +38,8 @@
   </ng-template>
   <ng-template appCell="machine" let-a><app-machine-cell [id]="a.machine_id" /></ng-template>
   <ng-template appListPanel let-a><app-agent-panel [id]="a.id" /></ng-template>
-  @if (truncated()) {
-    <p class="note" listFooter role="note">Showing the first 200 agents of each machine; a machine that has more reports only that many.</p>
+  @if (truncatedMachines().length > 0) {
+    <p class="note" listFooter role="note">Showing the first 200 agents of {{ truncatedMachines().join(', ') }}; {{ truncatedMachines().length === 1 ? 'it has' : 'they have' }} more.</p>
   }
   @if (silentMachines().length > 0) {
     <p class="note" listFooter>Agents are reported only by machines that publish them; {{ silentMachines().join(', ') }} {{ silentMachines().length === 1 ? 'reports' : 'report' }} none.</p>

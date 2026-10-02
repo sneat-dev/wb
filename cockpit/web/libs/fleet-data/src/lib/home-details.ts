@@ -5,7 +5,7 @@
 // first paint of Home do not carry them: Home imports it after it has rendered
 // (`import()`), and the list pages read the cleanup sets through it.
 
-import { CommandTarget, CopyCommand, SshRoute, cockpitExport, daemonStart, fleetStatus, remoteEnroll, remotePublish, selfUpdate } from './command-core'
+import { CommandTarget, CopyCommand, SshRoute, cockpitExport, daemonStart, fleetStatus, remoteEnroll, remotePublish, remotePublishDryRun, remoteStatus, selfUpdate } from './command-core'
 import type { FleetModel } from './fleet-model'
 import { buildRepositories } from './model-repositories'
 import { ageTermOf, idleOver30Days, wholeDays } from './match'
@@ -21,7 +21,7 @@ function toTime(value: string | undefined): number | undefined {
   return Number.isNaN(time) ? undefined : time
 }
 const EMPTY_CLEANUP: Cleanup = { safeCount: 0, lookCount: 0, safeIds: new Set(), lookIds: new Set(), indicative: true, reviewLink: EMPTY_LINK, bars: [], unknownAge: 0 }
-const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], scanErrors: [] }
+const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], publishErrors: [], scanErrors: [] }
 
 const AGE_LABELS: Record<(typeof AGE_TERMS)[number], string> = {
   '<1d': 'today',
@@ -72,6 +72,7 @@ export function buildHealth(model: FleetModel): FleetHealth {
     const olderWb: HealthItem[] = []
     const remoteErrors: HealthItem[] = []
     const exportDropped: HealthItem[] = []
+    const publishErrors: HealthItem[] = []
     for (const view of model.machines) {
       const machine = view.machine
       const base = { machine: machine.machine, machineId: machine.id, link: machineLink('machines', machine.id) }
@@ -88,6 +89,11 @@ export function buildHealth(model: FleetModel): FleetHealth {
         const count = machine.export_dropped
         exportDropped.push({ ...base, text: `${count} ${count === 1 ? 'entry' : 'entries'} left out of ${machine.machine}'s export`, command: healthCommand(cockpitExport(target), machine.machine, ssh !== undefined) })
       }
+      if (machine.publish_error !== undefined) {
+        // The diagnostic is on this machine's own entry, so its commands run here.
+        const { guidance, command } = publishFix(machine.publish_error)
+        publishErrors.push({ ...base, text: `${machine.machine} ${guidance}`, command: healthCommand(command, machine.machine, true), link: machineLink('machines', machine.id) })
+      }
       if (machine.remote_error !== undefined) {
         // Enrolling configures this machine, so it runs here whatever the route.
         const here = ssh !== undefined || machine.remote_error === 'http_auth_failed'
@@ -100,7 +106,15 @@ export function buildHealth(model: FleetModel): FleetHealth {
         const command = fleetStatus(repository.slug)
         return { repository: repository.slug, command: command.ok ? { text: command.text } : { reason: command.reason }, link: chipLink('repositories', 'errors') }
       })
-    return { ok: staleMachines.length + olderWb.length + remoteErrors.length + exportDropped.length + scanErrors.length === 0, staleMachines, olderWb, remoteErrors, exportDropped, scanErrors }
+    return {
+      ok: staleMachines.length + olderWb.length + remoteErrors.length + exportDropped.length + publishErrors.length + scanErrors.length === 0,
+      staleMachines,
+      olderWb,
+      remoteErrors,
+      exportDropped,
+      publishErrors,
+      scanErrors,
+    }
   })
 }
 
@@ -141,6 +155,39 @@ function isoDay(date: Date): string {
 /** The command of a health line, labelled where it runs: "run here" for the ssh form and enrolling, "run on <machine>" otherwise. */
 function healthCommand(command: CopyCommand, machine: string, here: boolean): HealthItem['command'] {
   return command.ok ? { text: command.text, label: here ? 'run here' : `run on ${machine}`, needsEdit: command.needsEdit } : { reason: command.reason }
+}
+
+/** A `publish_error` in a few words, for a row; the guidance is in `publishFix`. */
+export function publishErrorWords(code: string): string {
+  switch (code) {
+    case 'collect_failed':
+      return 'the scan or the GitHub login failed'
+    case 'store_unavailable':
+      return 'the remote store cannot be opened'
+    case 'publish_failed':
+      return 'the store refused or could not be reached'
+    case 'optional_fields_dropped':
+      return 'the hub is older than this wb'
+  }
+  return 'unknown problem'
+}
+
+/**
+ * A `publish_error` in words with its fixing guidance (REQ:home-fleet-health), and the command to copy; a code this
+ * library does not know says so and has no command. The commands run on this machine, whose entry carries the code.
+ */
+export function publishFix(code: string): { guidance: string; command: CopyCommand } {
+  switch (code) {
+    case 'collect_failed':
+      return { guidance: 'could not publish: the scan or the GitHub login failed. Run `gh auth status` and `wb remote publish --dry-run`', command: remotePublishDryRun() }
+    case 'store_unavailable':
+      return { guidance: 'could not publish: the remote store cannot be opened. Check `wb remote status`', command: remoteStatus() }
+    case 'publish_failed':
+      return { guidance: 'could not publish: the store refused or could not be reached. Run `wb remote publish` and read its error', command: remotePublish() }
+    case 'optional_fields_dropped':
+      return { guidance: 'publishes without its agents, metrics and hardware: the hub is older than this wb and does not take them. Update the hub', command: { ok: false, reason: 'nothing to run here: update the hub' } }
+  }
+  return { guidance: 'has an unknown publish problem', command: { ok: false, reason: 'unknown error: there is no command to suggest' } }
 }
 
 /** A `remote_error` in words; a code this page does not know is an unknown error. */

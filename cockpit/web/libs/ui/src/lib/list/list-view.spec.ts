@@ -46,6 +46,14 @@ class Host {
 }
 
 @Component({
+  imports: [ListView],
+  template: `<app-list page="worktrees" [columns]="columns" />`,
+})
+class NoSortHost {
+  protected readonly columns: ListColumn<Worktree>[] = [{ id: 'worktree', header: 'Worktree', title: true, width: 'fill', value: (w) => w.task }]
+}
+
+@Component({
   imports: [ListView, ListCell, ListPanelTemplate],
   template: `<app-list page="worktrees" [columns]="columns" prefix="a">
     <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
@@ -301,6 +309,36 @@ describe('ListView', () => {
     expect(selected.root.querySelector('[aria-label=Machines]')).not.toBeNull()
   })
 
+  it('sorts from the keyboard: s takes the next sortable column and Shift S reverses, each said aloud, and the headers are out of the Tab order', async () => {
+    const page = await open('/list')
+    expect([...page.root.querySelectorAll('.head button.sort')].every((header) => header.getAttribute('tabindex') === '-1')).toBe(true)
+    expect(keydown(page.viewport, 's').defaultPrevented).toBe(true)
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=worktree&dir=asc')
+    expect(page.root.querySelector('.visually-hidden[role=status]')?.textContent).toBe('Sorted by worktree, ascending')
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=machine&dir=asc')
+    keydown(page.viewport, 'S')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=machine&dir=desc')
+    expect(page.root.querySelector('.visually-hidden[role=status]')?.textContent).toBe('Sorted by machine, descending')
+    keydown(page.viewport, 's')
+    await page.settle()
+    // Past the last column it wraps to the first.
+    expect(page.router.url).toBe('/list?sort=activity&dir=desc')
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(page.router.url).toBe('/list?sort=worktree&dir=asc')
+  })
+
+  it('has nothing to sort by from the keyboard when no column sorts', async () => {
+    const page = await open('/list', { host: NoSortHost as unknown as AHost })
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(page.router.url).toBe('/list')
+  })
+
   it('sorts by a header, reverses on the second click, and shows the direction in the header', async () => {
     const page = await open('/list')
     button(page.root, 'Last activity').click()
@@ -360,7 +398,7 @@ describe('ListView', () => {
     expect(history.mock.calls.at(-1)?.[1]).toMatchObject({ replaceUrl: false })
     const panel = page.root.querySelector('app-side-panel') as HTMLElement
     expect(text(panel.querySelector('.panel-body'))).toBe('Panel of add-search')
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Worktree add-search')
+    expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Worktree add-search')
     expect(rowElements(page.root)[0].getAttribute('aria-selected')).toBe('true')
     expect(rowElements(page.root)[0].classList.contains('selected')).toBe(true)
     expect(page.root.querySelector('.layout')?.classList.contains('with-panel')).toBe(true)
@@ -411,7 +449,7 @@ describe('ListView', () => {
     expect(button(page.root, 'Upstream gone').getAttribute('aria-pressed')).toBe('true')
     expect(button(page.root, 'alpha').getAttribute('aria-pressed')).toBe('true')
     expect(text(page.root.querySelector('.panel-body'))).toBe('Panel of zeta')
-    expect(document.activeElement).not.toBe(page.root.querySelector('aside'))
+    expect(document.activeElement).not.toBe(page.root.querySelector('.side-panel'))
     expect(rowElements(page.root)[0].classList.contains('focused')).toBe(true)
   })
 
@@ -585,7 +623,7 @@ describe('ListView', () => {
     expect(document.activeElement).toBe(page.viewport)
     keydown(page.viewport, 'Enter')
     await page.settle()
-    expect(document.activeElement).toBe(page.root.querySelector('aside'))
+    expect(document.activeElement).toBe(page.root.querySelector('.side-panel'))
     // Tab reaches the panel next in the document order: its controls follow the list.
     expect(page.root.querySelector('.panel-button')).not.toBeNull()
   })
@@ -826,7 +864,7 @@ describe('ListView', () => {
 
   it('is a modal sheet on a phone: focus goes in even for a pasted address, the list is inert, and Esc closes it', async () => {
     const page = await open('/list?sel=w2', { phone: true })
-    const aside = page.root.querySelector('aside') as HTMLElement
+    const aside = page.root.querySelector('.side-panel') as HTMLElement
     expect(aside.getAttribute('role')).toBe('dialog')
     expect(document.activeElement).toBe(aside)
     expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(true)
@@ -846,7 +884,7 @@ describe('ListView', () => {
 
   it('calls the panel Details when the page names it no better', async () => {
     const page = await open('/list?sel=w1', { host: PlainHost })
-    expect(page.root.querySelector('aside')?.getAttribute('aria-label')).toBe('Details')
+    expect(page.root.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Details')
   })
 
   it('renders on its own over an empty fleet, with the rows of its page', async () => {

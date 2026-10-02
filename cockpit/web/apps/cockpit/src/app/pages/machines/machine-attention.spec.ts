@@ -33,6 +33,16 @@ describe('attentionOf', () => {
     expect(commands[0].command).toMatchObject({ ok: true, text: "wb cockpit export --format='json'" })
   })
 
+  it('names this machine\'s publish_error with the guidance and the command, run here', () => {
+    const document = machinesDocument()
+    document.machines[0] = { ...document.machines[0], publish_error: 'publish_failed' }
+    const { notes, commands } = attentionOf(new FleetModels().forDocument(document, NOW), 'mach-macbook')
+    expect(notes).toEqual([{ id: 'publish:mach-macbook', text: 'macbook could not publish: the store refused or could not be reached. Run `wb remote publish` and read its error' }])
+    expect(commands).toEqual([{ title: 'Fix the publish', command: { ok: true, text: 'wb remote publish', label: 'run here', needsEdit: false } }])
+    document.machines[0] = { ...document.machines[0], publish_error: 'optional_fields_dropped' }
+    expect(attentionOf(new FleetModels().forDocument(document, NOW), 'mach-macbook')).toMatchObject({ notes: [{ reason: 'nothing to run here: update the hub' }], commands: [] })
+  })
+
   it('has nothing for a machine with nothing wrong', () => {
     expect(attentionOf(model, 'mach-macbook')).toEqual({ notes: [], commands: [] })
   })

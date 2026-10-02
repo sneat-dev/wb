@@ -4,10 +4,19 @@ import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 import { assertInside, assertSafePort, freePort, isolatedEnv, portInUse, portInUseSync, recordedLivePid } from './isolation'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from '../violations'
+import { countOpensItsList, everyTabListsRows, filterChipPanelDetailBack, homeLoads, machineMetrics, newTaskProducesCommands, paletteOpensATask } from './steps'
 
 // cockpit#ac:whole-journey-e2e. The whole chain with no stub: the production web
 // build embedded in a wb binary built here, a daemon that `wb cockpit` itself
-// starts, a real repository with two WB worktrees, a real browser.
+// starts, two real repositories with two WB worktrees of two tasks, a real
+// browser. The steps over the pages (Home and its sections, the five tabs, a
+// list's filter, chip, panel and detail route, the palette, New task, the local
+// machine's metrics) are in steps.ts, which the stubbed suite runs too
+// (../journey-steps.e2e.ts) against answers shaped like this daemon's.
+//
+// It runs only on Linux under GitHub Actions (journey-guard.mjs refuses to run
+// anywhere else): the daemon is one fixed launchd label per user on macOS, so
+// starting one there would stop the developer's live service.
 //
 // The daemon is isolated from the machine: a free port chosen now, a projects
 // root, a unix socket, a state directory, a config and a home that are all
@@ -173,55 +182,56 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   await page.goto(loginUrl)
   await expect(page).toHaveURL(new RegExp(`^${origin.replace(/[.]/g, '\\.')}/cockpit/(dashboard)?$`))
   expect(page.url()).not.toContain('code=')
-  await page.goto(`${origin}/cockpit/dashboard`)
-  // The old address of Home still works and shows it.
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   const session = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
   expect(session.principal).toBe('owner')
 
-  // Hover the worktree count: the card names both worktrees.
-  const tile = page.locator('.tile').filter({ hasText: 'Worktrees' }).first()
-  const count = tile.locator('app-count')
-  await count.locator('a').hover()
-  const card = count.locator('.count-card')
-  await expect(card).toBeVisible()
-  await expect(card.locator('li')).toHaveCount(2)
-  await expect(card).toContainText('journey-one')
-  await expect(card).toContainText('journey-two')
+  // The fleet document of the real daemon: collections are lists, never null, and the fixture is what it says.
+  const fleet = await (await page.request.get(`${origin}/api/v1/cockpit/fleet`)).json()
+  for (const name of ['machines', 'repositories', 'worktrees', 'pull_requests', 'agents']) {
+    expect(Array.isArray(fleet[name]), `${name} is a list`).toBe(true)
+  }
+  expect(fleet.schema_version).toBe(2)
+  expect(fleet.worktrees.map((worktree: { task: string }) => worktree.task).sort()).toEqual(['journey-one', 'journey-two'])
+  expect(fleet.repositories.map((repository: { name: string }) => repository.name).sort()).toEqual(['acme/links', 'acme/shop'])
+  expect(fleet.machines.filter((machine: { route: string }) => machine.route === 'local')).toHaveLength(1)
 
-  // Click it: the Worktrees table shows exactly those two rows.
-  await count.locator('a').click()
-  await expect(page).toHaveURL(/\/cockpit\/worktrees(\?|$)/)
-  const rows = page.locator('tbody tr')
-  await expect(rows).toHaveCount(2)
-  await expect(rows.filter({ hasText: 'journey-one' })).toHaveCount(1)
-  await expect(rows.filter({ hasText: 'journey-two' })).toHaveCount(1)
+  // The old address of Home still works and shows it, with its sections.
+  await page.goto(`${origin}/cockpit/dashboard`)
+  await homeLoads(page, origin, fleet)
+  // Every tab lists the rows of the fleet.
+  await everyTabListsRows(page, fleet)
+  // A filter, a chip, the panel, the detail route and Back.
+  await filterChipPanelDetailBack(page, origin, fleet)
+  // The palette finds a task and opens it; New task produces its commands and runs nothing.
+  await paletteOpensATask(page, origin, 'journey-one')
+  await newTaskProducesCommands(page, origin, ['acme/links', 'acme/shop'], 'acme/*')
+  // The local machine: its history as charts on a platform that reports metrics (Linux does, through /proc), or "not reported".
+  const local = fleet.machines.find((machine: { route: string }) => machine.route === 'local')
+  const metrics = await (await page.request.get(`${origin}/api/v1/cockpit/machine-metrics?machine=${encodeURIComponent(local.id)}`)).json()
+  await machineMetrics(page, origin, fleet, metrics)
 
-  // The repository page shows the real README.
+  // A count is a link: the local machine's Worktrees count opens exactly its two worktrees.
+  await countOpensItsList(page, origin, fleet)
+  const rows = page.locator('[role=row][data-index]')
+
+  // The repository's page shows the real README.
   await page.goto(`${origin}/cockpit/repositories`)
-  await page.locator('tbody tr').filter({ hasText: 'acme/shop' }).getByRole('link', { name: /acme\/shop/ }).first().click()
-  await expect(page.getByRole('heading', { name: 'github.com/acme/shop' })).toBeVisible()
+  await page.getByRole('link', { name: 'Open acme/shop', exact: true }).click()
+  await expect(page.getByRole('heading', { level: 2, name: /acme\/shop$/ })).toBeVisible()
   await expect(page.locator('.readme-content')).toContainText(README_BODY)
   await expect(page.locator('.readme-content h4')).toHaveText('Shop')
 
   // A README committed as a symbolic link shows nothing from outside the checkout.
   await page.goto(`${origin}/cockpit/repositories`)
-  await page.locator('tbody tr').filter({ hasText: 'acme/links' }).getByRole('link', { name: /acme\/links/ }).first().click()
-  await expect(page.getByRole('heading', { name: 'github.com/acme/links' })).toBeVisible()
+  await page.getByRole('link', { name: 'Open acme/links', exact: true }).click()
+  await expect(page.getByRole('heading', { level: 2, name: /acme\/links$/ })).toBeVisible()
   await expect(page.locator('app-readme-section')).toContainText(/not a regular file|could not/i)
   await expect(page.locator('.readme-content')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText(SECRET)
-  const linksId = new URL(page.url()).pathname.split('/').pop()!
+  const linksId = fleet.repositories.find((repository: { name: string }) => repository.name === 'acme/links').id
   const linksReadme = await page.request.get(`${origin}/api/v1/cockpit/readme?repository=${linksId}`)
   expect(linksReadme.status()).toBeGreaterThanOrEqual(400)
   expect(await linksReadme.text()).not.toContain(SECRET)
-
-  // The fleet document's collections are lists, never null.
-  const fleet = await (await page.request.get(`${origin}/api/v1/cockpit/fleet`)).json()
-  for (const name of ['machines', 'repositories', 'worktrees', 'branches', 'pull_requests', 'agents']) {
-    expect(Array.isArray(fleet[name]), `${name} is a list`).toBe(true)
-  }
-  expect(fleet.worktrees).toHaveLength(2)
 
   // The README route refuses a request that carries no cookie.
   const shopId = fleet.repositories.find((repository: { name: string }) => repository.name === 'acme/shop').id
@@ -232,20 +242,21 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   expect(await refused.text()).not.toContain(README_BODY)
   await anonymousApi.dispose()
 
-  // Clear the cookie and reload: the lists still load, the README asks for an owner session.
-  await page.goto(`${origin}/cockpit/repositories/${shopId}`)
+  // Clear the cookie and reload: the lists still load, the README asks for an owner session, and no page shows an SSH route.
+  await page.goto(`${origin}/cockpit/repositories?sel=${encodeURIComponent(shopId)}`)
   await expect(page.locator('.readme-content')).toContainText(README_BODY)
   await page.context().clearCookies()
   await page.reload()
-  await expect(page.getByRole('heading', { name: 'github.com/acme/shop' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: /acme\/shop$/ })).toBeVisible()
   const section = page.locator('app-readme-section')
   await expect(section).toContainText('An owner session is needed to read the README')
   await expect(section.locator('code')).toHaveText('wb cockpit')
   await expect(page.locator('.readme-content')).toHaveCount(0)
-  await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Worktrees' }).click()
+  await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: /^Worktrees/ }).click()
   await expect(rows).toHaveCount(2)
   const anonymousSession = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
   expect(anonymousSession.principal).not.toBe('owner')
+  expect(anonymousSession.machine_routes).toBeUndefined()
 
   await expectClean()
   expect(failures).toEqual([])

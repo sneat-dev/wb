@@ -161,8 +161,10 @@ export function withGaps(points: { at: number; value: number }[], from: number, 
   return result
 }
 
-function percent(part: number, whole: number): number | undefined {
-  return whole > 0 ? (part / whole) * 100 : undefined
+const reported = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
+
+function percent(part: number | undefined, whole: number | undefined): number | undefined {
+  return reported(part) && reported(whole) && whole > 0 ? (part / whole) * 100 : undefined
 }
 
 /**
@@ -183,6 +185,6 @@ export function machineMetricSpecs(samples: readonly MetricsSample[], now: numbe
     series('CPU', 'CPU %', '%', 100, (sample) => sample.cpu_percent),
     series('Load (1 minute)', 'Load', '', undefined, (sample) => sample.load1),
     series('Memory used', 'Memory used %', '%', 100, (sample) => percent(sample.memory_used_bytes, sample.memory_total_bytes)),
-    series('Disk free', 'Disk free GB', ' GB', undefined, (sample) => (sample.disk_total_bytes > 0 && Number.isFinite(sample.disk_free_bytes) ? sample.disk_free_bytes / GIGABYTE : undefined)),
+    series('Disk free', 'Disk free GB', ' GB', undefined, (sample) => (reported(sample.disk_total_bytes) && sample.disk_total_bytes > 0 && reported(sample.disk_free_bytes) ? sample.disk_free_bytes / GIGABYTE : undefined)),
   ]
 }

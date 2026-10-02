@@ -5,7 +5,7 @@ import { fleetDocument, machine } from '@cockpit/fleet-data/testing'
 import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
 import { MetricsPoller } from '../../metrics/metrics-poller'
 import { openPage } from '../test-harness'
-import { machinesDocument, metricsAnswers, metricsFetch } from './machines-fixture'
+import { machinesDocument, metricsAnswers, metricsFetch, openMachines } from './machines-fixture'
 import { MachinesPage } from './machines-page'
 
 const text = (element: Element | null) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -42,12 +42,30 @@ describe('MachinesPage', () => {
     expect(text(root)).toContain('Nothing has been observed')
   })
 
+  // cockpit-views#ac:no-layout-shift-on-arrival: the columns do not change when the first metrics arrive
+  it('keeps the CPU and Memory columns while the first read is out, with nothing in their cells, and no bar before a sample', async () => {
+    const { root } = await openMachines('/machines', MachinesPage, { answers: 'never' })
+    expect(headersOf(root)).toContain('CPU')
+    expect(headersOf(root)).toContain('Memory')
+    expect(rowsOf(root).length).toBeGreaterThan(0)
+    expect(cell(root, 0, 'CPU').querySelector('.meter')).toBeNull()
+  })
+
   // cockpit-views#ac:machines-table-title-and-links
   it('has "Machines" as its first column header and no separate heading, and each name links to its page', async () => {
     const { root } = await open()
     expect(headersOf(root)).toEqual(['Machines', 'State', 'WB version', 'Repositories', 'Worktrees', 'Agents', 'Load', 'CPU', 'Memory'])
     expect(root.querySelectorAll('h1, h2, h3, .page-title')).toHaveLength(0)
     expect(rowsOf(root).map((row) => row.querySelector('a.name')?.getAttribute('href'))).toEqual(['/machines/mach-macbook', '/machines/mach-nas', '/machines/mach-oldmac', '/machines/mach-vm'])
+  })
+
+  it('shows this machine\'s publish_error as a warning in words, and nothing when publishing works', async () => {
+    const document = machinesDocument()
+    document.machines[0] = { ...document.machines[0], publish_error: 'collect_failed' }
+    const { root } = await open('/machines', document)
+    expect(text(cell(root, 0, 'State'))).toContain('publish: the scan or the GitHub login failed')
+    expect(cell(root, 0, 'State').querySelector('.warning')?.getAttribute('title')).toBe('macbook could not publish: the scan or the GitHub login failed')
+    expect(text(cell(root, 3, 'State'))).not.toContain('publish:')
   })
 
   // cockpit-views#ac:machines-table-title-and-links
@@ -147,7 +165,7 @@ describe('MachinesPage', () => {
   it('opens the side panel of the selected machine', async () => {
     const { root } = await open('/machines?sel=mach-vm')
     const panel = root.querySelector('app-side-panel') as HTMLElement
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Machine vm')
+    expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Machine vm')
     expect(text(panel.querySelector('h2'))).toBe('vm')
   })
 

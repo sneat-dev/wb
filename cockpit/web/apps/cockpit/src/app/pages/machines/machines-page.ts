@@ -3,7 +3,7 @@ import { toSignal } from '@angular/core/rxjs-interop'
 import { ActivatedRoute, RouterLink } from '@angular/router'
 import { FleetStore, MachineView, linkTarget, machineDetailLink, machineLoad } from '@cockpit/fleet-data'
 import { machineAgentsLink, machineRepositoriesLink, machineWorktreesLink, parseListQuery } from '@cockpit/fleet-data/list'
-import { remoteErrorText } from '@cockpit/fleet-data/home-details'
+import { publishErrorWords, remoteErrorText } from '@cockpit/fleet-data/home-details'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
 import { ALWAYS, CountLink, ListCell, ListColumn, ListPanelTemplate, ListView } from '@cockpit/ui/list'
 import { MetricsPoller, watchMetrics } from '../../metrics/metrics-poller'
@@ -17,6 +17,10 @@ export interface MachineRow {
   stale: boolean
   /** The `remote_error` in words; none when the last read worked. */
   warning: string | undefined
+  /** The first read of this machine's metrics has not answered yet: the CPU and Memory columns hold their place meanwhile. */
+  reading: boolean
+  /** The `publish_error` of this machine's own entry in words; none when publishing works or is off. */
+  publishWarning: string | undefined
   load: ReturnType<typeof machineLoad>
   bars: ReturnType<typeof barsOf>
   sample: string
@@ -65,12 +69,15 @@ export class MachinesPage {
       this.store.model().machines.map((view): [string, MachineRow] => {
         const load = machineLoad(entries.get(view.machine.id)?.metrics)
         const code = view.machine.remote_error
+        const publish = view.machine.publish_error
         return [
           view.machine.id,
           {
             reach: reachWords(view, now),
             stale: view.state === 'stale',
             warning: code === undefined ? undefined : remoteErrorText(code),
+            reading: !entries.has(view.machine.id),
+            publishWarning: publish === undefined ? undefined : publishErrorWords(publish),
             load,
             bars: barsOf(load),
             sample: sampleWords(load, now),
@@ -84,12 +91,13 @@ export class MachinesPage {
   protected readonly row = (view: MachineView): MachineRow => this.rows().get(view.machine.id) as MachineRow
   protected readonly panelLabel = (view: MachineView): string => `Machine ${view.machine.machine}`
   private readonly cpu = (view: MachineView): string => {
-    const bars = this.row(view).bars
-    return bars === undefined ? '' : `${bars.cpu}%`
+    const { bars, reading } = this.row(view)
+    // While the first read is out the column keeps its place (a column that appears with the numbers moves the rows).
+    return bars === undefined ? (reading ? '…' : '') : `${bars.cpu}%`
   }
   private readonly memory = (view: MachineView): string => {
-    const bars = this.row(view).bars
-    return bars === undefined ? '' : `${bars.memory}%`
+    const { bars, reading } = this.row(view)
+    return bars === undefined ? (reading ? '…' : '') : `${bars.memory}%`
   }
   protected readonly target = linkTarget
   protected readonly detail = (view: MachineView) => machineDetailLink(view.machine.id)

@@ -814,8 +814,8 @@ Then the Go check passes with every added statement covered, the web test config
 
 Scenario: The journey without crutches
 Given a temporary projects root with one repository and two worktrees, and no daemon running
-When one end-to-end test runs `wb cockpit`, follows the printed URL in a browser, hovers and clicks the worktree count, clears the cookie and reloads
-Then the Dashboard appears signed in as owner, the filtered Worktrees table shows both rows, and after the reload the lists still load while the repository README asks for an owner session
+When one end-to-end test runs `wb cockpit`, follows the printed URL in a browser, walks Home, the five tabs, a list's filter, chip, panel and detail route, the palette and "New task", clicks the local machine's worktree count, clears the cookie and reloads
+Then Home appears signed in as owner with its sections, each tab lists the rows of the real fleet, the filtered Worktrees list shows both rows, the local machine's metrics are drawn as charts or said not to be reported, and after the reload the lists still load while the repository README asks for an owner session (the page steps are `cockpit/web/apps/cockpit-e2e/src/journey/steps.ts`, the journey runs on Linux CI only)
 
 ## Open Questions
 

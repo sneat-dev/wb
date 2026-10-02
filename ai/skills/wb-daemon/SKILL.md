@@ -56,6 +56,17 @@ envelope's rules refuse is left out and counted in the envelope's `dropped` fiel
 found through launchd, so one started by hand in the foreground reads as not running.
 Run `wb daemon start` first if the daemon is not running.
 
+The page Cockpit opens is Home; its tabs are Home (`/`), Tasks (`/tasks`, with `/tasks/new`),
+Repositories, Worktrees, Agents and Machines, each a filterable list whose address holds `q`,
+`sort`, `machine`, `chips` and `sel`, with a detail route (`/worktrees/<id>`, `/machines/<id>`, ...).
+Cockpit runs nothing: a row offers "Copy command" text, and an owner session (`wb cockpit`) is what
+file content (a README) and the SSH form of a copied command need. Its configuration in wb.yaml is
+`cockpit.refresh_interval`, `cockpit.anonymous_metadata`, `cockpit.pull_request_limit`,
+`cockpit.pull_request_hourly_budget`, `cockpit.remote_http` and `cockpit.remote_ssh` (read other machines'
+exports over HTTP or SSH), `session_move.targets.<machine>.http` (`url`, `token_file`) and `.ssh` (`host`,
+`wb_path`) for each machine's route, and `remote.publish.interval`, `.agents` and `.metrics` for the opt-in
+periodic publish. The architecture, trust rule, cadences and budgets are in `docs/cockpit.md`.
+
 Start and inspect the local read-only API and embedded dashboard:
 
 ```sh

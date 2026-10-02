@@ -44,6 +44,7 @@ export class ShortcutSheet {
         { keys: ['j'], label: 'Next row' },
         { keys: ['k'], label: 'Previous row' },
         { keys: ['Enter'], label: 'Open the selected row in the side panel' },
+        { keys: ['s'], label: 'Sort by the next column (Shift S reverses)' },
       ],
     },
     {

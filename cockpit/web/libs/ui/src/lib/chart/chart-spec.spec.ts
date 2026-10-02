@@ -44,6 +44,13 @@ describe('chart specs', () => {
       expect(specs[3].points.map((point) => point.value)).toEqual([25 / 2 ** 30])
     })
 
+    it('leaves out a measurement the daemon omitted from a sample, instead of drawing a zero', () => {
+      const { cpu_percent: _cpu, ...noCpu } = sample(30)
+      const specs = machineMetricSpecs([noCpu, sample(20), { sampled_at: sample(10).sampled_at }], NOW)
+      expect(specs.map((spec) => spec.points.length)).toEqual([1, 2, 2, 2])
+      expect(machineMetricSpecs([{ sampled_at: sample(10).sampled_at }], NOW).map((spec) => spec.points)).toEqual([[], [], [], []])
+    })
+
     it('breaks the line where samples are absent', () => {
       const specs = machineMetricSpecs([sample(55), sample(54), sample(53), sample(30), sample(29)], NOW)
       const values = specs[0].points.map((point) => point.value)

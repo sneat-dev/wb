@@ -217,4 +217,18 @@ describe('RepositoryMachineSection', () => {
     await new Promise((done) => setTimeout(done, BRANCHES_DELAY_MS + 50))
     expect(fetcher).not.toHaveBeenCalled()
   })
+
+  it('reads the branches once: closing the section and opening it again asks for nothing more', async () => {
+    const fetcher = answer({ branches: [branch('main')] })
+    const { root, settle } = await render({ open: true, fetcher })
+    await settle(() => root.querySelector('.branches .branch-name') !== null)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const details = root.querySelector('details') as HTMLDetailsElement
+    for (const open of [false, true]) {
+      details.open = open
+      details.dispatchEvent(new Event('toggle'))
+      await new Promise((done) => setTimeout(done, BRANCHES_DELAY_MS + 50))
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
 })

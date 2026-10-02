@@ -52,12 +52,20 @@
   min-width: 0;
 }
 
+.tab-slot {
+  --tab-pad: var(--space-3);
+
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
 .tab {
   position: relative;
   display: inline-flex;
   gap: var(--space-2);
   align-items: center;
-  padding: 0 var(--space-3);
+  padding: 0 var(--tab-pad);
   color: var(--text-2);
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
@@ -88,6 +96,23 @@
 
 .badge-pending {
   visibility: hidden;
+}
+
+/* The badge is a link of its own, laid over the room the tab holds for it. */
+a.badge {
+  position: absolute;
+  top: 50%;
+  right: var(--tab-pad);
+  z-index: 1;
+  min-height: 1.5rem;
+  line-height: 1.5rem;
+  text-decoration: none;
+  transform: translateY(-50%);
+}
+
+a.badge:hover {
+  text-decoration: none;
+  filter: brightness(0.95);
 }
 
 .badge {
@@ -224,8 +249,8 @@
 }
 
 @media (min-width: 48rem) and (max-width: 63.9rem) {
-  .tab {
-    padding: 0 var(--space-2);
+  .tab-slot {
+    --tab-pad: var(--space-2);
   }
 
   .session {
@@ -276,10 +301,42 @@
     display: none;
   }
 
+  /* A finger needs 44 px: the controls of the bar are that big, the small badge and mark hold a target of their own. */
+  .palette-trigger,
+  .new-task {
+    flex: none;
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .session {
+    min-height: 2.75rem;
+  }
+
+  .brand {
+    position: relative;
+  }
+
+  .brand::after {
+    content: '';
+    position: absolute;
+    inset: 0 -0.625rem;
+  }
+
+  a.badge::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2.75rem;
+    height: 2.75rem;
+    transform: translate(-50%, -50%);
+  }
+
   .tabs {
     flex: 0 0 calc(100% + 2 * var(--space-3));
     order: 3;
-    height: 2.5rem;
+    height: calc(2.75rem + 1px);
     margin: 0 calc(-1 * var(--space-3));
     padding: 0 var(--space-2);
     overflow-x: auto;
@@ -289,5 +346,26 @@
 
   .tabs::-webkit-scrollbar {
     display: none;
+  }
+}
+
+/* The narrowest phones: the session chip keeps its icon and says the rest in its title and to assistive technology, so the
+   freshness chip and the controls fit one row at 360 px. */
+@media (max-width: 30rem) {
+  .session {
+    justify-content: center;
+    width: 2.75rem;
+    padding: 0;
+    border-radius: var(--radius-md);
+  }
+
+  .session-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }

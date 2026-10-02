@@ -182,6 +182,16 @@ export function remotePublish(target: CommandTarget = {}): CopyCommand {
   return command(target, wb('remote', 'publish'))
 }
 
+/** What this machine's own publish would send, without sending it: the first thing to run after a `collect_failed`. */
+export function remotePublishDryRun(target: CommandTarget = {}): CopyCommand {
+  return command(target, [...wb('remote', 'publish'), { word: '--dry-run' }])
+}
+
+/** The cross-machine worklist from the store, which fails when the store cannot be opened. */
+export function remoteStatus(target: CommandTarget = {}): CopyCommand {
+  return command(target, wb('remote', 'status'))
+}
+
 export function selfUpdate(target: CommandTarget = {}): CopyCommand {
   return command(target, wb('self-update'))
 }

@@ -182,7 +182,7 @@ describe('WorktreesPage', () => {
   it('opens the worktree\'s panel for a selection: summary, related entities, commands and collapsed raw data', async () => {
     const { root } = await openPage('/worktrees?sel=w1', WorktreesPage, documentOf())
     const panel = root.querySelector('app-side-panel') as HTMLElement
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Worktree fix-ci')
+    expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Worktree fix-ci')
     expect(text(panel.querySelector('h2'))).toBe('fix-ci')
     const facts = Object.fromEntries([...panel.querySelectorAll('dt')].map((term) => [text(term), text(term.nextElementSibling)]))
     expect(facts).toMatchObject({ Task: 'fix-ci', Repository: 'acme/r1', Branch: 'topic', Machine: 'alpha', Source: 'local', State: 'active, in_progress', 'Sync (this machine)': '2 ahead, 1 behind' })

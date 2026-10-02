@@ -9,6 +9,22 @@
     <app-state-badge kind="load" size="small" [value]="load()" />
   </app-panel-state>
 
+  @if (attention().notes.length > 0) {
+  <section class="block" aria-label="Needs attention">
+    <h3>Needs attention</h3>
+    <ul class="rows">
+      @for (note of attention().notes; track note.id) {
+      <li>
+        <span class="warning">{{ note.text }}</span>
+        @if (note.reason) {
+        <span class="quiet">{{ note.reason }}</span>
+        }
+      </li>
+      }
+    </ul>
+  </section>
+  }
+
   <section class="block" aria-label="Metrics">
     <h3>Metrics</h3>
     <p class="source" [attr.data-source]="metrics().kind">{{ metrics().source }}</p>
@@ -33,21 +49,5 @@
     </div>
     }
   </section>
-
-  @if (attention().notes.length > 0) {
-  <section class="block" aria-label="Needs attention">
-    <h3>Needs attention</h3>
-    <ul class="rows">
-      @for (note of attention().notes; track note.id) {
-      <li>
-        <span class="warning">{{ note.text }}</span>
-        @if (note.reason) {
-        <span class="quiet">{{ note.reason }}</span>
-        }
-      </li>
-      }
-    </ul>
-  </section>
-  }
 </app-panel-content>
 }

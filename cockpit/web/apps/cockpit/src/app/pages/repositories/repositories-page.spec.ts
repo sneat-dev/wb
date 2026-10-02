@@ -359,7 +359,7 @@ describe('RepositoriesPage', () => {
     for (const sel of ['go-a', 'go-b', 'go-c']) {
       const { root } = await open(`/repositories?sel=${sel}`)
       const panel = root.querySelector('app-side-panel') as HTMLElement
-      expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Repository sneat-co/sneat-go')
+      expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Repository sneat-co/sneat-go')
       expect(text(panel.querySelector('h2'))).toBe('sneat-co/sneat-go')
       expect(panel.querySelectorAll('app-repository-machine-section')).toHaveLength(3)
       expect(rowsOf(root).filter((row) => row.classList.contains('selected'))).toHaveLength(1)

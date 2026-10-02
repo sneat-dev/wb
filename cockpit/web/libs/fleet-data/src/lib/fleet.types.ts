@@ -31,7 +31,15 @@ export interface Machine extends Entry {
   remote_error?: string
   /** How many entries the live export left out (over a bound); above zero is a Fleet health line. Absent: not reported. */
   export_dropped?: number
+  /** The code of this machine's last failed or degraded periodic publish (REQ:home-fleet-health); on the local machine's entry only, absent when healthy or when publishing is off. */
+  publish_error?: PublishError
+  /** That machine's agents were cut; carried by the entry of a live-remote or cached machine, never by the local one (the document's own flag says it). */
+  agents_truncated?: boolean
 }
+
+/** The typed codes of the local machine's `publish_error`: a closed list, never an error text. */
+export const PUBLISH_ERRORS = ['collect_failed', 'store_unavailable', 'publish_failed', 'optional_fields_dropped'] as const
+export type PublishError = (typeof PUBLISH_ERRORS)[number]
 
 /** The typed codes of a machine's `remote_error` (REQ:remote-error-is-visible). */
 export const REMOTE_ERRORS = [
@@ -246,6 +254,15 @@ export interface FleetDocument {
   throughput?: Throughput
 }
 
+/**
+ * Whether the agents of `machine` were cut: the document's own flag for the local machine (the Go side never sets it on
+ * the local entry), the machine entry's flag for another machine. The `pull_requests_throttled` flag stays the
+ * document's: only this machine's own pull requests are observed.
+ */
+export function agentsTruncated(document: Pick<FleetDocument, 'agents_truncated'>, machine: Pick<Machine, 'route' | 'agents_truncated'>): boolean {
+  return (machine.route === 'local' ? document.agents_truncated : machine.agents_truncated) === true
+}
+
 /** The one schema version this page reads (REQ:schema-version-2). */
 export const SCHEMA_VERSION = 2
 
@@ -259,14 +276,18 @@ export interface BranchesResponse {
 /** Where a machine's samples came from (REQ:machine-metrics-route). */
 export type MetricsRoute = 'local' | 'live-remote' | 'cached' | 'none'
 
-/** One metrics sample, and nothing else. */
+/**
+ * One metrics sample, and nothing else. Every measurement is optional, as the daemon omits what could not be read
+ * (REQ:machine-metrics-route): `cpu_percent` on the first sample after a start, a pair of totals that could not be read.
+ * An absent one is "not reported", never a zero.
+ */
 export interface MetricsSample {
-  cpu_percent: number
-  load1: number
-  memory_used_bytes: number
-  memory_total_bytes: number
-  disk_free_bytes: number
-  disk_total_bytes: number
+  cpu_percent?: number
+  load1?: number
+  memory_used_bytes?: number
+  memory_total_bytes?: number
+  disk_free_bytes?: number
+  disk_total_bytes?: number
   sampled_at: string
 }
 

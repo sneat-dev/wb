@@ -4,6 +4,7 @@ import {
   Entry,
   FleetDocument,
   Machine,
+  MachineRoute,
   Repository,
   SCHEMA_VERSION,
   Session,
@@ -123,6 +124,15 @@ export function routeLabel(entry: Entry, now: number): string {
 
 /** The command that opens an owner session. */
 export const OWNER_SESSION_COMMAND = 'wb cockpit'
+
+/**
+ * The SSH routes of the machines, only for an owner session: they name hosts and users, which the metadata set does
+ * not (cockpit#req:anonymous-local-reads-metadata-only). A response that carried them for another principal is not
+ * believed, so no copied command ever holds a host of an anonymous reader.
+ */
+export function ownerRoutes(session: Session | null): MachineRoute[] | undefined {
+  return session?.principal === 'owner' ? session.machine_routes : undefined
+}
 
 /** Whether the session lets the caller read repository content. No session, no content. */
 export function canReadContent(session: Session | null): boolean {

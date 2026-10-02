@@ -4,6 +4,7 @@ import {
   FLEET_PATH,
   FleetDocument,
   MERGEABLE_STATES,
+  PUBLISH_ERRORS,
   SCHEMA_VERSION,
   SESSION_PATH,
   Session,
@@ -142,7 +143,7 @@ const isIdList = (value: unknown): boolean => Array.isArray(value) && value.ever
  * dropped, not rendered); the entry itself stays. `remote_error` is not here: an unknown code is "unknown error".
  */
 const OPTIONAL_CHECKS: Partial<Record<(typeof COLLECTIONS)[number], Record<string, (value: unknown) => boolean>>> = {
-  machines: { export_dropped: isCount, remote_error: isText, wb_version: isText },
+  machines: { export_dropped: isCount, remote_error: isText, wb_version: isText, publish_error: isOneOf(PUBLISH_ERRORS), agents_truncated: isBool },
   pull_requests: { mergeable: isOneOf(MERGEABLE_STATES) },
   agents: {
     activity: isOneOf(AGENT_ACTIVITIES),

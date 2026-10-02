@@ -30,6 +30,7 @@ export function healthRows(health: FleetHealth, dropped: number): HealthRow[] {
     ...health.olderWb.map(machine('older')),
     ...health.remoteErrors.map(machine('remote')),
     ...health.exportDropped.map(machine('export')),
+    ...health.publishErrors.map(machine('publish')),
   ]
   for (const error of health.scanErrors) {
     rows.push({

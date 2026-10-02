@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { PullRequest, isOpenPullRequest, webAddress } from '@cockpit/fleet-data'
-import { StateBadge, checksOf } from '@cockpit/ui/control'
+import { CHECKS_NOT_A_LINK, StateBadge, checksOf } from '@cockpit/ui/control'
 
 /** How many pull requests a Tasks row names before "+n". */
 export const PULL_REQUESTS_SHOWN = 2
@@ -31,7 +31,7 @@ interface Shown {
         }
         @switch (item.kind) {
           @case ('checks') {
-            <app-state-badge kind="checks" size="small" [value]="item.checks.value" [label]="item.checks.label" />
+            <app-state-badge kind="checks" size="small" [value]="item.checks.value" [label]="item.checks.label" [hint]="notALink" />
           }
           @case ('state') {
             <app-state-badge kind="pr-state" size="small" [value]="item.pr.state" />
@@ -78,6 +78,8 @@ interface Shown {
 })
 export class TaskPrCell {
   readonly pullRequests = input.required<readonly PullRequest[]>()
+
+  protected readonly notALink = CHECKS_NOT_A_LINK
 
   /** Open pull requests first, in the order the document lists them. */
   private readonly ordered = computed(() => [...this.pullRequests().filter(isOpenPullRequest), ...this.pullRequests().filter((pr) => !isOpenPullRequest(pr))])

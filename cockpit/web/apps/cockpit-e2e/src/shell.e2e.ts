@@ -53,7 +53,9 @@ test('the top bar shows the tabs, the signals, the freshness and the session, an
   const expectClean = await watch(page)
   await page.goto('/cockpit/')
   const tabs = page.getByRole('navigation', { name: 'Pages' })
-  await expect(tabs.getByRole('link')).toHaveText([/^Home/, /^Tasks/, /^Repositories/, /^Worktrees/, /^Agents\s*1/, /^Machines/])
+  await expect(tabs.locator('a.tab')).toHaveText([/^Home/, /^Tasks/, /^Repositories/, /^Worktrees/, /^Agents\s*1/, /^Machines/])
+  // A badge is a link to the list that produced its number, beside the tab (cockpit-views#ac:every-number-is-a-link).
+  await expect(tabs.getByRole('link', { name: /^1 agents running/ })).toHaveAttribute('href', '/cockpit/agents?chips=running')
   await expect(tabs.getByRole('link', { name: /^Home/ })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByRole('link', { name: 'New task' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Search' })).toBeVisible()
