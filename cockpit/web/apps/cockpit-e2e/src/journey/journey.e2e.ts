@@ -182,8 +182,20 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   await page.goto(loginUrl)
   await expect(page).toHaveURL(new RegExp(`^${origin.replace(/[.]/g, '\\.')}/cockpit/(dashboard)?$`))
   expect(page.url()).not.toContain('code=')
-  const session = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
+  // The printed URL carried the session key in its fragment (cockpit#req:session-key): the page took it out of the
+  // address and keeps it in the storage of its own origin, and it is what makes the cookie an owner's.
+  expect(new URL(loginUrl).hash).toMatch(/^#key=[A-Za-z0-9_-]{43}$/)
+  expect(page.url()).not.toContain('#')
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('wb-cockpit.session-key'))).toBe(new URL(loginUrl).hash.slice('#key='.length))
+  const sessionKey = { 'X-Wb-Cockpit-Session-Key': new URL(loginUrl).hash.slice('#key='.length) }
+  const session = await (await page.request.get(`${origin}/api/v1/cockpit/session`, { headers: sessionKey })).json()
   expect(session.principal).toBe('owner')
+  // The cookie alone, which any other server on the loopback host is sent, is an anonymous reader's: no error, and nothing of the owner's.
+  const replayed = await page.request.get(`${origin}/api/v1/cockpit/session`)
+  expect(replayed.status()).toBe(200)
+  expect((await replayed.json()).principal).toBe('anonymous-local')
+  expect((await page.request.get(`${origin}/api/v1/log?tail=1`)).status()).toBe(401)
+  expect((await page.request.get(`${origin}/api/v1/log?tail=1`, { headers: sessionKey })).status()).not.toBe(401)
 
   // The fleet document of the real daemon: collections are lists, never null, and the fixture is what it says.
   const fleet = await (await page.request.get(`${origin}/api/v1/cockpit/fleet`)).json()
@@ -229,7 +241,7 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   await expect(page.locator('.readme-content')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText(SECRET)
   const linksId = fleet.repositories.find((repository: { name: string }) => repository.name === 'acme/links').id
-  const linksReadme = await page.request.get(`${origin}/api/v1/cockpit/readme?repository=${linksId}`)
+  const linksReadme = await page.request.get(`${origin}/api/v1/cockpit/readme?repository=${linksId}`, { headers: sessionKey })
   expect(linksReadme.status()).toBeGreaterThanOrEqual(400)
   expect(await linksReadme.text()).not.toContain(SECRET)
 

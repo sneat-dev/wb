@@ -163,6 +163,16 @@ describe('FleetClient', () => {
     expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/session', expect.objectContaining({ credentials: 'same-origin' }))
   })
 
+  // cockpit#ac:session-key-reaches-the-page-in-the-fragment
+  it('asks the session with a session key it is given, and names none otherwise', async () => {
+    const fetcher = vi.fn(async () => respond(200, { principal: 'owner', capabilities: [], code_browser_url: '' }))
+    const client = clientWith(fetcher)
+    await client.readSession('offered-key')
+    await client.readSession()
+    const headers = (fetcher.mock.calls as unknown as [string, RequestInit][]).map(([, init]) => init.headers)
+    expect(headers).toEqual([{ Accept: 'application/json', 'X-Wb-Cockpit-Session-Key': 'offered-key' }, { Accept: 'application/json' }])
+  })
+
   it('fails the session read on an error status', async () => {
     await expect(clientWith(async () => respond(401, {})).readSession()).rejects.toBeInstanceOf(FleetRequestError)
   })
