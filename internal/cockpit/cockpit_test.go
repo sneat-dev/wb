@@ -274,7 +274,7 @@ func TestEveryPageResponseCarriesTheStrictPolicy(t *testing.T) {
 	}
 	// An API response keeps the dashboard's policy: it is never a document.
 	api := send("GET", "127.0.0.1:8766", "/api/v1/cockpit/fleet", "")
-	want := "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'"
+	want := dashboard.Policy
 	if got := api.Header().Values("Content-Security-Policy"); len(got) != 1 || got[0] != want {
 		t.Errorf("api policy = %q, want unchanged %q", got, want)
 	}

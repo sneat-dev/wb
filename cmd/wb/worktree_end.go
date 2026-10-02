@@ -295,7 +295,7 @@ type claimReleaser struct {
 }
 
 func (releaser claimReleaser) Release(projectsRoot, task string) string {
-	tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, releaser.writer)
+	releaseRemoteClaim(projectsRoot, task, releaser.writer)
 	return "released through the remote-claim path"
 }
 

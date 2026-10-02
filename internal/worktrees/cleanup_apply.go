@@ -2,8 +2,10 @@ package worktrees
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -92,6 +94,10 @@ type cleanupApplyEntry struct {
 	// inline against the whole outcome.
 	canApply            bool
 	hasEligibleWorktree bool
+	// after are the positions, in the plan, of the tasks stacked on one of this
+	// task's branches. Each of them comes earlier in the plan and must finish
+	// before this task starts. See orderLeavesBeforeBases.
+	after []int
 }
 
 // planCleanupApply resolves every task's apply plan from the pre-apply outcome.
@@ -132,7 +138,79 @@ func planCleanupApply(outcome CleanupOutcome, homes ...string) []cleanupApplyEnt
 		sort.Strings(entry.repositories)
 		entries = append(entries, entry)
 	}
-	return entries
+	return orderLeavesBeforeBases(entries, outcome)
+}
+
+// orderLeavesBeforeBases puts a task stacked on another task's branch ahead of
+// the task that owns that branch, and records the dependency so a concurrent
+// apply honours it too.
+//
+// Cleaning a base retires its branch on origin. A leaf whose recorded base is
+// that branch is re-inspected under its own lock immediately before removal,
+// and by then the target it was proved against would be gone. Whenever the
+// base had landed in the default branch the leaf is still provable there, but
+// a base that landed somewhere else leaves the leaf with nothing to be judged
+// against. Retiring leaves first keeps every proof standing for as long as
+// something still needs it, so one sweep of a repository can retire a whole
+// stack.
+//
+// The order is otherwise the walk order the plan already had. A dependency
+// cycle cannot be built from real branches; if the records describe one
+// anyway, it is broken where the walk first meets it, every task stays in the
+// plan, and nothing waits on itself or on a later task.
+func orderLeavesBeforeBases(entries []cleanupApplyEntry, outcome CleanupOutcome) []cleanupApplyEntry {
+	ownerOfBranch := make(map[string]int)
+	for index, entry := range entries {
+		for _, resultIndex := range entry.resultIndices {
+			result := outcome.Results[resultIndex]
+			if result.Branch != "" {
+				ownerOfBranch[cleanupBranchKey(result.CanonicalDir, result.Branch)] = index
+			}
+		}
+	}
+	// leaves[base] are the entries stacked on one of base's branches.
+	leaves := make([][]int, len(entries))
+	for index, entry := range entries {
+		for _, resultIndex := range entry.resultIndices {
+			result := outcome.Results[resultIndex]
+			base := result.RecordedBase
+			if base == "" {
+				base = result.Base
+			}
+			if owner, stacked := ownerOfBranch[cleanupBranchKey(result.CanonicalDir, base)]; stacked && owner != index {
+				leaves[owner] = append(leaves[owner], index)
+			}
+		}
+	}
+	position := make([]int, len(entries))
+	for index := range position {
+		position[index] = -1
+	}
+	ordered := make([]cleanupApplyEntry, 0, len(entries))
+	var place func(index int, visiting map[int]bool)
+	place = func(index int, visiting map[int]bool) {
+		if position[index] >= 0 || visiting[index] {
+			return
+		}
+		visiting[index] = true
+		entry := entries[index]
+		for _, leaf := range leaves[index] {
+			place(leaf, visiting)
+			if position[leaf] >= 0 && !slices.Contains(entry.after, position[leaf]) {
+				entry.after = append(entry.after, position[leaf])
+			}
+		}
+		position[index] = len(ordered)
+		ordered = append(ordered, entry)
+	}
+	for index := range entries {
+		place(index, map[int]bool{})
+	}
+	return ordered
+}
+
+func cleanupBranchKey(canonical, branch string) string {
+	return filepath.Clean(canonical) + "\x00" + branch
 }
 
 // acquireRepositoryWriteLocks takes every clone one task writes to and returns
@@ -181,16 +259,32 @@ func runCleanupApply(
 	if workers > len(entries) {
 		workers = len(entries)
 	}
+	// A task whose stacked leaf was not retired in this run is not retired
+	// either: its branch is still the recorded base of work that is still here.
+	applyUnlessHeld := func(index int) {
+		if errs[index] = heldByUnretiredLeaf(entries, errs, index); errs[index] != nil {
+			return
+		}
+		release := acquireRepositoryWriteLocks(locks, entries[index].repositories)
+		errs[index] = apply(entries[index])
+		release()
+	}
 	if workers < 2 || stopOnFirstError {
 		for index := range entries {
-			release := acquireRepositoryWriteLocks(locks, entries[index].repositories)
-			errs[index] = apply(entries[index])
-			release()
+			applyUnlessHeld(index)
 			if errs[index] != nil && stopOnFirstError {
 				break
 			}
 		}
 		return errs
+	}
+	// A task that must follow others waits for them before it takes any
+	// repository lock. Those others always sit earlier in the plan and jobs are
+	// handed out in plan order, so whatever a worker waits for is already in
+	// another worker's hands and none of them can wait in a circle.
+	done := make([]chan struct{}, len(entries))
+	for index := range done {
+		done[index] = make(chan struct{})
 	}
 	jobs := make(chan int)
 	var wait sync.WaitGroup
@@ -205,14 +299,28 @@ func runCleanupApply(
 		go func() {
 			defer wait.Done()
 			for index := range jobs {
-				release := acquireRepositoryWriteLocks(locks, entries[index].repositories)
-				errs[index] = apply(entries[index])
-				release()
+				for _, earlier := range entries[index].after {
+					<-done[earlier]
+				}
+				applyUnlessHeld(index)
+				close(done[index])
 			}
 		}()
 	}
 	wait.Wait()
 	return errs
+}
+
+// heldByUnretiredLeaf is the refusal for a task whose stacked leaf failed to
+// apply, or was itself held, earlier in this run. It names the leaf.
+func heldByUnretiredLeaf(entries []cleanupApplyEntry, errs []error, index int) error {
+	for _, earlier := range entries[index].after {
+		if errs[earlier] != nil {
+			return fmt.Errorf("held: %s is stacked on a branch of %s and was not retired in this run: %w",
+				entries[earlier].selection.Task, entries[index].selection.Task, errs[earlier])
+		}
+	}
+	return nil
 }
 
 // cleanupTaskApplicationPorts keep the task lock and artifact custody here

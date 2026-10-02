@@ -1165,21 +1165,31 @@ func TestRemoteDefaultBranchReadsOriginHead(t *testing.T) {
 	}
 }
 
+// A recorded target origin no longer has is judged against the default branch.
+// A receipt that does not hold is refused and grants nothing; plain containment
+// of the exact head in the fetched default branch is the only thing that still
+// can, and a candidate it does not cover stays visible with the reason rather
+// than disappearing behind a malformed-candidate diagnostic.
 func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		configure func(t *testing.T, fixture *gitFixture, result CreateResult, head, merge string, mergedAt time.Time)
 		want      string
 		dirty     bool
+		// contained: the unusable receipt is irrelevant because the exact head
+		// is a Git ancestor of the fetched default branch.
+		contained bool
+		// diagnosed: no target could be established at all.
+		diagnosed bool
 	}{
 		{
-			name: "wrong base", want: "no exact merged receipt",
+			name: "wrong base", contained: true,
 			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
 				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "release", mergedAt)
 			},
 		},
 		{
-			name: "missing immutable merge identity", want: "no exact merged receipt",
+			name: "missing immutable merge identity", contained: true,
 			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, _ string, mergedAt time.Time) {
 				installExactMergedPullRequestForDeletedTarget(t, head, "", "deleted-target", "main", mergedAt)
 			},
@@ -1192,7 +1202,16 @@ func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
 			},
 		},
 		{
-			name: "default fetch failure", want: "origin did not resolve a default branch",
+			// The receipt names a commit this clone has never seen, so whether it
+			// is in the default branch cannot be read. That is a failed
+			// observation, never an answer.
+			name: "receipt merge commit unknown to the clone", want: "verify merged receipt #77 against fetched origin/main", diagnosed: true,
+			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, _ string, mergedAt time.Time) {
+				installExactMergedPullRequestForDeletedTarget(t, head, strings.Repeat("d", 40), "deleted-target", "main", mergedAt)
+			},
+		},
+		{
+			name: "default fetch failure", want: "origin did not resolve a default branch", diagnosed: true,
 			configure: func(t *testing.T, fixture *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
 				gitTest(t, fixture.remote, "config", "receive.denyDeleteCurrent", "ignore")
 				gitTest(t, fixture.canonical, "push", "origin", ":main")
@@ -1239,12 +1258,31 @@ func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
 				}
 				return
 			}
-			if len(outcome.Entries) != 0 {
-				t.Fatalf("unsafe deleted-target recovery produced entries: %#v", outcome.Entries)
+			if test.diagnosed {
+				if len(outcome.Entries) != 0 {
+					t.Fatalf("a candidate with no resolvable target produced entries: %#v", outcome.Entries)
+				}
+				if diagnostics := fmt.Sprint(outcome.Diagnostics); !strings.Contains(diagnostics, test.want) {
+					t.Fatalf("diagnostics = %s, want %q", diagnostics, test.want)
+				}
+				return
 			}
-			diagnostics := fmt.Sprint(outcome.Diagnostics)
-			if !strings.Contains(diagnostics, test.want) {
-				t.Fatalf("diagnostics = %s, want %q", diagnostics, test.want)
+			entry := entryFor(t, outcome, task)
+			if len(outcome.Diagnostics) != 0 {
+				t.Fatalf("an absent recorded target hid the task behind diagnostics: %v", outcome.Diagnostics)
+			}
+			if test.contained {
+				mainHead := remoteBranchForTest(t, fixture.canonical, "main")
+				want := "head is contained in origin/main at " + shortSHA(mainHead) + ", via recorded base deleted-target (absent)"
+				if !entry.Eligible || entry.Class != GCClassContained || entry.Reason != want {
+					t.Fatalf("contained head with an unusable receipt = %#v, want reason %q", entry, want)
+				}
+				return
+			}
+			if entry.Eligible || entry.Class != GCClassUnmerged ||
+				!strings.Contains(entry.Reason, "head is not integrated into the exact origin target origin/main at ") ||
+				!strings.Contains(entry.Reason, "recorded base deleted-target is absent") || !strings.Contains(entry.Reason, test.want) {
+				t.Fatalf("uncontained deleted-target candidate = %#v, want a refusal naming %q", entry, test.want)
 			}
 		})
 	}
@@ -1749,7 +1787,7 @@ func TestCleanupRejectsRebaseReceiptWhoseMergeTreeDiffersFromSource(t *testing.T
 		t.Fatal(err)
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].IntegratedAtOrigin || planned.Results[0].RebaseMergedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("tree-mismatched rebase receipt must be rejected: %#v", planned)
 	}
 }
@@ -1782,7 +1820,7 @@ func TestCleanupRejectsMergedPullRequestWithoutTargetIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].IntegratedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("merged PR without target integration must be rejected: %#v", planned)
 	}
 }
@@ -1842,7 +1880,7 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cleanup.Results) != 1 || cleanup.Results[0].Eligible || cleanup.Results[0].Applied ||
-		!strings.Contains(cleanup.Results[0].Reason, "awaiting push") {
+		!strings.Contains(cleanup.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("advanced cleanup result = %#v", cleanup)
 	}
 	if _, err := os.Stat(result.WorktreeDir); err != nil {
@@ -3128,7 +3166,7 @@ func TestCleanupRejectsAbsorbedReceiptWhenTargetLaterRevertedTheWork(t *testing.
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
 		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("reverted absorption must be rejected: %#v", planned)
 	}
 }
@@ -3175,7 +3213,7 @@ func TestCleanupRejectsAbsorbedReceiptWhenOnlyPartOfTheBranchLanded(t *testing.T
 		t.Fatalf("partial absorption must be rejected: %#v", planned)
 	}
 	reason := planned.Results[0].Reason
-	if !strings.Contains(reason, "awaiting push") && !strings.Contains(reason, "residual") {
+	if !strings.Contains(reason, "is not integrated into the exact origin target") && !strings.Contains(reason, "residual") {
 		t.Fatalf("partial absorption must explain the unlanded remainder: %q", reason)
 	}
 }
@@ -3196,7 +3234,7 @@ func TestCleanupRejectsAbsorbedReceiptWhoseMergeCommitIsNotInTarget(t *testing.T
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
 		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("unpushed absorption must be rejected: %#v", planned)
 	}
 }
@@ -3247,7 +3285,7 @@ func TestCleanupRejectsAttestedLandingCommitThatDidNotIntroduceTheWork(t *testin
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
 		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("non-introducing attested commit must be rejected: %#v", planned)
 	}
 }

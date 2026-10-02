@@ -59,7 +59,7 @@ planning, again under the task lock, and before deleting the original ref.`,
 			if apply && result.Phase == "complete" {
 				releaseResult := retireReleaseClaim(command.Context(), inv.projectsRoot, args[0], remoteClaimWriter(command), worktrees.ListWithDiagnostics,
 					func(root, task string, out io.Writer) autoReleaseResult {
-						return tryAutoRelease(defaultRemoteDeps(), root, task, out)
+						return releaseRemoteClaim(root, task, out)
 					})
 				releaseLeaked = releaseResult.Leaked()
 			}

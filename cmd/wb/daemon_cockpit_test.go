@@ -132,7 +132,9 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		t.Fatalf("session with anonymous_metadata off = %s %q, want 401", response.Status, body)
 	}
 	// mint calls the login-code route on the socket; an empty token sends no
-	// Authorization header at all.
+	// Authorization header at all. sessionKey is the session key of the last
+	// answer, which only the owner channel is ever told.
+	var sessionKey string
 	mint := func(method, token string) (int, string) {
 		t.Helper()
 		socket, err := daemonLocalHTTPClient(root, token)
@@ -153,9 +155,11 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		defer func() { _ = response.Body.Close() }()
 		var minted struct {
 			Code string `json:"code"`
+			Key  string `json:"key"`
 			Path string `json:"path"`
 		}
 		_ = json.NewDecoder(response.Body).Decode(&minted)
+		sessionKey = minted.Key
 		return response.StatusCode, minted.Path + "?code=" + minted.Code
 	}
 	for name, test := range map[string]struct {
@@ -167,12 +171,12 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		"a GET with the wrong token": {http.MethodGet, "not-the-owner-token", http.StatusUnauthorized},
 		"a GET with the owner token": {http.MethodGet, "owner-token", http.StatusMethodNotAllowed},
 	} {
-		if status, login := mint(test.method, test.token); status != test.status || login != "?code=" {
-			t.Fatalf("minting with %s = %d %q, want %d and no code", name, status, login, test.status)
+		if status, login := mint(test.method, test.token); status != test.status || login != "?code=" || sessionKey != "" {
+			t.Fatalf("minting with %s = %d %q, want %d, no code and no key", name, status, login, test.status)
 		}
 	}
 	status, login := mint(http.MethodPost, "owner-token")
-	if status != http.StatusOK || !strings.HasPrefix(login, cockpit.LoginPath+"?code=") || len(login) < len(cockpit.LoginPath)+40 {
+	if status != http.StatusOK || !strings.HasPrefix(login, cockpit.LoginPath+"?code=") || len(login) < len(cockpit.LoginPath)+40 || len(sessionKey) < 43 {
 		t.Fatalf("minting with the owner token = %d and a login path of %d characters", status, len(login))
 	}
 	// The mint route is not on the loopback listener, with or without the
@@ -208,6 +212,18 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.AddCookie(cookies[0])
+	// The cookie alone is what another server on the loopback host could
+	// replay: with anonymous_metadata off it is refused like no session
+	// (cockpit#ac:replayed-cookie-is-not-the-owner).
+	replayed, err := client.Do(request.Clone(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = replayed.Body.Close()
+	if replayed.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("session with the cookie and no session key = %s, want 401", replayed.Status)
+	}
+	request.Header.Set(cockpit.SessionKeyHeader, sessionKey)
 	owned, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +231,7 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	ownedBody, _ := io.ReadAll(owned.Body)
 	_ = owned.Body.Close()
 	if owned.StatusCode != http.StatusOK || !strings.Contains(string(ownedBody), `"principal":"owner"`) || !strings.Contains(string(ownedBody), `"repo.content.read"`) {
-		t.Fatalf("session with the cookie = %s %q", owned.Status, ownedBody)
+		t.Fatalf("session with the cookie and the session key = %s %q", owned.Status, ownedBody)
 	}
 
 	// The daemon started the fleet snapshotter with its own context: the
@@ -228,6 +244,7 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.AddCookie(cookies[0])
+		request.Header.Set(cockpit.SessionKeyHeader, sessionKey)
 		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
@@ -484,12 +501,12 @@ func (listener *fakeBoundListener) Addr() net.Addr { return listener.bound }
 func TestCockpitServerKeepsSessionsInMemorySoARestartEndsThem(t *testing.T) {
 	t.Parallel()
 	const address = "127.0.0.1:8766"
+	var key string
 	session := func(server *cockpit.Server, cookie *http.Cookie) string {
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/cockpit/session", nil)
 		request.Host = address
-		if cookie != nil {
-			request.AddCookie(cookie)
-		}
+		request.AddCookie(cookie)
+		request.Header.Set(cockpit.SessionKeyHeader, key)
 		recorder := httptest.NewRecorder()
 		server.Mounts()[cockpit.APIPrefix].ServeHTTP(recorder, request)
 		return recorder.Body.String()
@@ -500,6 +517,7 @@ func TestCockpitServerKeepsSessionsInMemorySoARestartEndsThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	key = issued.Key
 	request := httptest.NewRequest(http.MethodGet, cockpit.LoginPath+"?code="+issued.Code, nil)
 	request.Host = address
 	recorder := httptest.NewRecorder()

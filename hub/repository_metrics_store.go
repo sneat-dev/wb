@@ -115,6 +115,9 @@ func (s repositoryMetricsStore) SaveMetric(ctx context.Context, metric Repositor
 	if s.backend == nil {
 		return errRepositoryMetricsStoreUnavailable
 	}
+	if err := validateMetricRecord(metric); err != nil {
+		return err
+	}
 	canonical := canonicalRepository(metric.Repository)
 	if canonical == "" || canonical == "github.com/" {
 		return fmt.Errorf("%w: repository is required", errInvalidMetricRecord)
