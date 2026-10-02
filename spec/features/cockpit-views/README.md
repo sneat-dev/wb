@@ -108,8 +108,10 @@ Home, Tasks, Repositories, Worktrees, Agents and Machines; the palette entry; a
 `owner`). A tab badge is shown only for a signal: Home shows the number of tasks in
 "Needs you" (REQ:home-needs-you), written `99+` above 99 with the whole number in its tooltip, and Agents the number of running agents (REQ:field-tables
 defines "running"), highlighted when above zero. No tab shows a badge for a static count.
-The freshness chip reads "updated N s ago" with the age of the snapshot, turns amber when
-the snapshot is older than two refresh intervals (the document's
+The freshness chip reads "updated N s ago" with the time since the daemon last found the
+document current (the `X-Wb-Cockpit-Checked-At` response header of the fleet read, which a `304`
+carries too, REQ:compressed-responses; not `snapshot_at`, which does not move while the fleet is
+quiet), turns amber when that is older than two refresh intervals (the document's
 `refresh_interval_seconds`), and while the daemon is warming up shows how many repositories
 have been scanned.
 
@@ -211,7 +213,7 @@ hint (its tooltip), so a list renders its chips from the page's vocabulary alone
 tasks in state `at-risk` whose last activity is outside the Needs you window (14 days; no recorded
 activity is not recent), as Home does, because older at-risk work is a cleanup matter; with `older` on,
 or with a `state:at-risk` term in the filter, they are listed too, and the result count still says "n of
-all". The palette applies the same window to its task results, with the same `state:at-risk` way in.
+all". The palette never hides such a task from a search that matches it: it ranks it after the others of its kind, and an empty query suggests none.
 The Worktrees chips `safe` and `look` are the two cleanup counts of
 REQ:home-cleanup, `stale` on Machines is a state older than 24 hours and `outdated` a WB
 older than the newest in the fleet. The Repositories sort ids `activity`, `worktrees` and
@@ -781,6 +783,13 @@ not rendered. Existing field names are not renamed. Times are RFC 3339 strings. 
 entry is the exporting machine's own local entry, validated and re-mapped
 (REQ:remote-entries-replace-cached), so it carries the fields marked "local only" as that machine
 observed them; "local only" excludes `cached` entries, whose published snapshot does not hold them.
+What a `live-remote` entry says (`ahead`, `behind`, `has_upstream`, `checks_green`, `mergeable`, a
+pull request `state` of `merged`, a worktree `lifecycle`) is that machine's report, not an
+observation of this daemon. `route` is the marker of whose word a field is, and it cannot be forged:
+no entry with a route other than `local` ever carries an id of one of this machine's entries or this
+machine's `machine_id`, whatever ids the other machine sent. A client therefore decides the state of a
+task that has an entry of this machine from its `local` entries alone, and shows any other entry's
+facts as reported by its machine.
 A link of another machine's entry (`cached` or `live-remote`) is never taken as that machine sent it:
 a pull request's `url` is rebuilt by this daemon from the host of its repository (or, for a
 repository published with no host, the host of the address sent), the repository's `owner/name` and
@@ -793,9 +802,11 @@ host is the host of a repository of this machine; otherwise the entry has no lin
 **Every entry** (machines, repositories, worktrees, pull requests, agents): `id` string; `machine`
 string, the machine's name; `machine_id` string, the id of its machine entry; `route` string,
 `local`, `cached` or `live-remote`; `observed_at` time, opt. (the snapshot's time for a cached or
-live-remote entry). Both.
+live-remote entry; for an entry of this machine, the time of the pass that produced the published
+document, see `snapshot_at`). Both.
 
-**Document**: `schema_version` int (2); `snapshot_at` time; `warming_up` bool;
+**Document**: `schema_version` int (2); `snapshot_at` time (when the published document was
+taken: it moves when the document's content does, not on every pass, REQ:compressed-responses); `warming_up` bool;
 `repositories_total` int; `repositories_scanned` int; `diagnostics` int; `error` string opt.
 (a code); `code_index_provider` string opt.; `refresh_interval_seconds` int; `throughput`
 object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` bool opt.; the collections `machines`, `repositories`,
@@ -810,7 +821,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `boot_time` | time | opt. | daemon / snapshot | as above |
 | `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
 | `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
-| `export_dropped` | int | opt. | the number of that machine's entries its export left out (REQ:cockpit-export-verb) plus those this daemon cut at its caps (REQ:remote-entries-replace-cached); set only by the reader, refused in an export | live-remote only |
+| `export_dropped` | int | opt. | the number of that machine's entries its export left out (REQ:cockpit-export-verb) plus those this daemon cut at its caps (REQ:remote-entries-replace-cached; for a published snapshot, REQ:remote-envelope-is-untrusted); set only by the reader, refused in an export | live-remote and cached |
 | `publish_error` | string, `collect_failed`\|`store_unavailable`\|`publish_failed`\|`optional_fields_dropped` | opt. | the periodic publisher's last diagnostic; absent when healthy and when publishing is off | local only |
 | `agents_truncated` | bool | opt. | that machine's agents were cut, by it, by its publisher or by this daemon's cap; carried by that machine's entry only | live-remote and cached |
 
@@ -897,6 +908,17 @@ strong and specific to the encoding (`"<hash>-gzip"` for the gzip body),
 `If-None-Match` accepts either form and a match is answered `304`, and every
 such response carries `Vary: Origin, Accept-Encoding`. The gzip bytes of the
 fleet document are computed once when the snapshot is stored, never per request.
+A snapshot is stored only when it says something the stored one does not. A pass, or a side read
+(the other machines' snapshots, the agents' activity, the pull-request records, the throughput
+scan, an export of another machine), that finds the fleet as it was publishes nothing: the body,
+its `snapshot_at`, the `observed_at` of this machine's entries and the ETag stay as they are, so a
+client that polls a quiet fleet is answered `304` and not a full body. What "the same" ignores is
+only when the document was taken (`snapshot_at` and the `observed_at` of this machine's own
+entries); every other time is content (a pull request's `checked_at`, another machine's
+`observed_at`). The freshness a client needs is not in the body: every answer of the fleet route,
+a `304` included, carries the response header `X-Wb-Cockpit-Checked-At`, the RFC 3339 time at
+which the daemon last assembled the document and found the published one current (or published a
+changed one).
 Static assets are compressed at build time; content-hashed assets carry
 `Cache-Control: public, max-age=31536000, immutable`; the index document, which
 has its nonce substituted per response, stays `no-cache` and is compressed per
@@ -906,8 +928,8 @@ response.
 
 The two new GET routes are deliberately readable by the configured hosted
 origin, as the fleet document is. For that origin the responses MUST expose
-`ETag` and the preflight MUST allow `If-None-Match`, so that conditional
-requests and `304` work from the hosted page.
+`ETag` and `X-Wb-Cockpit-Checked-At` and the preflight MUST allow `If-None-Match`, so that conditional
+requests and `304` work from the hosted page and it can read how fresh what it holds is.
 
 #### REQ: lazy-branches-route
 
@@ -963,7 +985,7 @@ required-check policy), `failed_check` (the name of the first failing check, at 
 characters, with control and bidirectional characters removed, and rendered only as text) and
 `checked_at`. `url` is emitted only when it is `https` with a host of ASCII letters, digits, dots
 and hyphens, no port and no user information. They come from the daemon's snapshotter, which runs
-the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) on its own ticker for
+the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) beside each refresh for
 the pull requests that `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials
 WB already uses. Each pull request has its own cadence: one never observed is observed on the next pass (those of a
 worktree this machine has before the others); one whose checks are pending, or which has no check
@@ -972,7 +994,11 @@ that the pending ones use at most 70% of the budget and the settled ones keep th
 mergeability is `unknown` likewise, until it has been unknown 5 observations in a row, after which it
 is settled; one whose verdict is known (green, failed, blocked on a missing required check, draft)
 after 10 minutes; one whose read failed after a backoff doubling from 2 to 30 minutes; one closed
-without merging after 60 minutes, in case it is reopened. A pass starts on a refresh, once the
+without merging after 60 minutes, in case it is reopened. These cadences are the least time between
+two observations, not a timer of their own: a pull request is observed by the first refresh at or
+after the time it is due, so each cadence is rounded up to the next refresh
+(`cockpit.refresh_interval`): with a refresh every 30 seconds a pending pull request is observed
+every 90 seconds, and with one every 60 seconds every 120. A pass starts on a refresh, once the
 worktrees are known, and observes the pull requests that are due, at most `cockpit.pull_request_limit`
 of them (default 10, 1 to 200), the longest due first; each observation is bounded to 30 seconds, at
 most 4 run at once, a pass whose context ends records nothing for what it did not observe and gives
@@ -1077,14 +1103,33 @@ fingerprint and none of those facts (a new untracked file, or an unstaged edit o
 which the snapshotter does not read) reaches the store with the next one that does, or with the
 keepalive. A failed attempt never gates the next.
 
+A scan that does run reads with Git only what changed. What it read of a clone (its status and
+tracking) is kept for as long as the clone's change fingerprint stays the same and for less than the
+keepalive, and taken again by the next scan, so a scan made because one repository changed reads
+that one with Git and not the fleet; a read that failed, and a clone whose fingerprint cannot be
+computed, are never kept. And when the snapshotter's change token is the one the last scan was made
+for, and that scan is younger than the keepalive, the attempt takes that scan again and runs none:
+only the agents moved, which the scan does not read, so an agents-only change, and each attempt made
+while one is held back, costs no scan. What is kept is bounded by the same rule as the gate: a
+change no fingerprint sees reaches the store with the next change of that clone, or with the
+keepalive, whose scan reads every repository. The worktree inventory is not kept: it reads state
+that no fingerprint covers (heartbeats, manifests, owners) and is made anew by every scan.
+
 A failed publish is a typed diagnostic (`collect_failed`, `store_unavailable`, `publish_failed` or
 `optional_fields_dropped`, a code and never the text of an error), logged when it changes, shown as
 `publish_error` on this machine's own entry (REQ:home-fleet-health) and absent when healthy or when
-publishing is off. One rule governs it: `publish_error` is the code of the last completed outcome
-against the store. A failure sets its code; a publish that carried the optional fields clears it and
-resets the failure count; a publish that had to leave them out sets `optional_fields_dropped`, which
-stays until a publish that carried them succeeds; a gated, skipped or held-back attempt never changes
-it. A failed publish is retried after the interval, then after twice, four times and so on up to one
+publishing is off. One rule governs it: a failure's code stays until the step that failed has worked
+again, and no longer. A failure sets its code. `collect_failed` is cleared by the next scan that
+works, whatever that attempt then does (publish, skip or hold back), and resets the failure count.
+`store_unavailable` and `publish_failed` are cleared by the next publish that reaches the store,
+and so that there is one, the attempt made while either stands is never gated, skipped or held back:
+it publishes, even a snapshot that says what the last published one said. An attempt made while
+`collect_failed` stands is never gated either. A publish that carried the optional fields clears
+every code and resets the failure count; a publish that had to leave them out sets
+`optional_fields_dropped`, which stays until a publish that carried them succeeds (a failure's code
+takes its place while the failure stands, and it returns when a scan that works clears
+`collect_failed`); a gated, skipped or held-back attempt never changes a code other than
+`collect_failed`. A failed publish is retried after the interval, then after twice, four times and so on up to one
 hour while it keeps failing; it never ends the daemon and never delays the local snapshot. After an
 older hub's refusal has been remembered for 24 hours (REQ:remote-snapshot-agents-and-metrics) the
 next attempt is forced to publish the full payload, bypassing the gate and the digest skip once, so
@@ -1191,7 +1236,7 @@ The rules of the block:
   `sealed_at` and a `recorded_at` both after 1999, a `sealed_at` not before its
   `recorded_at`, a duration of at most ten years, and a task name (else its effort id) that
   is not empty after control and bidirectional characters are removed (the name is cut at
-  200 characters). A sealing later than five seconds ahead of the clock is not counted.
+  200 characters). A sealing later than 60 seconds ahead of the clock is not counted.
 - When no terminal record is usable the block is omitted and the charts of
   REQ:home-charts are not shown; no value is invented. A usable record outside the
   window keeps the block, with empty lists.
@@ -1255,7 +1300,17 @@ this machine's running daemon from the daemon record, and reads that daemon's fl
 document (with the request header `X-Wb-Cockpit-Export`, so that the read is not taken for a
 person looking, REQ:remote-exporter-transports) and machine-metrics (the latest sample and the history) over the daemon's
 loopback transport as the `anonymous-local` principal, the same read any local browser
-tab makes. It prints the export envelope `{schema_version, machine, exported_at, fleet,
+tab makes. It asks the daemon for this machine's part of the document alone, with the fleet route's
+`scope` query parameter: `scope=own` is the document with this machine's own entries only (exactly
+the `fleet` of its export, prepared once for each published document) and `scope=machine` the same
+with no entry but this machine's own machine entry, which is all the `--metrics-only` export reads
+of the fleet. A machine whose daemon shows many other machines therefore never fails its own export
+on the size of entries it does not export, and a metrics-only export, which another machine may run
+every 30 seconds, does not fetch and decode the fleet. A scoped read is never demand for the other
+machines, whoever makes it; the response header `X-Wb-Cockpit-Export-Dropped` carries the four
+counts of what the daemon left out of it (repositories, worktrees, pull requests, agents), numbers
+only; any other value of `scope`, and a daemon that does not know the parameter, answer the whole
+document, which the verb reads as before, within the same bound. It prints the export envelope `{schema_version, machine, exported_at, fleet,
 metrics}` to stdout, bounded at 8 MiB, containing only the anonymous-readable metadata
 set of [cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only. The flag
 `--metrics-only` omits `fleet`. When no daemon is running, or the daemon refuses an
@@ -1264,8 +1319,13 @@ reason (an unreadable or unsupported daemon record, a daemon that answers an err
 this binary does not understand, an envelope that fails its own validation), it prints
 `{schema_version, error}` with `error` `daemon_not_running`, `export_refused` or
 `export_failed` and exits with the findings code 1, and starts nothing; the text is fixed and
-carries no path, no error text of a dependency and no response body. The recorded address is
-dialled exactly, and only `127.0.0.1`, `::1` and `localhost` are accepted. The verb writes
+carries no path, no error text of a dependency and no response body. `daemon_not_running` is a
+connection that could not be made; a daemon that accepts the connection and does not answer within
+the verb's 10 seconds, a read that is cancelled and a request that cannot be made are
+`export_failed`. The recorded address is
+dialled exactly, and only `127.0.0.1`, `::1` and `localhost` are accepted, with a port that is a
+port number: a record that names anything else is `export_failed`, exit code 1, never a crash (exit
+code 2 would be read by a remote daemon as a wb that has no such verb). The verb writes
 nothing, and records no heartbeat or invoked-command marker. A daemon is "running" when its
 recorded process is alive and, where the platform can observe it, started when the record says
 (a recycled process id is `daemon_not_running`); on macOS liveness is asked of launchd with
@@ -1282,7 +1342,12 @@ reference. The exporter says how many entries of each kind it left out, as numbe
 names: the daemon in its log when the numbers change, the verb on stderr. Only a machine entry that
 is itself invalid still fails the export as `export_failed`. A daemon whose first pass has not ended
 holds a partial fleet, which must never replace what a reader holds: the full export is then the
-fourth typed error `warming_up` (the metrics-only export, which has no fleet, is made). Its capability row, command-coverage entry,
+fourth typed error `warming_up` (the metrics-only export, which has no fleet, is made). A daemon
+that could not list its repositories and holds none (`error` `repositories_unreadable` and
+`repositories_total` 0, [cockpit](../cockpit/README.md)#req:no-fleet-scan-on-the-request-path) cannot
+say what the machine has: its empty fleet is not exported in the machine's place, the full export
+is `export_failed` on both transports (a reader shows it as `bad_payload` and keeps what it holds
+while that is fresh), and the metrics-only export is made. Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
 
 #### REQ: remote-exporter-transports
@@ -1316,9 +1381,34 @@ that is not fallback-class (`bad_payload`, `export_refused`) does not try SSH: t
 reached and answered, and what it answered would be the same over SSH, where the export is built by
 the same function.
 
-The cadence is the scheduler's, the same for both transports, and follows demand, so that a daemon
-nobody is looking at does not open a connection to every machine every minute. A read of the fleet
-document by a client is recorded (it fetches nothing itself and takes no lock). While a client read
+The cadence is the scheduler's and follows demand, so that a daemon
+nobody is looking at does not open a connection to every machine every minute. Who is demand is
+decided once, by Cockpit's own classification of a request (its Host check, its Origin
+classification and its session), and for both demands below, the fleet read and the metrics request:
+
+| Reader | Demand for HTTP | Demand for SSH |
+|---|---|---|
+| nobody | no (keepalive) | no (keepalive) |
+| the export verb's marked read (`X-Wb-Cockpit-Export`), whatever session it carries | no | no |
+| the hosted page, a foreign origin, any request not on a loopback `Host` | no | no |
+| an anonymous reader on this machine (loopback `Host`, canonical or no `Origin`) | yes | no (keepalive) |
+| an owner session (the same, with a live session) | yes | yes |
+
+A reader on this machine is a request on a loopback `Host` whose `Origin` is the canonical one or
+absent; the hosted page reads the same metadata routes and is never demand, and neither is a
+request through a proxy, which has no anonymous reading at all. An SSH export is a login with the
+user's own key, which an agent that asks for approval of each use turns into a prompt, or a silent
+signature, per login: so only an owner session's read is demand for SSH, and an anonymous reader,
+which any page or process on the machine can be, raises the HTTP transport alone. For such a
+reader a machine that has no HTTP route, or whose HTTP route is failing, stays on SSH's idle
+keepalive, max(15 minutes, the refresh interval), exactly as with nobody looking; its live entries stay
+for that keepalive, with their age and, where HTTP failed, with the HTTP failure as `remote_error`,
+and HTTP is retried on its own backoff, a request and never a login. A cool-down on SSH (below)
+holds only for an export SSH is open to. A metrics-only export uses SSH only while an owner
+requested that machine's metrics within the last 60 seconds: it is never a keepalive.
+
+A read of the fleet
+document by a reader on this machine is recorded (it fetches nothing itself and takes no lock). While such a reader read
 the fleet document within the last 5 minutes, a machine's fleet export runs once per snapshot
 refresh interval, and never more often than every 30 seconds whatever `cockpit.refresh_interval`
 says. With no such reader it runs as an idle keepalive every 15 minutes (or every refresh interval,
@@ -1327,7 +1417,7 @@ the background loop, which starts that one export at once, without blocking the 
 is served what is held and gets the fresh entries one request later. The read the export verb makes
 (REQ:cockpit-export-verb) is another machine's daemon, not a person, and is not demand: it carries
 the request header `X-Wb-Cockpit-Export`, without which two machines that read each other would
-keep each other in demand for ever. While any client has requested
+keep each other in demand for ever. While a reader on this machine has requested
 that machine's metrics within the last 60 seconds, a metrics-only export runs every 30 seconds.
 Every export, of either kind, is a login to the machine, so no two exports of a machine start within
 30 seconds of each other, whichever kind each is and whatever came of the first: a wake-up by a
@@ -1339,9 +1429,20 @@ included) stays refused until a person repairs it, and every attempt is a line i
 authentication log: it bars SSH for that machine, for both kinds of export, for a delay that doubles
 up to 1 hour, and an export that SSH answers lifts the bar. The bar is SSH's alone: a machine that
 also has an HTTP route is still asked over HTTP on the 5 minute backoff, and SSH is tried again at
-the first attempt after its bar has passed. At the default 60 second interval that is 4 connections an hour to a machine
-nobody looks at, 60 while a client reads the fleet document, 120 while a Machines page also polls
-its metrics, and 1 to a machine whose login is refused. A slow or failing remote
+the first attempt after its bar has passed. At the default 60 second interval the connections an
+hour to one machine are, by reader:
+
+| Reader | HTTP requests an hour (machine with an HTTP route that answers) | SSH logins an hour (machine read over SSH) |
+|---|---|---|
+| nobody, the hosted page, the export verb | 4 | 4 |
+| an anonymous reader on this machine reading the fleet document | 60 | 4 |
+| the same, with a Machines page polling the metrics | 120 | 4 |
+| an owner session reading the fleet document | 60 | 60 |
+| the same, with a Machines page polling the metrics | 120 | 120 |
+| any reader, a machine whose SSH login is refused | (its HTTP route is asked every 5 minutes) | 1 |
+
+A machine with both routes is read over HTTP while that answers and has no SSH login at all,
+whoever reads. A slow or failing remote
 never delays the local snapshot. Both transports yield the same strictly validated envelope
 and the same merge. With neither transport configured for a machine, no request is made and
 no process is started. `cockpit.remote_http: false` and `cockpit.remote_ssh: false` turn the
@@ -1374,7 +1475,10 @@ until the daemon's first pass has ended (the metrics-only shape is served meanwh
 `{"error":"export_failed"}` when the envelope would not pass its own rules or its size bound. The
 envelope is built and validated once for each version of the daemon's published document and of its
 metrics history, and served by the shared writer with gzip and a strong ETag, so a request copies
-bytes. Every answer of the route, the envelope and a 304 included, carries `Cache-Control: no-store`. Each credential may make a burst of 5 requests and then one a second; over that the answer is
+bytes. Its two halves are prepared apart: the fleet half is validated and encoded once for each
+published document, and a new metrics sample (every 10 seconds) costs the encoding of the metrics
+and the compression of the body, never the fleet's validation again; a reader learns whether the
+metrics moved from the sampler's version, without copying the history. Every answer of the route, the envelope and a 304 included, carries `Cache-Control: no-store`. Each credential may make a burst of 5 requests and then one a second; over that the answer is
 status 429.
 
 #### REQ: remote-http-fetch
@@ -1495,14 +1599,17 @@ the total timeout is `timeout`; any other status or reason is `bad_payload`. `ss
 remote command's status on, so a remote command that itself exits 255, 127, 126 or 2 picks the
 code: the remote login already has that machine's full authority, and the choice is among the codes
 of one closed set. How often `ssh` runs is the scheduler's rule
-(REQ:remote-exporter-transports), the same for both transports.
+(REQ:remote-exporter-transports): `ssh` is started on demand only for an owner session's read, and
+otherwise once per idle keepalive, max(15 minutes, the refresh interval), so that no page and no
+process on this machine that is not the owner can raise the rate of logins.
 
 What the user's SSH configuration can still do. The options above neutralise the directives that
 would change what the call is, not the ones that decide how the host is reached, which stay the
 user's: `ProxyCommand`, `ProxyJump`, `Match exec` and `KnownHostsCommand` run local commands, as
 they do for the user's own `ssh`, here with the reduced environment and no terminal. An
 `IdentityAgent`, or an agent that asks for approval of each use, may show its own prompt on every
-unattended login, the 15 minute keepalive included, and a FIDO key that wants a touch blocks until
+unattended login, the 15 minute keepalive included (4 an hour with no owner looking, and one per
+refresh interval only while an owner session reads), and a FIDO key that wants a touch blocks until
 the 15 second timeout, which is then shown as `timeout`. A connection-sharing master that already
 exists at the configured `ControlPath` is reused, so an export may travel over the owner's open
 session. A host for which any of this is unwanted is given no `ssh` section, or
@@ -1538,6 +1645,21 @@ the exporter's own, so a merger (REQ:remote-entries-replace-cached) re-derives e
 configured machine key and never uses one as received. Its refusal names the rule and the field's
 path and never a value, a time or an error text of the remote.
 
+A published snapshot (the `cached` route) is another machine's data as well, and the mapping that
+reads it is held to the same bounds, by the same code where the rule is the same, with one
+difference: it repairs where the decoder refuses, because a snapshot is read as a whole and one odd
+value must not hide a machine. A publish time before 2000 makes the snapshot unusable and one in the
+future is taken as now, so a clock that is ahead can never make a snapshot look fresh for ever; a
+`last_activity_at` is never later than its snapshot's time and one before 2000 is dropped; a
+`wb_version` that does not match the version pattern is dropped; a pull request whose number is
+not within 1 to 10,000,000 is dropped; at most 2000 repositories, 2000 worktrees, 500 pull
+requests and 200 agents of one machine are kept, the same ones on every read, and what is cut is
+counted in that machine's `export_dropped` (the agents in `agents_truncated`); and at most 200
+published machines are kept, the newest publications, with one diagnostic when more exist. The
+text a machine says about itself, in an export or in a snapshot (a repository, task, stream or
+branch name), is that machine's own text: it is bounded and stripped of control and format
+characters, and the application renders it as text, never as markup.
+
 #### REQ: remote-entries-replace-cached
 
 The accepted entries are merged into the local fleet document as that machine's entries
@@ -1552,7 +1674,14 @@ that a remote's clock cannot keep stale data live, they replace that machine's c
 age shown as every entry's is, as long as no export of it failed or found it warming since they
 were received: an idle machine's live view may be up to the keepalive and two intervals old, and
 the first export that brings nothing puts it back on the two-interval bound. That machine's cached entries are the published snapshots under the
-configured machine name (and under this machine's login when it is known). The machine entry is
+configured machine name by this machine's own login, and by no other: a machine another login
+published under the same name is a machine of its own, is never hidden behind the configured
+machine's live entries, never lends it its id and is never given its SSH route. The daemon knows
+its login from its periodic publisher, which resolves it for its first publish, or from this
+machine's own publication in the store (the one snapshot under this machine's name and projects
+root; two logins that both claim to be this machine tell it nothing). While the login is not known
+no published entry is taken for a configured machine's, so that machine may be shown twice, live and
+published, until it is. The machine entry is
 named by the configured key and keeps one id: the id of its published entry when exactly one
 exists, otherwise an id derived from the login and the key; every other id is derived from the
 configured key and never used as received. An agent's `activity`, `task`, `started_at`,
@@ -1593,13 +1722,18 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
 `daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads),
 `bad_payload`, `remote_warming_up` (the remote daemon's first pass has not ended and no fresh live
-view is held), `export_too_large` (this daemon left the machine's live entries out of a document
-that would be over its size bound; it is set while that holds and is not a failed attempt) or
-`self_export` (the export read is this machine's own); it is cleared by the next successful full
+view is held), `export_too_large` (this daemon left the machine's entries, live or published, out of a document
+that would be over its size bound: the live entries first, each such machine then shown by its
+published entries, and the published entries too when the document is still over the bound, each
+published machine then shown by its machine entry alone; it is set while that holds and is not a failed attempt),
+`self_export` (the export read is this machine's own) or `clock_skew` (the export carries a time
+more than 60 seconds ahead of this daemon's clock: the clocks of two machines differ, a difference
+of up to 60 seconds is accepted, and a larger one is named as what it is and never as
+`bad_payload`; it is fixed by setting the clock that is wrong, and has no command to copy); it is cleared by the next successful full
 export on the preferred transport, never by a metrics-only one. A remote export that prints
 `export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
 codes name the HTTP transport and the others the SSH transport, except `export_refused`,
-`bad_payload`, `remote_warming_up` and `self_export`, which either transport reports, and
+`bad_payload`, `remote_warming_up`, `self_export` and `clock_skew`, which either transport reports, and
 `export_too_large`, which names none (REQ:remote-exporter-transports), so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
@@ -2505,7 +2639,7 @@ Then every compressed response carries `Content-Encoding: gzip`, an ETag ending 
 Scenario: Many requests, one snapshot
 Given a snapshot stored once and a counter on the compressor
 When the fleet document is requested 100 times with gzip
-Then the compressor ran once for that snapshot, and it runs once more after a new snapshot is stored
+Then the compressor ran once for that snapshot, and it runs once more after a new snapshot is stored, and passes over an unchanged fleet with every side read on store no snapshot: the ETag and `snapshot_at` stay, a poll with `If-None-Match` is answered `304`, and `X-Wb-Cockpit-Checked-At` moves with each pass
 
 ### AC: static-assets-are-precompressed-and-immutable
 
@@ -2523,7 +2657,7 @@ Then the asset is served from a build-time compressed file with `Cache-Control: 
 Scenario: A preflight and a response from the hosted origin
 Given `cockpit.hosted_url` is `https://hosted.example.test/wb/cockpit/`
 When the origin `https://hosted.example.test` requests the fleet document and the branches route, with a preflight first, and then repeats with `If-None-Match`
-Then the preflight allows `If-None-Match`, the responses expose `ETag`, the repeat is answered `304`, and a request from any other foreign origin is still refused with status 403
+Then the preflight allows `If-None-Match`, the responses expose `ETag` and `X-Wb-Cockpit-Checked-At`, the repeat is answered `304`, and a request from any other foreign origin is still refused with status 403
 
 ### AC: branches-leave-the-document
 
@@ -2793,7 +2927,7 @@ Then no HTTP request is made during the first 5 minutes, one is made after them,
 Scenario: Oversized, unknown field, long string, filesystem path, bad numbers, future time, too many samples
 Given exports, over HTTP and over SSH, of 9 MiB, one with an unknown top-level field, one with a 10,000-byte task name, one whose worktree entry carries a `path`, one with a negative count, a `NaN` percentage and a sample 5 minutes in the future, and one with 361 samples
 When each is decoded
-Then each is refused with `remote_error` `bad_payload`, nothing from it is rendered, and the stdout or body buffer never held more than the cap
+Then each is refused with `remote_error` `bad_payload` (the one whose fault is the sample in the future with `clock_skew`), nothing from it is rendered, and the stdout or body buffer never held more than the cap
 
 ### AC: metrics-only-export-is-demand-driven
 
@@ -2808,10 +2942,10 @@ Then fleet exports run once per refresh interval throughout, metrics-only export
 
 **Requirements:** cockpit-views#req:remote-exporter-transports, cockpit-views#req:remote-entries-replace-cached
 
-Scenario: Idle, viewed, Machines page, refused login
+Scenario: Idle, viewed, Machines page, refused login, by reader
 Given a configured target read over SSH on a fake runner, the default 60 second refresh interval and a fake clock
-When nobody reads the fleet document for hours, then a client reads it once a minute, then a client also requests the machine's metrics every 10 seconds, and, on another daemon, the machine's SSH login is refused
-Then the machine is read 4 times an hour with nobody looking and its entries stay live with their age, the first read of the fleet document after the quiet time is answered from what is held and starts one export at once, a read by the export verb starts none, the machine is read 60 times an hour while the document is read and 120 times an hour with the metrics requested, with refresh intervals of 10, 45 and 70 seconds and both demands no two exports of either kind start within 30 seconds of each other, a refused login met by a metrics-only export holds the fleet export back too, the refused login is retried after 2, 4, 8, 16, 32 and then every 60 minutes, and a machine that also has an HTTP route is still asked over HTTP every 5 minutes meanwhile
+When nobody reads the fleet document for hours, then an owner session reads it once a minute, then the owner also requests the machine's metrics every 10 seconds, and, on other daemons, the same reads are made by an anonymous reader on this machine, by the hosted page and by the export verb, a machine with both routes is read by each of them with its HTTP route answering and failing, and the machine's SSH login is refused
+Then the machine is read 4 times an hour with nobody looking and its entries stay live with their age, the first read of the fleet document by an owner after the quiet time is answered from what is held and starts one export at once, a read by the export verb or by the hosted page starts none and records nothing, the machine is read 60 times an hour while an owner reads the document and 120 times an hour with the metrics requested, an anonymous reader, the hosted page and the export verb leave the SSH logins at 4 an hour over the simulated hour whatever they read, an anonymous reader has a machine with an HTTP route read over HTTP 60 and 120 times an hour with no SSH login while HTTP answers and with 4 SSH logins an hour while it fails, the hosted page raises neither transport, with refresh intervals of 10, 45 and 70 seconds and both demands no two exports of either kind start within 30 seconds of each other, a refused login met by a metrics-only export holds the fleet export back too, the refused login is retried after 2, 4, 8, 16, 32 and then every 60 minutes, and a machine that also has an HTTP route is still asked over HTTP every 5 minutes meanwhile
 
 ### AC: ssh-argument-vector-contains-only-configured-values
 
@@ -2836,9 +2970,9 @@ Then each exits with code 1 printing `{schema_version, error}` with `daemon_not_
 **Requirements:** cockpit-views#req:cockpit-export-verb
 
 Scenario: A running daemon
-Given a running daemon with worktrees, agents, pull requests and 360 samples
+Given a running daemon with worktrees, agents, pull requests and 360 samples, and another whose document is over the verb's bound because of the other machines it shows
 When `wb cockpit export --format json` and then with `--metrics-only` are run
-Then the first prints one envelope with `fleet` and `metrics` within 8 MiB whose fields all belong to the anonymous-readable metadata set, the second omits `fleet`, and neither contains a path, origin URL, free text or process data
+Then the first prints one envelope with `fleet` and `metrics` within 8 MiB whose fields all belong to the anonymous-readable metadata set, the second omits `fleet`, and neither contains a path, origin URL, free text or process data; the first read this machine's own entries only (`scope=own`) and the second its machine entry only (`scope=machine`); the daemon that shows many other machines is exported like any other; and a daemon that does not know the scope is read as before
 
 ### AC: non-loopback-metrics-request-is-refused
 

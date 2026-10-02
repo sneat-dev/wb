@@ -74,8 +74,8 @@ export function registryActions(target) {
 // The capabilities an owner session carries once the daemon has an action registry.
 const REGISTRY_CAPABILITIES = ['branch.push', 'pr.land']
 
-function sendJson(response, status, body) {
-  response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' }).end(JSON.stringify(body))
+function sendJson(response, status, body, headers = {}) {
+  response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', ...headers }).end(JSON.stringify(body))
 }
 
 // A request handler: the daemon's API from `data`, everything else the built
@@ -97,7 +97,8 @@ export function createPreviewHandler({ distRoot, data, state = 'ok', session = '
       return
     }
     const route = pathname.slice(API.length)
-    if (route === 'fleet') return sendJson(response, 200, shiftTimes(documentFor(data.document, state), delta()))
+    // The daemon says in a header when it last found the document current, as it does on every answer of this route; stamped when served.
+    if (route === 'fleet') return sendJson(response, 200, shiftTimes(documentFor(data.document, state), delta()), { 'X-Wb-Cockpit-Checked-At': new Date(clock() - snapshotAgeMs).toISOString() })
     if (route === 'session') {
       const known = SESSIONS[session] ?? SESSIONS.anonymous
       return sendJson(response, 200, registry && session === 'owner' ? { ...known, capabilities: [...known.capabilities, ...REGISTRY_CAPABILITIES] } : known)

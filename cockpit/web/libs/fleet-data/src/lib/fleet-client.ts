@@ -251,10 +251,13 @@ function hasDocumentFacts(document: FleetDocument): boolean {
   )
 }
 
+/** The response header of the fleet read that says when the daemon last found the document current. */
+export const CHECKED_AT_HEADER = 'X-Wb-Cockpit-Checked-At'
+
 export type FleetRead =
   /** `dropped` counts the entries left out for lacking a required field. */
-  | { kind: 'changed'; document: FleetDocument; etag: string; digest: string; dropped?: number }
-  | { kind: 'unchanged' }
+  | { kind: 'changed'; document: FleetDocument; etag: string; digest: string; dropped?: number; checkedAt?: number }
+  | { kind: 'unchanged'; checkedAt?: number }
 
 @Injectable({ providedIn: 'root' })
 export class FleetClient {
@@ -269,7 +272,10 @@ export class FleetClient {
       credentials: 'same-origin',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
-    if (response.status === 304) return { kind: 'unchanged' }
+    // When the daemon last found the document current: on a 304 too. An older daemon sends none, and the reader falls back to `snapshot_at`.
+    const checked = Date.parse(response.headers.get(CHECKED_AT_HEADER) ?? '')
+    const checkedAt = Number.isNaN(checked) ? undefined : checked
+    if (response.status === 304) return { kind: 'unchanged', ...(checkedAt === undefined ? {} : { checkedAt }) }
     if (!response.ok) throw new FleetRequestError(response.status)
     const text = await response.text()
     let document: unknown
@@ -284,7 +290,7 @@ export class FleetClient {
     if (!hasFleetShape(document) || !hasDocumentFacts(document)) throw new FleetFormatError()
     const cleaned = dropBadEntries(document)
     cleaned.document = cleanOptionalFields(cleaned.document)
-    return { kind: 'changed', document: cleaned.document, dropped: cleaned.dropped, etag: response.headers.get('ETag') ?? '', digest: digestOf(text) }
+    return { kind: 'changed', document: cleaned.document, dropped: cleaned.dropped, etag: response.headers.get('ETag') ?? '', digest: digestOf(text), ...(checkedAt === undefined ? {} : { checkedAt }) }
   }
 
   // The three reads that only some pages make (branches, a machine's metrics, a README) are functions of the fetch in

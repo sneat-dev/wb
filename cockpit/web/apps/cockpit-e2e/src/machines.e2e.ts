@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { alpha, beta, fleet, now, watch } from './support'
+import { alpha, beta, checkedAt, fleet, now, watch } from './support'
 
 // The Machines page journey against a stubbed fleet: filter -> chip -> select -> panel -> detail route -> back
 // (REQ:machines-list, REQ:machine-detail, REQ:detail-routes-share-the-panel), with the machine-metrics route stubbed
@@ -26,16 +26,30 @@ const sample = (minutesAgo: number, cpu: number) => ({
   disk_total_bytes: 500 * 2 ** 30,
   sampled_at: ago(minutesAgo * MINUTE),
 })
+// The samples are read when the answer is served (a getter), never at module load: CI starts a test minutes after the file loaded,
+// and a sample's age, and with it the load verdict and "30 min ago", must not drift with that.
 const answers: Record<string, unknown> = {
-  'mach-alpha': { machine: 'mach-alpha', route: 'local', samples: Array.from({ length: 360 }, (_, index) => sample((359 - index) / 6, 20 + (index % 40))) },
-  'mach-beta': { machine: 'mach-beta', route: 'cached', samples: [sample(30, 35)] },
+  'mach-alpha': {
+    machine: 'mach-alpha',
+    route: 'local',
+    get samples() {
+      return Array.from({ length: 360 }, (_, index) => sample((359 - index) / 6, 20 + (index % 40)))
+    },
+  },
+  'mach-beta': {
+    machine: 'mach-beta',
+    route: 'cached',
+    get samples() {
+      return [sample(30.5, 35)]
+    },
+  },
   'mach-gamma': { machine: 'mach-gamma', route: 'none', samples: [], reason: 'not_reported' },
 }
 
 const listRows = (page: Page) => page.locator('[role=row][data-index]')
 
 async function stubMachines(page: Page) {
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...machinesFleet, snapshot_at: now }, headers: { ETag: '"machines"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...machinesFleet, snapshot_at: now }, headers: { ETag: '"machines"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: answers[new URL(route.request().url()).searchParams.get('machine') as string] }))
 }

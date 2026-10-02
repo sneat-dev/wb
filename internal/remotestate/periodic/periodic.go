@@ -74,6 +74,9 @@ type Options struct {
 	MaxBackoff time.Duration
 	// Logf reports a diagnostic when it changes; nil discards.
 	Logf func(format string, args ...any)
+	// Published is called after each publish that reached the store, outside the
+	// publisher's lock; nil means nothing.
+	Published func()
 }
 
 // Status is what the publisher knows of its own attempts.
@@ -81,12 +84,14 @@ type Status struct {
 	// Diagnostic is the code of the last attempt, DiagnosticNone when it
 	// published or found nothing to publish.
 	Diagnostic string
-	// Attempts counts the attempts that ran a scan, Published the publishes
-	// that reached the store, Skipped the attempts that scanned and found
-	// nothing changed, Held the attempts that found only the agents changed
-	// and held them back, and Gated the attempts that did not scan at all because
-	// the source reported nothing changed (they are not Attempts).
-	Attempts, Published, Skipped, Held, Gated int
+	// Attempts counts the attempts that were not gated, Published the publishes
+	// that reached the store, Skipped the attempts that found nothing changed,
+	// Held the attempts that found only the agents changed and held them back,
+	// and Gated the attempts that did nothing at all because the source reported
+	// nothing changed (they are not Attempts). Scans counts the attempts that
+	// ran the scan (Collect): an attempt whose source reports the repositories
+	// and worktrees as they were at the last scan reuses that scan.
+	Attempts, Published, Skipped, Held, Gated, Scans int
 	// LastPublished is when the last publish reached the store.
 	LastPublished time.Time
 }
@@ -97,13 +102,19 @@ type Publisher struct {
 	options Options
 	now     func() time.Time
 
-	mu           sync.Mutex
-	running      bool
-	next         time.Time
-	failures     int
-	lastDigest   string
-	lastCore     string
-	lastToken    string
+	mu         sync.Mutex
+	running    bool
+	next       time.Time
+	failures   int
+	lastDigest string
+	lastCore   string
+	lastToken  string
+	// scanned is the snapshot of the last scan, before the extras, scannedToken
+	// the source's change token read before that scan ("" when it had none) and
+	// scannedAt its time: an attempt for the same token reuses it.
+	scanned      remotestate.Snapshot
+	scannedToken string
+	scannedAt    time.Time
 	retryFullAt  time.Time
 	provider     remotestate.Provider
 	status       Status
@@ -153,7 +164,10 @@ func (p *Publisher) Diagnostic() string {
 // the same agents, when they are published) as at the last publish or the last
 // attempt that found nothing changed, and the keepalive has not passed, it
 // does not even scan: the scan reads the git status of every repository, which
-// the snapshotter's fingerprints already tell is unchanged. Otherwise it scans,
+// the snapshotter's fingerprints already tell is unchanged. Otherwise it scans
+// (or, when the source's change token is the one the last scan was made for and
+// that scan is younger than the keepalive, takes that scan again: only the
+// agents moved, which the scan does not read),
 // adds the extras the flags allow, skips a snapshot that says what the last
 // published one said, holds back a change of the agents alone until
 // max(interval, AgentsMinSpacing) has passed since the last publish, and
@@ -163,11 +177,17 @@ func (p *Publisher) Diagnostic() string {
 // hours. source may be nil (no gate, no extras). It returns nothing: every
 // outcome is a Status and a logged code.
 //
-// The diagnostic (Status.Diagnostic) is one rule: it is the code of the last
-// completed outcome against the store. A failure sets its code; a publish that
-// carried the optional fields clears it; a publish that had to leave them out
-// sets optional_fields_dropped, which stays until a publish that carried them
-// succeeds; a gated, skipped or held-back attempt never changes it.
+// The diagnostic (Status.Diagnostic) is one rule: a failure's code stays until
+// the step that failed has worked again, and no longer. A failure sets its code.
+// collect_failed is cleared by the next scan that works, whatever the attempt
+// then does (publish, skip or hold back). store_unavailable and publish_failed
+// are cleared by the next publish that reaches the store, and so that there is
+// one, an attempt made while either stands is never gated, skipped or held
+// back: it publishes. A publish that carried the optional fields clears every
+// code; one that had to leave them out sets optional_fields_dropped, which
+// stays until a publish that carried them succeeds (a failure's code takes its
+// place while the failure stands). A gated, skipped or held-back attempt never
+// changes a code other than collect_failed.
 func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSource) {
 	if p.options.Every <= 0 || p.options.Collect == nil || p.options.Open == nil {
 		return
@@ -179,13 +199,19 @@ func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSourc
 		return
 	}
 	var extras func() remotestate.Extras
-	token := ""
+	token, scanToken := "", ""
 	if source != nil {
 		extras = source.PublishExtras
-		token = p.gateKey(source)
+		scanToken = source.ChangeToken()
+		token = p.gateKey(source, scanToken)
 	}
 	forced := !p.retryFullAt.IsZero() && !now.Before(p.retryFullAt)
-	if !forced && token != "" && token == p.lastToken && !p.status.LastPublished.IsZero() && now.Sub(p.status.LastPublished) < p.options.Keepalive {
+	// A failure that stands is cleared only by the step that failed working
+	// again, so the attempt that would show it is never gated; and after a
+	// failure of the store it goes to the store.
+	failing := p.status.Diagnostic == DiagnosticCollectFailed || p.status.Diagnostic == DiagnosticOpenFailed || p.status.Diagnostic == DiagnosticPublishFailed
+	toStore := forced || (failing && p.status.Diagnostic != DiagnosticCollectFailed)
+	if !forced && !failing && token != "" && token == p.lastToken && !p.status.LastPublished.IsZero() && now.Sub(p.status.LastPublished) < p.options.Keepalive {
 		p.status.Gated++
 		p.next = p.after(now)
 		p.mu.Unlock()
@@ -196,12 +222,23 @@ func (p *Publisher) Publish(ctx context.Context, source remotestate.PublishSourc
 
 	ctx, cancel := context.WithTimeout(ctx, p.options.Timeout)
 	defer cancel()
-	result := p.guarded(ctx, now, extras, forced)
+	result := p.guarded(ctx, now, extras, scanToken, toStore)
+	if result.published && p.options.Published != nil {
+		p.options.Published()
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.running = false
 	p.status.Attempts++
+	if (result.skipped || result.held) && p.status.Diagnostic == DiagnosticCollectFailed {
+		// The scan works again. What a remembered refusal of the optional
+		// fields says stands until a publish carries them.
+		p.status.Diagnostic, p.failures = DiagnosticNone, 0
+		if !p.retryFullAt.IsZero() {
+			p.status.Diagnostic = DiagnosticOptionalFields
+		}
+	}
 	switch {
 	case result.failure != DiagnosticNone:
 		p.status.Diagnostic = result.failure
@@ -251,8 +288,7 @@ func (p *Publisher) after(now time.Time) time.Time {
 // gateKey is the source's change token with the digest of the agents it would
 // publish, so that a change of agents opens the gate when agents are published.
 // It is empty when the source has no token yet.
-func (p *Publisher) gateKey(source remotestate.PublishSource) string {
-	token := source.ChangeToken()
+func (p *Publisher) gateKey(source remotestate.PublishSource, token string) string {
 	if token == "" {
 		return ""
 	}
@@ -276,18 +312,45 @@ type result struct {
 
 // guarded is attempt with a panic in a collaborator turned into a failed
 // attempt: a daemon never ends because a publish did.
-func (p *Publisher) guarded(ctx context.Context, now time.Time, extras func() remotestate.Extras, forced bool) (outcome result) {
+func (p *Publisher) guarded(ctx context.Context, now time.Time, extras func() remotestate.Extras, scanToken string, toStore bool) (outcome result) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			outcome = result{failure: DiagnosticCollectFailed, detail: fmt.Sprintf("panic (%T)", recovered)}
 		}
 	}()
-	return p.attempt(ctx, now, extras, forced)
+	return p.attempt(ctx, now, extras, scanToken, toStore)
 }
 
-// attempt runs the scan and the publish and says how it ended.
-func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() remotestate.Extras, forced bool) result {
+// scan is the snapshot of this attempt before the extras: the last scan's,
+// stamped now, when the source's change token is the one that scan was made for
+// (nothing the scan reads has moved) and the scan is younger than the
+// keepalive, and a new scan otherwise. The token was read before the scan, so a
+// change during it is a different token at the next attempt.
+func (p *Publisher) scan(ctx context.Context, now time.Time, scanToken string) (remotestate.Snapshot, error) {
+	p.mu.Lock()
+	held, reuse := p.scanned, scanToken != "" && scanToken == p.scannedToken && now.Sub(p.scannedAt) < p.options.Keepalive
+	p.mu.Unlock()
+	if reuse {
+		held.PublishedAt = now
+		return held, nil
+	}
 	snapshot, err := p.options.Collect(ctx, now)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.status.Scans++
+	if err != nil {
+		p.scanned, p.scannedToken = remotestate.Snapshot{}, ""
+		return remotestate.Snapshot{}, err
+	}
+	p.scanned, p.scannedToken, p.scannedAt = snapshot, scanToken, now
+	return snapshot, nil
+}
+
+// attempt runs the scan and the publish and says how it ended. toStore says
+// the attempt must reach the store whatever it finds: it is neither skipped nor
+// held back.
+func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() remotestate.Extras, scanToken string, toStore bool) result {
+	snapshot, err := p.scan(ctx, now, scanToken)
 	if err != nil {
 		return result{failure: DiagnosticCollectFailed, detail: err.Error()}
 	}
@@ -304,7 +367,7 @@ func (p *Publisher) attempt(ctx context.Context, now time.Time, extras func() re
 	held := published && outcome.core == p.lastCore && age < max(p.options.Every, AgentsMinSpacing) && age < p.options.Keepalive
 	provider := p.provider
 	p.mu.Unlock()
-	if !forced {
+	if !toStore {
 		if unchanged {
 			outcome.skipped = true
 			return outcome

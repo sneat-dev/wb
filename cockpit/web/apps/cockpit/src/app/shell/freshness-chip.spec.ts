@@ -89,6 +89,34 @@ describe('FreshnessChip', () => {
     loaded(store, { snapshot_at: undefined })
     await fixture.whenStable()
     expect(chip().textContent?.trim()).toBe('snapshot time unknown')
+    store.checkedAt.set(NOW - 1000)
+    await fixture.whenStable()
+    expect(chip().textContent?.trim()).toBe('updated 1 s ago')
+  })
+
+  // A quiet fleet moves `snapshot_at` no more: the chip reads when the daemon last found the document current.
+  it('reads the checked-at time, not snapshot_at, and falls back to snapshot_at for a daemon that sends none', async () => {
+    const { fixture, chip, store } = render((store) => {
+      loaded(store, { snapshot_at: new Date(NOW - 3_600_000).toISOString() })
+      store.checkedAt.set(NOW - 5000)
+    })
+    await fixture.whenStable()
+    expect(chip().textContent?.trim()).toBe('updated 5 s ago')
+    expect(chip().className).toContain('tone-ok')
+    store.checkedAt.set(undefined)
+    await fixture.whenStable()
+    expect(chip().textContent?.trim()).toBe('updated 60 min ago')
+    expect(chip().className).toContain('tone-warn')
+    store.checkedAt.set(NOW - 600_000)
+    await fixture.whenStable()
+    expect(chip().className).toContain('tone-warn')
+  })
+
+  it('says the scan failed when the repositories could not be listed, and does not claim an update', async () => {
+    const { fixture, chip } = render((store) => loaded(store, { warming_up: false, error: 'repositories_unreadable', repositories_total: 0 }))
+    await fixture.whenStable()
+    expect(chip().textContent?.trim()).toBe('scan failed')
+    expect(chip().className).toContain('tone-bad')
   })
 
   it('says the data is not readable on a schema mismatch', async () => {

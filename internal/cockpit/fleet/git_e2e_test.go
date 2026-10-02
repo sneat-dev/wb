@@ -186,13 +186,13 @@ func TestE2EDefaultBranchComesFromOriginsHEADThenTheCheckedOutBranch(t *testing.
 // failing one.
 func TestE2EGitUsableAsksTheGitBinary(t *testing.T) {
 	t.Parallel()
-	if !(LocalCollectors{}).GitUsable(t.Context()) {
+	if usable, err := (LocalCollectors{}).GitUsable(t.Context()); !usable || err != nil {
 		t.Skip("the Git on this machine is older than 2.45")
 	}
-	if (LocalCollectors{Git: fakeGit(t, "echo git version 2.30.0")}).GitUsable(t.Context()) {
+	if usable, err := (LocalCollectors{Git: fakeGit(t, "echo git version 2.30.0")}).GitUsable(t.Context()); usable || err != nil {
 		t.Error("an old Git was usable")
 	}
-	if (LocalCollectors{Git: fakeGit(t, "exit 3")}).GitUsable(t.Context()) {
+	if usable, err := (LocalCollectors{Git: fakeGit(t, "exit 3")}).GitUsable(t.Context()); usable || err == nil {
 		t.Error("a failing Git was usable")
 	}
 }

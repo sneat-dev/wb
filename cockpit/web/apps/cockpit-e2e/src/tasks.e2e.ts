@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { alpha, beta, fleet, now, observed, watch } from './support'
+import { alpha, beta, checkedAt, fleet, now, observed, watch } from './support'
 
 // The Tasks page journey against a stubbed fleet: filter -> chip -> select -> panel -> detail route -> back
 // (REQ:tasks-list, REQ:task-detail, REQ:detail-routes-share-the-panel), in the built application under the
@@ -20,7 +20,7 @@ const tasksFleet = {
 const listRows = (page: Page) => page.locator('[role=row][data-index]')
 
 async function stubTasks(page: Page) {
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: tasksFleet, headers: { ETag: '"tasks"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: tasksFleet, headers: { ETag: '"tasks"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))
 }

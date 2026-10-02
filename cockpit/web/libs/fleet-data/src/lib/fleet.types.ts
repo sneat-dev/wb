@@ -56,6 +56,7 @@ export const REMOTE_ERRORS = [
   'export_refused',
   'bad_payload',
   'self_export',
+  'clock_skew',
 ] as const
 export type RemoteError = (typeof REMOTE_ERRORS)[number]
 

@@ -92,12 +92,20 @@ const ErrorGitTooOld = "git_too_old"
 // Options configures a Snapshotter.
 type Options struct {
 	// Machine is this machine's name and Version its WB version. Login is the
-	// login this machine publishes its own snapshot under, when known: the
-	// machine's own publication is skipped by login and name together, and by
-	// name alone while Login is empty.
+	// login this machine publishes its own snapshot under, when known at the
+	// start: the machine's own publication is skipped by login and name
+	// together, and by name and projects root while the login is not known.
 	Machine string
 	Version string
 	Login   string
+	// LoginSource says the login once something has learned it (the daemon's
+	// periodic publisher resolves it for its first publish), and "" until then;
+	// nil means nothing will. It is read from memory on each read of the other
+	// machines and must not run anything. The snapshotter also learns the login
+	// from this machine's own publication in the store. Until the login is
+	// known, no published entry is taken for a configured machine's
+	// (cachedMachinesOf): a name alone could be another login's machine.
+	LoginSource func() string
 	// ProjectsRoot is this machine's projects root, which is compared (never
 	// emitted) with a snapshot's to recognise this machine's own publication
 	// when Login is not known.
@@ -227,9 +235,12 @@ type repoState struct {
 // collector, so it never waits for Git (cockpit#req:no-fleet-scan-on-the-
 // request-path).
 type Snapshotter struct {
-	machine           string
-	version           string
+	machine string
+	version string
+	// login is this machine's login, "" until it is known; it is guarded by mu
+	// and, once set, never changes. loginSource is Options.LoginSource.
 	login             string
+	loginSource       func() string
 	projectsRoot      string
 	hardware          Hardware
 	compress          func([]byte) []byte
@@ -261,13 +272,20 @@ type Snapshotter struct {
 	pullBusy     atomic.Bool
 	mu           sync.RWMutex
 
-	doc         Document
-	payload     cockpit.Payload
-	complete    bool
-	passing     bool
-	listError   string
-	gitChecked  bool
-	gitOld      bool
+	doc     Document
+	payload cockpit.Payload
+	// complete says the warm-up has ended: the first pass ran to its end, or no
+	// listing of the repositories has ever worked (listed) and the document says
+	// so in its error.
+	complete   bool
+	listed     bool
+	passing    bool
+	listError  string
+	gitChecked bool
+	gitOld     bool
+	// lastPublish is when the document was last assembled, whether or not it
+	// had changed, and publishes counts the documents that were published: it is
+	// the document's version, and moves only when its content does.
 	lastPublish time.Time
 	publishes   int
 	repos       map[string]*repoState
@@ -314,24 +332,28 @@ type Snapshotter struct {
 	// order; both are fixed once built.
 	sshRoutes map[string]SSHRoute
 	sshKeys   []string
-	// fleetAsked is when a client last read the fleet document, in nanoseconds
-	// since the epoch and zero for never; kick wakes the background loop.
-	fleetAsked atomic.Int64
-	kick       chan struct{}
-	liveIDs    map[string]string
-	transports []RemoteTransport
-	remoteTick func(time.Duration) (<-chan time.Time, func())
+	// fleetAsked is when a reader on this machine last read the fleet document,
+	// and fleetOwnerAsked when an owner session did, in nanoseconds since the
+	// epoch and zero for never; kick wakes the background loop.
+	fleetAsked      atomic.Int64
+	fleetOwnerAsked atomic.Int64
+	kick            chan struct{}
+	liveIDs         map[string]string
+	transports      []RemoteTransport
+	remoteTick      func(time.Duration) (<-chan time.Time, func())
 	// mapper maps an accepted fleet to a machine's entries (mapLive; a test
 	// replaces it). generation counts the documents assembled, so that one
 	// prepared outside the lock is stored only if none was assembled after it.
-	// maxDocument is the size over which the live machines are left out,
-	// leftOut whether they are in the published document, and baseBytes the
-	// size of that document less its live machines' entries.
+	// maxDocument is the size over which the other machines' entries are left
+	// out, leftOut whether the live machines' are out of the published document
+	// and cachedOut whether the published store's are, and baseBytes the size of
+	// that document less the other machines' entries.
 	baseBytes   int
 	mapper      func(key, machineID string, fleet *Document, observed time.Time, dropped int) liveView
 	generation  uint64
 	maxDocument int
 	leftOut     bool
+	cachedOut   bool
 
 	// throughputs scans the terminal records on its own cadence (nil without a
 	// source); throughput is its last block, guarded by mu.
@@ -351,7 +373,7 @@ type Snapshotter struct {
 // warming-up document until the first repository completes.
 func New(options Options) *Snapshotter {
 	snapshotter := &Snapshotter{
-		machine: options.Machine, version: options.Version, login: options.Login, projectsRoot: options.ProjectsRoot, hardware: options.Hardware, compress: options.Compress, collectors: options.Collectors,
+		machine: options.Machine, version: options.Version, login: options.Login, loginSource: options.LoginSource, projectsRoot: options.ProjectsRoot, hardware: options.Hardware, compress: options.Compress, collectors: options.Collectors,
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
 		stopWait: options.StopWait, activityTimeout: options.ActivityTimeout, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
@@ -468,6 +490,50 @@ func (s *Snapshotter) Payload() cockpit.Payload {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.payload
+}
+
+// CheckedAt is when the daemon last assembled the document and found the
+// published one current (or published the one that had changed): the freshness
+// of what a reader holds, which the body does not carry because a body that did
+// not change keeps its bytes and its ETag. It is zero before the first look.
+func (s *Snapshotter) CheckedAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastPublish
+}
+
+// sameContent reports whether two documents say the same but for when they
+// were taken: the document's own snapshot_at and the observed_at of this
+// machine's entries, which a pass stamps anew whether or not anything changed.
+// Every other time is content (a pull request's checked_at, an activity, the
+// time another machine's entries were observed at).
+func sameContent(held, assembled Document) bool {
+	held.SnapshotAt, assembled.SnapshotAt = time.Time{}, time.Time{}
+	collections := [][2]any{
+		{held.Machines, assembled.Machines}, {held.Repositories, assembled.Repositories}, {held.Worktrees, assembled.Worktrees},
+		{held.PullRequests, assembled.PullRequests}, {held.Agents, assembled.Agents},
+	}
+	held.Machines, held.Repositories, held.Worktrees, held.PullRequests, held.Agents = nil, nil, nil, nil, nil
+	assembled.Machines, assembled.Repositories, assembled.Worktrees, assembled.PullRequests, assembled.Agents = nil, nil, nil, nil, nil
+	if !reflect.DeepEqual(held, assembled) {
+		return false
+	}
+	return sameEntries(collections[0][0].([]Machine), collections[0][1].([]Machine), func(item *Machine) *Entry { return &item.Entry }) &&
+		sameEntries(collections[1][0].([]Repository), collections[1][1].([]Repository), func(item *Repository) *Entry { return &item.Entry }) &&
+		sameEntries(collections[2][0].([]Worktree), collections[2][1].([]Worktree), func(item *Worktree) *Entry { return &item.Entry }) &&
+		sameEntries(collections[3][0].([]PullRequest), collections[3][1].([]PullRequest), func(item *PullRequest) *Entry { return &item.Entry }) &&
+		sameEntries(collections[4][0].([]Agent), collections[4][1].([]Agent), func(item *Agent) *Entry { return &item.Entry })
+}
+
+// sameEntries compares two lists of entries, taking two entries of this
+// machine for the same whatever time each was observed at.
+func sameEntries[T any](held, assembled []T, entry func(*T) *Entry) bool {
+	return slices.EqualFunc(held, assembled, func(a, b T) bool {
+		if first, second := entry(&a), entry(&b); first.Route == RouteLocal && second.Route == RouteLocal {
+			first.ObservedAt, second.ObservedAt = time.Time{}, time.Time{}
+		}
+		return reflect.DeepEqual(a, b)
+	})
 }
 
 // Branches returns the branch list of the local repository with id, prepared for
@@ -624,7 +690,9 @@ func (s *Snapshotter) run(ctx context.Context) {
 // delays the pass nor ends the warm-up. If the repositories cannot be listed
 // the document says so in its error field and the agents and other machines
 // are still read. The first full pass ends the warm-up; a cancelled pass does
-// not.
+// not. A listing that fails before any has worked ends it too, in the error
+// state (the document is then empty and says why), and the first listing that
+// works starts the warm-up of the first pass.
 func (s *Snapshotter) Refresh(ctx context.Context) error {
 	s.refresh.Lock()
 	defer s.refresh.Unlock()
@@ -642,6 +710,12 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 		s.startThroughput(ctx)
 		s.mu.Lock()
 		s.listError = ErrorRepositoriesUnreadable
+		if !s.listed && ctx.Err() == nil {
+			// No listing has ever worked, and this pass has nothing more to learn:
+			// the warm-up ends in the error state, so that a reader is told why the
+			// document is empty instead of waiting for a first pass that never ends.
+			s.complete = true
+		}
 		s.publishLocked()
 		s.mu.Unlock()
 		return errors.Join(append(failures, fmt.Errorf("list repositories: %w", listErr))...)
@@ -673,9 +747,14 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	return errors.Join(append(failures, machineFailures...)...)
 }
 
-// checkGit reads the Git version once, the first time a pass runs with a live
-// context, and records whether Git is too old (or unreadable) to run. Until it
-// has answered Git is assumed usable only by the pass that asked.
+// checkGit reads the Git version at the start of a pass that runs with a live
+// context, until it has a definite answer, and records whether Git may be run.
+// A Git that is too old is a definite answer and is not asked about again. A
+// version that could not be read (the command failed, timed out or panicked) is
+// not: Git-backed reads are off for that pass, which cannot know that they are
+// safe, and the next pass asks again, so one failed `git version` does not turn
+// Git off until the daemon restarts. When Git becomes usable after such a pass
+// every repository's Git state is read on that pass, whatever its fingerprint.
 func (s *Snapshotter) checkGit(ctx context.Context) {
 	if s.gitChecked || s.collectors.Git == nil || ctx.Err() != nil {
 		return
@@ -683,13 +762,27 @@ func (s *Snapshotter) checkGit(ctx context.Context) {
 	usable := false
 	checkCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
 	defer cancel()
-	if catch(func() error { usable = s.collectors.Git.GitUsable(checkCtx); return nil }) != nil || !usable {
-		s.logf("cockpit fleet: Git is too old or unreadable; Git-backed reads are off (%s)", ErrorGitTooOld)
-		s.mu.Lock()
-		s.gitOld = true
-		s.mu.Unlock()
+	unreadable := catch(func() (err error) { usable, err = s.collectors.Git.GitUsable(checkCtx); return err }) != nil
+	off := unreadable || !usable
+	s.mu.Lock()
+	was := s.gitOld
+	s.gitOld = off
+	if was && !off {
+		// What was recorded while Git was off holds no Git state.
+		for _, state := range s.repos {
+			state.gitRead = false
+		}
 	}
-	s.gitChecked = true
+	s.mu.Unlock()
+	switch {
+	case off && !was && unreadable:
+		s.logf("cockpit fleet: the Git version could not be read; Git-backed reads are off for this pass (%s) and the next pass asks again", ErrorGitTooOld)
+	case off && !was:
+		s.logf("cockpit fleet: Git is too old; Git-backed reads are off (%s)", ErrorGitTooOld)
+	case was && !off:
+		s.logf("cockpit fleet: the Git version was read and Git is usable; Git-backed reads are on again")
+	}
+	s.gitChecked = !unreadable
 }
 
 // beginCodeIndex reads the indexer receipts for a pass and keeps the result
@@ -863,6 +956,11 @@ func (s *Snapshotter) track(discovered []discover.Repo) []string {
 	}
 	s.repos = next
 	s.listError, s.passing = "", true
+	if !s.listed {
+		// The first listing that works starts the first pass, whatever error
+		// state came before it: the document warms up until that pass ends.
+		s.listed, s.complete = true, false
+	}
 	ids := make([]string, 0, len(next))
 	for id := range next {
 		ids = append(ids, id)
@@ -959,6 +1057,12 @@ func (s *Snapshotter) scanOne(ctx context.Context, id string) error {
 // operation without waiting for the interval. A repository that could not be
 // read is recorded with an error code, shown in the republished document, and
 // its failure is returned.
+//
+// It is the read a pass makes of each repository whose fingerprint moved
+// (scanOne), and the on-request refresh that
+// cockpit#req:snapshot-refresh requires the daemon to be able to make. No
+// operation of the daemon completes inside it yet (the mutating routes are a
+// later task), so outside a pass nothing but that capability's tests calls it.
 func (s *Snapshotter) RefreshRepository(ctx context.Context, id string) error {
 	err := s.scanRepository(ctx, id, true)
 	if errors.Is(err, ErrUnknownRepository) {
@@ -1123,15 +1227,34 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 			s.logf("cockpit fleet: read other machines: %v", err)
 			return
 		}
-		view := mapRemote(s.machine, s.login, s.projectsRoot, entries, s.now())
+		login := s.knownLogin()
+		view := mapRemote(s.machine, login, s.projectsRoot, entries, s.now())
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.login == "" {
+			// Learned now, from the source or from this machine's own publication:
+			// the configured machines' published entries are found by it from this
+			// publication on.
+			s.login = firstNonEmpty(login, view.ownLogin)
+		}
 		if !maps.EqualFunc(s.remote.samples, view.samples, sameSample) {
 			s.remoteSampleVersion++
 		}
 		s.remote, s.remoteBranches = view, nil
 		s.publishMaybeLocked()
 	}()
+}
+
+// knownLogin is this machine's login as far as it is known now: the one it was
+// given or has learned, else what the source says, else "".
+func (s *Snapshotter) knownLogin() string {
+	s.mu.RLock()
+	login := s.login
+	s.mu.RUnlock()
+	if login == "" && s.loginSource != nil {
+		login = s.loginSource()
+	}
+	return login
 }
 
 // startPublish hands the end of a successful pass to the periodic remote
@@ -1306,26 +1429,55 @@ func (s *Snapshotter) publishMaybeLocked() {
 	s.publishLocked()
 }
 
-// publishLocked assembles the document, prepares its body and makes it the
-// published one. The caller holds s.mu.
+// publishLocked assembles the document and, when it says something the
+// published one does not, prepares its body and makes it the published one. A
+// document that says the same is not published again: the published one keeps
+// its bytes, its snapshot_at and its ETag, so a client that revalidates is
+// answered 304 for as long as the fleet is quiet, and only the time it was
+// last found current moves (CheckedAt). The caller holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
-	document, liveBytes, leftOut := s.assemble(now)
-	s.commit(document, s.prepare(document), now, liveBytes, leftOut)
+	document, sizes := s.assemble(now)
+	if s.current(document, now) {
+		return
+	}
+	s.commit(document, s.prepare(document), now, sizes)
+}
+
+// current reports whether the published document already says what document
+// does, and if so records that it was found current at now. Before anything was
+// published nothing is current. The caller holds s.mu.
+func (s *Snapshotter) current(document Document, now time.Time) bool {
+	if s.publishes == 0 || !sameContent(s.doc, document) {
+		return false
+	}
+	s.lastPublish = now
+	return true
+}
+
+// documentSizes is what the size guard decided for one assembled document: the
+// encoded bytes of the live machines' entries and of the published store's
+// entries that are in it, and whether each was left out.
+type documentSizes struct {
+	liveBytes, cachedBytes int
+	leftOut, cachedOut     bool
 }
 
 // commit makes a prepared document the published one and records what the size
-// guard needs for the next: the size of everything but the live machines'
-// entries, and whether they were left out (logged when that changes). The
+// guard needs for the next: the size of everything but the other machines'
+// entries, and whether those were left out (logged when that changes). The
 // caller holds s.mu, and calls it only for the newest document assembled.
-func (s *Snapshotter) commit(document Document, payload cockpit.Payload, now time.Time, liveBytes int, leftOut bool) {
+func (s *Snapshotter) commit(document Document, payload cockpit.Payload, now time.Time, sizes documentSizes) {
 	s.doc, s.payload = document, payload
 	s.lastPublish, s.publishes = now, s.publishes+1
-	s.baseBytes = max(payload.Size()-liveBytes, 0)
-	if leftOut && !s.leftOut {
+	s.baseBytes = max(payload.Size()-sizes.liveBytes-sizes.cachedBytes, 0)
+	if sizes.leftOut && !s.leftOut {
 		s.logf("cockpit fleet: the fleet document would be over %d bytes with the live machines' entries; they are left out (%s) and their published entries shown", s.maxDocument, RemoteErrorExportTooLarge)
 	}
-	s.leftOut = leftOut
+	if sizes.cachedOut && !s.cachedOut {
+		s.logf("cockpit fleet: the fleet document would be over %d bytes with the other machines' published entries; they are left out (%s) and only their machine entries shown", s.maxDocument, RemoteErrorExportTooLarge)
+	}
+	s.leftOut, s.cachedOut = sizes.leftOut, sizes.cachedOut
 }
 
 // publishUnlocked publishes as publishLocked does for a caller that does not
@@ -1341,14 +1493,18 @@ func (s *Snapshotter) publishUnlocked() {
 		s.mu.Unlock()
 		return
 	}
-	document, liveBytes, leftOut := s.assemble(now)
+	document, sizes := s.assemble(now)
+	if s.current(document, now) {
+		s.mu.Unlock()
+		return
+	}
 	generation := s.generation
 	s.mu.Unlock()
 	payload := s.prepare(document)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if generation == s.generation {
-		s.commit(document, payload, now, liveBytes, leftOut)
+		s.commit(document, payload, now, sizes)
 	}
 }
 
@@ -1359,19 +1515,28 @@ func (s *Snapshotter) publishUnlocked() {
 // holds s.mu.
 //
 // The size guard is decided here, before anything is encoded, so the document
-// is encoded once: when the size of everything else in the last published
-// document plus the encoded size of the fresh live views is over the bound, the
-// live machines' entries are left out, each such machine is shown by its
-// published entries or a bare entry carrying remote_error export_too_large,
-// and the document counts one more diagnostic. It returns the bytes of the live
-// views it included and whether it left them out.
-func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int, leftOut bool) {
+// is encoded once, and it covers every entry that is another machine's, live or
+// published. When the size of this machine's part of the last published
+// document plus the encoded size of the published store's entries is over the
+// bound, those entries are left out and each published machine is shown by its
+// machine entry alone, carrying remote_error export_too_large. When what is
+// then in the document plus the encoded size of the fresh live views is over
+// the bound, the live machines' entries are left out, each such machine shown
+// by its published entries or a bare entry carrying export_too_large. Each of
+// the two counts one more diagnostic. It returns what the guard decided.
+func (s *Snapshotter) assemble(now time.Time) (assembled Document, sizes documentSizes) {
+	liveBytes := 0
 	for _, key := range s.liveKeys {
 		if machine := s.live[key]; machine.fresh(now, s.remoteInterval()) {
 			liveBytes += machine.viewBytes
 		}
 	}
-	withLive := liveBytes == 0 || s.baseBytes+liveBytes <= s.maxDocument
+	withCached := s.remote.bytes == 0 || s.baseBytes+s.remote.bytes <= s.maxDocument
+	sizes.cachedBytes, sizes.cachedOut = s.remote.bytes, !withCached
+	if !withCached {
+		sizes.cachedBytes = s.remote.machineBytes
+	}
+	withLive := liveBytes == 0 || s.baseBytes+sizes.cachedBytes+liveBytes <= s.maxDocument
 	document := emptyDocument(s.interval)
 	document.WarmingUp, document.SnapshotAt, document.Error = !s.complete, now, s.listError
 	if s.gitOld && document.Error == "" {
@@ -1444,7 +1609,7 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		}
 	}
 	hidden, failures := s.overlayLive(&document, now, withLive, localHosts)
-	s.appendCached(&document, hidden, failures, localHosts)
+	s.appendCached(&document, hidden, failures, localHosts, withCached)
 	sortByName(document.Machines, func(item Machine) string { return item.Machine }, func(item Machine) string { return item.ID })
 	sortByName(document.Repositories, func(item Repository) string { return item.Name }, func(item Repository) string { return item.ID })
 	sortByName(document.Worktrees, func(item Worktree) string { return item.Task }, func(item Worktree) string { return item.ID })
@@ -1454,11 +1619,18 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		// The live machines were left out for the document's size: one diagnostic.
 		document.Diagnostics++
 	}
-	s.generation++
-	if !withLive {
-		return document, 0, true
+	if !withCached {
+		document.Diagnostics++
 	}
-	return document, liveBytes, false
+	if s.remote.machinesCut > 0 {
+		// More machines are published than the document carries: one diagnostic.
+		document.Diagnostics++
+	}
+	s.generation++
+	if sizes.leftOut = !withLive; withLive {
+		sizes.liveBytes = liveBytes
+	}
+	return document, sizes
 }
 
 // sameSample compares two samples by value: a sample holds pointers, which a

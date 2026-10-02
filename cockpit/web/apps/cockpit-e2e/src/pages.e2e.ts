@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { fleet, now, stub, watch } from './support'
+import { checkedAt, fleet, now, stub, watch } from './support'
 
 // The five pages against a stubbed fleet document and session, in the built
 // application served under the daemon's content security policy. Each test
@@ -96,7 +96,7 @@ test('the Worktrees page shows fresh, stale with its count, and never', async ({
     ],
   }
   await stub(page)
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: indexed, headers: { ETag: '"indexed"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: indexed, headers: { ETag: '"indexed"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   const expectClean = await watch(page)
   await page.goto('/cockpit/worktrees')
   await expect(page.getByRole('columnheader', { name: 'Code index' })).toBeVisible()

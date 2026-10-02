@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { stub, watch } from './support'
+import { checkedAt, stub, watch } from './support'
 
 // Home against a stubbed fleet and session, in the built application under the daemon's policy: its sections
 // from the model, the actions of its rows, the lazy chunk of the rest and the charts that load only on scroll,
@@ -47,7 +47,7 @@ const OWNER = { principal: 'owner', capabilities: ['fleet.read', 'repo.content.r
 
 async function serve(page: Page, session = ANONYMOUS) {
   await stub(page)
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: homeFleet, headers: { ETag: '"home"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: homeFleet, headers: { ETag: '"home"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: session }))
 }
 
@@ -191,7 +191,7 @@ test('at 360 px Home shows its first three sections as cards and the rest behind
 test('a healthy fleet shows a short, reassuring page: one calm line for each empty section and no Fleet health', async ({ page }) => {
   await stub(page)
   await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: { ...homeFleet, worktrees: [], pull_requests: [], agents: [], throughput: undefined }, headers: { ETag: '"calm"', 'Cache-Control': 'no-cache' } }),
+    route.fulfill({ json: { ...homeFleet, worktrees: [], pull_requests: [], agents: [], throughput: undefined }, headers: { ETag: '"calm"', 'Cache-Control': 'no-cache', ...checkedAt() } }),
   )
   const expectClean = await watch(page)
   await page.goto('/cockpit/')

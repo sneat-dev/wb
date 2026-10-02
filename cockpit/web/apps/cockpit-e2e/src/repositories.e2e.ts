@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { watch } from './support'
+import { checkedAt, watch } from './support'
 
 // The Repositories page, its panel and its detail route, in the built application against a stubbed
 // daemon: one row per repository across machines, the one-click sort presets, the machine chips, the
@@ -46,7 +46,7 @@ const requests: string[] = []
 
 async function stub(page: Page, options: { codeBrowser?: string; branchesDelayMs?: number } = {}) {
   requests.length = 0
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: fleet, headers: { ETag: '"repositories"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: fleet, headers: { ETag: '"repositories"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: ['fleet.read'], ...(options.codeBrowser ? { code_browser_url: options.codeBrowser } : {}) } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))
   await page.route('**/api/v1/cockpit/branches?**', async (route) => {
@@ -234,7 +234,7 @@ test('a wide list shows all eight columns and the actions cell, with Agents and 
     repositories: [...fleet.repositories.map((repository) => (repository.id === 'go-a' ? { ...repository, active_agent_count: 2 } : repository)), { id: 'gl-1', ...alpha, host: 'gitlab.com', name: 'group/sub/project', default_branch: 'main', worktree_count: 0, last_activity_at: ago(400 * hour) }],
     pull_requests: [{ id: 'p1', ...alpha, repository: 'go-a', worktree: 'w1', number: 7, state: 'open', checks_total: 4, checks_passed: 4, checks_green: true, mergeable: 'mergeable', checked_at: now }],
   }
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: busy, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: busy, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   const headers = () => page.locator('.head [role=columnheader]:not(.open-cell)').allInnerTexts()
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/cockpit/repositories')

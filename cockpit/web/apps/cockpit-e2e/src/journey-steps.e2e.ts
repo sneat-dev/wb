@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { countOpensItsList, everyTabListsRows, filterChipPanelDetailBack, homeLoads, machineMetrics, newTaskProducesCommands, paletteOpensATask, type JourneyFleet, type JourneyMetrics } from './journey/steps'
-import { watch } from './support'
+import { checkedAt, watch } from './support'
 
 // The steps of the real-daemon journey (journey/steps.ts), run here against a stubbed daemon whose answers are shaped
 // like the real one's for the journey's fixture: one Linux machine that is this one, two repositories, two WB
@@ -54,7 +54,7 @@ const sample = (minutesAgo: number, withCpu: boolean) => ({
 async function serve(page: Page, metrics: JourneyMetrics & { machine: string }) {
   const requests: string[] = []
   page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}`))
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...fleet, snapshot_at: ago(0) }, headers: { ETag: '"journey"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...fleet, snapshot_at: ago(0) }, headers: { ETag: '"journey"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.route('**/api/v1/cockpit/branches?**', (route) => route.fulfill({ json: { branches: [] } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: metrics }))
@@ -62,8 +62,21 @@ async function serve(page: Page, metrics: JourneyMetrics & { machine: string }) 
 }
 
 const origin = () => new URL(test.info().project.use.baseURL as string).origin
-const withCpu = { machine: 'mach-runner', route: 'local', samples: [sample(2, false), sample(1.8, true), sample(1.5, true)] }
-const withoutCpu = { machine: 'mach-runner', route: 'local', samples: [sample(0.2, false)] }
+// Read when served (a getter), so a sample is as old as the page believes however long after the file loaded the test starts.
+const withCpu = {
+  machine: 'mach-runner',
+  route: 'local',
+  get samples() {
+    return [sample(2, false), sample(1.8, true), sample(1.5, true)]
+  },
+}
+const withoutCpu = {
+  machine: 'mach-runner',
+  route: 'local',
+  get samples() {
+    return [sample(0.2, false)]
+  },
+}
 
 // cockpit-views#ac:every-tab-lists-its-collection
 test('Home holds its sections and every tab lists the rows of the fleet', async ({ page }) => {

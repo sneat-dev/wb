@@ -121,6 +121,7 @@ func TestConfiguredTargetAppearsLiveRemote(t *testing.T) {
 	sources.remote = append(sources.remote, cachedVM("alex"))
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{httpTarget(hub, tokenFile(t, vmBearer+"\n"))}
 		options.Transports = []RemoteTransport{
 			{Name: TransportHTTP, Exporter: NewHTTPExporter(func() time.Time { return clock.Now() })},
@@ -547,10 +548,19 @@ func hostilePayloads(t *testing.T, valid []byte, later time.Time) map[string][]b
 // TestHostilePayloadIsRefused proves cockpit-views#ac:hostile-payload-is-refused
 // over the HTTP transport, through the whole daemon path: a 9 MiB body, an
 // unknown top-level field, a 10,000-byte task name, a worktree carrying a path,
-// a negative count, a NaN, a sample 5 minutes in the future and 361 samples are
-// each refused as bad_payload; nothing of them is rendered (the machine's
-// published entries stay, with the code); and the fallback transport is not
-// tried, because a refused payload is not a transport failure.
+// a negative count, a NaN and 361 samples are each refused as bad_payload, and
+// a sample 5 minutes in the future as clock_skew; nothing of them is rendered
+// (the machine's published entries stay, with the code); and the fallback
+// transport is not tried, because a refused payload is not a transport failure.
+// hostileCode is the code a hostile payload of hostilePayloads is refused with:
+// the one whose only fault is a time ahead of the clock is clock_skew.
+func hostileCode(name string) string {
+	if name == "a sample in the future" {
+		return RemoteErrorClockSkew
+	}
+	return RemoteErrorBadPayload
+}
+
 func TestHostilePayloadIsRefused(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 360, false)
@@ -566,6 +576,7 @@ func TestHostilePayloadIsRefused(t *testing.T) {
 		sources.remote = append(sources.remote, cachedVM("alex"))
 		var clock *manualClock
 		snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+			options.Login = testLogin
 			options.Remotes = []RemoteTarget{httpTarget(hub, tokenFile(t, vmBearer))}
 			options.Transports = []RemoteTransport{
 				{Name: TransportHTTP, Exporter: NewHTTPExporter(func() time.Time { return clock.Now() })},
@@ -577,8 +588,8 @@ func TestHostilePayloadIsRefused(t *testing.T) {
 		pollAndSettle(t, snapshotter)
 		document := snapshotter.Document()
 		vm, found := machineNamed(document, vmKey)
-		if !found || vm.Route != RouteCached || vm.RemoteError != RemoteErrorBadPayload || vm.Transport != "" {
-			t.Errorf("%s: the machine = %+v, want its published entry with bad_payload", name, vm)
+		if !found || vm.Route != RouteCached || vm.RemoteError != hostileCode(name) || vm.Transport != "" {
+			t.Errorf("%s: the machine = %+v, want its published entry with %s", name, vm, hostileCode(name))
 		}
 		rendered := marshalled(t, document)
 		for _, absent := range []string{"vm-task", "agt-vm", "rm -rf", "/home/ai", RouteLiveRemote} {

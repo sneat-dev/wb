@@ -1,5 +1,5 @@
 import { Agent, AppLink, FleetModel, MachineView, MergedRepository, TaskView, Worktree, ListPageId, Term, agentDetailLink, declaredFields, machineDetailLink, parseQuery, repositoryDetailLink, taskDetailLink, worktreeDetailLink } from '@cockpit/fleet-data'
-import { EXACT_FIELDS, ListRow, MatchEnv, Subject, agentLabel, emptyListQuery, includesOlder, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows, matchesTerms } from '@cockpit/fleet-data/list'
+import { EXACT_FIELDS, ListRow, MatchEnv, Subject, agentLabel, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows, matchesTerms } from '@cockpit/fleet-data/list'
 import { IconName } from '../ui/icon'
 
 export type PaletteKind = 'task' | 'repository' | 'worktree' | 'branch' | 'agent' | 'machine'
@@ -62,6 +62,8 @@ interface Candidate {
   subject: Subject
   /** Built only for the results that are shown: matching a thousand rows builds no label. */
   describe: () => Described
+  /** Ranks after every other match of its kind, never out of the results: finding by name always works. */
+  last?: boolean
 }
 
 function group(kind: PaletteKind, candidates: readonly Candidate[], page: ListPageId | 'branch', terms: readonly Term[], now: number): PaletteGroup | undefined {
@@ -73,7 +75,7 @@ function group(kind: PaletteKind, candidates: readonly Candidate[], page: ListPa
   const matching = candidates
     .filter((candidate) => matchesTerms(terms, candidate.subject, env))
     .map((candidate, index) => ({ candidate, index, score: rank(terms, candidate.subject) }))
-    .sort((a, b) => a.score - b.score || (b.candidate.subject.activityAt ?? 0) - (a.candidate.subject.activityAt ?? 0) || a.index - b.index)
+    .sort((a, b) => Number(a.candidate.last === true) - Number(b.candidate.last === true) || a.score - b.score || (b.candidate.subject.activityAt ?? 0) - (a.candidate.subject.activityAt ?? 0) || a.index - b.index)
   if (matching.length === 0) return undefined
   const info = PALETTE_KINDS.find((candidate) => candidate.kind === kind) as (typeof PALETTE_KINDS)[number]
   return {
@@ -163,9 +165,10 @@ export function searchPalette(model: FleetModel, text: string, now: number): Pal
       },
     })
   }
+  const taskRows = buildTaskRows(model)
   const groups = [
-    // The window of Home applies: a task at risk and idle for over 14 days is a cleanup matter, so a search leaves it out unless it asks for `state:at-risk`.
-    group('task', rows(buildTaskRows(model).filter((row) => row.windowed !== true || includesOlder(emptyListQuery(), terms)), describe.task), 'tasks', terms, now),
+    // A task at risk and idle for over 14 days is a cleanup matter, so it ranks after the others; it is never left out of a search that matches it.
+    group('task', taskRows.map((row) => ({ ...rows([row], describe.task)[0], last: row.windowed === true })), 'tasks', terms, now),
     group('repository', rows(buildRepositoryRows(model), describe.repository), 'repositories', terms, now),
     group('worktree', rows(worktreeRows, describe.worktree), 'worktrees', terms, now),
     group('branch', branches, 'branch', terms, now),

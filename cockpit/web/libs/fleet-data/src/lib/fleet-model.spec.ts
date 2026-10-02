@@ -572,8 +572,24 @@ describe('machines and Fleet health', () => {
     const [warming, big] = buildHealth(model).remoteErrors
     expect(warming.command).toEqual({ reason: expect.stringContaining('nothing to run') })
     expect(big.command).toEqual({ reason: expect.stringContaining('nothing to run') })
-    for (const code of ['remote_warming_up', 'export_too_large', 'self_export']) expect(remoteFix(code, undefined)).toEqual({ ok: false, reason: expect.stringContaining('nothing to run') })
+    for (const code of ['remote_warming_up', 'export_too_large', 'self_export', 'clock_skew']) expect(remoteFix(code, undefined)).toEqual({ ok: false, reason: expect.stringContaining('nothing to run') })
     expect(remoteFix('a_code_from_the_future', { host: 'h' })).toEqual({ ok: false, reason: expect.stringContaining('unknown error') })
+  })
+
+  // cockpit-views#ac:remote-error-is-visible
+  it('lists a machine whose clock is ahead, live or cached, with the guidance to fix that clock and no command to copy', () => {
+    const model = modelOf({ machines: [m('vm', { route: 'live-remote', transport: 'ssh', remote_error: 'clock_skew' }), m('nas', { route: 'cached', remote_error: 'clock_skew', observed_at: ago(HOUR) })] })
+    const items = buildHealth(model).remoteErrors
+    expect(items.map((item) => item.text)).toEqual([expect.stringContaining("vm: its clock is more than a minute ahead"), expect.stringContaining("nas: its clock is more than a minute ahead")])
+    expect(items.every((item) => item.text.endsWith("fix that machine's clock"))).toBe(true)
+    expect(items.map((item) => item.command)).toEqual([{ reason: expect.stringContaining("set the clock of that machine") }, { reason: expect.stringContaining("set the clock of that machine") }])
+  })
+
+  it('lists a cached machine that carries export_dropped and export_too_large as a live one is listed', () => {
+    const model = modelOf({ machines: [m('live', { route: 'live-remote', export_dropped: 2, remote_error: 'export_too_large' }), m('old', { route: 'cached', export_dropped: 2, remote_error: 'export_too_large', observed_at: ago(HOUR) })] })
+    const health = buildHealth(model)
+    expect(health.exportDropped.map((item) => item.text)).toEqual(["2 entries left out of live's export", "2 entries left out of old's export"])
+    expect(health.remoteErrors.map((item) => item.text)).toEqual(['live: its export is too large to read', 'old: its export is too large to read'])
   })
 
   it('lists a machine whose export left entries out, and nothing for zero or an unreported count', () => {
@@ -643,7 +659,7 @@ describe('machines and Fleet health', () => {
   })
 
   it('says each remote_error in words, and an unknown code as an unknown error', () => {
-    for (const code of ['http_unavailable', 'http_auth_failed', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'wb_too_old', 'daemon_not_running', 'export_refused', 'bad_payload', 'remote_warming_up', 'export_too_large', 'self_export']) {
+    for (const code of ['http_unavailable', 'http_auth_failed', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'wb_too_old', 'daemon_not_running', 'export_refused', 'bad_payload', 'remote_warming_up', 'export_too_large', 'self_export', 'clock_skew']) {
       expect(remoteErrorText(code)).not.toBe('unknown error')
     }
     expect(remoteErrorText('???')).toBe('unknown error')

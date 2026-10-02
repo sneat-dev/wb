@@ -98,12 +98,17 @@ func cockpitFleetOptionsWith(projectsRoot, home, configPath string, config wbcon
 	}
 	var remote cockpitfleet.RemoteCollector
 	var publisher cockpitfleet.RemotePublisher
+	// The login this machine publishes under is what tells its own machines'
+	// publications from another login's machine of the same name. The daemon
+	// learns it when its periodic publisher resolves it; the snapshotter also
+	// learns it from this machine's own publication in the store.
+	login := &learnedLogin{}
 	if remoteConfig, loadErr := remotestate.LoadConfig(configPath); loadErr == nil {
 		machine = remoteConfig.Machine
 		if every := remoteConfig.Publish.PublishEvery(); every > 0 {
 			deps := defaultRemoteDeps()
 			deps.configPath = configPath
-			publisher = newPeriodicPublisher(deps, remoteConfig, projectsRoot, logf)
+			publisher = newPeriodicPublisher(deps, remoteConfig, projectsRoot, logf, login.learn)
 		}
 		if remoteConfig.Provider != "git" {
 			logf("cockpit fleet: other machines are not read from the %s remote provider", remoteConfig.Provider)
@@ -123,13 +128,28 @@ func cockpitFleetOptionsWith(projectsRoot, home, configPath string, config wbcon
 	targets, transports, sshRoutes := cockpitRemotes(configPath, config, logf, ssh)
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
-		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: withHerdrActivity(local.Collectors(remote)), Interval: config.RefreshInterval,
+		LoginSource: login.known,
+		Sampler:     newLocalSampler(projectsRoot, logf, nil), Collectors: withHerdrActivity(local.Collectors(remote)), Interval: config.RefreshInterval,
 		Remotes: targets, Transports: transports, SSHRoutes: sshRoutes,
 		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
 		Publisher:    publisher,
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}
+}
+
+// learnedLogin holds the login this machine publishes under from the moment
+// something resolves it; it is read from memory by the fleet snapshotter.
+type learnedLogin struct{ value atomic.Pointer[string] }
+
+func (l *learnedLogin) learn(login string) { l.value.Store(&login) }
+
+// known is the login, or "" while nothing has resolved it.
+func (l *learnedLogin) known() string {
+	if login := l.value.Load(); login != nil {
+		return *login
+	}
+	return ""
 }
 
 // cockpitRemotes is the other machines the daemon reads live, the transports it
@@ -314,11 +334,19 @@ const periodicScanWorkers = 2
 // remote-publish): the same collector, identity and provider as `wb remote
 // publish`, wrapped in the interval, change and backoff policy of package
 // periodic. The GitHub login keying this machine's entry is resolved on the
-// first attempt that needs it and kept.
-func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot string, logf func(string, ...any)) *periodic.Publisher {
+// first attempt that needs it and kept, and learned, when it is not nil, is told
+// it then.
+func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot string, logf func(string, ...any), learned func(login string)) *periodic.Publisher {
 	var login string
+	// What a scan read of a clone is kept while the clone's fingerprint stays the
+	// same, and no longer than the keepalive.
+	scans := &repositoryScans{read: deps.readRepository, fingerprint: cockpitfleet.Fingerprint, maxAge: max(periodic.DefaultKeepalive, cfg.Publish.PublishEvery())}
+	if scans.read == nil {
+		scans.read = readRepositoryWithGit
+	}
 	return periodic.New(periodic.Options{
 		Every: cfg.Publish.PublishEvery(), Agents: cfg.Publish.Agents, Metrics: cfg.Publish.Metrics, Logf: logf, Now: deps.now,
+		Published: func() { notePeriodicHardware(deps.configPath, logf) },
 		Collect: func(ctx context.Context, now time.Time) (remotestate.Snapshot, error) {
 			if login == "" {
 				found, err := deps.login()
@@ -326,8 +354,11 @@ func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot 
 					return remotestate.Snapshot{}, errors.New("the GitHub login keying this machine's entry is unavailable (gh auth status)")
 				}
 				login = found
+				if learned != nil {
+					learned(login)
+				}
 			}
-			return collectSnapshot(ctx, projectsRoot, "", periodicScanWorkers, publishIdentity(cfg, login, now), cfg.Publish.Unpushed, nil)
+			return collectSnapshot(ctx, projectsRoot, "", periodicScanWorkers, publishIdentity(cfg, login, now), cfg.Publish.Unpushed, nil, scans)
 		},
 		Open: func() (remotestate.Provider, error) { return deps.open(cfg, projectsRoot) },
 	})

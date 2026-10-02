@@ -12,6 +12,9 @@ import { otherConsoleErrors, unexplainedViolations, type Violation } from './vio
 export const observed = new Date(Date.now() - 12 * 60_000).toISOString()
 export const now = new Date().toISOString()
 
+/** The header a daemon sends on every answer of the fleet route, a 304 too: when it last found the document current. Stamped when served, never at file load. */
+export const checkedAt = (): Record<string, string> => ({ 'X-Wb-Cockpit-Checked-At': new Date().toISOString() })
+
 export const alpha = { machine: 'alpha', machine_id: 'mach-alpha', route: 'local', observed_at: now }
 export const beta = { machine: 'beta', machine_id: 'mach-beta', route: 'cached', observed_at: observed }
 
@@ -48,7 +51,7 @@ export const fleet = {
 
 export async function stub(page: Page, codeBrowserUrl = 'https://codegrapher.dev/') {
   await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: fleet, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache' } }),
+    route.fulfill({ json: fleet, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache', ...checkedAt() } }),
   )
   await page.route('**/api/v1/cockpit/session', (route) =>
     route.fulfill({
@@ -112,7 +115,7 @@ export async function stubBusy(page: Page, principal: 'anonymous-local' | 'owner
   const requests: string[] = []
   page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}${new URL(request.url()).search}`))
   const routes = document.machines.filter((machine) => machine.route !== 'local').map((machine) => ({ machine_id: machine.id, ssh: { host: 'secret-host.example', user: 'secretuser', wb_path: '/opt/secret/wb' } }))
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...document, snapshot_at: new Date().toISOString() }, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...document, snapshot_at: new Date().toISOString() }, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) =>
     route.fulfill({
       json: {

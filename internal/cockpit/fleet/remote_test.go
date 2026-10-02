@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,7 @@ func failing(err error) func(RemoteTarget, bool) (Envelope, error) {
 func newLive(t *testing.T, sources *fakeSources, exporter RemoteExporter, change func(*Options)) (*Snapshotter, *manualClock) {
 	t.Helper()
 	return newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{{Machine: vmKey}}
 		options.Transports = []RemoteTransport{{Name: TransportHTTP, Exporter: exporter}}
 		if change != nil {
@@ -139,12 +141,13 @@ func newLive(t *testing.T, sources *fakeSources, exporter RemoteExporter, change
 	})
 }
 
-// pollAndSettle runs one look of the background loop, as it is while a client
-// reads the fleet document, and waits for the exports it started. pollIdle is
-// the same look with no reader.
+// pollAndSettle runs one look of the background loop, as it is while an owner
+// session reads the fleet document (the reader that is demand for every
+// transport), and waits for the exports it started. pollIdle is the same look
+// with no reader.
 func pollAndSettle(t *testing.T, snapshotter *Snapshotter) {
 	t.Helper()
-	snapshotter.fleetAsked.Store(snapshotter.now().UnixNano())
+	snapshotter.fleetRead(demandOwner)
 	snapshotter.pollRemotes(t.Context())
 	snapshotter.side.Wait()
 }
@@ -267,8 +270,56 @@ func TestRemoteFailureNamesTheCodeAndWhetherToFallBack(t *testing.T) {
 	if text := (&RemoteError{Code: RemoteErrorTimeout}).Error(); text != "remote export failed: timeout" {
 		t.Errorf("error text = %q", text)
 	}
-	if len(remoteErrorCodes) != 13 {
-		t.Errorf("the vocabulary has %d codes, want the thirteen of the requirement", len(remoteErrorCodes))
+	if remoteFailure(TransportSSH, &BadEnvelopeError{ClockSkew: true}).Fallback {
+		t.Error("a clock that is ahead is the same on every transport: it is not a reason to try the next")
+	}
+	if len(remoteErrorCodes) != 14 {
+		t.Errorf("the vocabulary has %d codes, want the fourteen of the requirement", len(remoteErrorCodes))
+	}
+}
+
+// TestAMachineWhoseClockIsAheadIsReadWithinAMinuteAndNamedBeyondIt: the clocks
+// of two machines differ. An export whose times are up to a minute ahead of
+// this daemon's clock is read as any other; one further ahead is refused under
+// its own code, clock_skew, on either transport, and never as bad_payload,
+// which would name a fault the export does not have.
+func TestAMachineWhoseClockIsAheadIsReadWithinAMinuteAndNamedBeyondIt(t *testing.T) {
+	t.Parallel()
+	exportAhead := func(by time.Duration) Envelope {
+		remote, clock := newSnapshotter(vmSources().collectors(), func(options *Options) { options.Machine = vmOwnName })
+		clock.advance(by)
+		refreshAndSettle(t, remote)
+		return remote.Export(false)
+	}
+	for name, test := range map[string]struct {
+		ahead time.Duration
+		want  string
+	}{
+		"half a minute ahead":       {30 * time.Second, ""},
+		"exactly the allowance":     {maxSkew, ""},
+		"a second over":             {maxSkew + time.Second, RemoteErrorClockSkew},
+		"an hour ahead (a bad RTC)": {time.Hour, RemoteErrorClockSkew},
+	} {
+		for _, transport := range []string{TransportHTTP, TransportSSH} {
+			envelope := exportAhead(test.ahead)
+			logs := &logRecorder{}
+			snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: answering(envelope, envelope)}, func(options *Options) {
+				options.Logf = logs.logf
+				options.Transports = []RemoteTransport{{Name: transport, Exporter: options.Transports[0].Exporter}}
+			})
+			refreshAndSettle(t, snapshotter)
+			pollAndSettle(t, snapshotter)
+			vm, found := machineNamed(snapshotter.Document(), vmKey)
+			if !found || vm.RemoteError != test.want || (vm.WorktreeCount > 0) != (test.want == "") {
+				t.Errorf("%s over %s: the machine is %+v (found %v), want remote_error %q", name, transport, vm, found, test.want)
+			}
+		}
+	}
+	// Only a time ahead of the clock is skew: a time before 2000 is a bad payload.
+	old := exportAhead(0)
+	old.ExportedAt = time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := remoteFailure(TransportHTTP, old.Validate(false, old.Fleet.SnapshotAt)); got != (RemoteError{Code: RemoteErrorBadPayload}) {
+		t.Errorf("an export dated before 2000 is %+v, want bad_payload", got)
 	}
 }
 
@@ -781,6 +832,12 @@ func TestStartRunsTheBackgroundReadsUntilItIsStopped(t *testing.T) {
 	if exporter.count() != 2 {
 		t.Fatalf("exports after one interval = %d, want 2", exporter.count())
 	}
+	// The local loop takes a tick only once its first pass has ended, and with it
+	// that pass's closing publication. Without this wait the stop could cancel a
+	// first pass that was still running: the exports' own publications are held
+	// back at the in-pass rate, and a cancelled pass publishes nothing when it
+	// ends, so the document would not show the machine.
+	refresh <- clock.Now()
 	stop()
 	if stopped != 1 || len(steps) != 1 || steps[0] != remoteStep {
 		t.Errorf("the loop's ticker: stopped %d times, steps %v", stopped, steps)
@@ -1055,7 +1112,7 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 			t.Errorf("%s: log = %q", name, logs.all())
 		}
 		machine := snapshotter.live[vmKey]
-		if snapshotter.recordExport(t.Context(), machine, exportResult{}, true, newClock().Now(), newClock().Now(), liveView{}, [32]byte{}, 0, ""); machine.samples != nil {
+		if snapshotter.recordExport(t.Context(), machine, exportResult{}, true, newClock().Now(), newClock().Now(), liveView{}, [32]byte{}, 0, "", false); machine.samples != nil {
 			t.Errorf("%s: metrics of this machine were kept", name)
 		}
 	}
@@ -1096,11 +1153,21 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 	}
 }
 
+// ownPublication is a snapshot this machine published itself under login: its
+// own name and its projects root.
+func ownPublication(login string) remotestate.Entry {
+	return remotestate.Entry{Snapshot: remotestate.Snapshot{Login: login, Machine: testMachine, ProjectsRoot: "/projects", PublishedAt: newClock().Now().Add(-time.Hour)}}
+}
+
 // TestLiveMachineIDIsThePublishedEntrysWhenThereIsExactlyOne is the id rule of a
 // configured machine: the id of its one published entry (so it keeps its id
-// when it goes live), else an id derived from this machine's login and the key;
-// with a login known only that login's publication is the machine, and without
-// one every publication under the name is replaced while the export is fresh.
+// when it goes live), else an id derived from this machine's login and the key.
+// Only a publication under this machine's own login is the machine. While the
+// login is not known none is: a machine of another login with the same name
+// stays a machine of its own, is never hidden behind the configured machine's
+// live entries and never lends it its id. The login is the one given, or the
+// one this machine's own publication in the store carries, unless two logins
+// both claim to be this machine.
 func TestLiveMachineIDIsThePublishedEntrysWhenThereIsExactlyOne(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 2, false)
@@ -1110,18 +1177,30 @@ func TestLiveMachineIDIsThePublishedEntrysWhenThereIsExactlyOne(t *testing.T) {
 		wantID    string
 		cached    int // the machines still shown from the published store under the name
 	}{
-		"no publication":                 {"", nil, entryID(kindMachine, "/vm"), 0},
-		"no publication, login known":    {"alex", nil, entryID(kindMachine, "alex/vm"), 0},
-		"one publication":                {"", []remotestate.Entry{cachedVM("alex")}, entryID(kindMachine, "alex/vm"), 0},
-		"one, published twice":           {"", []remotestate.Entry{cachedVM("alex"), cachedVM("alex")}, entryID(kindMachine, "alex/vm"), 0},
-		"two logins, login unknown":      {"", []remotestate.Entry{cachedVM("alex"), cachedVM("someone")}, entryID(kindMachine, "/vm"), 0},
-		"two logins, login known":        {"alex", []remotestate.Entry{cachedVM("alex"), cachedVM("someone")}, entryID(kindMachine, "alex/vm"), 1},
-		"another login only, ours known": {"alex", []remotestate.Entry{cachedVM("someone")}, entryID(kindMachine, "alex/vm"), 1},
+		"no publication":                         {"", nil, entryID(kindMachine, "/vm"), 0},
+		"no publication, login known":            {"alex", nil, entryID(kindMachine, "alex/vm"), 0},
+		"one publication, login unknown":         {"", []remotestate.Entry{cachedVM("alex")}, entryID(kindMachine, "/vm"), 1},
+		"one publication, login known":           {"alex", []remotestate.Entry{cachedVM("alex")}, entryID(kindMachine, "alex/vm"), 0},
+		"one, published twice":                   {"alex", []remotestate.Entry{cachedVM("alex"), cachedVM("alex")}, entryID(kindMachine, "alex/vm"), 0},
+		"two logins, login unknown":              {"", []remotestate.Entry{cachedVM("alex"), cachedVM("someone")}, entryID(kindMachine, "/vm"), 2},
+		"two logins, login known":                {"alex", []remotestate.Entry{cachedVM("alex"), cachedVM("someone")}, entryID(kindMachine, "alex/vm"), 1},
+		"another login only, ours known":         {"alex", []remotestate.Entry{cachedVM("someone")}, entryID(kindMachine, "alex/vm"), 1},
+		"another login only, ours unknown":       {"", []remotestate.Entry{cachedVM("someone")}, entryID(kindMachine, "/vm"), 1},
+		"the login learned from our publication": {"", []remotestate.Entry{ownPublication("alex"), cachedVM("alex"), cachedVM("someone")}, entryID(kindMachine, "alex/vm"), 1},
+		"two logins claim to be this machine":    {"", []remotestate.Entry{ownPublication("alex"), ownPublication("someone"), cachedVM("alex")}, entryID(kindMachine, "/vm"), 1},
 	} {
 		exporter := &fakeExporter{answer: answering(full, full)}
-		snapshotter, _ := newLive(t, &fakeSources{remote: test.published}, exporter, func(options *Options) { options.Login = test.login })
+		snapshotter, _ := newLive(t, &fakeSources{remote: test.published}, exporter, func(options *Options) {
+			options.Login, options.ProjectsRoot = test.login, "/projects"
+		})
 		refreshAndSettle(t, snapshotter)
 		pollAndSettle(t, snapshotter)
+		// A machine of another login never has the configured machine's SSH route.
+		for _, route := range snapshotter.MachineRoutes() {
+			if route.MachineID == entryID(kindMachine, "someone/vm") {
+				t.Errorf("%s: another login's machine was given the configured machine's route", name)
+			}
+		}
 		document := snapshotter.Document()
 		requireUniqueIDs(t, document)
 		live, cached := 0, 0
@@ -1155,11 +1234,18 @@ func TestALiveMachineIsMappedAgainWhenItsIDChanges(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 2, false)
 	sources := &fakeSources{}
-	snapshotter, _ := newLive(t, sources, &fakeExporter{answer: answering(full, full)}, nil)
+	snapshotter, _ := newLive(t, sources, &fakeExporter{answer: answering(full, full)}, func(options *Options) { options.Login = "" })
 	refreshAndSettle(t, snapshotter)
 	pollAndSettle(t, snapshotter)
 	first, _ := machineNamed(snapshotter.Document(), vmKey)
-	sources.change(func(f *fakeSources) { f.remote = []remotestate.Entry{cachedVM("alex")} })
+	// The login is learned later (this machine's own publication arrives with the
+	// machine's), and with it the publication that is the machine.
+	sources.change(func(f *fakeSources) {
+		own := cachedVM("alex")
+		own.Snapshot.Machine, own.Snapshot.ProjectsRoot = testMachine, "/projects"
+		f.remote = []remotestate.Entry{cachedVM("alex"), own}
+	})
+	snapshotter.projectsRoot = "/projects"
 	refreshAndSettle(t, snapshotter)
 	document := snapshotter.Document()
 	second, _ := machineNamed(document, vmKey)
@@ -1359,6 +1445,53 @@ func TestAnExportNeverCarriesAnotherMachinesLiveEntriesOrTheErrorOfAReadOfThem(t
 		change(&forged.Fleet.Machines[0])
 		if err := forged.Validate(false, clock.Now()); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("an export with a machine's %s = %v, want it refused", name, err)
+		}
+	}
+}
+
+// TestTheLoginIsLearnedFromItsSourceAndThenKept: a daemon that does not know
+// its login at the start takes no published entry for a configured machine's;
+// once the source says the login (the periodic publisher resolved it), the next
+// read of the other machines finds that login's publication, which the machine
+// then replaces and takes its id from, and a later answer of the source changes
+// nothing.
+func TestTheLoginIsLearnedFromItsSourceAndThenKept(t *testing.T) {
+	t.Parallel()
+	full := exportOf(t, vmOwnName, vmSources(), 2, false)
+	var said atomic.Pointer[string]
+	source := func() string {
+		if login := said.Load(); login != nil {
+			return *login
+		}
+		return ""
+	}
+	sources := &fakeSources{remote: []remotestate.Entry{cachedVM("alex"), cachedVM("someone")}}
+	snapshotter, clock := newLive(t, sources, &fakeExporter{answer: answering(full, full)}, func(options *Options) {
+		options.Login, options.LoginSource = "", source
+	})
+	refreshAndSettle(t, snapshotter)
+	pollAndSettle(t, snapshotter)
+	named := func() (live Machine, cached int) {
+		for _, machine := range snapshotter.Document().Machines {
+			switch {
+			case machine.Machine != vmKey:
+			case machine.Route == RouteLiveRemote:
+				live = machine
+			default:
+				cached++
+			}
+		}
+		return live, cached
+	}
+	if live, cached := named(); live.ID != entryID(kindMachine, "/vm") || cached != 2 {
+		t.Fatalf("with the login unknown: the live machine %s beside %d published ones, want none of them taken for it", live.ID, cached)
+	}
+	for _, login := range []string{"alex", "someone"} {
+		said.Store(&login)
+		clock.advance(time.Second)
+		refreshAndSettle(t, snapshotter)
+		if live, cached := named(); live.ID != entryID(kindMachine, "alex/vm") || cached != 1 {
+			t.Fatalf("after the source said %s: the live machine %s beside %d published ones, want alex's publication replaced", login, live.ID, cached)
 		}
 	}
 }

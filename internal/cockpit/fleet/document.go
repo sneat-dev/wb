@@ -202,9 +202,10 @@ const ReasonCachedRepository = "cached_repository"
 // live-remote entries, and RemoteError the code of the last failed read of
 // another machine (cockpit-views#req:remote-error-is-visible): one of
 // remoteErrorCodes, never the remote's own text. ExportDropped is the number of
-// that machine's entries its export left out, or this daemon cut at its caps,
-// and AgentsTruncated says its agents were cut. None of the four is ever set
-// on this machine's own entry.
+// that machine's entries its export left out, or this daemon cut at its caps
+// (of a live export and of a published snapshot alike), and AgentsTruncated
+// says its agents were cut. None of the four is ever set on this machine's own
+// entry.
 type Machine struct {
 	Entry
 	WBVersion       string    `json:"wb_version,omitempty"`
@@ -255,9 +256,14 @@ type Repository struct {
 }
 
 // Worktree is one WB task worktree. Repository is the id of its repository.
-// Name is its task, never a path. Ahead, Behind and UpstreamGone are the sync
-// facts of its branch, present only for a worktree of this machine and each
-// omitted when unknown.
+// Name is its task, never a path. Ahead, Behind, UpstreamGone and HasUpstream
+// are the sync facts of its branch, each omitted when unknown. A `local` entry
+// carries what this daemon observed. A `live-remote` entry carries them, and its
+// lifecycle and owner state, as the other machine reported them: they are that
+// machine's word, not an observation of this one, and Route is what says so (no
+// entry with another route ever carries an id or the machine id of this
+// machine's entries, so a client that reads a fact as "observed here" only from
+// a `local` entry cannot be misled). A `cached` entry has no sync facts.
 type Worktree struct {
 	Entry
 	Repository     string    `json:"repository"`
@@ -308,11 +314,13 @@ type PullRequest struct {
 	State      string `json:"state,omitempty"`
 	URL        string `json:"url,omitempty"`
 	// The fields below come from the daemon's last successful observation of
-	// the pull request and are omitted until one has succeeded, and always for
-	// a pull request of another machine (cockpit-views#req:pull-request-fields).
-	// The counts and the verdict are pointers because zero and false are
-	// values. ChecksGreen is the observation's own verdict, not derived from
-	// the counts.
+	// the pull request and are omitted until one has succeeded
+	// (cockpit-views#req:pull-request-fields). On a `live-remote` entry they,
+	// and State (`merged` included), are what the other machine's daemon reported
+	// of its own observation, validated and never observed here: Route says
+	// whose word they are. A `cached` entry has none of them. The counts and the
+	// verdict are pointers because zero and false are values. ChecksGreen is the
+	// observation's own verdict, not derived from the counts.
 	Mergeable     string    `json:"mergeable,omitempty"`
 	ChecksTotal   *int      `json:"checks_total,omitempty"`
 	ChecksPassed  *int      `json:"checks_passed,omitempty"`

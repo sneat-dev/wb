@@ -1,6 +1,6 @@
 import { performanceFixture } from '@cockpit/fleet-data/testing'
 import { expect, test, type Page } from '@playwright/test'
-import { watch } from './support'
+import { checkedAt, watch } from './support'
 
 // The shared list and its side panel, on the Worktrees page, against the 600-worktree fixture
 // of the performance budgets (REQ:bounded-row-elements, REQ:fast-filtering, REQ:look-layout).
@@ -14,7 +14,7 @@ const grid = (page: Page) => page.getByRole('grid')
 async function stubFixture(page: Page, delayMs = 0) {
   await page.route('**/api/v1/cockpit/fleet', async (route) => {
     if (delayMs > 0) await new Promise((done) => setTimeout(done, delayMs))
-    await route.fulfill({ json: fleet, headers: { ETag: '"perf"', 'Cache-Control': 'no-cache' } })
+    await route.fulfill({ json: fleet, headers: { ETag: '"perf"', 'Cache-Control': 'no-cache', ...checkedAt() } })
   })
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))
@@ -253,6 +253,29 @@ test('a short list has no empty strip under its rows, and the cells of the workt
     )
     expect(cut, `${path}: cells whose chips are cut`).toEqual([])
   }
+})
+
+// A chip is whole or it is not shown: at 1024 with the panel open the State column is narrow, and no sync chip may be cut at its edge.
+test('no sync chip of the State column is cut at 1024 with the panel open', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await stubFixture(page)
+  await page.goto('/cockpit/worktrees')
+  await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+  await expect(page.getByRole('complementary')).toBeVisible()
+  await expect(page.locator('app-owner-state-cell .sync').first()).toBeAttached()
+  const cut = await page.evaluate(() => {
+    const out: string[] = []
+    for (const cell of document.querySelectorAll('app-owner-state-cell')) {
+      const box = cell.getBoundingClientRect()
+      for (const chip of cell.querySelectorAll('.sync')) {
+        const at = chip.getBoundingClientRect()
+        const wrappedOut = at.top >= box.bottom - 1
+        if (!wrappedOut && at.right > box.right + 0.5) out.push(`${chip.textContent}: ${at.right} > ${box.right}`)
+      }
+    }
+    return out
+  })
+  expect(cut).toEqual([])
 })
 
 // A closed phone sheet leaves focus on the list, never on the page's top: the keyboard user keeps their place.

@@ -93,7 +93,8 @@ func TestFleetAndBranchesAreGzipWithAnEncodingSpecificETag(t *testing.T) {
 func TestGzipBytesAreComputedOncePerStoredSnapshot(t *testing.T) {
 	t.Parallel()
 	var compressed atomic.Int64
-	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) {
+	sources := oneRepoSources(t.TempDir())
+	snapshotter, _ := newSnapshotter(sources.collectors(), func(options *Options) {
 		options.Compress = func(data []byte) []byte {
 			compressed.Add(1)
 			return cockpit.Gzip(data)
@@ -118,6 +119,12 @@ func TestGzipBytesAreComputedOncePerStoredSnapshot(t *testing.T) {
 	if compressed.Load() != before {
 		t.Fatalf("100 requests ran the compressor %d times", compressed.Load()-before)
 	}
+	// A pass that finds the fleet as it was stores nothing and compresses nothing.
+	refreshAndSettle(t, snapshotter)
+	if compressed.Load() != before {
+		t.Errorf("a pass over an unchanged fleet ran the compressor %d times", compressed.Load()-before)
+	}
+	sources.change(func(f *fakeSources) { f.branch = "trunk" })
 	refreshAndSettle(t, snapshotter)
 	if compressed.Load() != stored() || compressed.Load() == before {
 		t.Errorf("after a new snapshot the compressor ran %d times in all for %d stored", compressed.Load(), stored())
@@ -240,7 +247,7 @@ func TestFleetAndBranchesAreMetadataRoutesForTheHostedOrigin(t *testing.T) {
 			t.Fatalf("%s preflight = %d %v", target, recorder.Code, recorder.Header())
 		}
 		first := server.get(target, nil, "Origin", hostedOrigin)
-		if first.Code != 200 || first.Header().Get("Access-Control-Expose-Headers") != "ETag" || first.Header().Get("Access-Control-Allow-Origin") != hostedOrigin || first.Header().Get("ETag") == "" {
+		if first.Code != 200 || first.Header().Get("Access-Control-Expose-Headers") != "ETag, "+cockpit.CheckedAtHeader || first.Header().Get("Access-Control-Allow-Origin") != hostedOrigin || first.Header().Get("ETag") == "" {
 			t.Fatalf("%s hosted response = %d %v", target, first.Code, first.Header())
 		}
 		repeat := server.get(target, nil, "Origin", hostedOrigin, "If-None-Match", first.Header().Get("ETag"))
@@ -552,7 +559,8 @@ func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 	if repository := names["a.b/c"]; repository.Host != "" {
 		t.Errorf("two segments with a dot = %+v", repository)
 	}
-	if len(view.machines) != 3 || view.machines[0].WBVersion != "v1.2" {
+	// A version that is not one by the export decoder's rule is dropped, not repaired.
+	if len(view.machines) != 3 || view.machines[0].WBVersion != "" {
 		t.Fatalf("machines = %+v, want the hostile-named one kept (sanitised), the empty-named one skipped", view.machines)
 	}
 	for _, machine := range view.machines {
@@ -818,4 +826,69 @@ func TestBranchesBuiltWhileAScanLandsAreStillServed(t *testing.T) {
 type branchAnswer struct {
 	payload cockpit.Payload
 	found   bool
+}
+
+// TestAQuietFleetKeepsItsETagAndIsAnswered304 proves that a document is
+// published only when it says something new. Passes over an unchanged fleet,
+// with every side read on (the other machines' snapshots, herdr's statuses, the
+// pull-request records, the throughput scan, a machine read live, the periodic
+// publisher's diagnostic), leave the body, its snapshot_at and its ETag as they
+// were, so the browser's poll is answered 304; only the time the document was
+// last found current moves, in a response header that a 304 carries too. A
+// change publishes a new document with a new ETag and a new snapshot_at.
+func TestAQuietFleetKeepsItsETagAndIsAnswered304(t *testing.T) {
+	t.Parallel()
+	sources := sentinelSources()
+	remote, _ := newSnapshotter(vmSources().collectors(), func(options *Options) { options.Machine = vmOwnName })
+	refreshAndSettle(t, remote)
+	exported := remote.Export(false)
+	publisher := &fakePublisher{}
+	snapshotter, clock := newLive(t, sources, &fakeExporter{answer: answering(exported, exported)}, func(options *Options) {
+		options.Sampler = filledSampler(t, &countingSource{}, 3)
+		options.Terminals = sentinelTerminals()
+		options.Publisher = publisher
+		options.Fingerprint = newConstFingerprint("unchanged").get
+	})
+	refreshAndSettle(t, snapshotter)
+	pollAndSettle(t, snapshotter)
+	refreshAndSettle(t, snapshotter)
+	server := newCockpitServer(t, snapshotter)
+	first := server.get(cockpit.APIPrefix+FleetRoute, nil)
+	etag, checked := first.Header().Get("ETag"), first.Header().Get(cockpit.CheckedAtHeader)
+	taken := snapshotter.Document().SnapshotAt
+	if first.Code != http.StatusOK || etag == "" || checked == "" || taken.IsZero() {
+		t.Fatalf("the first read = %d, ETag %q, checked at %q, snapshot at %s", first.Code, etag, checked, taken)
+	}
+	if document := snapshotter.Document(); len(document.Machines) < 3 || len(document.Agents) == 0 || len(document.PullRequests) == 0 || document.Throughput == nil {
+		t.Fatalf("the fixture's document has %d machines, %d agents, %d pull requests and throughput %v (the test would be vacuous)", len(document.Machines), len(document.Agents), len(document.PullRequests), document.Throughput)
+	}
+	published := publishesOf(snapshotter)
+	for pass := 1; pass <= 3; pass++ {
+		clock.advance(DefaultInterval)
+		refreshAndSettle(t, snapshotter)
+		pollAndSettle(t, snapshotter)
+		again := server.get(cockpit.APIPrefix+FleetRoute, nil, "If-None-Match", etag)
+		if again.Code != http.StatusNotModified || again.Body.Len() != 0 || again.Header().Get("ETag") != etag {
+			t.Fatalf("pass %d over an unchanged fleet: the poll = %d with %d bytes and ETag %q, want 304 and %q", pass, again.Code, again.Body.Len(), again.Header().Get("ETag"), etag)
+		}
+		if !snapshotter.Document().SnapshotAt.Equal(taken) || publishesOf(snapshotter) != published {
+			t.Fatalf("pass %d over an unchanged fleet published the document again (snapshot_at %s, was %s)", pass, snapshotter.Document().SnapshotAt, taken)
+		}
+		// The 304 says when the document was last found current.
+		if got, want := again.Header().Get(cockpit.CheckedAtHeader), clock.Now().UTC().Format(time.RFC3339); got != want || got == checked {
+			t.Fatalf("pass %d: the document was found current at %q, want %q", pass, got, want)
+		}
+	}
+	// The hosted page may read that header.
+	if hosted := server.get(cockpit.APIPrefix+FleetRoute, nil, "Origin", hostedOrigin, "If-None-Match", etag); hosted.Code != http.StatusNotModified || !strings.Contains(hosted.Header().Get("Access-Control-Expose-Headers"), cockpit.CheckedAtHeader) {
+		t.Errorf("the hosted page's poll = %d, exposing %q", hosted.Code, hosted.Header().Get("Access-Control-Expose-Headers"))
+	}
+	// A change is published.
+	clock.advance(DefaultInterval)
+	sources.change(func(f *fakeSources) { f.bindings = nil })
+	refreshAndSettle(t, snapshotter)
+	changed := server.get(cockpit.APIPrefix+FleetRoute, nil, "If-None-Match", etag)
+	if changed.Code != http.StatusOK || changed.Header().Get("ETag") == etag || !snapshotter.Document().SnapshotAt.Equal(clock.Now()) {
+		t.Fatalf("after a change the poll = %d, ETag %q, snapshot at %s", changed.Code, changed.Header().Get("ETag"), snapshotter.Document().SnapshotAt)
+	}
 }

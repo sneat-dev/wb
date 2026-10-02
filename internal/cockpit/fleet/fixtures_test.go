@@ -24,8 +24,11 @@ import (
 )
 
 const (
-	testHost      = "127.0.0.1:8766"
-	hostedOrigin  = "https://hosted.example"
+	testHost     = "127.0.0.1:8766"
+	hostedOrigin = "https://hosted.example"
+	// testLogin is the login the live fixtures run as, which the published
+	// snapshots of their configured machine carry (cachedVM).
+	testLogin     = "alex"
 	testMachine   = "laptop"
 	sentinel      = "SENTINEL-"
 	testVersion   = "v1.2.3"
@@ -304,6 +307,18 @@ type cockpitServer struct {
 	server *cockpit.Server
 	api    http.Handler
 	page   http.Handler
+	// session is the owner session owner() logged in with, kept for the test.
+	session *http.Cookie
+}
+
+// owner returns one owner session cookie for the whole test: a read with it is
+// an owner's, the only reader that is demand for the SSH transport.
+func (c *cockpitServer) owner() *http.Cookie {
+	c.t.Helper()
+	if c.session == nil {
+		c.session = c.login()
+	}
+	return c.session
 }
 
 func newCockpitServer(t *testing.T, snapshotter *Snapshotter) *cockpitServer {
@@ -328,6 +343,29 @@ func (c *cockpitServer) get(target string, cookie *http.Cookie, headers ...strin
 	if cookie != nil {
 		request.AddCookie(cookie)
 	}
+	recorder := httptest.NewRecorder()
+	c.api.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// do makes a request of any method on the API mount, with a body and headers.
+func (c *cockpitServer) do(method, target, body string, headers ...string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Host = testHost
+	for i := 0; i < len(headers); i += 2 {
+		request.Header.Set(headers[i], headers[i+1])
+	}
+	recorder := httptest.NewRecorder()
+	c.api.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// onHost requests target on the API mount with another Host header.
+func (c *cockpitServer) onHost(host, target string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = host
 	recorder := httptest.NewRecorder()
 	c.api.ServeHTTP(recorder, request)
 	return recorder
@@ -499,15 +537,20 @@ func (s *Snapshotter) Document() Document {
 type fakeGate struct {
 	usable bool
 	panics bool
-	asked  atomic.Int64
+	// failures is how many asks fail to read the version before one answers.
+	failures int64
+	asked    atomic.Int64
 }
 
-func (g *fakeGate) GitUsable(context.Context) bool {
-	g.asked.Add(1)
+func (g *fakeGate) GitUsable(context.Context) (bool, error) {
+	asked := g.asked.Add(1)
 	if g.panics {
 		panic("a gate panicked")
 	}
-	return g.usable
+	if asked <= g.failures {
+		return false, errors.New("git version: exit status 128")
+	}
+	return g.usable, nil
 }
 
 // Body is the last published document as marshalled JSON, and its strong ETag,

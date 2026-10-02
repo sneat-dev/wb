@@ -7,16 +7,28 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
-// The real macOS reader: read-only sysctls and a statfs of a temporary directory.
-func TestRealMacSourceReadsThisMachine(t *testing.T) {
+// TestNewSourceIsWiredToTheMacReaders: the source reads the load average
+// through the kernel's sysctl, CPU and memory through gopsutil and the disk of
+// the directory it was given. Each reader is called once; what the machine
+// answers over time (a CPU percent needs two readings a tick apart) is the e2e
+// tier's (source_e2e_darwin_test.go).
+func TestNewSourceIsWiredToTheMacReaders(t *testing.T) {
 	t.Parallel()
-	source := NewSource(t.TempDir())
-	sample := readUntilCPU(t, source)
-	if sample.CPUPercent == nil || *sample.CPUPercent < 0 || *sample.CPUPercent > 100 {
-		t.Errorf("cpu_percent = %v after two readings", sample.CPUPercent)
+	source, ok := NewSource(t.TempDir()).(*sysctlSource)
+	if !ok {
+		t.Fatal("the macOS source is not the sysctl source")
 	}
-	if sample.MemoryTotalBytes == nil || *sample.MemoryTotalBytes == 0 || *sample.MemoryUsedBytes > *sample.MemoryTotalBytes || sample.DiskTotalBytes == nil || *sample.DiskTotalBytes == 0 || sample.Load1 == nil || *sample.Load1 < 0 {
-		t.Errorf("sample = %+v", sample)
+	if raw, err := source.raw("vm.loadavg"); err != nil || len(raw) == 0 {
+		t.Errorf("vm.loadavg = %d bytes, %v", len(raw), err)
+	}
+	if busy, all, err := source.cpu(); err != nil || all <= 0 || busy < 0 || busy > all {
+		t.Errorf("cpu times = %v of %v, %v", busy, all, err)
+	}
+	if used, total, err := source.memory(); err != nil || total == 0 || used > total {
+		t.Errorf("memory = %d of %d, %v", used, total, err)
+	}
+	if free, total, err := source.disk(); err != nil || total == 0 || free > total {
+		t.Errorf("disk = %d free of %d, %v", free, total, err)
 	}
 }
 

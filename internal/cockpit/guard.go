@@ -6,10 +6,10 @@ package cockpit
 import (
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/sneat-dev/wb/cockpit/web"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 )
 
 // PagePrefix and APIPrefix are the two subtrees Cockpit owns on the loopback
@@ -46,36 +46,13 @@ func origin(host, port string) string {
 }
 
 // loopbackName reports whether a Host header's host part names the loopback
-// interface. Only the three names localhost, 127.0.0.1 and ::1 (written [::1]
-// in a Host header) qualify (cockpit#req:host-header-
-// check); an address such as 127.0.0.2 is refused like any other host.
-func loopbackName(host string) bool {
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
-}
+// interface (cockpit#req:host-header-check). The rule is package
+// loopbackhost's, which the dashboard's own routes on this listener share.
+func loopbackName(host string) bool { return loopbackhost.Named(host) }
 
-// splitHost separates a Host header into its host name and optional port. A
-// bracketed IPv6 literal loses its brackets. An empty or malformed value
-// yields an empty host, which loopbackName refuses, as does a port that is
-// present but not a number.
-func splitHost(value string) (host, port string) {
-	if host, port, err := net.SplitHostPort(value); err == nil {
-		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-			return "", ""
-		}
-		return host, port
-	}
-	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-		return value[1 : len(value)-1], ""
-	}
-	if strings.ContainsAny(value, "[]:") {
-		return "", ""
-	}
-	return value, ""
-}
+// splitHost separates a Host header into its host name and optional port, by
+// the same shared rule.
+func splitHost(value string) (host, port string) { return loopbackhost.Split(value) }
 
 // Guard refuses a request whose Host header does not name a loopback host
 // with status 421, before next runs: that is what stops a page that rebinds

@@ -92,8 +92,19 @@ declaration, as every public WB leaf does.
 The loopback daemon MUST serve the Cockpit application under `/cockpit/` and
 its API under `/api/v1/cockpit/`, whether or not `wb.yaml` has a `hub:`
 section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
-`/workbench/` and `/v0/workbench/` — are unchanged, with one exception:
+`/workbench/` and `/v0/workbench/` — are unchanged, with these exceptions.
 `GET /api/v1/log` requires an owner session (cockpit#req:daemon-log-is-owner-only).
+`GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
+process id and the names of its worktrees (metadata, which a local reader may read without a
+session), MUST apply the Host check (cockpit#req:host-header-check, the same rule, from one shared
+function): a request whose `Host` does not name a loopback host is refused with status 421 and the
+JSON body `{schema_version, error: "misdirected_request", message}` with a fixed message, so a page
+that rebinds DNS to the loopback address reads neither. A daemon published through a tunnel must
+therefore have the tunnel send a loopback `Host` to reach them; the static pages `/` and `/metrics`
+hold nothing of the machine and are not checked. An overview that cannot be built is answered with
+status 500, the closed code `overview_unavailable` and one fixed message; the error itself, which
+names a path under the projects root, goes to the daemon's log (once for a failure that repeats)
+and to no reader of the route, and the page shows a fixed text of its own.
 
 #### REQ: embedded-application
 
@@ -159,7 +170,7 @@ is this closed set of fields:
   machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
   `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
   `export_refused`, `http_unavailable`, `http_auth_failed`, `bad_payload`,
-  `remote_warming_up`, `export_too_large` or `self_export`), never the
+  `remote_warming_up`, `export_too_large`, `self_export` or `clock_skew`), never the
   remote's error text, the transport that supplied a machine's live entries
   (`transport`: `http` or `ssh`), the number of another machine's entries that were
   left out of its export or cut at this daemon's caps (`export_dropped`) and whether
@@ -395,7 +406,7 @@ background. A request MUST NOT wait for a Git scan of every repository. A
 request made before the first snapshot exists returns an empty, well-formed
 document marked as warming up.
 
-The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned.
+The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned. A warm-up always ends. When the repositories cannot be listed and no listing has ever worked, the first pass has nothing more to learn: `warming_up` becomes false and the document, which is empty, carries the closed code `repositories_unreadable` in `error`, so that a client that polls faster while the document warms up stops, and a reader of this machine is told that its export failed instead of being told `warming_up` for ever. The first listing that works then starts the first pass, and the document warms up again until that pass completes.
 
 #### REQ: snapshot-refresh
 
@@ -600,6 +611,15 @@ Scenario: Existing surfaces keep working
 Given a daemon serving Cockpit
 When `wb dashboard --local --format json`, `GET /`, `GET /metrics` and `GET /api/v1/overview` are requested
 Then each answers as it did before this Feature
+
+### AC: dashboard-json-routes-answer-only-on-loopback
+
+**Requirements:** cockpit#req:cockpit-mount, cockpit#req:host-header-check
+
+Scenario: A rebinding page, and an overview that fails
+Given a daemon serving its dashboard routes, and a worktree whose run telemetry cannot be read
+When `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each of the three loopback names, and the overview is requested twice
+Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback names are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
 
 ### AC: manifest-rows-exist
 

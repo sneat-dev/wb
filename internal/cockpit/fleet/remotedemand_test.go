@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -14,19 +15,47 @@ import (
 // same for every transport, and driven by who is looking. They run over the SSH
 // exporter on a fake runner, where one export is one connection.
 
+// reader is who reads the routes in a test: a function that makes one GET.
+type reader func(target string)
+
+// The readers: an owner session, an anonymous client on this machine, the hosted
+// page (which reads the same metadata routes from another origin) and the export
+// verb, which is another machine's daemon.
+func (c *cockpitServer) asOwner() reader {
+	cookie := c.owner()
+	return func(target string) { c.get(target, cookie) }
+}
+
+func (c *cockpitServer) asAnonymous() reader {
+	return func(target string) { c.get(target, nil) }
+}
+
+func (c *cockpitServer) asHostedPage() reader {
+	return func(target string) {
+		c.t.Helper()
+		if recorder := c.get(target, nil, "Origin", hostedOrigin); recorder.Code != http.StatusOK || recorder.Header().Get("Access-Control-Allow-Origin") != hostedOrigin {
+			c.t.Fatalf("the hosted page's read of %s = %d (the test would be vacuous)", target, recorder.Code)
+		}
+	}
+}
+
+func (c *cockpitServer) asExportVerb() reader {
+	return func(target string) { c.get(target, c.owner(), ExportReaderHeader, "1") }
+}
+
 // watching runs the daemon's loop for the given time on the fake clock, one
-// look every remoteStep, with a client that reads the fleet document once a
+// look every remoteStep, with a reader that reads the fleet document once a
 // minute while viewing and a machine's metrics every 10 seconds while onMachines,
 // through the real routes.
-func watching(t *testing.T, snapshotter *Snapshotter, clock *manualClock, server *cockpitServer, length time.Duration, viewing, onMachines bool) {
+func watching(t *testing.T, snapshotter *Snapshotter, clock *manualClock, read reader, length time.Duration, viewing, onMachines bool) {
 	t.Helper()
 	for elapsed := time.Duration(0); elapsed < length; elapsed += remoteStep {
 		if viewing && elapsed%time.Minute == 0 {
-			server.get(cockpit.APIPrefix+FleetRoute, nil)
+			read(cockpit.APIPrefix + FleetRoute)
 		}
 		if onMachines && elapsed%(10*time.Second) == 0 {
 			if vm, found := machineNamed(snapshotter.Document(), vmKey); found {
-				server.get(metricsURL+vm.ID, nil)
+				read(metricsURL + vm.ID)
 			}
 		}
 		pollIdle(t, snapshotter)
@@ -46,11 +75,14 @@ func inTheHourFrom(seconds []int, from int) int {
 	return count
 }
 
-// TestOtherMachinesAreReadAsOftenAsSomeoneIsLooking measures connections per
+// TestOtherMachinesAreReadAsOftenAsSomeoneIsLooking measures SSH logins per
 // hour at the default 60 second refresh interval: 4 with nobody looking (one
-// keepalive every 15 minutes), 60 while a client reads the fleet document, 120
-// while a Machines page also polls the machine's metrics, and 1 for a machine
-// whose SSH login is refused, looked at or not.
+// keepalive every 15 minutes), 60 while an owner session reads the fleet
+// document, 120 while the owner's Machines page also polls the machine's
+// metrics, and 1 for a machine whose SSH login is refused, looked at or not.
+// Only an owner is demand for an SSH login: an anonymous reader on this machine,
+// the hosted page and the export verb leave the machine on its keepalive,
+// whatever they read and however often.
 func TestOtherMachinesAreReadAsOftenAsSomeoneIsLooking(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 6, false)
@@ -58,24 +90,150 @@ func TestOtherMachinesAreReadAsOftenAsSomeoneIsLooking(t *testing.T) {
 	refused := failingSSH(255, "", "alex@vm.example: Permission denied (publickey).")
 	for name, test := range map[string]struct {
 		answer              func([]string) sshAnswer
+		read                func(*cockpitServer) reader
 		viewing, onMachines bool
 		hours               int
 		want                int
 	}{
-		"nobody looking":                  {answer: exporting(t, full, only), hours: 2, want: 4},
-		"a client reading the fleet":      {answer: exporting(t, full, only), viewing: true, hours: 2, want: 60},
-		"a Machines page open":            {answer: exporting(t, full, only), viewing: true, onMachines: true, hours: 2, want: 120},
-		"a refused login, looked at":      {answer: refused, viewing: true, onMachines: true, hours: 3, want: 1},
-		"a refused login, nobody looking": {answer: refused, hours: 3, want: 1},
+		"nobody looking":                          {answer: exporting(t, full, only), hours: 2, want: 4},
+		"an owner reading the fleet":              {answer: exporting(t, full, only), read: (*cockpitServer).asOwner, viewing: true, hours: 2, want: 60},
+		"an owner's Machines page open":           {answer: exporting(t, full, only), read: (*cockpitServer).asOwner, viewing: true, onMachines: true, hours: 2, want: 120},
+		"an anonymous client reading the fleet":   {answer: exporting(t, full, only), read: (*cockpitServer).asAnonymous, viewing: true, hours: 2, want: 4},
+		"an anonymous client's Machines page":     {answer: exporting(t, full, only), read: (*cockpitServer).asAnonymous, viewing: true, onMachines: true, hours: 2, want: 4},
+		"the hosted page, with its Machines page": {answer: exporting(t, full, only), read: (*cockpitServer).asHostedPage, viewing: true, onMachines: true, hours: 2, want: 4},
+		"the export verb, with an owner's cookie": {answer: exporting(t, full, only), read: (*cockpitServer).asExportVerb, viewing: true, onMachines: true, hours: 2, want: 4},
+		"a refused login, looked at":              {answer: refused, read: (*cockpitServer).asOwner, viewing: true, onMachines: true, hours: 3, want: 1},
+		"a refused login, an anonymous client":    {answer: refused, read: (*cockpitServer).asAnonymous, viewing: true, onMachines: true, hours: 3, want: 1},
+		"a refused login, nobody looking":         {answer: refused, hours: 3, want: 1},
 	} {
 		runner := &fakeSSH{answer: test.answer}
 		snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, nil)
 		refreshAndSettle(t, snapshotter)
 		server := newCockpitServer(t, snapshotter)
-		watching(t, snapshotter, clock, server, time.Duration(test.hours)*time.Hour, test.viewing, test.onMachines)
+		var read reader
+		if test.read != nil {
+			read = test.read(server)
+		}
+		watching(t, snapshotter, clock, read, time.Duration(test.hours)*time.Hour, test.viewing, test.onMachines)
 		if got := inTheHourFrom(runner.seconds(), (test.hours-1)*3600); got != test.want {
 			t.Errorf("%s: %d connections in the last hour, want %d (at %v)", name, got, test.want, runner.seconds())
 		}
+		// The machine nobody may log in to for stays shown, with the age of its entries.
+		if vm, found := machineNamed(snapshotter.Document(), vmKey); test.want == 4 && (!found || vm.Route != RouteLiveRemote || vm.RemoteError != "") {
+			t.Errorf("%s: the machine on its keepalive = %+v", name, vm)
+		}
+	}
+}
+
+// TestAnAnonymousReaderRaisesTheHTTPTransportOnly measures, over a simulated
+// hour at the default 60 second interval, a machine that has both routes: an
+// anonymous reader on this machine has it read over HTTP as often as an owner
+// would (60 times, 120 with its metrics), and causes no SSH login at all while
+// HTTP answers. While HTTP fails, the anonymous reader's HTTP reads go on at
+// their backoff (which each keepalive SSH answers starts again: 20 requests in
+// the hour, none of them a login) and SSH stays on its keepalive (4 logins),
+// which keeps the machine shown, with the HTTP failure; an owner gets the
+// fallback at once, and the hosted page raises neither transport.
+func TestAnAnonymousReaderRaisesTheHTTPTransportOnly(t *testing.T) {
+	t.Parallel()
+	full := exportOf(t, vmOwnName, vmSources(), 6, false)
+	only := exportOf(t, vmOwnName, vmSources(), 6, true)
+	down := failing(&RemoteError{Code: RemoteErrorHTTPUnavailable, Fallback: true})
+	for name, test := range map[string]struct {
+		http               func(RemoteTarget, bool) (Envelope, error)
+		read               func(*cockpitServer) reader
+		onMachines         bool
+		wantHTTP, wantSSH  int
+		transport, failure string
+	}{
+		"anonymous, http answers":              {http: answering(full, only), read: (*cockpitServer).asAnonymous, wantHTTP: 60, wantSSH: 0, transport: TransportHTTP},
+		"anonymous with metrics, http answers": {http: answering(full, only), read: (*cockpitServer).asAnonymous, onMachines: true, wantHTTP: 120, wantSSH: 0, transport: TransportHTTP},
+		"anonymous with metrics, http is down": {http: down, read: (*cockpitServer).asAnonymous, onMachines: true, wantHTTP: 20, wantSSH: 4, transport: TransportSSH, failure: RemoteErrorHTTPUnavailable},
+		"the hosted page, http is down":        {http: down, read: (*cockpitServer).asHostedPage, onMachines: true, wantHTTP: 4, wantSSH: 4, transport: TransportSSH, failure: RemoteErrorHTTPUnavailable},
+		"the hosted page, http answers":        {http: answering(full, only), read: (*cockpitServer).asHostedPage, onMachines: true, wantHTTP: 4, wantSSH: 0, transport: TransportHTTP},
+		"an owner with metrics, http is down":  {http: down, read: (*cockpitServer).asOwner, onMachines: true, wantHTTP: 12, wantSSH: 120, transport: TransportSSH, failure: RemoteErrorHTTPUnavailable},
+		"an owner with metrics, http answers":  {http: answering(full, only), read: (*cockpitServer).asOwner, onMachines: true, wantHTTP: 120, wantSSH: 0, transport: TransportHTTP},
+	} {
+		overHTTP := &fakeExporter{answer: test.http}
+		runner := &fakeSSH{answer: exporting(t, full, only)}
+		var clock *manualClock
+		snapshotter, clock := newSnapshotter(oneRepoSources("/repos/widgets").collectors(), func(options *Options) {
+			options.Remotes = []RemoteTarget{{Machine: vmKey, HTTP: &HTTPRoute{URL: "https://vm.example", TokenFile: "/etc/wb/vm.token"}, SSH: &vmRoute}}
+			options.Transports = []RemoteTransport{
+				{Name: TransportHTTP, Exporter: overHTTP},
+				{Name: TransportSSH, Exporter: NewSSHExporter(foundSSH(t, nil), runner, func() time.Time { return clock.Now() }, nil)},
+			}
+		})
+		overHTTP.clock, runner.clock = clock, clock
+		refreshAndSettle(t, snapshotter)
+		server := newCockpitServer(t, snapshotter)
+		watching(t, snapshotter, clock, test.read(server), 2*time.Hour, true, test.onMachines)
+		attempts := append(overHTTP.callsAt(false), overHTTP.callsAt(true)...)
+		if got := inTheHourFrom(attempts, 3600); got != test.wantHTTP {
+			t.Errorf("%s: %d http reads in the last hour, want %d (at %v)", name, got, test.wantHTTP, attempts)
+		}
+		if got := inTheHourFrom(runner.seconds(), 3600); got != test.wantSSH {
+			t.Errorf("%s: %d ssh logins in the last hour, want %d (at %v)", name, got, test.wantSSH, runner.seconds())
+		}
+		if vm, found := machineNamed(snapshotter.Document(), vmKey); !found || vm.Route != RouteLiveRemote || vm.Transport != test.transport || vm.RemoteError != test.failure {
+			t.Errorf("%s: the machine = %+v, want it live over %s with %q", name, vm, test.transport, test.failure)
+		}
+	}
+}
+
+// fixedReader is a localReader with a fixed answer.
+type fixedReader bool
+
+func (f fixedReader) LocalReader(*http.Request) bool { return bool(f) }
+
+// TestOnlyAReaderOnThisMachineIsDemand is the classification itself: the export
+// verb's marked read and a request that is not a reader on this machine (the
+// hosted page, as cockpit classifies it) are no demand whoever they act as, an
+// owner session is demand for both transports and any other reader on this
+// machine for HTTP alone. A read that is no demand records nothing and wakes
+// nothing.
+func TestOnlyAReaderOnThisMachineIsDemand(t *testing.T) {
+	t.Parallel()
+	owner, anonymous := cockpit.Principal{Name: cockpit.PrincipalOwner}, cockpit.Principal{Name: cockpit.PrincipalAnonymousLocal}
+	plain := httptest.NewRequest(http.MethodGet, cockpit.APIPrefix+FleetRoute, nil)
+	marked := plain.Clone(t.Context())
+	marked.Header.Set(ExportReaderHeader, "1")
+	for name, test := range map[string]struct {
+		local     fixedReader
+		request   *http.Request
+		principal cockpit.Principal
+		want      demand
+	}{
+		"an owner on this machine":         {true, plain, owner, demandOwner},
+		"an anonymous reader":              {true, plain, anonymous, demandLocal},
+		"the export verb, as an owner":     {true, marked, owner, demandNone},
+		"the export verb":                  {true, marked, anonymous, demandNone},
+		"not a reader on this machine":     {false, plain, anonymous, demandNone},
+		"an owner that is not a local one": {false, plain, owner, demandNone},
+	} {
+		if got := demandOf(test.local, test.request, test.principal); got != test.want {
+			t.Errorf("%s: demand = %d, want %d", name, got, test.want)
+		}
+	}
+	full := exportOf(t, vmOwnName, vmSources(), 6, false)
+	runner := &fakeSSH{answer: exporting(t, full, full)}
+	snapshotter, _, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, nil)
+	refreshAndSettle(t, snapshotter)
+	pollIdle(t, snapshotter)
+	vm, _ := machineNamed(snapshotter.Document(), vmKey)
+	snapshotter.fleetRead(demandNone)
+	snapshotter.metricsRead(vm.ID, demandNone)
+	snapshotter.metricsRead("machine-nope", demandOwner)
+	if snapshotter.fleetAsked.Load() != 0 || snapshotter.live[vmKey].asked.Load() != 0 || len(snapshotter.kick) != 0 {
+		t.Fatal("a read that is no demand was recorded")
+	}
+	snapshotter.metricsRead(vm.ID, demandLocal)
+	if machine := snapshotter.live[vmKey]; machine.asked.Load() == 0 || machine.ownerAsked.Load() != 0 {
+		t.Fatal("an anonymous ask for the metrics was recorded as an owner's")
+	}
+	snapshotter.metricsRead(vm.ID, demandOwner)
+	if snapshotter.live[vmKey].ownerAsked.Load() == 0 {
+		t.Fatal("an owner's ask for the metrics was not recorded")
 	}
 }
 
@@ -94,7 +252,7 @@ func TestARefusedLoginBacksOffToAnHourAndOtherFailuresToFiveMinutes(t *testing.T
 		runner := &fakeSSH{answer: test.answer}
 		snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, nil)
 		refreshAndSettle(t, snapshotter)
-		watching(t, snapshotter, clock, newCockpitServer(t, snapshotter), 3*time.Hour, true, false)
+		watching(t, snapshotter, clock, newCockpitServer(t, snapshotter).asOwner(), 3*time.Hour, true, false)
 		if got := runner.seconds(); len(got) < len(test.want) || !slices.Equal(got[:len(test.want)], test.want) {
 			t.Errorf("%s: attempts at %v seconds, want %v first", name, got, test.want)
 		}
@@ -133,8 +291,15 @@ func TestTheFirstReaderAfterAQuietTimeGetsAnExportStartedAtOnce(t *testing.T) {
 	if runner.count() != 1 || len(snapshotter.kick) != 0 {
 		t.Fatalf("the export verb's read was taken for a person looking: %d exports", runner.count())
 	}
-	// A person looks.
-	if recorder := server.get(cockpit.APIPrefix+FleetRoute, nil); recorder.Code != http.StatusOK || runner.count() != 1 {
+	// The hosted page reads the document: it is no demand either.
+	server.asHostedPage()(cockpit.APIPrefix + FleetRoute)
+	pollIdle(t, snapshotter)
+	if runner.count() != 1 || len(snapshotter.kick) != 0 {
+		t.Fatalf("the hosted page's read was taken for a reader on this machine: %d exports", runner.count())
+	}
+	// The owner looks.
+	owner := server.owner()
+	if recorder := server.get(cockpit.APIPrefix+FleetRoute, owner); recorder.Code != http.StatusOK || runner.count() != 1 {
 		t.Fatalf("the read = %d, with %d exports started by it", recorder.Code, runner.count())
 	}
 	if len(snapshotter.kick) != 1 {
@@ -142,8 +307,8 @@ func TestTheFirstReaderAfterAQuietTimeGetsAnExportStartedAtOnce(t *testing.T) {
 	}
 	// More reads before the loop wakes neither block nor queue more wake-ups.
 	clock.advance(remoteStep)
-	server.get(cockpit.APIPrefix+FleetRoute, nil)
-	server.get(cockpit.APIPrefix+FleetRoute, nil)
+	server.get(cockpit.APIPrefix+FleetRoute, owner)
+	server.get(cockpit.APIPrefix+FleetRoute, owner)
 	if len(snapshotter.kick) != 1 {
 		t.Fatalf("%d wake-ups queued", len(snapshotter.kick))
 	}
@@ -202,9 +367,9 @@ func TestAMachineIsNeverReadMoreOftenThanEveryThirtySeconds(t *testing.T) {
 		server := newCockpitServer(t, snapshotter)
 		// A reader of the fleet document and of the machine's metrics, for an hour.
 		for elapsed := time.Duration(0); elapsed < time.Hour; elapsed += remoteStep {
-			server.get(cockpit.APIPrefix+FleetRoute, nil)
+			server.get(cockpit.APIPrefix+FleetRoute, server.owner())
 			if vm, found := machineNamed(snapshotter.Document(), vmKey); found {
-				server.get(metricsURL+vm.ID, nil)
+				server.get(metricsURL+vm.ID, server.owner())
 				if vm.Route != RouteLiveRemote {
 					t.Fatalf("interval %s: at %s the machine = %+v", interval, elapsed, vm)
 				}
@@ -254,7 +419,7 @@ func TestARefusedMetricsLoginHoldsTheFleetLoginBackToo(t *testing.T) {
 	}}
 	snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, func(options *Options) { options.Interval = 70 * time.Second })
 	refreshAndSettle(t, snapshotter)
-	watching(t, snapshotter, clock, newCockpitServer(t, snapshotter), 4*time.Minute, true, true)
+	watching(t, snapshotter, clock, newCockpitServer(t, snapshotter).asOwner(), 4*time.Minute, true, true)
 	// The refusal at 30 s bars ssh for 140 s (the interval, doubled).
 	if got, want := runner.seconds(), []int{0, 30, 170, 200}; !slices.Equal(got, want) {
 		t.Fatalf("logins at %v seconds, want %v", got, want)
@@ -286,10 +451,10 @@ func TestAFleetReadRightAfterAMetricsLoginWaitsForTheFloor(t *testing.T) {
 	pollIdle(t, snapshotter)
 	vm, _ := machineNamed(snapshotter.Document(), vmKey)
 	clock.advance(100 * time.Second)
-	server.get(metricsURL+vm.ID, nil)
+	server.get(metricsURL+vm.ID, server.owner())
 	pollIdle(t, snapshotter)
 	clock.advance(time.Second)
-	server.get(cockpit.APIPrefix+FleetRoute, nil)
+	server.get(cockpit.APIPrefix+FleetRoute, server.owner())
 	if len(snapshotter.kick) != 1 {
 		t.Fatal("the read did not wake the loop")
 	}
@@ -324,7 +489,7 @@ func TestARefusedSSHLoginDoesNotDelayTheHTTPRetry(t *testing.T) {
 	})
 	overHTTP.clock, runner.clock = clock, clock
 	refreshAndSettle(t, snapshotter)
-	watching(t, snapshotter, clock, newCockpitServer(t, snapshotter), 3*time.Hour, true, true)
+	watching(t, snapshotter, clock, newCockpitServer(t, snapshotter).asOwner(), 3*time.Hour, true, true)
 	if got, want := runner.seconds(), []int{0, 120, 360, 960, 2160, 4260, 7860}; !slices.Equal(got, want) {
 		t.Errorf("ssh logins at %v seconds, want %v", got, want)
 	}
@@ -374,6 +539,6 @@ func TestAFleetReadWakesTheStartedLoop(t *testing.T) {
 		}
 	}
 	clock.advance(10 * time.Minute)
-	server.get(cockpit.APIPrefix+FleetRoute, nil)
+	server.get(cockpit.APIPrefix+FleetRoute, server.owner())
 	await(2)
 }

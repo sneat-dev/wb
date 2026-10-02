@@ -1,5 +1,5 @@
 import { expect, test, type Response } from '@playwright/test'
-import { fleet, stub, watch } from './support'
+import { checkedAt, fleet, stub, watch } from './support'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 
 test('the built shell loads under /cockpit/ with no console errors and no CSP violations', async ({ page }) => {
@@ -193,7 +193,7 @@ test('while the daemon warms up the chip counts the scan and skeleton rows wait,
     const warming = reads <= 2
     return route.fulfill({
       json: warming ? { ...fleet, warming_up: true, repositories_total: 438, repositories_scanned: 120, repositories: fleet.repositories.slice(0, 1), worktrees: fleet.worktrees.slice(0, 1) } : fleet,
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: { 'Cache-Control': 'no-cache', ...checkedAt() },
     })
   })
   await page.addInitScript(() => {
@@ -215,6 +215,40 @@ test('while the daemon warms up the chip counts the scan and skeleton rows wait,
   await expect(page.locator('app-skeleton-rows')).toHaveCount(0)
   await expect(page.getByRole('heading', { level: 2, name: 'In flight' })).toBeVisible()
   expect(await page.evaluate(() => (window as unknown as { __cls: number }).__cls)).toBeLessThan(0.01)
+})
+
+// cockpit-views#ac:compressed-responses-once-per-snapshot: a quiet fleet moves snapshot_at no more; the header, on a 304 too, is the freshness.
+test('the chip follows X-Wb-Cockpit-Checked-At, also on a 304, and not an hour-old snapshot_at', async ({ page }) => {
+  await stub(page)
+  const reads: string[] = []
+  await page.route('**/api/v1/cockpit/fleet', (route) => {
+    const conditional = route.request().headers()['if-none-match'] !== undefined
+    reads.push(conditional ? '304' : '200')
+    const headers = { ETag: '"quiet"', 'Cache-Control': 'no-cache', ...checkedAt() }
+    if (conditional) return route.fulfill({ status: 304, headers })
+    return route.fulfill({ json: { ...fleet, snapshot_at: new Date(Date.now() - 3_600_000).toISOString(), refresh_interval_seconds: 2 }, headers })
+  })
+  await page.goto('/cockpit/')
+  const chip = page.getByTestId('freshness-chip')
+  await expect(chip).toContainText(/updated \d+ s ago/)
+  // Later reads are 304s that carry the time: the chip stays calm instead of aging with the document.
+  // A page that is visible again reads at once, which saves waiting for the interval.
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+  await expect.poll(() => reads.filter((read) => read === '304').length).toBeGreaterThan(0)
+  await expect(chip).toContainText(/updated \d+ s ago/)
+  await expect(chip.locator('xpath=..')).not.toContainText('min ago')
+})
+
+// cockpit-views#ac:warming-up-shows-progress: a first listing that failed is an error state, not a skeleton for ever.
+test('a daemon that could not list its repositories shows a plain error and no skeleton rows', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/v1/cockpit/fleet', (route) =>
+    route.fulfill({ json: { schema_version: 2, warming_up: false, error: 'repositories_unreadable', repositories_total: 0, repositories_scanned: 0, diagnostics: 0, machines: [], repositories: [], worktrees: [], pull_requests: [], agents: [] }, headers: { ETag: '"unreadable"', 'Cache-Control': 'no-cache', ...checkedAt() } }),
+  )
+  await page.goto('/cockpit/')
+  await expect(page.getByRole('alert')).toContainText('repositories could not be listed')
+  await expect(page.getByTestId('freshness-chip')).toContainText('scan failed')
+  await expect(page.locator('app-skeleton-rows')).toHaveCount(0)
 })
 
 // cockpit-views#ac:initial-script-fits-the-budget, the loading half: a page's code is a chunk of its own, fetched only when its route is opened.

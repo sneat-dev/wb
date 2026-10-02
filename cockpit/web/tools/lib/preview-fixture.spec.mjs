@@ -78,6 +78,7 @@ describe('the preview server', () => {
     expect(await page.text()).toContain('ngCspNonce=')
     expect(page.headers.get('content-security-policy')).toContain("script-src 'self'")
 
+    expect((await get('/api/v1/cockpit/fleet')).headers.get('x-wb-cockpit-checked-at')).toBe(new Date(NOW - 8000).toISOString())
     const fleet = await (await get('/api/v1/cockpit/fleet')).json()
     expect(fleet.snapshot_at).toBe(new Date(NOW - 8000).toISOString())
     expect(fleet.repositories[0].seen).toBe(new Date(NOW - 8000 - 3600_000).toISOString())
