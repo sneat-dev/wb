@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktreecollab"
@@ -1011,7 +1012,7 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 }
 
 func newWorktreeAbortCmd(inv *invocation) *cobra.Command {
-	var base, disposition, successor, absorbedBy, format string
+	var base, disposition, successor, absorbedBy, closedPR, format string
 	var claimID, actor, reason string
 	var model, cli, provider string
 	var apply, deleteRemote, all bool
@@ -1056,6 +1057,19 @@ terminal instead of trying to reseal the immutable "landed" terminal as
 terminal conflicts with requested transition". The original finalize
 terminal is never rewritten.
 
+For a checkout whose pull request was CLOSED WITHOUT MERGING (a duplicate whose
+twin landed, a superseded attempt), --disposition discarded --closed-pr
+<pr-number|pr-url> --reason <why> is the supported discard. WB reads the pull
+request from GitHub and proceeds only when it is closed and unmerged, in this
+repository, with head branch and head commit exactly equal to the checkout's;
+a checkout with any commit the closed pull request never carried, or any
+uncommitted byte, is refused. The check is repeated under the task lock
+immediately before removal, the remote branch is retired only at that exact
+head (--remote, as for every discard), and a durable audit record naming the
+task, repository, head commit, pull request, and your --reason is written under
+WB home in closed-pr-discards/ before anything is removed. --closed-pr does
+not combine with --absorbed-by: a pull request is either merged or not.
+
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
 explicit --actor and --reason. Dry run and apply both prove the worktree path,
@@ -1081,8 +1095,8 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: inv.projectsRoot, Task: args[0], Base: base, Filter: inv.filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
-				AbsorbedBy: absorbedBy,
-				ClaimID:    claimID, Actor: actor, Reason: reason,
+				AbsorbedBy: absorbedBy, ClosedPullRequest: closedPR,
+				ClaimID: claimID, Actor: actor, Reason: reason,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -1151,6 +1165,13 @@ The default is a dry-run plan.`,
 					continue
 				}
 				state := "would seal"
+				if !result.Eligible {
+					// A dry run must not promise a seal the apply will refuse.
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "cannot seal %s %s: %s\n", result.Repository, result.Disposition, result.Reason); err != nil {
+						return err
+					}
+					continue
+				}
 				if result.Applied && result.Disposition == worktrees.AbortOrphaned {
 					state = "sealed absent claim"
 				} else if result.Applied && result.WorktreeGone {
@@ -1160,6 +1181,12 @@ The default is a dry-run plan.`,
 				}
 				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s\n", state, result.Repository, result.Disposition); err != nil {
 					return err
+				}
+				if closed := result.ClosedPullRequest; closed != nil {
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "  closed pull request %s#%d head %s (%s)%s\n",
+						closed.Repository, closed.Number, closed.HeadSHA, closed.Reason, closedAuditSuffix(closed.AuditPath)); err != nil {
+						return err
+					}
 				}
 			}
 			if remaining > 0 {
@@ -1177,9 +1204,10 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, discarded, or orphaned")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "merged pull request that proves a clean squash-absorbed source before discarded removal")
+	command.Flags().StringVar(&closedPR, "closed-pr", "", "pull request number or URL that GitHub reports closed unmerged with head exactly equal to this clean checkout's head; with discarded and --reason")
 	command.Flags().StringVar(&claimID, "claim", "", "exact immutable Work Log claim ID (required for orphaned)")
 	command.Flags().StringVar(&actor, "actor", "", "approving person or agent identity (required for orphaned)")
-	command.Flags().StringVar(&reason, "reason", "", "audit reason for sealing an absent orphaned claim")
+	command.Flags().StringVar(&reason, "reason", "", "audit reason: required for an orphaned claim and for discarded --closed-pr")
 	command.Flags().StringVar(&model, "model", "", "required with applied handoff/not_landed: exact successor model or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
@@ -1188,6 +1216,13 @@ The default is a dry-run plan.`,
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged remote source branch when applying discarded")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+func closedAuditSuffix(path string) string {
+	if path == "" {
+		return ""
+	}
+	return "; audit " + path
 }
 
 func newWorktreeCreateCmd(inv *invocation) *cobra.Command {
@@ -1452,13 +1487,15 @@ func refreshManagedHooksBeforeWorktreeCreate(inv *invocation, repositories []str
 
 func newWorktreeGuardCmd(inv *invocation) *cobra.Command {
 	var base, format, admission string
-	var quiet, published bool
+	var quiet, published, prePushStdin bool
 	command := &cobra.Command{
 		Use:   "guard [repository-path]",
 		Short: "Reject unsafe canonical clones and misplaced worktrees",
 		Long: `Validate the checkout policy used by agents and WB Git hooks.
 
-A canonical clone is valid only when it is clean and on the base branch. A
+A canonical clone is valid when it is clean, whatever branch it has checked
+out: a different checked-out branch is a normal state, and no WB verb needs the
+clone on the base branch. Uncommitted work in it is what the guard protects. A
 linked checkout is valid only when it uses a non-base branch and either lives
 in the central store at
 <root>/.worktrees/<task>/<host>/<owner>/<repository> (or the legacy
@@ -1503,6 +1540,11 @@ unverified, never assumed published. Run it after every push.`,
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
+			}
+			if prePushStdin && pushOnlyDeletesRemoteRefs(command.InOrStdin(), console.IsTerminal) {
+				// Nothing is sent from this checkout, so nothing about it can
+				// make the push unsafe (sneat-dev/wb#824).
+				return nil
 			}
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
 				ProjectsRoot:     inv.projectsRoot,
@@ -1578,7 +1620,21 @@ unverified, never assumed published. Run it after every push.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")
 	command.Flags().BoolVar(&published, "published", false, "verify after a push that HEAD is exactly origin/<this worktree's branch>; exit 1 with the remedy otherwise")
+	command.Flags().BoolVar(&prePushStdin, "pre-push-stdin", false, "run as a pre-push guard: read Git's pushed-ref list on stdin and pass without inspecting the checkout when the push only deletes remote refs")
+	_ = command.Flags().MarkHidden("pre-push-stdin")
 	return command
+}
+
+// pushOnlyDeletesRemoteRefs reports whether stdin is Git's pre-push ref list
+// and every line of it deletes a remote ref. A terminal, an unreadable list and
+// a malformed list all answer false, so the guard then inspects the checkout as
+// it always did.
+func pushOnlyDeletesRemoteRefs(stdin io.Reader, isTerminal func(any) bool) bool {
+	if isTerminal(stdin) {
+		return false
+	}
+	only, err := hooks.OnlyRemoteRefDeletions(stdin)
+	return err == nil && only
 }
 
 func formatCanonicalFreshness(freshness *worktrees.CanonicalFreshness) string {

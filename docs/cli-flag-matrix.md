@@ -207,6 +207,12 @@ reason. `--apply` records which tasks an inclusion covered in its manifest;
   terminal `--disposition discarded`. It fetches and verifies the named PR
   receipt before a clean source is removed; `--absorbed-by` never widens a
   handoff or converts a commit message into deletion authority.
+- `worktree abort --closed-pr <pr-number|pr-url> --reason <text>` is accepted
+  only with the terminal `--disposition discarded` and excludes
+  `--absorbed-by`. It discards a clean checkout whose pull request GitHub
+  reports closed unmerged with head branch and commit exactly equal to the
+  checkout's, re-proves that under the task lock, and writes an audit record
+  to `closed-pr-discards/` under WB home before removal.
 - `--non-interactive` disables every live terminal UI and progress line,
   including sync, status, fleet quality checks, CI waits, dependency campaigns,
   npm publication, remote publication, and hierarchical migration.

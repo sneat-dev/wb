@@ -1071,8 +1071,8 @@ func ValidateRepositories(repositories []string) ([]string, error) {
 	return normalized, nil
 }
 
-// Guard verifies that path is either a clean canonical checkout of the base
-// branch or a non-base linked worktree in WB's central worktree hierarchy.
+// Guard verifies that path is either a clean canonical checkout (on any named
+// branch) or a non-base linked worktree in WB's central worktree hierarchy.
 func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult, error) {
 	projectsRoot, err := absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
@@ -1110,12 +1110,11 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		if _, _, _, err := canonicalCoordinates(projectsRoot, root); err != nil {
 			return GuardResult{}, err
 		}
-		if branch != base {
-			return GuardResult{}, fmt.Errorf(
-				"canonical clone %s is on %q; it must stay on %q. Return it to %s, then create feature work with `wb worktree create <task> <owner/repository>`",
-				root, branch, base, base,
-			)
-		}
+		// The branch a canonical clone has checked out is not a policy
+		// concern (sneat-dev/wb#824): another agent or a person may have a
+		// different branch checked out, and nothing WB does (landing, cleanup,
+		// worktree creation) needs the clone on the base branch. What the
+		// guard protects here is data: uncommitted work, below.
 		clean, err := cleanWorktree(ctx, root)
 		if err != nil {
 			return GuardResult{}, err
@@ -1126,7 +1125,10 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 				root,
 			)
 		}
-		if options.CheckFreshness {
+		// Freshness compares the checked-out HEAD with origin/<base>, which is
+		// only meaningful when HEAD is the base branch; on another branch it
+		// would warn "diverged" about a state that is normal.
+		if options.CheckFreshness && branch == base {
 			result.Freshness = inspectCanonicalFreshness(ctx, root, base)
 		}
 		return result, nil

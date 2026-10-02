@@ -46,8 +46,9 @@ the approved owner/repository layout before worktree creation.
 WB preserves dirty, stashed, conflicted, or unpushed repositories and reports
 them for attention. Never clean or reset them merely to make sync pass.
 
-Canonical clones should remain on their default branch. Make feature changes
-through `$wb-worktrees`.
+Canonical clones should stay clean; a canonical clone on a different checked-out
+branch is a normal state, not a fault, and no WB verb needs it moved. Make feature
+changes through `$wb-worktrees`.
 
 # Read the issues report
 

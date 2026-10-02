@@ -22,7 +22,8 @@ type Inspection struct {
 type DescribeOptions struct {
 	// ProjectsRoot is the directory holding {owner}/{repository} clones.
 	ProjectsRoot string
-	// BaseBranch is the protected branch a canonical clone must stay on.
+	// BaseBranch is the clone's base branch: the branch worktrees are cut from
+	// and landings target. The clone itself may have any branch checked out.
 	BaseBranch string
 	// Version identifies the WB build that generated the marker.
 	Version string

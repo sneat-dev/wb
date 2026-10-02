@@ -1840,15 +1840,26 @@ func TestCreateResumeIsExplicitAndPreservesChanges(t *testing.T) {
 	}
 }
 
-func TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone(t *testing.T) {
+// A canonical clone on a feature branch is a normal state (sneat-dev/wb#824):
+// the branch alone never refuses. Uncommitted work still does, on any branch.
+func TestGuardAcceptsAnyBranchInACanonicalCloneAndRejectsChanges(t *testing.T) {
 	fixture := newGitFixture(t)
 	if result, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil || result.Kind != "canonical" {
 		t.Fatalf("clean main guard = %#v, %v", result, err)
 	}
 
 	gitTest(t, fixture.canonical, "switch", "-c", "feature")
-	if _, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "wb worktree create") {
-		t.Fatalf("feature guard error = %v", err)
+	if result, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil || result.Kind != "canonical" || result.Branch != "feature" {
+		t.Fatalf("clean feature-branch guard = %#v, %v", result, err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "dirty-feature.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "must remain clean") {
+		t.Fatalf("dirty feature-branch guard error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(fixture.canonical, "dirty-feature.txt")); err != nil {
+		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "switch", "main")
 	if err := os.WriteFile(filepath.Join(fixture.canonical, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {

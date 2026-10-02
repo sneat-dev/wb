@@ -380,7 +380,28 @@ func runCombinedWorktreeMerge(inv *invocation, command *cobra.Command, args []st
 	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 		return writeErr
 	}
-	return err
+	return landedIncompleteExit(receipt, err)
+}
+
+// landedIncompleteExit gives a landing whose merge reached the target but
+// whose canonical sync or cleanup did not finish its own exit status and the
+// exact resume command. A bare error exits 1, which reads as "not landed" and
+// sends the caller back to re-land finished work (sneat-dev/wb#824).
+func landedIncompleteExit(receipt orchestrate.WorktreeMergeReceipt, err error) error {
+	if err == nil {
+		return nil
+	}
+	if receipt.Status != orchestrate.WorktreeMergeLanded && receipt.Status != orchestrate.WorktreeMergeCanonicalSyncBlocked {
+		return err
+	}
+	resume := "wb " + strings.Join(receipt.ResumeArgs, " ")
+	if len(receipt.ResumeArgs) == 0 {
+		resume = "wb worktree merge resume " + receipt.ReceiptPath
+	}
+	return &exitError{
+		code:    exitLandedIncomplete,
+		message: fmt.Sprintf("the change is landed on %s (%s) but the follow-up did not finish: %v; resume with: %s", receipt.Target, receipt.Status, err, resume),
+	}
 }
 
 func newWorktreeMergeSealValidationFailedCmd(inv *invocation) *cobra.Command {
@@ -548,7 +569,7 @@ func newWorktreeMergeLandCmd(inv *invocation, name string) *cobra.Command {
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
-			return err
+			return landedIncompleteExit(receipt, err)
 		},
 	}
 	markLandingGuard(command, landingGuardByReceipt)
@@ -595,7 +616,7 @@ func newWorktreeMergeRevertCmd(inv *invocation) *cobra.Command {
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
-			return err
+			return landedIncompleteExit(receipt, err)
 		},
 	}
 	bindWorktreeMergeFlags(command, &flags, false, true, false)

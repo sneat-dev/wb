@@ -55,17 +55,31 @@ const (
 	// --approved-by was given with no --review-comment/--review-comment-file
 	// text, or an empty one (#604).
 	LandRefusalReviewCommentEmpty = "review-comment-empty"
+	// LandRefusalBranchRetirement marks a merged pull request whose source
+	// branch could not be retired on origin.
+	LandRefusalBranchRetirement = "branch-retirement-failed"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
-// success is 0, findings is 1, refused is 2.
+// success is 0, findings is 1, refused is 2, and landed-incomplete is 3.
 type LandOutcome string
 
 const (
 	LandSuccess  LandOutcome = "success"
 	LandFindings LandOutcome = "findings"
 	LandRefused  LandOutcome = "refused"
+	// LandLandedIncomplete means the merge reached the base branch and was
+	// verified there, but a step after it (canonical sync, branch retirement,
+	// worktree cleanup) did not finish. It is not "not landed": re-running the
+	// resume command finishes the tail (sneat-dev/wb#824).
+	LandLandedIncomplete LandOutcome = "landed-incomplete"
 )
+
+// ExitLandedIncomplete is the exit status of a landing whose merge succeeded
+// but whose follow-up did not finish. It is distinct from 1 ("not landed, see
+// the finding") so a caller never re-lands, re-reviews or reverts work that is
+// already on the base branch.
+const ExitLandedIncomplete = 3
 
 // PullRequestLandOptions identifies one pull request to land.
 type PullRequestLandOptions struct {
@@ -263,12 +277,15 @@ type PullRequestLandResult struct {
 	// Commits pairs every source commit with the commit that landed it, and
 	// marks the ones kept separate. GitHub's rebase merge rewrites the SHAs, so
 	// after landing this pairing is the only way back to the originals.
-	Commits        []LandedCommit `json:"commits,omitempty"`
-	KeptCommits    []string       `json:"kept_commits,omitempty"`
-	KeepReason     string         `json:"keep_reason,omitempty"`
-	CleanedTasks   []string       `json:"cleaned_tasks,omitempty"`
-	CleanupReports []string       `json:"cleanup_reports,omitempty"`
-	Kept           bool           `json:"kept"`
+	Commits      []LandedCommit `json:"commits,omitempty"`
+	KeptCommits  []string       `json:"kept_commits,omitempty"`
+	KeepReason   string         `json:"keep_reason,omitempty"`
+	CleanedTasks []string       `json:"cleaned_tasks,omitempty"`
+	// ResumeCommand is the exact command that finishes a landing whose merge
+	// succeeded but whose follow-up did not (outcome landed-incomplete).
+	ResumeCommand  string   `json:"resume_command,omitempty"`
+	CleanupReports []string `json:"cleanup_reports,omitempty"`
+	Kept           bool     `json:"kept"`
 
 	// ManualEquivalent is the ordered list of calls a caller would otherwise
 	// have made. SavedToolCalls is that count minus one — the one call they
@@ -294,6 +311,8 @@ func (result PullRequestLandResult) ExitCode() int {
 		return 0
 	case LandRefused:
 		return 2
+	case LandLandedIncomplete:
+		return ExitLandedIncomplete
 	default:
 		return 1
 	}
@@ -947,6 +966,37 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	return finalizeLandedPullRequest(ctx, options, result, view, head, number)
 }
 
+// resumeCommand is the exact command that finishes the tail of a landing whose
+// merge already succeeded: `wb pr land` on a merged pull request resumes from
+// GitHub's merged state (see landPullRequest) and runs the same canonical sync,
+// branch retirement and cleanup.
+func resumeCommand(options PullRequestLandOptions, number string) string {
+	return pullRequestLandResumeCommand(options, number, "")
+}
+
+// landedIncomplete reports a landing whose merge is verified on the base
+// branch but whose follow-up step failed. The outcome is distinct from
+// findings so the exit status is: the work is landed, only the tail is not.
+func landedIncomplete(options PullRequestLandOptions, result PullRequestLandResult, number, code, reason, remedy string) PullRequestLandResult {
+	result.Outcome = LandLandedIncomplete
+	result.RefusalCode = code
+	result.Reason = "landed on " + result.baseDescription() + " but the follow-up did not finish: " + reason
+	result.SanctionedCommand = remedy
+	result.ResumeCommand = resumeCommand(options, number)
+	return withSavings(result)
+}
+
+// baseDescription names where the merge landed, for messages.
+func (result PullRequestLandResult) baseDescription() string {
+	if result.BaseRef != "" && result.MergeSHA != "" {
+		return result.BaseRef + " (" + shortMergeRevision(result.MergeSHA) + ")"
+	}
+	if result.BaseRef != "" {
+		return result.BaseRef
+	}
+	return "the base branch"
+}
+
 // finalizeLandedPullRequest proves and completes the observable landing
 // effects. It is shared by an ordinary successful merge call and recovery of
 // an exact pull request that a prior invocation merged before losing its
@@ -998,25 +1048,19 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Started, view.Base.Ref+"@"+shortMergeRevision(landed.MergeCommitSHA), 0, 0)
 	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, options.Repository)
 	if canonicalErr != nil {
-		result.Outcome = LandFindings
-		result.RefusalCode = LandRefusalCanonicalSync
-		result.Reason = canonicalErr.Error()
-		result.SanctionedCommand = "wb sync --filter " + options.Repository
-		return withSavings(result), nil
+		return landedIncomplete(options, result, number, LandRefusalCanonicalSync, canonicalErr.Error(), "wb sync --filter "+options.Repository), nil
 	}
 	result.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, view.Base.Ref, landed.MergeCommitSHA, options.Slice, 0, options.CheckoutUpdated)
 	if err != nil {
-		result.Outcome = LandFindings
-		result.RefusalCode = LandRefusalCanonicalSync
-		result.Reason = err.Error()
-		result.SanctionedCommand = "wb sync --filter " + options.Repository
-		return withSavings(result), nil
+		return landedIncomplete(options, result, number, LandRefusalCanonicalSync, err.Error(), "wb sync --filter "+options.Repository), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.resolveRunner(), canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
-		return result, deleteErr
+		// The merge is already on the base branch: report that, not a bare
+		// error that reads as "not landed".
+		return landedIncomplete(options, result, number, LandRefusalBranchRetirement, deleteErr.Error(), resumeCommand(options, number)), nil
 	} else {
 		result.BranchDeleted = deleted
 	}
@@ -1037,11 +1081,7 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 			// The landing itself succeeded and must be reported as such; a
 			// checkout that could not be retired is a finding, with the verb
 			// that finishes it named.
-			result.Outcome = LandFindings
-			result.RefusalCode = "cleanup-incomplete"
-			result.Reason = cleanupErr.Error()
-			result.SanctionedCommand = "wb worktree gc --apply"
-			return withSavings(result), nil
+			return landedIncomplete(options, result, number, "cleanup-incomplete", cleanupErr.Error(), "wb worktree gc --apply"), nil
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
 	}

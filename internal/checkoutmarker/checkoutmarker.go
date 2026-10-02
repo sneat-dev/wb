@@ -120,7 +120,9 @@ func canonicalBody(descriptor Descriptor) string {
 	return fmt.Sprintf(`# This is a canonical clone — do not write here
 
 `+"`%s`"+` is the shared canonical clone of **%s**. Every linked worktree in the
-fleet is cut from it, so it must stay clean and stay on `+"`%s`"+`.
+fleet is cut from it, so it must stay clean. Its base branch is `+"`%s`"+`, but another
+checked-out branch is a normal state: landing, cleanup and worktree creation
+never need this clone on the base branch.
 
 Uncommitted work left here is invisible to WB and one routine checkout away
 from being destroyed. It has happened: a `+"`git checkout origin/main -- .`"+` run
