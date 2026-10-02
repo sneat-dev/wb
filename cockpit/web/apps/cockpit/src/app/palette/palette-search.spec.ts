@@ -1,9 +1,8 @@
 import { TestBed } from '@angular/core/testing'
 import { FleetDocument, FleetStore, hrefOf } from '@cockpit/fleet-data'
 import { agent, fleetDocument, repository, worktree } from '@cockpit/fleet-data/testing'
+import { NOW } from '../pages/test-harness'
 import { PALETTE_KINDS, PaletteGroup, RESULTS_PER_KIND, resolveResult, searchPalette } from './palette-search'
-
-const NOW = Date.parse('2026-10-01T10:05:00Z')
 
 function groupOf(groups: PaletteGroup[], kind: string): PaletteGroup {
   const found = groups.find((group) => group.kind === kind)
@@ -14,6 +13,7 @@ function groupOf(groups: PaletteGroup[], kind: string): PaletteGroup {
 function model(document: FleetDocument) {
   const store = TestBed.inject(FleetStore)
   store.document.set(document)
+  store.now.set(NOW)
   return store.model()
 }
 
@@ -103,7 +103,7 @@ describe('searchPalette', () => {
 
   // cockpit-views#ac:default-sorts
   it('ranks a task at risk for over 14 days last, never out of the results, and offers none for an empty query', () => {
-    const days = (count: number): string => new Date(Date.now() - count * 86_400_000).toISOString()
+    const days = (count: number): string => new Date(NOW - count * 86_400_000).toISOString()
     const risky = { owner_state: 'orphaned' as const, ahead: 1 }
     const doc = fleetDocument({
       worktrees: [
