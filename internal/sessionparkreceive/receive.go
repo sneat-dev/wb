@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
@@ -279,5 +278,3 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	result.Phase, result.Receipt, result.Replay = PhaseCompleted, &durable, result.Replay || replay || has(PhaseMembersReady)
 	return result, nil
 }
-
-func TargetStoreRoot(home string) string { return filepath.Join(home, sessionpark.TargetDirName) }

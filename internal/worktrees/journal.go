@@ -67,12 +67,6 @@ type Manifest = worktreeclaims.Manifest
 // output, reports, hook metrics, or a sync envelope.
 type PromptHeader = worktreeclaims.PromptHeader
 
-// ValidEffortPath accepts a dot-separated effort path of unbounded depth. Dots
-// carry parentage, so an empty component, a leading or trailing dot, and an
-// over-long path are all rejected rather than normalized: a silently repaired
-// identity is worse than a refused one.
-func ValidEffortPath(value string) bool { return worktreeclaims.ValidEffortPath(value) }
-
 // ParentEffort returns the lexical parent of an effort path, or "" for a root
 // effort. Parentage is derivable without reading any manifest so an orphan
 // family can be grouped even when every manifest is missing.
@@ -125,10 +119,6 @@ func CheckAdmission(worktree string, mode AdmissionMode) Admission {
 // symlink pointing outside the worktree between checks.
 func openJournalDirectory(worktree string, create bool) (*os.File, error) {
 	return worktreejournal.OpenJournalDirectory(worktree, create)
-}
-
-func openJournalComponent(parentFD int, name string, create bool) (int, error) {
-	return worktreejournal.OpenJournalComponent(parentFD, name, create)
 }
 
 // openJournalSubdirectory opens prompts/ or worklog/ below the journal root.

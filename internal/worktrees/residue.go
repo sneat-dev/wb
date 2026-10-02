@@ -289,10 +289,6 @@ func unlinkResidueEntryWithIO(parent *os.File, parentPath, name string, flags in
 	return nil
 }
 
-func grantOwnerWriteAt(directory *os.File, path string) error {
-	return grantOwnerWriteWithIO(directory, path, nativeResidueRemovalIO())
-}
-
 func grantOwnerWriteWithIO(directory *os.File, path string, access residueRemovalIO) error {
 	var status unix.Stat_t
 	if err := access.stat(int(directory.Fd()), &status); err != nil {

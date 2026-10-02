@@ -87,16 +87,6 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 	return result, nil
 }
 
-func reconcileAbsorbedSourcePullRequestsWith(
-	ctx context.Context,
-	receipt *WorktreeMergeReceipt,
-	heads []string,
-	remote sourcePullRequestRemote,
-	persist func(WorktreeMergeReceipt) error,
-) error {
-	return reconcileAbsorbedSourcePullRequestsWithProgress(ctx, receipt, heads, remote, persist, nil)
-}
-
 func reconcileAbsorbedSourcePullRequestsWithProgress(
 	ctx context.Context,
 	receipt *WorktreeMergeReceipt,

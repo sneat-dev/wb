@@ -713,6 +713,8 @@ internal/hooks::TestCheckIgnoresUnresolvableCurrentExecutable	serial pending cas
 internal/hooks::TestCheckSkipsExecutableStalenessForUnrelatedRepository	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestDefaultPolicyAlwaysEnforcesWorktreeAdmissionWithoutEnablingLanguageProfiles	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestDetectDefaultBranchHonoursExplicitOverride	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/hooks::TestEnsureExecutionLayoutCreatesPrivateRuntimeDirectories	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/hooks::TestEnsureExecutionLayoutRefusesARuntimeRootOccupiedByAFile	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestExecutionLayoutOfStagingWorktreeUsesCanonicalCheckoutIdentity	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/hooks::TestGeneratedHookRunsUserSectionsAroundManagedDispatcher	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/hooks::TestGeneratedHookRunsUserSectionsAroundManagedDispatcher/failure preserves status and skips user post section	serial pending case-by-case review (sneat-dev/wb#623 baseline)
@@ -757,7 +759,6 @@ internal/hooks::TestHkCovOriginSlugReadsHostedRemotes	calls t.Setenv, which Go's
 internal/hooks::TestHkCovRefreshManagedShimsErrorPaths	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestHkCovRefreshManagedShimsReportsHomeFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestHkCovRefreshManagedShimsValidations	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/hooks::TestHkCovReplayPendingMetricsPreparesLayout	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestHkCovResolveExecutionLayoutSanitizesCheckoutSegments	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestHkCovResolveProfilesAutoDetectionBranches	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestHkCovRunAnnotatesPushEventsWithRefAndTier	calls testenv.Isolate, which calls t.Setenv internally and so forbids t.Parallel the same way
@@ -769,7 +770,6 @@ internal/hooks::TestHkCovRunReportsUnreadablePrePushInput	calls testenv.Isolate,
 internal/hooks::TestHkCovRunTemplateErrorBranches	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/hooks::TestHkCovRunUsesProcessStreamsWhenUnset	calls testenv.Isolate, which calls t.Setenv internally and so forbids t.Parallel the same way
 internal/hooks::TestHkCovRunVerifiesARealCanonicalRescueAttestation	calls testenv.Isolate, which calls t.Setenv internally and so forbids t.Parallel the same way
-internal/hooks::TestHkCovSecureExecutionWriteRoots	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/hooks::TestHkCovSetHooksPathAtReportsMissingGit	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/hooks::TestHkCovShimManagedSectionEmbedsConfigWithoutLegacyMarker	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/hooks::TestLoadPolicyAcceptsAgentAutoTags	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
@@ -848,7 +848,6 @@ internal/layout::TestMigrateRelocationManifestWriteFailureReturnsPartialReport	c
 internal/layout::TestMigrateUndoReversesRelocationAndRemovesEmptyTaskDirectory	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/layout::TestOriginAddressReportsTheLiteralHostAndSlug	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/layout::TestTailCovAbsolutePathsFailClosedWithoutAWorkingDirectory	calls t.Chdir, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/layout::TestTailCovOriginSlugPathShapes	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/lifecyclehooks::TestHkCovDefaultReceiptPathHonoursXDGAndHomeFallback	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/lifecyclehooks::TestHkCovDefaultsFillsMissingFields	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/lifecyclehooks::TestHkCovLaunchWorkerSpawnsDetachedRunPending	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)

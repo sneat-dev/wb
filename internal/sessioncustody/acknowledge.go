@@ -237,10 +237,3 @@ func runHook(boundary string, hook func() error) error {
 	}
 	return nil
 }
-
-func now(options Options) time.Time {
-	if options.Now != nil {
-		return options.Now()
-	}
-	return time.Now().UTC()
-}

@@ -259,18 +259,6 @@ func (s Store) Load(id string) (State, error) {
 	return loadSourceStateAt(aggregate, bundle)
 }
 
-func (s Store) Resume(id string, successor session.Record, now time.Time) (State, error) {
-	lock, err := s.Acquire(context.Background(), id)
-	if err != nil {
-		return State{}, err
-	}
-	defer func() { _ = lock.Close() }()
-	if _, _, err := s.PrepareLocalUnderLock(lock, now); err != nil {
-		return State{}, err
-	}
-	return s.ResumeUnderLock(lock, successor, now)
-}
-
 func validateBundle(bundle Bundle) error {
 	if bundle.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("parked session schema_version %d unsupported; want %d", bundle.SchemaVersion, SchemaVersion)
@@ -552,21 +540,6 @@ func (s Store) LoadUnderLock(lock *SourceLock) (State, error) {
 		return State{}, fmt.Errorf("load parked session requires retained resume authority")
 	}
 	return loadSourceStateAt(lock.aggregate, lock.bundle)
-}
-
-// ContinuationPathUnderLock returns the deterministic private local-resume
-// artifact only after re-reading it through the retained aggregate descriptor.
-// Callers must pass it through WB_SESSION_CONTINUATION_FILE, never stdout or
-// harness argv.
-func (s Store) ContinuationPathUnderLock(lock *SourceLock) (string, error) {
-	if lock == nil || !lock.held(s.Root, lock.parkID) {
-		return "", fmt.Errorf("read parked continuation requires retained source authority")
-	}
-	raw, err := readPrivateRegularAt(lock.aggregate, sourceContinuationFileName, MaxContinuationBytes)
-	if err != nil || !bytes.Equal(raw, []byte(lock.bundle.Continuation)) {
-		return "", fmt.Errorf("private parked continuation conflicts with exact source bundle")
-	}
-	return filepath.Join(s.Root, lock.parkID, sourceContinuationFileName), nil
 }
 
 // EnsureLocalSuccessorContextUnderLock publishes the single private file read

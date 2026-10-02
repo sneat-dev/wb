@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -24,4 +25,15 @@ func newTestService(t *testing.T, projectsRoot, build, generation string, author
 		return nil, err
 	}
 	return NewService(projectsRoot, operationsDirectory, build, generation, authorizeRaw)
+}
+
+// LegacyStatePath is the lifecycle record a daemon wrote before the runtime
+// directory followed WB's home. It exists for detection only; nothing here
+// reads it as this build's own state.
+func LegacyStatePath(projectsRoot string) string {
+	legacy := LegacyRuntimeDir(projectsRoot)
+	if legacy == "" {
+		return ""
+	}
+	return filepath.Join(legacy, StateFileName)
 }

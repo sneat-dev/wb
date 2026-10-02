@@ -4,13 +4,211 @@
 # on findings absent from this file, so this list may only shrink without
 # review: deleting dead code or wiring it up removes its line.
 #
-# Regenerate with: wb deadcode --update-baseline
 # The analysis covers linux, darwin and windows; a function is listed only when
 # it is unreachable on all three, so the verdict is the same on every host.
-# Of the 17 gitclitest.Fake entries below, 15 implement the production Git
+#
+# Every entry sits under a heading that says why it is tolerated; the evidence
+# (specs, consumers, test callers) is in docs/deadcode-baseline.md. Anything
+# that fits none of these headings is dead code and should be deleted, not
+# added here.
+#
+# `wb deadcode --update-baseline` regenerates this file from scratch and drops
+# the headings and comments. If you regenerate, restore them from git history
+# (or from docs/deadcode-baseline.md) before committing.
+
+# == A1. Test-support packages: reachable only from tests, by design ==
+#
+# internal/gitcli/gitclitest, internal/runner/runnertest, internal/sessiontransport/transporttest,
+# internal/testenv and internal/testsweep exist only to be imported by tests. This
+# analysis is built without test roots, so main-package reachability cannot see
+# their callers. Of the gitclitest.Fake entries, 15 implement the production Git
 # port; RemotePushURL and ConfigRegexpMatches support adapter contract tests.
-# This test-support package is built without
-# test roots, so main-package reachability cannot see its test-only callers.
+# internal/testenv gained IsolateUserState, UserStateViolations and their helpers
+# with the user-state isolation guard; they are called from tests only.
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.BranchSetUpstreamTo
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.BranchShowCurrent
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CallCount
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CherryPick
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CherryPickNoCommit
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CommitNoVerify
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CommitObjectExists
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.ConfigRegexpMatches
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CurrentBranch
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.FailCall
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.Fetch
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.FetchRefs
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.IsAncestor
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.MergeBaseIsAncestorStrict
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.MergeTreeWriteTree
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.PushForceWithLeaseHead
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RemotePushURL
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RevListReverseRange
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RevParse
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.ShowTreeFormat
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.StatusPorcelain
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeAddDetached
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeRemoveForce
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.record
+github.com/sneat-dev/wb/internal/gitcli/gitclitest.key
+github.com/sneat-dev/wb/internal/runner/runnertest.AllowRealProcess
+github.com/sneat-dev/wb/internal/runner/runnertest.Call.Argv
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.CallCount
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Calls
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Detach
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Expect
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.ExpectArgv
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.FailCall
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Interactive
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Run
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.RunOpts
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.RunWithInput
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Start
+github.com/sneat-dev/wb/internal/runner/runnertest.Fake.answer
+github.com/sneat-dev/wb/internal/runner/runnertest.New
+github.com/sneat-dev/wb/internal/runner/runnertest.fakeHandle.Pid
+github.com/sneat-dev/wb/internal/runner/runnertest.fakeHandle.Signal
+github.com/sneat-dev/wb/internal/runner/runnertest.fakeHandle.Wait
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckAdvisoryNeverExceedsCapability
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckDaemonClassNeverUsesLineageSubmit
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckDeliverNeverErrors
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckKindMatchesCapabilities
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckMismatchedOperationNeverSubmits
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckResolvePaneRequiresNoUniqueTarget
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckSuccessorMessageNeverExceedsCapability
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckZeroTargetAlwaysRecordsOnly
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.Suite
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.probeTarget
+github.com/sneat-dev/wb/internal/sessiontransport/transporttest.run
+github.com/sneat-dev/wb/internal/testenv.ConfigureGitAutoMaintenanceOff
+github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffEnv
+github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffProcess
+github.com/sneat-dev/wb/internal/testenv.InitBareRemoteForTest
+github.com/sneat-dev/wb/internal/testenv.Isolate
+github.com/sneat-dev/wb/internal/testenv.IsolateHarnessProcess
+github.com/sneat-dev/wb/internal/testenv.IsolateProcess
+github.com/sneat-dev/wb/internal/testenv.IsolateUserState
+github.com/sneat-dev/wb/internal/testenv.SetGitAutoMaintenanceOff
+github.com/sneat-dev/wb/internal/testenv.UserStateViolations
+github.com/sneat-dev/wb/internal/testenv.WriteExecutableFile
+github.com/sneat-dev/wb/internal/testenv.globalGitConfigFiles
+github.com/sneat-dev/wb/internal/testenv.goEnvFileValues
+github.com/sneat-dev/wb/internal/testenv.inheritedUserStateRoot
+github.com/sneat-dev/wb/internal/testenv.isolateEnvironment
+github.com/sneat-dev/wb/internal/testenv.resolvedGoToolVariables
+github.com/sneat-dev/wb/internal/testenv.under
+github.com/sneat-dev/wb/internal/testsweep.Sweep
+
+# == A1. Test-support dependencies and test-only hooks ==
+#
+# internal/secureopen.Fake, NewFake: the in-memory secureopen for tests.
+# internal/execfile: WriteExecutableFile is reached only through testenv.WriteExecutableFile
+# and internal/envguard tests.
+github.com/sneat-dev/wb/internal/execfile.WriteExecutableFile
+github.com/sneat-dev/wb/internal/execfile.writeAndChmodTempExecutable
+github.com/sneat-dev/wb/internal/secureopen.Fake.CallCount
+github.com/sneat-dev/wb/internal/secureopen.Fake.FailCall
+github.com/sneat-dev/wb/internal/secureopen.Fake.Hook
+github.com/sneat-dev/wb/internal/secureopen.Fake.IsSymlink
+github.com/sneat-dev/wb/internal/secureopen.Fake.Mkdir
+github.com/sneat-dev/wb/internal/secureopen.Fake.OpenDir
+github.com/sneat-dev/wb/internal/secureopen.Fake.OpenRoot
+github.com/sneat-dev/wb/internal/secureopen.Fake.next
+github.com/sneat-dev/wb/internal/secureopen.NewFake
+
+# internal/runqueue *ForTest hooks: documented as test-only seams that cmd/wb tests
+# use to isolate the queue root and CPU budget.
+github.com/sneat-dev/wb/internal/runqueue.QueueDirForTest
+github.com/sneat-dev/wb/internal/runqueue.SetNumCPUForTest
+github.com/sneat-dev/wb/internal/runqueue.SetQueueRootForTest
+
+# == A1. internal/quality guard analysers that run as Go tests ==
+#
+# FindClockSeamViolations, FindExecSiteMatches, FindUnitTierMatches, FindInlineWriteSequences,
+# FindCampaignTestNameMatches, ScanExecWriteFileCallSites and their helpers are the
+# repository guards, invoked from clock_seam_guard_test.go, execsites_guard_test.go,
+# unittier_guard_test.go, filewrite_boundary_test.go, execwritefile_guard_test.go and
+# campaigntestnames_test.go. They run as `go test`, not from a main package.
+github.com/sneat-dev/wb/internal/quality.CampaignTestNameMatch.String
+github.com/sneat-dev/wb/internal/quality.ClockSeamMatch.String
+github.com/sneat-dev/wb/internal/quality.CountCampaignTestNameMatchesByFile
+github.com/sneat-dev/wb/internal/quality.CountExecSiteMatchesByFile
+github.com/sneat-dev/wb/internal/quality.CountUnitTierMatchesByFile
+github.com/sneat-dev/wb/internal/quality.ExecSiteMatch.String
+github.com/sneat-dev/wb/internal/quality.FindCampaignTestNameMatches
+github.com/sneat-dev/wb/internal/quality.FindClockSeamViolations
+github.com/sneat-dev/wb/internal/quality.FindExecSiteMatches
+github.com/sneat-dev/wb/internal/quality.FindInlineWriteSequences
+github.com/sneat-dev/wb/internal/quality.FindNativeTestSelectionProblems
+github.com/sneat-dev/wb/internal/quality.FindUnitTierMatches
+github.com/sneat-dev/wb/internal/quality.FormatCampaignTestNamesPending
+github.com/sneat-dev/wb/internal/quality.FormatExecSitesPending
+github.com/sneat-dev/wb/internal/quality.FormatUnitTierPending
+github.com/sneat-dev/wb/internal/quality.InlineWriteSequenceViolation.String
+github.com/sneat-dev/wb/internal/quality.ParseUnitTierAllow
+github.com/sneat-dev/wb/internal/quality.ScanExecWriteFileCallSites
+github.com/sneat-dev/wb/internal/quality.UnitTierMatch.String
+github.com/sneat-dev/wb/internal/quality.ValidateNativeWorkflowSelector
+github.com/sneat-dev/wb/internal/quality.buildConstraintRequiresE2E
+github.com/sneat-dev/wb/internal/quality.callArgIsOSArgsZero
+github.com/sneat-dev/wb/internal/quality.callArgsMentionAppendFlag
+github.com/sneat-dev/wb/internal/quality.callArgsMentionCreateFlag
+github.com/sneat-dev/wb/internal/quality.callArgsMentionFlagSubstring
+github.com/sneat-dev/wb/internal/quality.callFirstStringArgEquals
+github.com/sneat-dev/wb/internal/quality.campaignFileNameViolation
+github.com/sneat-dev/wb/internal/quality.campaignFuncNameViolation
+github.com/sneat-dev/wb/internal/quality.classifyExecSiteCall
+github.com/sneat-dev/wb/internal/quality.classifyInlineWriteSequence
+github.com/sneat-dev/wb/internal/quality.classifyUnitTierCall
+github.com/sneat-dev/wb/internal/quality.collectExecWriteFileLocals
+github.com/sneat-dev/wb/internal/quality.collectExecWriteForwarders
+github.com/sneat-dev/wb/internal/quality.execSiteAllowedDir
+github.com/sneat-dev/wb/internal/quality.execSitePackageAliases
+github.com/sneat-dev/wb/internal/quality.execSiteTopLevelFuncLitNames
+github.com/sneat-dev/wb/internal/quality.execSiteVisitor.Visit
+github.com/sneat-dev/wb/internal/quality.execWriteFileChmodCall
+github.com/sneat-dev/wb/internal/quality.execWriteFileModeArg
+github.com/sneat-dev/wb/internal/quality.execWriteFileParamNames
+github.com/sneat-dev/wb/internal/quality.execWriteFileWritePath
+github.com/sneat-dev/wb/internal/quality.fileRenameLinkAliases
+github.com/sneat-dev/wb/internal/quality.fileRequiresE2ETag
+github.com/sneat-dev/wb/internal/quality.findClockSeamViolationsAgainst
+github.com/sneat-dev/wb/internal/quality.findExecWriteFuncDecl
+github.com/sneat-dev/wb/internal/quality.findFuncDecl
+github.com/sneat-dev/wb/internal/quality.findFunctionsNotRenameOnlyOrAppendOnly
+github.com/sneat-dev/wb/internal/quality.findFunctionsThatCreateAndWriteContent
+github.com/sneat-dev/wb/internal/quality.formatPendingList
+github.com/sneat-dev/wb/internal/quality.functionCreatesAndWritesContentIgnoringPublish
+github.com/sneat-dev/wb/internal/quality.functionHasInlineWriteSequence
+github.com/sneat-dev/wb/internal/quality.functionRenameOnlyOrAppendOnly
+github.com/sneat-dev/wb/internal/quality.hasNativeHelperCaller
+github.com/sneat-dev/wb/internal/quality.hasNativeHelperMarker
+github.com/sneat-dev/wb/internal/quality.isExecWriteFileExecutableMode
+github.com/sneat-dev/wb/internal/quality.isNativeTestFunction
+github.com/sneat-dev/wb/internal/quality.literalGitArg
+github.com/sneat-dev/wb/internal/quality.qualifiedFuncName
+github.com/sneat-dev/wb/internal/quality.receiverTypeName
+github.com/sneat-dev/wb/internal/quality.relSlashFor
+github.com/sneat-dev/wb/internal/quality.resolveExecWriteFileMode
+github.com/sneat-dev/wb/internal/quality.scanExecSiteFile
+github.com/sneat-dev/wb/internal/quality.scanExecWriteFileFile
+github.com/sneat-dev/wb/internal/quality.scanUnitTierFile
+github.com/sneat-dev/wb/internal/quality.stripImportQuotes
+github.com/sneat-dev/wb/internal/quality.testImportName
+github.com/sneat-dev/wb/internal/quality.timeLocalName
+github.com/sneat-dev/wb/internal/quality.unitTierPackageAliases
+github.com/sneat-dev/wb/internal/quality.unitTierSkipDir
+github.com/sneat-dev/wb/internal/quality.walkGoTestFiles
+github.com/sneat-dev/wb/internal/quality.walkNonTestFunctionDecls
+
+# == A2. Hosted Workbench service: api/githubapp and hub, consumed outside this module ==
+#
+# sneat-co/sneat-go pkg/modules/workbench (module.go, document_store.go) mounts
+# DocumentProjectionStore, StoreReadModel, GitHubRESTProjectionReader, InstallationTokenSource,
+# ProjectionEngine writers and hub.GitHubOAuthVerifier from this module. Rooting the
+# analysis at that wiring makes every entry below reachable. Specs: self-hosted-bench
+# (Implementing) keeps the hosted OAuth viewer unchanged; github-app-repository-events
+# (Draft) describes the provider. No spec under spec/ names the projection read model
+# itself: see docs/deadcode-baseline.md.
 github.com/sneat-dev/wb/api/githubapp.DocumentProjectionDeliveryStore.ClaimDelivery
 github.com/sneat-dev/wb/api/githubapp.DocumentProjectionDeliveryStore.CommitDeliveryAndWakeup
 github.com/sneat-dev/wb/api/githubapp.DocumentProjectionDeliveryStore.HasDelivery
@@ -59,15 +257,6 @@ github.com/sneat-dev/wb/api/githubapp.signGitHubAppJWT
 github.com/sneat-dev/wb/api/githubapp.validateProjectionDeliveryID
 github.com/sneat-dev/wb/api/githubapp.wakeupDocumentID
 github.com/sneat-dev/wb/api/githubapp.workbenchURL
-github.com/sneat-dev/wb/api/githubapp/machinesnapshot.ResolveLatest
-github.com/sneat-dev/wb/api/githubapp/machinesnapshot.SnapshotKey
-github.com/sneat-dev/wb/cmd/wb.daemonController.Restart
-github.com/sneat-dev/wb/cmd/wb.daemonFileRequestTarget
-github.com/sneat-dev/wb/cmd/wb.daemonSupervisorRecordsStartLog
-github.com/sneat-dev/wb/cmd/wb.newDaemonOperationClient
-github.com/sneat-dev/wb/cmd/wb.newRootCmd
-github.com/sneat-dev/wb/cmd/wb.newRunQueueProgress
-github.com/sneat-dev/wb/cmd/wb.runPreparedNpmPublish
 github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.ExchangeGitHubOAuthCode
 github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.Validate
 github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.VerifyGitHubIdentity
@@ -76,197 +265,26 @@ github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.exchange
 github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.installations
 github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.oauthBaseURL
 github.com/sneat-dev/wb/hub.GitHubOAuthVerifier.repositories
-github.com/sneat-dev/wb/hub.HTTPArtifactDownloader.DownloadWorkflowArtifact
-github.com/sneat-dev/wb/hub.HTTPArtifactDownloader.newRequest
-github.com/sneat-dev/wb/hub.WorkflowRunHarvester.HarvestWorkflowRun
-github.com/sneat-dev/wb/hub.WorkflowRunHarvester.narrateLine
-github.com/sneat-dev/wb/hub.extractCoverageSummaryFromZip
 github.com/sneat-dev/wb/hub.githubGET
-github.com/sneat-dev/wb/internal/agents.StripAgentID
-github.com/sneat-dev/wb/internal/buildinfo.Set
-github.com/sneat-dev/wb/internal/checkoutmarker.Result.Changed
-github.com/sneat-dev/wb/internal/ciaudit.WorkflowMechanisms
-github.com/sneat-dev/wb/internal/daemon.LegacyStatePath
-github.com/sneat-dev/wb/internal/daemon.NewStarting
-github.com/sneat-dev/wb/internal/deps.BumpOperationID
-github.com/sneat-dev/wb/internal/deps.DriftFailed
-github.com/sneat-dev/wb/internal/deps.RepositoryReportFromResult
-github.com/sneat-dev/wb/internal/diskusage.Measure
-github.com/sneat-dev/wb/internal/execfile.WriteExecutableFile
-github.com/sneat-dev/wb/internal/execfile.writeAndChmodTempExecutable
-github.com/sneat-dev/wb/internal/filewrite.WriteJSONAtomic
-github.com/sneat-dev/wb/internal/fleetsync.RunMeta.Complete
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.BranchSetUpstreamTo
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.BranchShowCurrent
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CallCount
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CherryPick
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CherryPickNoCommit
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CommitNoVerify
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CommitObjectExists
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.ConfigRegexpMatches
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.CurrentBranch
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.FailCall
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.Fetch
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.FetchRefs
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.IsAncestor
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.MergeBaseIsAncestorStrict
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.MergeTreeWriteTree
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.PushForceWithLeaseHead
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RemotePushURL
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RevListReverseRange
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.RevParse
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.ShowTreeFormat
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.StatusPorcelain
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeAddDetached
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeRemoveForce
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.record
-github.com/sneat-dev/wb/internal/gitcli/gitclitest.key
-github.com/sneat-dev/wb/internal/gitops.UnpushedCommits
+
+# api/githubapp/machinesnapshot.ResolveLatest is the documented comparison that durable
+# adapters apply inside their transaction; api/githubapp/machine_snapshots_test.go
+# checks the service against it.
+github.com/sneat-dev/wb/api/githubapp/machinesnapshot.ResolveLatest
+
+# == A3. Scheduled by a live spec and plan: herdr session transport ==
+#
+# spec/features/herdr-session-transport (Draft): single-transport-interface, transport-capability-matrix,
+# explicit-transport-override, none-transport-is-first-class, herdr-version-detected-and-bounded,
+# automatic-transport-identity-capture. spec/plans/herdr-session-transport.md: Task 1 (internal/herdr
+# adapter: identity from the environment, fakeable exec seam), Task 2 (interface, capability matrix,
+# override, none transport), Task 5 (selection), Task 10 (failure modes). Wiring lands with Tasks 3-5.
 github.com/sneat-dev/wb/internal/herdr.Identity.InHerdr
 github.com/sneat-dev/wb/internal/herdr.ReadIdentity
 github.com/sneat-dev/wb/internal/herdr.WithRunner
 github.com/sneat-dev/wb/internal/herdr.WithSessionName
 github.com/sneat-dev/wb/internal/herdr.WithSocketPath
 github.com/sneat-dev/wb/internal/herdr.valueOrEmpty
-github.com/sneat-dev/wb/internal/hooks.AppendEvent
-github.com/sneat-dev/wb/internal/hooks.Classification.IsPublication
-github.com/sneat-dev/wb/internal/hooks.Classification.RunLint
-github.com/sneat-dev/wb/internal/hooks.ReplayPendingMetrics
-github.com/sneat-dev/wb/internal/hooks.SecureExecutionWriteRoots
-github.com/sneat-dev/wb/internal/hooks.uniqueSortedPaths
-github.com/sneat-dev/wb/internal/hooks.writeExecutable
-github.com/sneat-dev/wb/internal/hostload.Disabled
-github.com/sneat-dev/wb/internal/hostload.Floor
-github.com/sneat-dev/wb/internal/landinglane.Read
-github.com/sneat-dev/wb/internal/landinglane.lockShared
-github.com/sneat-dev/wb/internal/layout.OriginSlug
-github.com/sneat-dev/wb/internal/layout.splitSlug
-github.com/sneat-dev/wb/internal/locallink.copyBuiltPackage
-github.com/sneat-dev/wb/internal/locallink.copyBuiltPackageContents
-github.com/sneat-dev/wb/internal/orchestrate.canonicalClonePath
-github.com/sneat-dev/wb/internal/orchestrate.persistReceiptCollisionAcknowledgement
-github.com/sneat-dev/wb/internal/orchestrate.persistSelfSupersessionCorrection
-github.com/sneat-dev/wb/internal/orchestrate.reconcileAbsorbedSourcePullRequestsWith
-github.com/sneat-dev/wb/internal/policy.Result.Summary
-github.com/sneat-dev/wb/internal/quality.CampaignTestNameMatch.String
-github.com/sneat-dev/wb/internal/quality.ClockSeamMatch.String
-github.com/sneat-dev/wb/internal/quality.CountCampaignTestNameMatchesByFile
-github.com/sneat-dev/wb/internal/quality.CountExecSiteMatchesByFile
-github.com/sneat-dev/wb/internal/quality.CountUnitTierMatchesByFile
-github.com/sneat-dev/wb/internal/quality.Cover
-github.com/sneat-dev/wb/internal/quality.ExecSiteMatch.String
-github.com/sneat-dev/wb/internal/quality.FindCampaignTestNameMatches
-github.com/sneat-dev/wb/internal/quality.FindClockSeamViolations
-github.com/sneat-dev/wb/internal/quality.FindExecSiteMatches
-github.com/sneat-dev/wb/internal/quality.FindInlineWriteSequences
-github.com/sneat-dev/wb/internal/quality.FindUnitTierMatches
-github.com/sneat-dev/wb/internal/quality.FormatCampaignTestNamesPending
-github.com/sneat-dev/wb/internal/quality.FormatExecSitesPending
-github.com/sneat-dev/wb/internal/quality.FormatUnitTierPending
-github.com/sneat-dev/wb/internal/quality.InlineWriteSequenceViolation.String
-github.com/sneat-dev/wb/internal/quality.ParseUnitTierAllow
-github.com/sneat-dev/wb/internal/quality.ReadCoverageSummary
-github.com/sneat-dev/wb/internal/quality.ScanExecWriteFileCallSites
-github.com/sneat-dev/wb/internal/quality.UnitTierMatch.String
-github.com/sneat-dev/wb/internal/quality.Verify
-github.com/sneat-dev/wb/internal/quality.buildConstraintRequiresE2E
-github.com/sneat-dev/wb/internal/quality.callArgIsOSArgsZero
-github.com/sneat-dev/wb/internal/quality.callArgsMentionAppendFlag
-github.com/sneat-dev/wb/internal/quality.callArgsMentionCreateFlag
-github.com/sneat-dev/wb/internal/quality.callArgsMentionFlagSubstring
-github.com/sneat-dev/wb/internal/quality.callFirstStringArgEquals
-github.com/sneat-dev/wb/internal/quality.campaignFileNameViolation
-github.com/sneat-dev/wb/internal/quality.campaignFuncNameViolation
-github.com/sneat-dev/wb/internal/quality.classifyExecSiteCall
-github.com/sneat-dev/wb/internal/quality.classifyInlineWriteSequence
-github.com/sneat-dev/wb/internal/quality.classifyUnitTierCall
-github.com/sneat-dev/wb/internal/quality.collectExecWriteFileLocals
-github.com/sneat-dev/wb/internal/quality.collectExecWriteForwarders
-github.com/sneat-dev/wb/internal/quality.execSiteAllowedDir
-github.com/sneat-dev/wb/internal/quality.execSitePackageAliases
-github.com/sneat-dev/wb/internal/quality.execSiteTopLevelFuncLitNames
-github.com/sneat-dev/wb/internal/quality.execSiteVisitor.Visit
-github.com/sneat-dev/wb/internal/quality.execWriteFileChmodCall
-github.com/sneat-dev/wb/internal/quality.execWriteFileModeArg
-github.com/sneat-dev/wb/internal/quality.execWriteFileParamNames
-github.com/sneat-dev/wb/internal/quality.execWriteFileWritePath
-github.com/sneat-dev/wb/internal/quality.fileRenameLinkAliases
-github.com/sneat-dev/wb/internal/quality.fileRequiresE2ETag
-github.com/sneat-dev/wb/internal/quality.findClockSeamViolationsAgainst
-github.com/sneat-dev/wb/internal/quality.findExecWriteFuncDecl
-github.com/sneat-dev/wb/internal/quality.findFuncDecl
-github.com/sneat-dev/wb/internal/quality.findFunctionsNotRenameOnlyOrAppendOnly
-github.com/sneat-dev/wb/internal/quality.findFunctionsThatCreateAndWriteContent
-github.com/sneat-dev/wb/internal/quality.formatPendingList
-github.com/sneat-dev/wb/internal/quality.functionCreatesAndWritesContentIgnoringPublish
-github.com/sneat-dev/wb/internal/quality.functionHasInlineWriteSequence
-github.com/sneat-dev/wb/internal/quality.functionRenameOnlyOrAppendOnly
-github.com/sneat-dev/wb/internal/quality.isExecWriteFileExecutableMode
-github.com/sneat-dev/wb/internal/quality.literalGitArg
-github.com/sneat-dev/wb/internal/quality.qualifiedFuncName
-github.com/sneat-dev/wb/internal/quality.receiverTypeName
-github.com/sneat-dev/wb/internal/quality.relSlashFor
-github.com/sneat-dev/wb/internal/quality.resolveExecWriteFileMode
-github.com/sneat-dev/wb/internal/quality.runShardedCoverage
-github.com/sneat-dev/wb/internal/quality.runShardedCoverageWithDiagnostics
-github.com/sneat-dev/wb/internal/quality.runShardedCoverageWithDiagnosticsAndProgress
-github.com/sneat-dev/wb/internal/quality.scanExecSiteFile
-github.com/sneat-dev/wb/internal/quality.scanExecWriteFileFile
-github.com/sneat-dev/wb/internal/quality.scanUnitTierFile
-github.com/sneat-dev/wb/internal/quality.stripImportQuotes
-github.com/sneat-dev/wb/internal/quality.timeLocalName
-github.com/sneat-dev/wb/internal/quality.unitTierPackageAliases
-github.com/sneat-dev/wb/internal/quality.unitTierSkipDir
-github.com/sneat-dev/wb/internal/quality.walkNonTestFunctionDecls
-github.com/sneat-dev/wb/internal/repopath.Address.EqualFold
-github.com/sneat-dev/wb/internal/repopath.Address.String
-github.com/sneat-dev/wb/internal/repositoryevents.CursorStore.Load
-github.com/sneat-dev/wb/internal/repositoryevents.CursorStore.Save
-github.com/sneat-dev/wb/internal/runner/runnertest.AllowRealProcess
-github.com/sneat-dev/wb/internal/runner/runnertest.Call.Argv
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.CallCount
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Calls
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Detach
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Expect
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.ExpectArgv
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.FailCall
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Interactive
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Run
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.RunOpts
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.RunWithInput
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.Start
-github.com/sneat-dev/wb/internal/runner/runnertest.Fake.answer
-github.com/sneat-dev/wb/internal/runner/runnertest.New
-github.com/sneat-dev/wb/internal/runner/runnertest.fakeHandle.Pid
-github.com/sneat-dev/wb/internal/runner/runnertest.fakeHandle.Signal
-github.com/sneat-dev/wb/internal/runner/runnertest.fakeHandle.Wait
-github.com/sneat-dev/wb/internal/runqueue.Lease.Heartbeat
-github.com/sneat-dev/wb/internal/runqueue.Peek
-github.com/sneat-dev/wb/internal/runqueue.QueueDirForTest
-github.com/sneat-dev/wb/internal/runqueue.SetNumCPUForTest
-github.com/sneat-dev/wb/internal/runqueue.SetQueueRootForTest
-github.com/sneat-dev/wb/internal/secretscan.Scanner.Rules
-github.com/sneat-dev/wb/internal/secureopen.Fake.CallCount
-github.com/sneat-dev/wb/internal/secureopen.Fake.FailCall
-github.com/sneat-dev/wb/internal/secureopen.Fake.Hook
-github.com/sneat-dev/wb/internal/secureopen.Fake.IsSymlink
-github.com/sneat-dev/wb/internal/secureopen.Fake.Mkdir
-github.com/sneat-dev/wb/internal/secureopen.Fake.OpenDir
-github.com/sneat-dev/wb/internal/secureopen.Fake.OpenRoot
-github.com/sneat-dev/wb/internal/secureopen.Fake.next
-github.com/sneat-dev/wb/internal/secureopen.NewFake
-github.com/sneat-dev/wb/internal/sessioncourier.DeliverSSH
-github.com/sneat-dev/wb/internal/sessioncustody.now
-github.com/sneat-dev/wb/internal/sessionlaunch.ValidateHarnessSelection
-github.com/sneat-dev/wb/internal/sessionlaunch.launchPrompt
-github.com/sneat-dev/wb/internal/sessionlaunch.loadPlan
-github.com/sneat-dev/wb/internal/sessionlaunch.loadReady
-github.com/sneat-dev/wb/internal/sessionlaunch.loadRelease
-github.com/sneat-dev/wb/internal/sessionlaunch.savePlan
-github.com/sneat-dev/wb/internal/sessionlaunch.saveRelease
-github.com/sneat-dev/wb/internal/sessionpark.Store.ContinuationPathUnderLock
-github.com/sneat-dev/wb/internal/sessionpark.Store.Resume
-github.com/sneat-dev/wb/internal/sessionparkreceive.TargetStoreRoot
 github.com/sneat-dev/wb/internal/sessiontransport.CheckHerdrBinary
 github.com/sneat-dev/wb/internal/sessiontransport.CheckTmuxBinary
 github.com/sneat-dev/wb/internal/sessiontransport.ComposeChecks
@@ -291,100 +309,43 @@ github.com/sneat-dev/wb/internal/sessiontransport.Target.IsZero
 github.com/sneat-dev/wb/internal/sessiontransport.TmuxCapabilities
 github.com/sneat-dev/wb/internal/sessiontransport.loadOverrideWithMarshal
 github.com/sneat-dev/wb/internal/sessiontransport.mappingValue
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckAdvisoryNeverExceedsCapability
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckDaemonClassNeverUsesLineageSubmit
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckDeliverNeverErrors
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckKindMatchesCapabilities
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckMismatchedOperationNeverSubmits
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckResolvePaneRequiresNoUniqueTarget
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckSuccessorMessageNeverExceedsCapability
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckZeroTargetAlwaysRecordsOnly
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.Suite
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.probeTarget
-github.com/sneat-dev/wb/internal/sessiontransport/transporttest.run
-github.com/sneat-dev/wb/internal/streambranch.StreamName
-github.com/sneat-dev/wb/internal/streams.IsStreamBranch
-github.com/sneat-dev/wb/internal/streams.PreflightChecks
-github.com/sneat-dev/wb/internal/streams.npmPackageManifests
-github.com/sneat-dev/wb/internal/testenv.ConfigureGitAutoMaintenanceOff
-github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffEnv
-github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffProcess
-github.com/sneat-dev/wb/internal/testenv.InitBareRemoteForTest
-github.com/sneat-dev/wb/internal/testenv.Isolate
-github.com/sneat-dev/wb/internal/testenv.IsolateHarnessProcess
-github.com/sneat-dev/wb/internal/testenv.IsolateProcess
-github.com/sneat-dev/wb/internal/testenv.SetGitAutoMaintenanceOff
-github.com/sneat-dev/wb/internal/testenv.WriteExecutableFile
-github.com/sneat-dev/wb/internal/testenv.isolateEnvironment
-github.com/sneat-dev/wb/internal/testsweep.Sweep
-github.com/sneat-dev/wb/internal/tui.NewResultsModel
-github.com/sneat-dev/wb/internal/tui.ResultsModel.Init
-github.com/sneat-dev/wb/internal/tui.ResultsModel.Update
-github.com/sneat-dev/wb/internal/tui.ResultsModel.View
-github.com/sneat-dev/wb/internal/tui.ResultsModel.filtering
-github.com/sneat-dev/wb/internal/tui.ResultsModel.resize
-github.com/sneat-dev/wb/internal/tui.ResultsModel.resizeRight
-github.com/sneat-dev/wb/internal/tui.ResultsModel.rightPanel
-github.com/sneat-dev/wb/internal/tui.ResultsModel.selectedResult
-github.com/sneat-dev/wb/internal/tui.ResultsModel.selectedSummaryGroup
-github.com/sneat-dev/wb/internal/tui.ResultsModel.stacked
-github.com/sneat-dev/wb/internal/tui.ResultsModel.syncGroup
-github.com/sneat-dev/wb/internal/tui.ResultsModel.syncRepository
-github.com/sneat-dev/wb/internal/tui.ResultsModel.toggleFocus
-github.com/sneat-dev/wb/internal/tui.detailView
-github.com/sneat-dev/wb/internal/tui.pluralRepositories
-github.com/sneat-dev/wb/internal/tui.repositoryItem.Description
-github.com/sneat-dev/wb/internal/tui.repositoryItem.FilterValue
-github.com/sneat-dev/wb/internal/tui.repositoryItem.Title
-github.com/sneat-dev/wb/internal/tui.resultsContentHeight
-github.com/sneat-dev/wb/internal/tui.resultsContentWidth
-github.com/sneat-dev/wb/internal/tui.resultsHelp
-github.com/sneat-dev/wb/internal/tui.resultsPanel
-github.com/sneat-dev/wb/internal/tui.resultsPanelHeights
-github.com/sneat-dev/wb/internal/tui.resultsPanelWidths
-github.com/sneat-dev/wb/internal/tui.resultsRightHeights
-github.com/sneat-dev/wb/internal/tui.section
-github.com/sneat-dev/wb/internal/tui.summaryItem.Description
-github.com/sneat-dev/wb/internal/tui.summaryItem.FilterValue
-github.com/sneat-dev/wb/internal/tui.summaryItem.Title
-github.com/sneat-dev/wb/internal/tui.summarySectionLabel
-github.com/sneat-dev/wb/internal/tui.writeUnpushedDetail
+
+# == C. Possibly unwired by accident ==
+#
+# hub.WorkflowRunHarvester and hub.HTTPArtifactDownloader: spec/features/fleet-quality REQ
+# hub-coverage-harvester (Implementing) and spec/plans/remote-ci-coverage.md Task 3 (Approved) say the
+# hub downloads the wb-coverage-summary artifact on workflow_run.completed. hub.HandlerOptions.CoverageHarvester
+# is read by hub/http.go but nothing in this module or in sneat-go sets it, so the harvester never runs.
+github.com/sneat-dev/wb/hub.HTTPArtifactDownloader.DownloadWorkflowArtifact
+github.com/sneat-dev/wb/hub.HTTPArtifactDownloader.newRequest
+github.com/sneat-dev/wb/hub.WorkflowRunHarvester.HarvestWorkflowRun
+github.com/sneat-dev/wb/hub.WorkflowRunHarvester.narrateLine
+github.com/sneat-dev/wb/hub.extractCoverageSummaryFromZip
+
+# == X. Test fixtures used across packages (decision needed; see docs/deadcode-baseline.md) ==
+#
+# Production-package functions whose only callers are tests in another package, so they cannot move
+# into a _test.go file without a shared test package.
+github.com/sneat-dev/wb/internal/buildinfo.Set
+github.com/sneat-dev/wb/internal/landinglane.Read
+github.com/sneat-dev/wb/internal/landinglane.lockShared
+github.com/sneat-dev/wb/internal/quality.ReadCoverageSummary
+github.com/sneat-dev/wb/internal/runqueue.Peek
 github.com/sneat-dev/wb/internal/worktreebranches.DependencyManifestValue
 github.com/sneat-dev/wb/internal/worktreebranches.SupersessionService.ValidateDependencyDeltas
 github.com/sneat-dev/wb/internal/worktreejournal.OpenJournalComponent
-github.com/sneat-dev/wb/internal/worktrees.AttachParkedLocalSuccessor
 github.com/sneat-dev/wb/internal/worktrees.CaptureParkedSessionWorktree
-github.com/sneat-dev/wb/internal/worktrees.ExpectedRemoteURL
-github.com/sneat-dev/wb/internal/worktrees.NewestChangedFileTime
-github.com/sneat-dev/wb/internal/worktrees.ParkedSessionWorkLogReference
 github.com/sneat-dev/wb/internal/worktrees.ParkedSessionWorkLogSnapshot
-github.com/sneat-dev/wb/internal/worktrees.QuarantineManifestDigest
 github.com/sneat-dev/wb/internal/worktrees.TouchHeartbeat
-github.com/sneat-dev/wb/internal/worktrees.ValidEffortPath
 github.com/sneat-dev/wb/internal/worktrees.ValidateDependencyDeltas
 github.com/sneat-dev/wb/internal/worktrees.WithParkedLocalResumeCustody
-github.com/sneat-dev/wb/internal/worktrees.classifyAbsorbedOrUnique
-github.com/sneat-dev/wb/internal/worktrees.classifyBranch
-github.com/sneat-dev/wb/internal/worktrees.classifyLandingReceipt
-github.com/sneat-dev/wb/internal/worktrees.decorateBranchCommit
-github.com/sneat-dev/wb/internal/worktrees.decorateBranchCommits
-github.com/sneat-dev/wb/internal/worktrees.exactBranchPullRequests
-github.com/sneat-dev/wb/internal/worktrees.githubPullRequestsForBranchWithExecute
-github.com/sneat-dev/wb/internal/worktrees.grantOwnerWriteAt
-github.com/sneat-dev/wb/internal/worktrees.inspectRepositoryBranches
-github.com/sneat-dev/wb/internal/worktrees.inspectRepositoryBranchesWithHeartbeat
-github.com/sneat-dev/wb/internal/worktrees.listLocalRefs
-github.com/sneat-dev/wb/internal/worktrees.listRefs
-github.com/sneat-dev/wb/internal/worktrees.listRemoteRefs
-github.com/sneat-dev/wb/internal/worktrees.listRetiredRemoteRefs
-github.com/sneat-dev/wb/internal/worktrees.listRetiredTags
-github.com/sneat-dev/wb/internal/worktrees.mergeResultTree
-github.com/sneat-dev/wb/internal/worktrees.openJournalComponent
 github.com/sneat-dev/wb/internal/worktrees.parkedSessionWorkLogSnapshotWithReads
+
+# == X. Implicit interface and per-platform test probes ==
+#
+# repopath.Address.String is the fmt.Stringer used when addresses are printed with %s/%v, which
+# static reachability cannot see. platformGitFilesystemCapabilityConfines and
+# daemonSupervisorRecordsStartLog have one definition per OS and are read only by tests.
+github.com/sneat-dev/wb/cmd/wb.daemonSupervisorRecordsStartLog
+github.com/sneat-dev/wb/internal/repopath.Address.String
 github.com/sneat-dev/wb/internal/worktrees.platformGitFilesystemCapabilityConfines
-github.com/sneat-dev/wb/internal/worktrees.protectedEvidence
-github.com/sneat-dev/wb/internal/worktrees.resolveAbsorbedByPullRequestWithGet
-github.com/sneat-dev/wb/internal/worktrees.resolveCanonicalClone
-github.com/sneat-dev/wb/internal/worktrees.selectBranchRepositories
-github.com/sneat-dev/wb/internal/worktrees.sessionReceiveRepositoryFromRemote
-github.com/sneat-dev/wb/internal/worktrees.writeJSONAtomic
