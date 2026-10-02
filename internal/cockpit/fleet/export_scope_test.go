@@ -172,8 +172,9 @@ func TestTheHubExportEncodesOnlyTheHalfThatMoved(t *testing.T) {
 		t.Fatalf("the export after a new sample: %v, %d samples", err, len(envelope.Metrics.Samples))
 	}
 	snapshotter.exports.mu.Lock()
-	defer snapshotter.exports.mu.Unlock()
-	if snapshotter.exports.fleet != fleetHalf {
+	held := snapshotter.exports.fleet
+	snapshotter.exports.mu.Unlock()
+	if held != fleetHalf {
 		t.Error("a new sample built the fleet half again")
 	}
 }

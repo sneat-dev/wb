@@ -167,7 +167,7 @@ func TestAgentActivityIsOmittedWhenHerdrFailsOrIsSlowAndDoesNotDelayTheSnapshot(
 	use(activityOver(fakeHerdr{hang: true, calls: hung, entered: entered, ended: ended}))
 	snapshotter.activityTimeout = time.Hour
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	t.Cleanup(cancel)
 	refreshed := make(chan error, 1)
 	go func() { refreshed <- snapshotter.Refresh(ctx) }()
 	<-entered
