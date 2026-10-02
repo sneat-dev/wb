@@ -232,22 +232,6 @@ func (locks npmPublicationLocks) Release() {
 	}
 }
 
-// runPreparedNpmPublish owns the irreversible boundary after the complete
-// preflight has selected a stable fleet. Keeping it separate makes the
-// campaign-lock contract directly testable without a live GitHub or npm call.
-func runPreparedNpmPublish(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared, inv *invocation) error {
-	// Every path below writes a durable report. Take both campaign and
-	// package-version locks before either a dry-run plan or --apply can touch
-	// it, so a plan cannot overwrite an in-progress apply/resume handoff and an
-	// overlapping campaign cannot publish the same npm version concurrently.
-	locks, err := acquireNpmPublicationLocks(inv, prepared.operation, prepared.releases, options.resume)
-	if err != nil {
-		return err
-	}
-	defer locks.Release()
-	return runPreparedNpmPublishLocked(command, options, prepared, inv)
-}
-
 func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared, inv *invocation) error {
 	publication, err := plannedNpmPublication(commandExecutionContext(command), prepared, options)
 	if err != nil {

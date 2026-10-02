@@ -1888,10 +1888,6 @@ func optionalDaemonState(state daemon.State, found bool) *daemon.State {
 	return &state
 }
 
-func (controller daemonController) Restart(ctx context.Context, ifRunning bool) (daemonResult, error) {
-	return controller.RestartWithProgress(ctx, ifRunning, nil, false)
-}
-
 func (controller daemonController) RestartWithProgress(ctx context.Context, ifRunning bool, progress func(string), forceDetached bool) (daemonResult, error) {
 	release, err := controller.lifecycleLock()
 	if err != nil {

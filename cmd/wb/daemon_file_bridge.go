@@ -897,11 +897,6 @@ func daemonFileBridgeID() (string, error) {
 	return "wbfb-" + hex.EncodeToString(value), nil
 }
 
-func daemonFileRequestTarget(procedure string, body []byte) (string, error) {
-	target, _, err := daemonFilePrepareRequest(procedure, body, "")
-	return target, err
-}
-
 func daemonFilePrepareRequest(procedure string, body []byte, requestID string) (string, []byte, error) {
 	var target string
 	switch procedure {
