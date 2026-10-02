@@ -105,7 +105,6 @@ export class FleetStore {
 
   /** A hidden page schedules nothing more; one that is visible again reads at once (unless a read is already out) and re-reads the session. */
   private visibilityChanged(): void {
-    if (!this.running) return
     if (this.doc.visibilityState === 'hidden') {
       clearTimeout(this.timer)
       return

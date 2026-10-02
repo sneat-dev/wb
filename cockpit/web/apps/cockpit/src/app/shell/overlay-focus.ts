@@ -3,9 +3,20 @@ import { DestroyRef, Directive, ElementRef, afterNextRender, inject } from '@ang
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-/** Gives the focus back to `element`, when there is an element that can take it: one still on the page. */
-export function restoreFocus(element: Element | null): void {
+/** When nothing has the focus (it was on something that went), the page's main takes it, as the skip link does. */
+export function focusMainIfLost(doc: Document): void {
+  const active = doc.activeElement
+  if (active === null || active === doc.body) doc.getElementById('main')?.focus()
+}
+
+/**
+ * Gives the focus back to `element`, when there is an element that can take it: one still on the page. When that
+ * leaves the focus nowhere (the element is gone, or cannot take it, as one under an `inert` ancestor cannot), the
+ * page's main takes it, so the keyboard is never left on a page that has no place for it.
+ */
+export function restoreFocus(element: Element | null, doc: Document | undefined = element?.ownerDocument): void {
   if (element instanceof HTMLElement && element.isConnected) element.focus()
+  if (doc !== undefined) focusMainIfLost(doc)
 }
 
 /** What each open overlay will give the focus back to. */
@@ -38,7 +49,8 @@ export class OverlayFocus {
   constructor() {
     RETURN_TO.set(this.host, this.previous)
     afterNextRender(() => (this.host.querySelector<HTMLElement>('[data-autofocus]') ?? this.host).focus())
-    inject(DestroyRef).onDestroy(() => restoreFocus(this.previous))
+    const doc = inject(DOCUMENT)
+    inject(DestroyRef).onDestroy(() => restoreFocus(this.previous, doc))
   }
 
   protected trap(event: KeyboardEvent): void {

@@ -35,8 +35,8 @@ describe('needsYouRows', () => {
     expect(rows[0].work).toEqual({
       task: 'refactor-cache',
       worktrees: [
-        { id: 'wt-1', branch: 'task/refactor-cache' },
-        { id: 'wt-2', branch: 'task/refactor-cache' },
+        { id: 'wt-1', branch: 'task/refactor-cache', repository: 'sneat-dev/wb' },
+        { id: 'wt-2', branch: 'task/refactor-cache', repository: 'sneat-co/sneat-go' },
       ],
     })
     expect(rows[2].action).toEqual({ kind: 'external', text: 'Open failure', label: 'Open failure of sneat-dev/wb#131', href: 'https://github.com/example/r-wb/pull/131' })

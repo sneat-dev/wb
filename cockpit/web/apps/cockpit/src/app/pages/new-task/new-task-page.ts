@@ -11,8 +11,9 @@ import { RepositoryPicker } from './repository-picker'
 
 /**
  * The "New task" form (REQ:new-task-form), `/tasks/new`: a repository picker, the task name, an optional base branch, the
- * model, the brief and the machine, and the exact commands to copy: `wb worktree create` once for every repository and
- * `wb agent dispatch` for each, from the library's `newTaskCommands`. Nothing is run. The answers live in the address
+ * model, the agent profile, the brief and the machine, and the exact commands to copy, from the library's `newTaskCommands`:
+ * with a brief `wb agent dispatch` for each repository (it creates the worktree itself, so a `wb worktree create` before it
+ * would collide), without one `wb worktree create` once for every repository. Nothing is run. The answers live in the address
  * (shareable, back and forward restore them) except the brief, which stays in memory.
  *
  * Next to each machine choice the load verdict from its metrics (free, busy or unknown) says whether it can take another
@@ -49,6 +50,8 @@ export class NewTaskPage {
   })
   protected readonly defaultBranch = computed(() => defaultBranchOf(this.store.document(), this.state().repositories))
   protected readonly choice = computed(() => this.choices().find((candidate) => candidate.id === this.state().machine) ?? this.choices()[0])
+  /** A brief is typed: the commands are the dispatch ones, which create the worktree themselves. */
+  protected readonly dispatching = computed(() => this.brief().trim() !== '')
   protected readonly commands = computed(() => commandsOf(this.state(), this.brief(), this.choice().target))
 
   constructor() {

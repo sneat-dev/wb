@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
-import { FleetStore, PanelCommand, RegistryAction, TaskView, Worktree, agentDetailLink, agentTitle, isOpenPullRequest, repositoryDetailLink, routeLabel, taskDetailLink, webAddress } from '@cockpit/fleet-data'
+import { FleetStore, PanelCommand, RegistryAction, TaskView, Worktree, agentDetailLink, agentTitle, isOpenPullRequest, lifecycleText, ownerStateText, repositoryDetailLink, routeLabel, taskDetailLink, webAddress } from '@cockpit/fleet-data'
 import { branchCleanup, branchList } from '@cockpit/fleet-data/commands'
 import { PullRequestPanel, WorktreePanel, buildPullRequestPanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
 import { ActionSlot } from '@cockpit/ui/control'
@@ -77,7 +77,7 @@ export class WorktreePanelView {
       { label: 'Branch', text: summary.branch, copy: true },
       { label: 'Machine', text: summary.machine },
       { label: 'Source', text: routeLabel(entry, this.store.now()) },
-      { label: 'State', text: `${summary.ownerState ?? 'unknown'}${summary.lifecycle ? `, ${summary.lifecycle}` : ''}` },
+      { label: 'State', text: [ownerStateText(summary.ownerState), lifecycleText(summary.lifecycle)].filter((part) => part !== undefined).join('; ') },
     ]
     if (entry.route === 'local') facts.push({ label: 'Sync (this machine)', text: sync.length > 0 ? sync.join(', ') : 'in sync' })
     facts.push({ label: 'Last activity', time: summary.lastActivityAt, text: '—' })

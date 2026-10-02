@@ -123,13 +123,12 @@ function oldestFirst(a: number | undefined, b: number | undefined): number {
   return (a ?? Infinity) - (b ?? Infinity) || 0
 }
 
-/** The state of the owners of the at-risk worktrees in words; a value this page does not know is "owner state not reported". */
+/** The state of the owners of the at-risk worktrees in words. An at-risk worktree's owner is idle, orphaned or not recorded (`interimAtRiskWorktrees`). */
 function ownerWords(risky: readonly Worktree[]): string {
   const states = new Set(risky.map((worktree) => worktree.owner_state))
   if (states.has('orphaned')) return 'its owner process is gone'
   if (states.has('idle')) return 'it has no running owner'
-  if (states.has('unknown')) return 'no owner process is recorded'
-  return 'owner state not reported'
+  return 'no owner process is recorded'
 }
 
 /** The sum of the counts that are reported; undefined when none is. */

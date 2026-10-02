@@ -55,49 +55,51 @@ describe('NewTaskPage', () => {
   })
 
   // cockpit-views#ac:new-task-form-produces-commands
-  it('produces the creation command for both repositories and one dispatch command each, flagged as needing an edit, and runs nothing', async () => {
+  it('produces one dispatch command per repository once a brief is typed, with the profile of the form and nothing left to edit, and no creation command before it; runs nothing', async () => {
     const requested: string[] = []
     const base = metricsFetch(loadAnswers())
-    const { commands, fillAll, root } = await open('/tasks/new', SESSION, (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const { commands, fillAll, fill, root } = await open('/tasks/new', SESSION, (async (input: RequestInfo | URL, init?: RequestInit) => {
       requested.push(String(input))
       return base(input, init)
     }) as typeof fetch)
     await fillAll()
     expect([...root.querySelectorAll('.chip-name')].map(text)).toEqual(['sneat-co/sneat-go', 'sneat-co/bots-go'])
-    expect(commands()).toEqual([
-      {
-        title: 'Create the worktrees',
-        where: 'run here',
-        edit: 'edit before running',
-        code: "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'",
-        refused: '',
-        button: 'Copy template',
-      },
-      {
-        title: 'Dispatch an agent in sneat-co/sneat-go',
-        where: 'run here',
-        edit: 'edit before running',
-        code: "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
-        refused: '',
-        button: 'Copy template',
-      },
-      {
-        title: 'Dispatch an agent in sneat-co/bots-go',
-        where: 'run here',
-        edit: 'edit before running',
-        code: "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
-        refused: '',
-        button: 'Copy template',
-      },
+    // The brief is typed and the profile is not: the profile is the one place left to fill in.
+    expect(commands().map((command) => [command.title, command.code, command.button])).toEqual([
+      ['Dispatch an agent in sneat-co/sneat-go', "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'", 'Copy template'],
+      ['Dispatch an agent in sneat-co/bots-go', "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'", 'Copy template'],
     ])
+    await fill('#new-task-profile', 'cheap-coder')
+    expect(commands().map((command) => [command.code, command.edit, command.button])).toEqual([
+      ["wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'", '', 'Copy'],
+      ["wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'", '', 'Copy'],
+    ])
+    expect(commands().every((command) => command.where === 'run here')).toBe(true)
     // Only the machine metrics were read: the form sends nothing and starts nothing.
     expect(requested.every((url) => url.startsWith('/api/v1/cockpit/machine-metrics?machine='))).toBe(true)
   })
 
   // cockpit-views#ac:new-task-form-produces-commands
-  it('refuses to produce a command until a model is entered, saying why', async () => {
+  it('produces the creation command alone while there is no brief, with the model; the model is not asked for once a brief is typed', async () => {
+    const { commands, fillAll, fill, root } = await open()
+    await fillAll()
+    const model = root.querySelector('#new-task-model') as HTMLInputElement
+    expect(model.required).toBe(false)
+    expect(text(root.querySelector('label[for="new-task-model"]'))).toContain('not used with a brief')
+    expect(text(root.querySelector('label[for="new-task-model"]')?.parentElement?.querySelector('.hint'))).toContain('takes a profile, not a model')
+    await fill('#new-task-brief', '')
+    expect(model.required).toBe(true)
+    expect(commands().map((command) => [command.title, command.code])).toEqual([
+      ['Create the worktrees', "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'"],
+    ])
+    expect(text(root.querySelector('#new-task-brief')?.nextElementSibling)).toContain('Type a brief to get wb agent dispatch')
+  })
+
+  // cockpit-views#ac:new-task-form-produces-commands
+  it('refuses to produce the creation command until a model is entered, saying why', async () => {
     const { fillAll, fill, commands } = await open()
     await fillAll()
+    await fill('#new-task-brief', '')
     await fill('#new-task-model', '')
     expect(commands()).toEqual([expect.objectContaining({ title: 'Commands', refused: expect.stringContaining('a model is required'), button: '' })])
     await fill('#new-task-model', 'unknown')
@@ -115,15 +117,17 @@ describe('NewTaskPage', () => {
   })
 
   it('writes the form into the address, but not the brief, and restores it from that address', async () => {
-    const { fillAll, query, url } = await open()
+    const { fillAll, fill, query, url } = await open()
     await fillAll()
     expect(query().getAll('repo')).toEqual(['sneat-co/sneat-go', 'sneat-co/bots-go'])
-    expect([query().get('task'), query().get('base'), query().get('model'), query().has('machine')]).toEqual(['fix-ci', 'main', 'opus', false])
+    await fill('#new-task-profile', 'cheap-coder')
+    expect([query().get('task'), query().get('base'), query().get('model'), query().get('profile'), query().has('machine')]).toEqual(['fix-ci', 'main', 'opus', 'cheap-coder', false])
     expect(url()).not.toContain('flaky')
     const again = await open(url())
     expect(again.commands()[0].code).toBe("wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'")
-    // The brief did not travel: the dispatch asks for it.
-    expect(again.commands()[1].code).toContain('--task=<<<edit:brief>>>')
+    // The brief did not travel, so the form is back to the creation command, and the profile did.
+    expect(again.commands()).toHaveLength(1)
+    expect((again.root.querySelector('#new-task-profile') as HTMLInputElement).value).toBe('cheap-coder')
     expect((again.root.querySelector('#new-task-brief') as HTMLTextAreaElement).value).toBe('')
     expect((again.root.querySelector('#new-task-name') as HTMLInputElement).value).toBe('fix-ci')
   })
@@ -132,7 +136,7 @@ describe('NewTaskPage', () => {
     const { root, click, query, commands } = await open('/tasks/new?repo=sneat-co/sneat-go&repo=sneat-co/bots-go&task=t&model=opus')
     await click(root.querySelector('button[aria-label="Remove sneat-co/sneat-go"]'))
     expect(query().getAll('repo')).toEqual(['sneat-co/bots-go'])
-    expect(commands()).toHaveLength(2)
+    expect(commands()).toHaveLength(1)
     expect(commands()[0].code).toBe("wb worktree create 't' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>>")
   })
 
@@ -238,16 +242,16 @@ describe('NewTaskPage', () => {
     it('goes to the dispatch command as its --task, with line breaks and quotes in one word, and is kept in memory only', async () => {
       const { root, fill, commands, url } = await open('/tasks/new?repo=acme/web&task=t&model=opus')
       await fill('#new-task-brief', "It's\nmulti-line")
-      expect(commands()[1].code).toContain("--task='It'\\''s multi-line'")
+      expect(commands()[0].code).toContain("--task='It'\\''s multi-line'")
       expect(url()).not.toContain('multi')
       expect(text(root.querySelector('#new-task-brief')?.nextElementSibling)).toContain('not put in the address')
     })
 
-    it('shows the library\'s refusal for a control character in the brief, with the other commands still offered', async () => {
+    it('shows the library\'s refusal for a control character in the brief', async () => {
       const { fill, commands } = await open('/tasks/new?repo=acme/web&task=t&model=opus')
       await fill('#new-task-brief', 'bad\u0007brief')
-      expect(commands()[0].code).toContain('wb worktree create')
-      expect(commands()[1].refused).toContain('a value with a control character')
+      expect(commands()).toHaveLength(1)
+      expect(commands()[0].refused).toContain('a value with a control character')
     })
   })
 

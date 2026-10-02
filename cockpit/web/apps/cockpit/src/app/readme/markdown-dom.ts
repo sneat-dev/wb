@@ -1,4 +1,5 @@
 import { Lexer, type Token, type Tokens } from 'marked'
+import { SYNC_PARSED_CHARACTERS } from './readme-limit'
 
 // Untrusted Markdown to DOM, safe by construction.
 //
@@ -269,14 +270,70 @@ class Builder {
 }
 
 /**
+ * Builds the DOM of one README, a part at a time: the heading ids stay unique across the parts, as they are within one
+ * document. Each part is lexed on its own, so a part is the most one lex ever holds the page for.
+ */
+export class MarkdownRenderer {
+  private readonly builder: Builder
+
+  constructor(
+    private readonly doc: Document,
+    origin: string = doc.location?.origin ?? '',
+  ) {
+    this.builder = new Builder(doc, origin)
+  }
+
+  /** The DOM for `source`, which is never touched until the fragment is attached. */
+  render(source: string): DocumentFragment {
+    const fragment = this.doc.createDocumentFragment()
+    this.builder.blocks(fragment, Lexer.lex(source), 0)
+    return fragment
+  }
+}
+
+/**
  * Builds the DOM for `source` in `doc`, which is never touched until the
  * fragment is attached. `origin` is the page's own origin, whose links and
  * those to loopback hosts are shown as text.
  */
 export function renderMarkdown(source: string, doc: Document, origin: string = doc.location?.origin ?? ''): DocumentFragment {
-  const fragment = doc.createDocumentFragment()
-  new Builder(doc, origin).blocks(fragment, Lexer.lex(source), 0)
-  return fragment
+  return new MarkdownRenderer(doc, origin).render(source)
+}
+
+/** A fence that opens or closes a code block: three or more backticks or tildes, indented by at most three spaces. */
+const FENCE = /^ {0,3}(`{3,}|~{3,})/
+
+/**
+ * Cuts `source` into parts of about `size` characters at the boundary between two blocks (a blank line outside a code
+ * fence), so that each part lexes as the blocks it holds. A part that has no such boundary within one and a half times
+ * `size` is cut at a line, so no part is unbounded; the parts joined give `source` back exactly.
+ */
+export function splitSource(source: string, size: number = SYNC_PARSED_CHARACTERS): string[] {
+  if (source.length <= size) return [source]
+  const parts: string[] = []
+  let start = 0
+  let fence: string | undefined
+  let offset = 0
+  while (offset < source.length) {
+    const newline = source.indexOf('\n', offset)
+    const end = newline < 0 ? source.length : newline + 1
+    const line = source.slice(offset, end)
+    const marker = FENCE.exec(line)?.[1]
+    if (marker !== undefined) {
+      if (fence === undefined) fence = marker[0]
+      else if (marker[0] === fence) fence = undefined
+    }
+    offset = end
+    const held = offset - start
+    // A boundary: a blank line between blocks once the part is big enough; or a line, past the most a part may be.
+    const blank = line.trim() === '' && fence === undefined
+    if ((blank && held >= size) || held >= size * 1.5) {
+      parts.push(source.slice(start, offset))
+      start = offset
+    }
+  }
+  if (start < source.length) parts.push(source.slice(start))
+  return parts
 }
 
 /** Builds the DOM for tokens already lexed; the tests use it for token types the parser does not produce today. */
@@ -295,4 +352,4 @@ export function renderPlain(source: string, doc: Document): DocumentFragment {
   return fragment
 }
 
-export { MAX_PARSED_CHARACTERS } from './readme-limit'
+export { MAX_PARSED_CHARACTERS, SYNC_PARSED_CHARACTERS } from './readme-limit'

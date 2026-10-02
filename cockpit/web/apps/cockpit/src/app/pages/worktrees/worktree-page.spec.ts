@@ -14,7 +14,7 @@ function documentWith() {
       {
         ...worktree('w1', 'r1', 'alpha'),
         stream: 'stream-a',
-        lifecycle: 'in_progress',
+        lifecycle: 'working',
         owner_state: 'active',
         last_activity_at: '2026-10-01T10:00:00Z',
         code_index: [{ indexer: 'codegrapher', state: 'fresh', statistics: stats }],

@@ -1,6 +1,7 @@
 import { Type } from '@angular/core'
 import { vi } from 'vitest'
 import { FleetDocument, Session } from '@cockpit/fleet-data'
+import { ClipboardWriter } from '@cockpit/ui/control'
 import { buildHealth } from '@cockpit/fleet-data/home-details'
 import { AgentDetailPage } from './agents/agent-detail-page'
 import { AgentsPage } from './agents/agents-page'
@@ -38,21 +39,22 @@ const sessionOf = (principal: 'anonymous-local' | 'owner', doc: FleetDocument): 
 })
 
 /** The routes of the application, each with the component that renders it, over the busy fleet of Home's fixtures. */
-const PAGES: { name: string; url: string; page: Type<unknown> }[] = [
-  { name: 'Home', url: '/', page: HomePage },
-  { name: 'Tasks', url: '/tasks', page: TasksPage },
-  { name: 'New task', url: '/tasks/new', page: NewTaskPage },
-  { name: 'Task detail', url: '/tasks/detail?task=refactor-cache', page: TaskDetailPage },
-  { name: 'Repositories', url: '/repositories', page: RepositoriesPage },
-  { name: 'Repository detail', url: '/repositories/github.com/sneat-dev/wb', page: RepositoryDetailPage },
-  { name: 'Repository (by id)', url: '/repositories/r-wb', page: RepositoryPage },
-  { name: 'Worktrees', url: '/worktrees', page: WorktreesPage },
-  { name: 'Worktree detail', url: '/worktrees/wt-1', page: WorktreePage },
-  { name: 'Agents', url: '/agents', page: AgentsPage },
-  { name: 'Agent detail', url: '/agents/vm-blocked', page: AgentDetailPage },
-  { name: 'Machines', url: '/machines', page: MachinesPage },
-  { name: 'Machine detail (live over ssh)', url: '/machines/mach-vm', page: MachineDetailPage },
-  { name: 'Machine detail (stale)', url: '/machines/mach-old', page: MachineDetailPage },
+const PAGES: { name: string; url: string; page: Type<unknown>; shows: string }[] = [
+  // `shows` is what the page really holds for this fleet: the check is of a rendered page, not of an empty one.
+  { name: 'Home', url: '/', page: HomePage, shows: 'refactor-cache' },
+  { name: 'Tasks', url: '/tasks', page: TasksPage, shows: 'refactor-cache' },
+  { name: 'New task', url: '/tasks/new', page: NewTaskPage, shows: 'Run on' },
+  { name: 'Task detail', url: '/tasks/detail?task=refactor-cache', page: TaskDetailPage, shows: 'refactor-cache' },
+  { name: 'Repositories', url: '/repositories', page: RepositoriesPage, shows: 'sneat-dev/wb' },
+  { name: 'Repository detail', url: '/repositories/github.com/sneat-dev/wb', page: RepositoryDetailPage, shows: 'sneat-dev/wb' },
+  { name: 'Repository (by id)', url: '/repositories/r-wb', page: RepositoryPage, shows: 'sneat-dev/wb' },
+  { name: 'Worktrees', url: '/worktrees', page: WorktreesPage, shows: 'refactor-cache' },
+  { name: 'Worktree detail', url: '/worktrees/wt-1', page: WorktreePage, shows: 'Branch' },
+  { name: 'Agents', url: '/agents', page: AgentsPage, shows: 'claude' },
+  { name: 'Agent detail', url: '/agents/vm-blocked', page: AgentDetailPage, shows: 'Blocked' },
+  { name: 'Machines', url: '/machines', page: MachinesPage, shows: 'WB version' },
+  { name: 'Machine detail (live over ssh)', url: '/machines/mach-vm', page: MachineDetailPage, shows: 'vm' },
+  { name: 'Machine detail (stale)', url: '/machines/mach-old', page: MachineDetailPage, shows: 'old' },
 ]
 
 /** A fetch that answers the two lazy metadata routes and records every address asked, so a spec can see what was requested. */
@@ -73,18 +75,25 @@ const METADATA_ROUTE = /^\/api\/v1\/cockpit\/(machine-metrics|branches)\?/
 async function render(url: string, page: Type<unknown>, principal: 'anonymous-local' | 'owner') {
   const doc = document()
   const { fetcher, asked } = recordingFetch()
-  const opened = await openPage(url, page, doc, sessionOf(principal, doc), fetcher)
+  const copied: string[] = []
+  const opened = await openPage(url, page, doc, sessionOf(principal, doc), fetcher, [{ provide: ClipboardWriter, useValue: { copy: async (text: string) => (copied.push(text), true) } }])
   await settle(opened.harness.fixture, () => true)
   // The lazy sections of Home and the panels arrive after the first paint.
   await new Promise((resolve) => setTimeout(resolve, 30))
   await opened.harness.fixture.whenStable()
-  return { text: opened.root.textContent ?? '', html: opened.root.innerHTML, asked, store: opened.store }
+  // The commands are behind buttons (some built when pressed, from a lazy chunk) and the raw data behind a disclosure: open them all before scanning.
+  for (const details of opened.root.querySelectorAll('details')) details.open = true
+  const buttons = [...opened.root.querySelectorAll<HTMLButtonElement>('app-lazy-copy button, app-copy-button button')]
+  for (const button of buttons) button.click()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  await opened.harness.fixture.whenStable()
+  return { text: opened.root.textContent ?? '', html: opened.root.innerHTML, asked, store: opened.store, copied, pressed: buttons.length }
 }
 
 describe('owner gating on every page, for an anonymous session', () => {
-  it.each(PAGES)('$name: asks only the metadata routes and shows no SSH route', async ({ url, page }) => {
-    const { text, html, asked } = await render(url, page, 'anonymous-local')
-    expect(text.length).toBeGreaterThan(0)
+  it.each(PAGES)('$name: asks only the metadata routes and shows and copies no SSH route', async ({ url, page, shows }) => {
+    const { text, html, asked, copied } = await render(url, page, 'anonymous-local')
+    expect(text).toContain(shows)
     // Only the closed list of metadata routes: no README, no action registry, no operation.
     expect(asked.filter((address) => !METADATA_ROUTE.test(address))).toEqual([])
     for (const secret of SECRETS) {
@@ -92,6 +101,21 @@ describe('owner gating on every page, for an anonymous session', () => {
       expect(html).not.toContain(secret)
     }
     expect(text).not.toMatch(/\bssh [^ ]*@|\bssh secret/)
+    // What every Copy button put on the clipboard carries none either.
+    for (const command of copied) {
+      for (const secret of SECRETS) expect(command).not.toContain(secret)
+      expect(command).not.toMatch(/\bssh\b/)
+    }
+  })
+
+  // The control: the scan above looks at what the buttons copy, so it must be seen to copy something somewhere.
+  it('copies commands from the pages that have them, so the scan of the copied text is not empty', async () => {
+    for (const { url, page } of PAGES.filter((candidate) => ['Home', 'Worktree detail', 'Machine detail (live over ssh)'].includes(candidate.name))) {
+      const { copied, pressed } = await render(url, page, 'anonymous-local')
+      expect(pressed, url).toBeGreaterThan(0)
+      expect(copied.length, url).toBeGreaterThan(0)
+      expect(copied.every((command) => command.startsWith('wb ')), url).toBe(true)
+    }
   })
 })
 
@@ -118,7 +142,8 @@ describe('what a copied command carries', () => {
   })
 
   it('shows the owner the ssh form of a machine panel command', async () => {
-    const { text } = await render('/machines/mach-vm', MachineDetailPage, 'owner')
+    const { text, copied } = await render('/machines/mach-vm', MachineDetailPage, 'owner')
     expect(text).toContain(`ssh ${SECRETS[1]}@${SECRETS[0]}`)
+    expect(copied.some((command) => command.startsWith(`ssh ${SECRETS[1]}@${SECRETS[0]} `))).toBe(true)
   })
 })

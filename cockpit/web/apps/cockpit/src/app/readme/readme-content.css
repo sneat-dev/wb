@@ -47,3 +47,30 @@
 .readme-content .align-right {
   text-align: right;
 }
+
+.readme-more {
+  margin: var(--space-3) 0 0;
+}
+
+.readme-more button {
+  height: 1.75rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.readme-more button:disabled {
+  color: var(--text-3);
+  cursor: progress;
+}
+
+@media (max-width: 30rem) {
+  .readme-more button {
+    height: 2.75rem;
+  }
+}

@@ -35,6 +35,22 @@ describe('GalleryPage', () => {
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(6))
   })
 
+  it('copies the command of a slot that has no handler, built when its button is pressed', async () => {
+    const copy = vi.fn().mockResolvedValue(true)
+    TestBed.resetTestingModule()
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: CHART_ENGINE, useValue: async () => ({ create: () => ({ update: vi.fn(), destroy: vi.fn() }) }) },
+        { provide: ClipboardWriter, useValue: { copy } },
+        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({}) } } },
+      ],
+    })
+    const fixture = TestBed.createComponent(GalleryPage)
+    await fixture.whenStable()
+    ;(fixture.nativeElement.querySelector('app-action-slot button') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>"))
+  })
+
   it('shows an absent registry as nothing at all', async () => {
     const { root } = await render()
     const row = [...root.querySelectorAll('.slot-row')][2]

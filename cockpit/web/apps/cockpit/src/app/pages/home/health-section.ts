@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { CopyButton, QUOTE_TWICE_HINT, copyName, copyWord } from '@cockpit/ui/control'
+import { CopyButton, copyName, copyWord } from '@cockpit/ui/control'
 import { HealthRow } from './health-rows'
 
 /**
@@ -18,7 +18,6 @@ export class HealthSection {
 
   protected readonly count = computed(() => this.rows().length)
   protected readonly word = copyWord
-  protected readonly quoteTwice = QUOTE_TWICE_HINT
   protected name(command: { text: string; needsEdit: boolean }, subject: string): string {
     return copyName(command.needsEdit, command.text, subject)
   }

@@ -64,6 +64,13 @@ describe('entity panels', () => {
     expect(anonymous?.related.repository?.key).toBe('sneat-dev/wb')
     const owner = buildWorktreePanel(modelOf(ROUTES), 'w3')
     expect(owner?.commands[0].command).toEqual({ ok: true, text: "ssh alex@vm.example /usr/local/bin/wb worktree list 'fix-ci'", needsEdit: false })
+    // Every command of another machine's worktree is a reading one, labelled or through ssh: none changes anything there.
+    for (const panel of [anonymous, owner]) {
+      expect(panel?.commands.map((c) => c.title)).toEqual(['List worktrees', 'Plan cleanup (dry run)'])
+      expect(panel?.commands.every((c) => c.command.ok && !/pr (create|land)|agent stop|session send/.test(c.command.text))).toBe(true)
+    }
+    expect(anonymous?.commands.every((c) => c.command.ok && c.command.label === 'run on vm')).toBe(true)
+    expect(owner?.commands.every((c) => c.command.ok && c.command.text.startsWith('ssh alex@vm.example '))).toBe(true)
     expect(modelOf(ROUTES).machineRoutes).toBe(ROUTES)
     expect(modelOf().machineRoutes).toBeUndefined()
   })

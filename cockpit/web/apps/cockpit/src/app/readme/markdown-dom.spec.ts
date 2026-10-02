@@ -1,5 +1,5 @@
 import type { Token } from 'marked'
-import { ID_PREFIX, MAX_DEPTH, MAX_PARSED_CHARACTERS, decodeEntities, renderMarkdown, renderPlain, renderTokens, resolveLink, slug } from './markdown-dom'
+import { ID_PREFIX, MAX_DEPTH, MAX_PARSED_CHARACTERS, MarkdownRenderer, SYNC_PARSED_CHARACTERS, decodeEntities, renderMarkdown, renderPlain, renderTokens, resolveLink, slug, splitSource } from './markdown-dom'
 
 function render(source: string): HTMLElement {
   const root = document.createElement('div')
@@ -222,6 +222,60 @@ describe('renderPlain', () => {
     expect(root.children).toHaveLength(1)
     expect(root.querySelector('pre')?.textContent).toBe('# <b onclick=1>x</b>\n[a](javascript:1)')
     expect(MAX_PARSED_CHARACTERS).toBe(262144)
+  })
+})
+
+describe('splitSource', () => {
+  const block = (n: number) => `## Block ${n}\n\n${'word '.repeat(30)}\n\n`
+
+  // cockpit#ac:large-readme-is-lexed-in-parts
+  it('keeps a source of the size of a part whole, and cuts a larger one into parts at the blank lines between blocks, losing nothing', () => {
+    expect(SYNC_PARSED_CHARACTERS).toBe(65536)
+    expect(splitSource('short')).toEqual(['short'])
+    expect(splitSource('x'.repeat(100), 100)).toEqual(['x'.repeat(100)])
+    const source = Array.from({ length: 40 }, (_, n) => block(n)).join('')
+    const parts = splitSource(source, 1000)
+    expect(parts.length).toBeGreaterThan(3)
+    expect(parts.join('')).toBe(source)
+    // Every part but the last ends where a block ends, and is about the size asked.
+    for (const part of parts.slice(0, -1)) {
+      expect(part.endsWith('\n\n')).toBe(true)
+      expect(part.length).toBeGreaterThanOrEqual(1000)
+      expect(part.length).toBeLessThan(1500)
+    }
+  })
+
+  it('does not cut inside a code fence, however blank its lines, and cuts a part that has no boundary at a line', () => {
+    const fenced = '```\n' + 'line\n\n'.repeat(300) + '```\n\nafter\n\n'
+    const parts = splitSource(fenced, 500)
+    expect(parts.join('')).toBe(fenced)
+    // The fence is in one part until the size is past the most a part may be (one and a half times), then it is cut at a line.
+    expect(parts[0].length).toBeGreaterThanOrEqual(750)
+    expect(parts.every((part) => part.length < 750 + 10)).toBe(true)
+    const tilde = '~~~\n' + 'a\n\n'.repeat(200) + '~~~\n\ntext\n\n' + 'b\n\n'.repeat(200)
+    expect(splitSource(tilde, 300).join('')).toBe(tilde)
+    // A different fence character inside a fence does not close it, and a long line with no newline is one part.
+    const mixed = '```\n~~~\nx\n\n```\n\n' + 'y'.repeat(40) + '\n\n' + 'z'.repeat(40)
+    expect(splitSource(mixed, 10).join('')).toBe(mixed)
+    expect(splitSource('q'.repeat(100), 10)).toEqual(['q'.repeat(100)])
+    // A cut that falls at the very end leaves no empty part after it.
+    expect(splitSource('aaa\n\nbbb\n\n', 5)).toEqual(['aaa\n\n', 'bbb\n\n'])
+  })
+
+  it('draws the parts as one document: a heading id repeated in a later part is numbered, never repeated', () => {
+    const renderer = new MarkdownRenderer(document, '')
+    const root = document.createElement('div')
+    root.appendChild(renderer.render('# Same\n\ntext\n'))
+    root.appendChild(renderer.render('# Same\n\nmore\n'))
+    root.appendChild(renderer.render('[up](#same)\n'))
+    expect([...root.querySelectorAll('h4')].map((heading) => heading.id)).toEqual([`${ID_PREFIX}same`, `${ID_PREFIX}same-1`])
+    expect(root.querySelector('a.jump')?.getAttribute('href')).toBe(`#${ID_PREFIX}same`)
+    expect(new MarkdownRenderer(document).render('x').childNodes).toHaveLength(1)
+    // A document with no location (one made apart from a page) has no own origin: every address is outside it.
+    const apart = document.implementation.createHTMLDocument('apart')
+    const linked = document.createElement('div')
+    linked.append(new MarkdownRenderer(apart).render('[out](https://example.com/)'))
+    expect(linked.querySelector('a')?.getAttribute('href')).toBe('https://example.com/')
   })
 })
 

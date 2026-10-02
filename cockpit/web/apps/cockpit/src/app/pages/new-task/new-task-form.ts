@@ -10,6 +10,8 @@ export interface NewTaskState {
   /** Empty: the repository's default branch. */
   base: string
   model: string
+  /** The agent profile of `wb agent dispatch`, named in `wb.yaml`; empty is a placeholder in the command. */
+  profile: string
   /** The id of another machine to run on; none is this machine. */
   machine: string | undefined
 }
@@ -20,12 +22,12 @@ export const KNOWN_MODELS = ['opus', 'sonnet', 'haiku', 'codex', 'gemini', 'unkn
 /** What a task name may be made of: it is a worktree and a branch name. */
 export const SAFE_TASK_NAME = /^[A-Za-z0-9._-]+$/
 
-export const EMPTY_STATE: NewTaskState = { repositories: [], task: '', base: '', model: '', machine: undefined }
+export const EMPTY_STATE: NewTaskState = { repositories: [], task: '', base: '', model: '', profile: '', machine: undefined }
 
 /** The form of an address: a repository that cannot be picked, or twice, is dropped. */
 export function stateOf(params: ParamMap): NewTaskState {
   const repositories = [...new Set(params.getAll('repo').filter((name) => PICKABLE_REPOSITORY.test(name)))]
-  return { repositories, task: params.get('task') ?? '', base: params.get('base') ?? '', model: params.get('model') ?? '', machine: params.get('machine') ?? undefined }
+  return { repositories, task: params.get('task') ?? '', base: params.get('base') ?? '', model: params.get('model') ?? '', profile: params.get('profile') ?? '', machine: params.get('machine') ?? undefined }
 }
 
 /** The address of a form: a field that is empty is left out. */
@@ -35,6 +37,7 @@ export function queryOf(state: NewTaskState): Record<string, string | string[] |
     task: state.task === '' ? null : state.task,
     base: state.base === '' ? null : state.base,
     model: state.model === '' ? null : state.model,
+    profile: state.profile === '' ? null : state.profile,
     machine: state.machine ?? null,
   }
 }
@@ -71,8 +74,9 @@ export interface Target {
 const refusal = (reason: string): PanelCommand[] => [{ title: 'Commands', command: { ok: false, reason } }]
 
 /**
- * The commands of the form, from the library's `newTaskCommands` (`wb worktree create` once for every repository,
- * then `wb agent dispatch` once for each), in that order. A field the library refuses (no model, a value that starts
+ * The commands of the form, from the library's `newTaskCommands`: with a brief, `wb agent dispatch` for each repository
+ * (which creates the worktree itself, so no `wb worktree create` goes before it); without one, `wb worktree create` once for
+ * every repository. A field the library refuses (no model without a brief, a value that starts
  * with `-` or holds a control character) gives its reason and no command; nothing is ever run.
  * For another machine the form carries its `target`, and the library puts the SSH route in front of each command.
  */
@@ -80,13 +84,10 @@ export function commandsOf(state: NewTaskState, brief: string, target: Target = 
   if (state.task === '') return refusal('name the task: it is the worktree and the branch')
   const problem = nameProblem(state.task)
   if (problem !== undefined) return refusal(problem)
-  const form = { task: state.task, brief, repositories: state.repositories, base: state.base === '' ? undefined : state.base, model: state.model.trim(), target }
+  const form = { task: state.task, brief, repositories: state.repositories, base: state.base === '' ? undefined : state.base, model: state.model.trim(), profile: state.profile.trim(), target }
   const built = newTaskCommands(form)
-  if (!built.create.ok) return refusal(built.create.reason)
-  return [
-    { title: 'Create the worktrees', command: built.create },
-    ...built.dispatch.map((command, index) => ({ title: `Dispatch an agent in ${form.repositories[index]}`, command })),
-  ]
+  if (built.create !== undefined) return built.create.ok ? [{ title: 'Create the worktrees', command: built.create }] : refusal(built.create.reason)
+  return built.dispatch.map((command, index) => ({ title: `Dispatch an agent in ${form.repositories[index]}`, command }))
 }
 
 /** One place the commands can run. */

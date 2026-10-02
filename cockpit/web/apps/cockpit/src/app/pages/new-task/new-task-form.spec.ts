@@ -9,21 +9,22 @@ const state = (extra: Partial<NewTaskState>): NewTaskState => ({ ...EMPTY_STATE,
 const texts = (entries: ReturnType<typeof commandsOf>) => entries.map((entry) => (entry.command.ok ? entry.command.text : `refused: ${entry.command.reason}`))
 
 describe('stateOf and queryOf', () => {
-  it('reads the repositories, task, base, model and machine of an address, dropping a name that cannot be picked and a repeat', () => {
-    expect(stateOf(convertToParamMap({ repo: ['a/b', 'a/b', 'no slash', 'c/d'], task: 'fix', base: 'main', model: 'opus', machine: 'mach-beta' }))).toEqual({
+  it('reads the repositories, task, base, model, profile and machine of an address, dropping a name that cannot be picked and a repeat', () => {
+    expect(stateOf(convertToParamMap({ repo: ['a/b', 'a/b', 'no slash', 'c/d'], task: 'fix', base: 'main', model: 'opus', profile: 'cheap-coder', machine: 'mach-beta' }))).toEqual({
       repositories: ['a/b', 'c/d'],
       task: 'fix',
       base: 'main',
       model: 'opus',
+      profile: 'cheap-coder',
       machine: 'mach-beta',
     })
     expect(stateOf(convertToParamMap({}))).toEqual(EMPTY_STATE)
   })
 
   it('writes only what is filled in, and reads back what it wrote', () => {
-    expect(queryOf(EMPTY_STATE)).toEqual({ repo: null, task: null, base: null, model: null, machine: null })
-    const filled = state({ repositories: ['a/b', 'c/d'], task: 't', base: 'dev', model: 'opus', machine: 'mach-beta' })
-    expect(queryOf(filled)).toEqual({ repo: ['a/b', 'c/d'], task: 't', base: 'dev', model: 'opus', machine: 'mach-beta' })
+    expect(queryOf(EMPTY_STATE)).toEqual({ repo: null, task: null, base: null, model: null, profile: null, machine: null })
+    const filled = state({ repositories: ['a/b', 'c/d'], task: 't', base: 'dev', model: 'opus', profile: 'p', machine: 'mach-beta' })
+    expect(queryOf(filled)).toEqual({ repo: ['a/b', 'c/d'], task: 't', base: 'dev', model: 'opus', profile: 'p', machine: 'mach-beta' })
     expect(stateOf(convertToParamMap(queryOf(filled) as Record<string, string | string[]>))).toEqual(filled)
   })
 })
@@ -61,44 +62,56 @@ describe('defaultBranchOf', () => {
 })
 
 describe('commandsOf', () => {
-  const filled = state({ repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], task: 'fix-ci', base: 'main', model: 'opus' })
+  const filled = state({ repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], task: 'fix-ci', base: 'main', model: 'opus', profile: 'cheap-coder' })
 
   // cockpit-views#ac:new-task-form-produces-commands
-  it('is the creation command for every repository and then one dispatch command for each, exactly as the library writes them', () => {
+  it('is one dispatch command for each repository when a brief is typed, with the profile from the form: dispatch creates the worktree itself, so there is no create before it and no placeholder left', () => {
     const entries = commandsOf(filled, 'Fix the flaky CI.')
-    expect(entries.map((entry) => entry.title)).toEqual(['Create the worktrees', 'Dispatch an agent in sneat-co/sneat-go', 'Dispatch an agent in sneat-co/bots-go'])
+    expect(entries.map((entry) => entry.title)).toEqual(['Dispatch an agent in sneat-co/sneat-go', 'Dispatch an agent in sneat-co/bots-go'])
     expect(texts(entries)).toEqual([
-      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'",
-      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
-      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'",
     ])
+    // Nothing is left to edit, and nothing creates the worktree twice.
+    expect(entries.every((entry) => entry.command.ok && !entry.command.needsEdit)).toBe(true)
+    expect(texts(entries).join('\n')).not.toContain('worktree create')
+    expect(texts(entries).join('\n')).not.toContain('--model')
+  })
+
+  it('keeps one placeholder, the profile, only when the form has none: the one thing the page cannot know', () => {
+    const entries = commandsOf(state({ ...filled, profile: '  ', base: '' }), 'x')
+    expect(texts(entries)[0]).toBe("wb agent dispatch --repo='sneat-co/sneat-go' --task='x' --profile=<<<edit:profile>>> --new-worktree='fix-ci'")
     expect(entries.every((entry) => entry.command.ok && entry.command.needsEdit)).toBe(true)
   })
 
-  it('leaves --base out when none is given, and writes the brief placeholder while there is no brief', () => {
-    expect(texts(commandsOf(state({ ...filled, base: '' }), '')).slice(0, 2)).toEqual([
-      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>>",
-      "wb agent dispatch --repo='sneat-co/sneat-go' --task=<<<edit:brief>>> --profile=<<<edit:profile>>> --new-worktree='fix-ci'",
-    ])
+  it('is the creation command alone, with the model from the form, while there is no brief', () => {
+    for (const brief of ['', '   \n ']) {
+      const entries = commandsOf(filled, brief)
+      expect(entries.map((entry) => entry.title)).toEqual(['Create the worktrees'])
+      expect(texts(entries)).toEqual(["wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'"])
+    }
+    expect(texts(commandsOf(state({ ...filled, base: '' }), ''))).toEqual(["wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>>"])
   })
 
-  it('refuses until a model is entered, a repository is chosen and the task is named, with the reason and no command', () => {
-    expect(texts(commandsOf(state({ ...filled, model: ' ' }), 'b'))).toEqual(['refused: a model is required (the verb requires --model; "unknown" is its explicit value)'])
+  it('refuses until a repository is chosen and the task is named, and a model is entered when there is no brief, with the reason and no command', () => {
+    expect(texts(commandsOf(state({ ...filled, model: ' ' }), ''))).toEqual(['refused: a model is required to create the worktrees (the verb requires --model; "unknown" is its explicit value)'])
+    // With a brief the model is not asked for: dispatch takes a profile.
+    expect(texts(commandsOf(state({ ...filled, model: '' }), 'b'))[0]).toContain('wb agent dispatch')
     expect(texts(commandsOf(state({ ...filled, repositories: [] }), 'b'))).toEqual(['refused: choose at least one repository'])
     expect(texts(commandsOf(state({ ...filled, task: '' }), 'b'))).toEqual(['refused: name the task: it is the worktree and the branch'])
     expect(texts(commandsOf(state({ ...filled, task: 'a b' }), 'b'))).toEqual(['refused: a task name is made of letters, digits, dots, underscores and hyphens'])
   })
 
-  it('shows the library\'s refusal of an unsafe base, model or brief, and still offers the commands that are safe', () => {
+  it("shows the library's refusal of an unsafe base, model, profile or brief", () => {
     expect(texts(commandsOf(state({ ...filled, base: '-x' }), 'b'))[0]).toContain('refused: a value that starts with "-"')
-    expect(texts(commandsOf(state({ ...filled, model: 'a\u202eb' }), 'b'))[0]).toContain('refused: a value with a control character')
+    expect(texts(commandsOf(state({ ...filled, model: 'a\u202eb' }), ''))[0]).toContain('refused: a value with a control character')
+    expect(texts(commandsOf(state({ ...filled, profile: '-p' }), 'b'))[0]).toContain('refused: a value that starts with "-"')
     const entries = commandsOf(filled, 'a\u0007b')
-    expect(texts(entries)[0]).toContain('wb worktree create')
-    expect(texts(entries)[1]).toContain('refused: a value with a control character')
+    expect(texts(entries)[0]).toContain('refused: a value with a control character')
   })
 
   it('quotes a brief with quotes and line breaks as one word', () => {
-    const [, dispatch] = commandsOf(state({ ...filled, repositories: ['sneat-co/sneat-go'] }), "it's\nmulti")
+    const [dispatch] = commandsOf(state({ ...filled, repositories: ['sneat-co/sneat-go'] }), "it's\nmulti")
     expect(dispatch.command.ok && dispatch.command.text).toContain("--task='it'\\''s\nmulti'")
   })
 
@@ -106,16 +119,17 @@ describe('commandsOf', () => {
     const target = { machine: 'beta', ssh: { host: 'beta.example', user: 'me' } }
     // A value the remote shell would split again is quoted twice, as the library does for every ssh command.
     expect(texts(commandsOf(filled, 'do it', target))).toEqual([
-      "ssh me@beta.example wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'",
-      "ssh me@beta.example wb agent dispatch --repo='sneat-co/sneat-go' --task=''\\''do it'\\''' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
-      "ssh me@beta.example wb agent dispatch --repo='sneat-co/bots-go' --task=''\\''do it'\\''' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
+      "ssh me@beta.example wb agent dispatch --repo='sneat-co/sneat-go' --task=''\\''do it'\\''' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'",
+      "ssh me@beta.example wb agent dispatch --repo='sneat-co/bots-go' --task=''\\''do it'\\''' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'",
     ])
-    expect(texts(commandsOf(state({ ...filled, model: '' }), 'x', target))).toHaveLength(1)
+    expect(texts(commandsOf(filled, '', target))).toEqual(["ssh me@beta.example wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'"])
+    expect(commandsOf(filled, '', target)[0].command).toMatchObject({ quoteTwice: true })
+    expect(texts(commandsOf(state({ ...filled, model: '' }), '', target))).toHaveLength(1)
   })
 
   it('labels a command of a machine named without a route "run on" it', () => {
-    const [create] = commandsOf(filled, 'x', { machine: 'beta' })
-    expect(create.command.ok && create.command.label).toBe('run on beta')
+    const [dispatch] = commandsOf(filled, 'x', { machine: 'beta' })
+    expect(dispatch.command.ok && dispatch.command.label).toBe('run on beta')
   })
 })
 

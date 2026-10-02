@@ -26,11 +26,13 @@ export class WorkAction {
   private readonly registry = inject(HomeRegistry)
   /** The worktree the registry offers a push for, the first one; else the first worktree (a row at risk has one). */
   private readonly pushable = computed(() => this.action().worktrees.find((worktree) => this.registry.offered(`worktree:${worktree.id}`, PUSH_ACTION) !== undefined) ?? this.action().worktrees[0])
+  /** The repositories of the work at risk, once each: a task of two repositories says so in the name of its button. */
+  private readonly repositories = computed(() => [...new Set(this.action().worktrees.map((worktree) => worktree.repository))])
   protected readonly target = computed(() => `worktree:${this.pushable().id}`)
   protected readonly offered = computed(() => this.registry.offered(this.target(), PUSH_ACTION))
   protected readonly copy = computed<SlotCopy>(() => ({
     build: commitAndOpen(this.action().task),
-    label: copyLabel(true, 'wb pr create', 'commit everything and open the pull request'),
+    label: copyLabel(true, 'wb pr create', `commit everything and open the pull request${this.repositories().length > 1 ? ` of ${this.repositories().join(' and ')}` : ''}`),
     template: true,
     quiet: true,
   }))

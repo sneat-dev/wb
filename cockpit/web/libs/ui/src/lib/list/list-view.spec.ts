@@ -4,9 +4,9 @@ import { TestBed } from '@angular/core/testing'
 import { By } from '@angular/platform-browser'
 import { Router, provideRouter } from '@angular/router'
 import { RouterTestingHarness } from '@angular/router/testing'
-import { FleetDocument, FleetStore, Worktree } from '@cockpit/fleet-data'
+import { Agent, FleetDocument, FleetStore, Worktree } from '@cockpit/fleet-data'
 import { ListRow, buildWorktreeRows } from '@cockpit/fleet-data/list'
-import { fleetDocument, performanceFixture, worktree } from '@cockpit/fleet-data/testing'
+import { agent, fleetDocument, performanceFixture, worktree } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from '../control/clipboard'
 import { ListCell, ListPanelTemplate } from './list-cell'
 import { LIST_SHORTCUTS, ListFilterTarget } from './list-host'
@@ -103,7 +103,15 @@ class FooterHost {
   protected readonly copyValue = (w: Worktree) => `id:${w.id}`
 }
 
-type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost | typeof FooterHost
+@Component({
+  imports: [ListView],
+  template: `<app-list page="agents" [columns]="columns" />`,
+})
+class AgentsHost {
+  protected readonly columns: ListColumn<Agent>[] = [{ id: 'agent', header: 'Agent', title: true, width: 'fill', value: (a) => a.id }]
+}
+
+type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost | typeof FooterHost | typeof AgentsHost
 
 function documentOf(): FleetDocument {
   return fleetDocument({
@@ -435,6 +443,29 @@ describe('ListView', () => {
     button(page.root, 'Unpushed').click()
     await page.settle()
     expect(page.list().result()).not.toBe(before)
+  })
+
+  // cockpit-views#ac:agents-truncated-says-at-least
+  it('reads the count of an agents list "at least" when a machine cut its agents, in the toolbar and in what is said after a filter', async () => {
+    const agents = [agent('a1', undefined, 'live', { runtime: 'claude' }), agent('a2', undefined, 'live', { runtime: 'codex' })]
+    const cut = await open('/list', { host: AgentsHost, document: fleetDocument({ agents, agents_truncated: true }) })
+    expect(text(cut.root.querySelector('.count'))).toBe('at least 2 of 2')
+    await type(cut, 'claude')
+    await vi.waitFor(() => expect(text(cut.root.querySelector('section > [role=status]'))).toBe('at least 1 of 2 agents'))
+    const whole = await open('/list', { host: AgentsHost, document: fleetDocument({ agents }) })
+    expect(text(whole.root.querySelector('.count'))).toBe('2 of 2')
+    // Only an agents list counts agents: worktrees say nothing of it.
+    const worktrees = await open('/list', { document: fleetDocument({ ...documentOf(), agents_truncated: true }) })
+    expect(text(worktrees.root.querySelector('.count'))).toBe('6 of 6')
+  })
+
+  // cockpit-views#ac:list-keyboard
+  it('draws its rows, and keeps their controls out of the tab order, in a browser that has no MutationObserver', async () => {
+    vi.stubGlobal('MutationObserver', undefined)
+    const page = await open('/list')
+    const controls = [...page.root.querySelectorAll<HTMLElement>('.row a, .row button')]
+    expect(controls.length).toBeGreaterThan(10)
+    expect(controls.every((control) => control.getAttribute('tabindex') === '-1')).toBe(true)
   })
 
   // cockpit-views#ac:list-accessibility

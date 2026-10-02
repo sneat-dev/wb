@@ -136,27 +136,35 @@ export function pickRepositories(names: readonly string[], query: string, now: n
 export interface NewTaskForm {
   /** The task name: the worktree and branch name. */
   task: string
-  /** The text of the task prompt, for `wb agent dispatch --task`; may be several lines. */
+  /** The text of the task prompt, for `wb agent dispatch --task`; may be several lines. With none, the form gives the creation command. */
   brief: string
   repositories: readonly string[]
   base?: string
-  /** Required: the verb requires `--model`, and `unknown` is its explicit value. */
+  /** Required for the creation command (the verb requires `--model`, and `unknown` is its explicit value); `wb agent dispatch` has no such flag. */
   model: string
+  /** The agent profile of `wb agent dispatch --profile` (named in `wb.yaml`); empty: a placeholder, which is all the page cannot know. */
+  profile?: string
   /** Where the commands run (an SSH route for another machine); none, or `{}`, for this machine. */
   target?: CommandTarget
 }
 
+/**
+ * The commands of the form. `wb agent dispatch --new-worktree` creates the worktree itself (through `wb worktree create`'s
+ * own code, and `wb worktree create` never reuses a worktree that exists), so a creation command before it would make it
+ * fail: with a brief the form gives the dispatch commands alone, and without one the creation command alone.
+ */
 export interface NewTaskCommands {
-  /** The creation command for every repository at once. */
-  create: CopyCommand
-  /** One dispatch command per repository. */
+  /** Without a brief: the creation command for every repository at once. Absent with a brief. */
+  create?: CopyCommand
+  /** With a brief: one dispatch command per repository, which creates its worktree. Empty without one. */
   dispatch: CopyCommand[]
 }
 
-/** The commands the "New task" form produces; with no model, no repositories or a refused value, a refusal with its reason. */
+/** The commands the "New task" form produces; with no repositories or a refused value (or, without a brief, no model), a refusal with its reason. */
 export function newTaskCommands(form: NewTaskForm): NewTaskCommands {
-  if (form.model.trim() === '') {
-    const refusal: CopyCommand = { ok: false, reason: 'a model is required (the verb requires --model; "unknown" is its explicit value)' }
+  const dispatching = form.brief.trim() !== ''
+  if (!dispatching && form.model.trim() === '') {
+    const refusal: CopyCommand = { ok: false, reason: 'a model is required to create the worktrees (the verb requires --model; "unknown" is its explicit value)' }
     return { create: refusal, dispatch: [refusal] }
   }
   if (form.repositories.length === 0) {
@@ -168,10 +176,8 @@ export function newTaskCommands(form: NewTaskForm): NewTaskCommands {
     const refusal: CopyCommand = { ok: false, reason: `"${named.slice(0, MAX_QUERY_LENGTH)}" is not an owner/name made of letters, digits, dots, underscores and hyphens` }
     return { create: refusal, dispatch: [refusal] }
   }
-  return {
-    create: worktreeCreate(form.task, form.repositories, { model: form.model, base: form.base }, form.target),
-    dispatch: form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base, brief: form.brief }, form.target)),
-  }
+  if (!dispatching) return { create: worktreeCreate(form.task, form.repositories, { model: form.model, base: form.base }, form.target), dispatch: [] }
+  return { dispatch: form.repositories.map((repository) => agentDispatch(repository, form.task, { base: form.base, brief: form.brief, profile: form.profile }, form.target)) }
 }
 
 // ---- fleet health ----

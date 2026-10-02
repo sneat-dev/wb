@@ -47,6 +47,21 @@ describe('WorktreePanelView', () => {
     expect(await sync({})).toBe('in sync')
   })
 
+  // cockpit-views#ac:worktree-panel-words
+  it('says the owner and the lifecycle in words, never the raw values', async () => {
+    const state = async (extra: Record<string, unknown>) => text((await render('w1', false, extra)).querySelectorAll('dd')[5])
+    expect(await state({ owner_state: 'active', lifecycle: 'working' })).toBe('active; in progress')
+    expect(await state({ owner_state: 'orphaned', lifecycle: 'review' })).toBe('orphaned, its owner process is gone; in review')
+    expect(await state({ owner_state: 'idle', lifecycle: 'merged' })).toBe('idle, no running owner; merged')
+    expect(await state({ owner_state: 'unknown', lifecycle: 'superseded' })).toBe('owner not recorded; superseded')
+    // Not reported, or outside the vocabulary: said so, and no raw value on the page.
+    expect(await state({ owner_state: undefined, lifecycle: undefined })).toBe('owner not reported')
+    const odd = await render('w1', false, { owner_state: 'zombie', lifecycle: 'in_progress' })
+    expect(text(odd.querySelectorAll('dd')[5])).toBe('owner not reported')
+    expect(odd.textContent).not.toContain('in_progress')
+    expect(odd.textContent).not.toContain('zombie')
+  })
+
   // cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers
   it('offers the worktree commands, this branch\'s commands as a dry-run plan, and wb pr land for each open pull request', async () => {
     const root = await render('w1')

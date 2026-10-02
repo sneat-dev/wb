@@ -45,6 +45,9 @@ describe('numbers', () => {
     expect(sampleWords({ state: 'not-reported', route: 'none' }, NOW)).toBe('no usable sample')
     expect(sampleWords(load({ route: 'cached', sampledAt: NOW }), NOW)).toBe('cached, just now')
     expect(sampleWords(load({ route: 'none' }), NOW)).toBe('no samples')
+    // A sample too old to say how loaded the machine is now: its age is said, and that it is too old; with no time, that.
+    expect(sampleWords({ state: 'not-reported', route: 'cached', stale: true, sampledAt: NOW - 2 * 3_600_000 }, NOW)).toBe('cached, 2 h ago: too old to say')
+    expect(sampleWords({ state: 'not-reported', route: 'live-remote', stale: true }, NOW)).toBe('live, no time: too old to say')
   })
 
   it('writes the uptime from the time since boot, or nothing', () => {

@@ -154,7 +154,7 @@ function isoDay(date: Date): string {
 
 /** The command of a health line, labelled where it runs: "run here" for the ssh form and enrolling, "run on <machine>" otherwise. */
 function healthCommand(command: CopyCommand, machine: string, here: boolean): HealthItem['command'] {
-  return command.ok ? { text: command.text, label: here ? 'run here' : `run on ${machine}`, needsEdit: command.needsEdit, ...(command.quoteTwice ? { quoteTwice: true } : {}) } : { reason: command.reason }
+  return command.ok ? { text: command.text, label: here ? 'run here' : `run on ${machine}`, needsEdit: command.needsEdit } : { reason: command.reason }
 }
 
 /** A `publish_error` in a few words, for a row; the guidance is in `publishFix`. */

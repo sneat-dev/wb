@@ -303,31 +303,41 @@ describe('the New task form', () => {
   })
 
   // cockpit-views#ac:new-task-form-produces-commands
-  it('produces the creation command with the task name, and a dispatch command per repository with the brief as the task text', () => {
-    const brief = 'Fix the flaky CI.\nIt\'s the go-ci test job.'
-    const commands = newTaskCommands({ task: 'fix-ci', brief, repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], base: 'main', model: 'opus' })
-    expect(text(commands.create)).toBe(
-      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'",
-    )
-    expect(commands.create).toMatchObject({ needsEdit: true })
+  it('produces one dispatch command per repository, with the brief as the task text and the profile of the form, and no creation command: dispatch creates the worktree', () => {
+    const brief = "Fix the flaky CI.\nIt's the go-ci test job."
+    const commands = newTaskCommands({ task: 'fix-ci', brief, repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], base: 'main', model: 'opus', profile: 'cheap-coder' })
+    expect(commands.create).toBeUndefined()
     expect(commands.dispatch.map(text)).toEqual([
-      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
-      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'",
+      "wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.\nIt'\\''s the go-ci test job.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'",
     ])
+    expect(commands.dispatch).toEqual([expect.objectContaining({ needsEdit: false }), expect.objectContaining({ needsEdit: false })])
     // --task carries the brief, and the task name goes to the worktree.
     expect(commands.dispatch.map(text).join('')).not.toContain("--task='fix-ci'")
     expect(commands.dispatch.map(text).join('')).not.toContain('--model')
-    expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'unknown' }).create)).not.toContain('--base')
-    // No brief yet: a placeholder to fill in.
-    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0])).toContain('--task=<<<edit:brief>>>')
+    // No profile in the form: the one placeholder left, for what the page cannot know.
+    expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'unknown' }).dispatch[0])).toBe("wb agent dispatch --repo='o/r' --task='b' --profile=<<<edit:profile>>> --new-worktree='t'")
+    expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: '', profile: ' ' }).dispatch[0])).toContain('--profile=')
+  })
+
+  // cockpit-views#ac:new-task-form-produces-commands
+  it('produces the creation command alone, with the model, while there is no brief: a creation before a dispatch would collide with the worktree dispatch creates', () => {
+    const commands = newTaskCommands({ task: 'fix-ci', brief: '  ', repositories: ['sneat-co/sneat-go', 'sneat-co/bots-go'], base: 'main', model: 'opus' })
+    expect(text(commands.create as CopyCommand)).toBe(
+      "wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'",
+    )
+    expect(commands.create).toMatchObject({ needsEdit: true })
+    expect(commands.dispatch).toEqual([])
+    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'unknown' }).create as CopyCommand)).not.toContain('--base')
   })
 
   it('runs every command of the form on its target, when it has one', () => {
     const target = { machine: 'vm', ssh: { host: 'vm.example', user: 'me' } }
-    const commands = newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r', 'o/s'], model: 'm', target })
-    expect([text(commands.create), ...commands.dispatch.map(text)].every((line) => line.startsWith('ssh me@vm.example '))).toBe(true)
-    expect(commands.dispatch).toHaveLength(2)
-    expect(text(newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'm', target: {} }).create)).toMatch(/^wb worktree create/)
+    const dispatch = newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r', 'o/s'], model: 'm', target })
+    expect(dispatch.dispatch.map(text).every((line) => line.startsWith('ssh me@vm.example '))).toBe(true)
+    expect(dispatch.dispatch).toHaveLength(2)
+    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm', target }).create as CopyCommand)).toMatch(/^ssh me@vm.example wb worktree create/)
+    expect(text(newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm', target: {} }).create as CopyCommand)).toMatch(/^wb worktree create/)
   })
 
   it('accepts a multi-line brief but refuses control characters and a leading dash in it', () => {
@@ -335,28 +345,31 @@ describe('the New task form', () => {
     expect(refused('line one\nline two\tindented')).toBe(true)
     expect(refused('-x')).toBe(false)
     expect(refused('bad\u0000')).toBe(false)
-    expect(refused('bad\u2028')).toBe(false)
+    expect(refused('bad ')).toBe(false)
     expect(valueProblem('a\nb', true)).toBeUndefined()
     expect(valueProblem('a\nb')).toMatch(/control/)
   })
 
-  it('refuses to produce a command until a model is entered, a repository is chosen and every value is safe', () => {
+  it('refuses to produce a command until a repository is chosen and every value is safe, and, without a brief, until a model is entered', () => {
     const refusal = (form: Parameters<typeof newTaskCommands>[0]): string => {
       const commands = newTaskCommands(form)
-      expect(commands.create.ok).toBe(false)
+      expect(commands.create?.ok).toBe(false)
       expect(commands.dispatch.every((command) => !command.ok)).toBe(true)
-      return commands.create.ok ? '' : commands.create.reason
+      return commands.create?.ok === false ? commands.create.reason : ''
     }
-    expect(refusal({ task: 'fix-ci', brief: 'b', repositories: ['o/r'], model: '' })).toMatch(/model is required/)
-    expect(refusal({ task: 'fix-ci', brief: 'b', repositories: ['o/r'], model: '  ' })).toMatch(/model is required/)
+    expect(refusal({ task: 'fix-ci', brief: '', repositories: ['o/r'], model: '' })).toMatch(/model is required/)
+    expect(refusal({ task: 'fix-ci', brief: ' ', repositories: ['o/r'], model: '  ' })).toMatch(/model is required/)
     expect(refusal({ task: 'fix-ci', brief: 'b', repositories: [], model: 'opus' })).toMatch(/at least one repository/)
     expect(refusal({ task: 'fix-ci', brief: 'b', repositories: ['owner/na me'], model: 'opus' })).toMatch(/not an owner\/name/)
+    // With a brief the model is not needed: dispatch takes a profile.
+    expect(newTaskCommands({ task: 'fix-ci', brief: 'b', repositories: ['o/r'], model: '' }).dispatch[0].ok).toBe(true)
     // A refused task value is refused by the command itself.
     const hostileTask = newTaskCommands({ task: '-x', brief: 'b', repositories: ['o/r'], model: 'opus' })
-    expect(hostileTask.create.ok).toBe(false)
     expect(hostileTask.dispatch[0].ok).toBe(false)
+    expect(newTaskCommands({ task: '-x', brief: '', repositories: ['o/r'], model: 'opus' }).create?.ok).toBe(false)
   })
 })
+
 
 describe('placeholders and the shell (REQ:copy-the-command)', () => {
   /** The exit code of `<shell> -n` (parse only, nothing runs) over the text, or undefined when the shell is absent. */
@@ -396,8 +409,8 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
     { name: 'daemonStart', open: daemonStart(to), filled: daemonStart(to) },
     { name: 'remoteEnroll', open: remoteEnroll(undefined, to), filled: remoteEnroll('https://hub.example', to) },
     { name: 'cockpitExport', open: cockpitExport(to), filled: cockpitExport(to) },
-    { name: 'newTask create', open: newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).create, filled: worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f' }, to) },
-    { name: 'newTask dispatch', open: newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).dispatch[0], filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
+    { name: 'newTask create', open: newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).create as CopyCommand, filled: worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f' }, to) },
+    { name: 'newTask dispatch', open: newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'm' }).dispatch[0], filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
   ]
 
   // cockpit-views#ac:copy-command-placeholders-are-syntax-errors

@@ -133,6 +133,26 @@ describe('CommandPalette', () => {
     expect(navigate).toHaveBeenCalledWith(hrefOf({ path: '/worktrees/w1', query: {} }))
   })
 
+  // cockpit-views#ac:phone-panel-is-a-sheet (focus after an overlay)
+  it('leaves the focus on the page it opened, not on nothing, when a result takes the keyboard to another page', async () => {
+    const { fixture, type, options } = await open()
+    const main = document.createElement('main')
+    main.id = 'main'
+    main.tabIndex = -1
+    document.body.append(main)
+    // The page the palette was opened from goes with the navigation, and nothing has the focus any more.
+    const page = document.createElement('button')
+    document.body.append(page)
+    page.focus()
+    navigate.mockImplementation(async () => {
+      page.remove()
+      return true
+    })
+    await type('go-live')
+    ;(options()[0] as HTMLElement).click()
+    await vi.waitFor(() => expect(document.activeElement).toBe(main))
+  })
+
   it('says when nothing matches, and invites typing while the input is empty', async () => {
     const { root, type, press, selected } = await open()
     expect(root.querySelector('.empty')?.textContent).toContain('Type to search')

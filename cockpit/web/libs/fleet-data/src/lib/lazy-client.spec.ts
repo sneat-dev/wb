@@ -53,7 +53,7 @@ describe('the lazy reads', () => {
     expect(seen[0].aborted).toBe(true)
     // Already aborted before the call: nothing is sent to a live connection.
     const already = AbortSignal.abort()
-    await expect(readMachineMetrics(fetcher as unknown as typeof fetch, 'm1', already)).rejects.toBeDefined()
+    await expect(readMachineMetrics(fetcher as unknown as typeof fetch, 'm1', already)).rejects.toMatchObject({ name: 'AbortError' })
     // Without a signal the request still carries its own timeout signal.
     void readMachineMetrics(fetcher as unknown as typeof fetch, 'm1')
     await vi.waitFor(() => expect(seen).toHaveLength(3))

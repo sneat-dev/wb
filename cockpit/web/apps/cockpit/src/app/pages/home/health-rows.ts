@@ -11,7 +11,7 @@ export interface HealthRow {
   /** Where the command runs ("run on vm", "run here"); absent when it runs anywhere. */
   where: string | undefined
   /** The text to copy, and whether it holds a part to edit; or why there is no command. */
-  command: { text: string; needsEdit: boolean; quoteTwice?: boolean } | { reason: string } | undefined
+  command: { text: string; needsEdit: boolean } | { reason: string } | undefined
 }
 
 /** The rows of "Fleet health": one per problem, stale machines first. Empty when nothing is wrong. */
@@ -23,7 +23,7 @@ export function healthRows(health: FleetHealth, dropped: number): HealthRow[] {
       text: item.text,
       link: item.link,
       where: 'text' in item.command ? item.command.label : undefined,
-      command: 'text' in item.command ? { text: item.command.text, needsEdit: item.command.needsEdit, ...(item.command.quoteTwice ? { quoteTwice: true } : {}) } : item.command,
+      command: 'text' in item.command ? { text: item.command.text, needsEdit: item.command.needsEdit } : item.command,
     })
   const rows = [
     ...health.staleMachines.map(machine('stale')),
