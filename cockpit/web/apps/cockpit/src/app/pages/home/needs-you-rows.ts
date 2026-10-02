@@ -87,11 +87,13 @@ function actionOf(item: NeedsYouItem): RowAction {
 }
 
 /**
- * Where the work's commands run: here only when every worktree is this machine's; otherwise the machine of the
- * first worktree that is not, so that a mutating command is refused and never built for another machine.
+ * Where the work's commands run: here only when every worktree is known and this machine's; otherwise the machine of
+ * the first worktree that is not, and when none of the ids is a worktree of the document, an unknown machine's, so that a
+ * mutating command is refused and never built on a guess.
  */
 export function targetOfWork(model: FleetModel, ids: readonly string[]): CommandTarget {
   const entries = ids.map((id) => model.worktreeById(id)).filter((entry): entry is Worktree => entry !== undefined)
+  if (entries.length === 0) return { machine: 'an unknown machine' }
   const targets = entries.map((entry) => model.targetOf(entry))
   return targets.find((target) => target.machine !== undefined || target.ssh !== undefined) ?? {}
 }

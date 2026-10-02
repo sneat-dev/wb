@@ -412,6 +412,9 @@ func publicDaemonState(state daemon.State) daemonPublicState {
 }
 
 type daemonDependencies struct {
+	// listen binds the dashboard endpoint; nil means net.Listen. Tests hand it a
+	// listener whose bound address is not the one that was asked for.
+	listen     func(network, address string) (net.Listener, error)
 	now        func() time.Time
 	executable func() (string, error)
 	start      func(string, []string, string) (int, error)
@@ -2383,7 +2386,11 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", address)
+	listen := deps.listen
+	if listen == nil {
+		listen = net.Listen
+	}
+	listener, err := listen("tcp", address)
 	if err != nil {
 		// A held endpoint is a distinct, actionable condition, not a transient
 		// error: another daemon (or an unrelated process) already owns it, and
@@ -2395,6 +2402,11 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	}
 	closeListener := sync.OnceFunc(func() { _ = listener.Close() })
 	defer closeListener()
+	// The name that was asked for may have resolved to an interface that is not
+	// loopback (a name pinned elsewhere, /etc/hosts): serve only what is bound there.
+	if err := requireLoopbackBound(listener.Addr()); err != nil {
+		return err
+	}
 	provenance, err := newDaemonController(deps, inv.projectsRoot).provenance()
 	if err != nil {
 		return err
@@ -2791,6 +2803,18 @@ func daemonOwnedHealthy(ctx context.Context, listen string, pid int, generation 
 	}
 	return nil
 }
+
+// requireLoopbackBound refuses an address a listener was actually bound to
+// unless it is a TCP address on the loopback interface, whatever name the
+// --listen value used to ask for it.
+func requireLoopbackBound(bound net.Addr) error {
+	tcp, ok := bound.(*net.TCPAddr)
+	if !ok || !tcp.IP.IsLoopback() {
+		return usageError(fmt.Sprintf("the daemon is bound to %s, which is not a loopback address; it was not started, publish it through an authenticated tunnel instead", bound))
+	}
+	return nil
+}
+
 func requireLoopbackAddress(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {

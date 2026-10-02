@@ -131,16 +131,21 @@ The application MUST follow the browser's light or dark preference.
 #### REQ: host-header-check
 
 Every request to `/cockpit/` and `/api/v1/cockpit/` MUST carry a `Host`
-header naming a loopback host on any port: `localhost` or any name under
-`.localhost`, any IPv4 address of `127.0.0.0/8`, or `::1` in any spelling. One function
+header naming a loopback host on any port: exactly `localhost` (any case, no trailing dot), any
+IPv4 address of `127.0.0.0/8` written as four decimal numbers, or `::1` in any spelling. A
+name such as `app.localhost` is refused, as are `127.1`, `2130706433`, octal and hex forms, a
+zone (`[::1%lo0]`) and userinfo. One function
 (`internal/loopbackhost`) decides this, and the daemon's `--listen` check uses the same one, so a
-daemon cannot listen on a loopback form that its own health check then refuses. Any other host name is refused with status 421 before any handler runs.
+daemon cannot listen on a loopback form that its own health check then refuses. After it binds, the
+daemon also refuses to serve unless the address the listener really holds is a loopback TCP address
+(a `localhost` that resolves elsewhere is a usage error naming that address, exit 2). Any other host name is refused with status 421 before any handler runs.
 This is what stops a page that rebinds DNS to the loopback address. The port
 is not checked, so an SSH forward to a different local port works.
 
-The canonical origin is `http://127.0.0.1:<port>`, or `http://[::1]:<port>`
-when the daemon listens on the IPv6 loopback address, with the port the request
-arrived on. A request for a page under `/cockpit/` on another loopback name
+The canonical origin is the address the daemon listens on: `http://127.0.0.1:<port>` for
+`127.0.0.1` or `localhost`, `http://[::1]:<port>` for the IPv6 loopback address, and
+`http://127.0.0.2:<port>` for a listener on `127.0.0.2` (any loopback IP literal), with the port the
+request arrived on; `wb cockpit` prints its login URL on that origin. A request for a page under `/cockpit/` on another loopback name
 is redirected to the same path on the canonical origin, so the session
 cookie, which browsers scope by host, is always set and read on one host.
 

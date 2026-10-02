@@ -13,15 +13,15 @@ import (
 )
 
 // Named reports whether a host (a Host header's host part, or the host of a
-// listen address) names the loopback interface: the name localhost or any
-// name under .localhost, any IPv4 address of 127.0.0.0/8, and the IPv6
+// listen address) names the loopback interface: exactly the name localhost
+// (in any case, with no trailing dot), any IPv4 address of 127.0.0.0/8, and the IPv6
 // address ::1 in any spelling. The one rule serves the Host check and the
 // daemon's own --listen check, so a daemon cannot listen on a loopback form
 // that its own health check then refuses. Anything else, including a trailing
 // dot name, is refused.
 func Named(host string) bool {
 	host = strings.ToLower(host)
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") && len(host) > len(".localhost") {
+	if host == "localhost" {
 		return true
 	}
 	ip := net.ParseIP(host)

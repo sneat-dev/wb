@@ -70,6 +70,10 @@ func TestGuardDecidesByHostMethodAndPath(t *testing.T) {
 		{"ipv6 listener: localhost is the alias", "::1", "GET", "localhost:8766", "/cockpit/a", 307, "http://[::1]:8766/cockpit/a"},
 		{"ipv6 listener: alias without port", "::1", "GET", "localhost", "/cockpit/", 307, "http://[::1]/cockpit/"},
 		{"ipv6 listener: 127.0.0.1 api is served", "::1", "GET", "127.0.0.1:8766", "/api/v1/cockpit/fleet", 200, ""},
+		{"another-address listener: canonical page", "127.0.0.2", "GET", "127.0.0.2:8766", "/cockpit/", 200, ""},
+		{"another-address listener: 127.0.0.1 is the alias", "127.0.0.2", "GET", "127.0.0.1:8766", "/cockpit/", 307, "http://127.0.0.2:8766/cockpit/"},
+		{"another-address listener: localhost is the alias", "127.0.0.2", "GET", "localhost:8766", "/cockpit/", 307, "http://127.0.0.2:8766/cockpit/"},
+		{"another-address listener: api is served on an alias", "127.0.0.2", "GET", "127.0.0.1:8766", "/api/v1/cockpit/fleet", 200, ""},
 		{"foreign host page", "127.0.0.1", "GET", "attacker.example:8766", "/cockpit/", 421, ""},
 		{"foreign host api", "127.0.0.1", "GET", "attacker.example:8766", "/api/v1/cockpit/fleet", 421, ""},
 		{"foreign host without port", "127.0.0.1", "GET", "attacker.example", "/cockpit/", 421, ""},
@@ -99,13 +103,15 @@ func TestGuardDecidesByHostMethodAndPath(t *testing.T) {
 func TestCanonicalHostFollowsTheListener(t *testing.T) {
 	t.Parallel()
 	for address, want := range map[string]string{
-		"127.0.0.1:8766": "127.0.0.1",
-		"localhost:8766": "127.0.0.1",
-		"[::1]:8766":     "::1",
-		"[::2]:8766":     "127.0.0.1",
-		"0.0.0.0:8766":   "127.0.0.1",
-		"not an address": "127.0.0.1",
-		"":               "127.0.0.1",
+		"127.0.0.1:8766":         "127.0.0.1",
+		"localhost:8766":         "127.0.0.1",
+		"[::1]:8766":             "::1",
+		"127.0.0.2:8766":         "127.0.0.2",
+		"[0:0:0:0:0:0:0:1]:8766": "::1",
+		"[::2]:8766":             "127.0.0.1",
+		"0.0.0.0:8766":           "127.0.0.1",
+		"not an address":         "127.0.0.1",
+		"":                       "127.0.0.1",
 	} {
 		if got := CanonicalHost(address); got != want {
 			t.Errorf("CanonicalHost(%q) = %q, want %q", address, got, want)

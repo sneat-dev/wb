@@ -55,6 +55,8 @@ describe('needsYouRows', () => {
     const offer = needsYouRows(model)[0].work
     expect(offer?.worktrees.map((worktree) => worktree.id)).not.toContain(remote.id)
     expect(offer?.target).toEqual({})
+    expect(targetOfWork(model, [])).toEqual({ machine: 'an unknown machine' })
+    expect(targetOfWork(model, ['gone'])).toEqual({ machine: 'an unknown machine' })
     expect(targetOfWork(model, ['gone', ...offer!.worktrees.map((worktree) => worktree.id)])).toEqual({})
     expect(targetOfWork(model, [offer!.worktrees[0].id, remote.id])).toMatchObject({ machine: 'vm' })
   })

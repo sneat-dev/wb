@@ -304,9 +304,18 @@ func TestHealthAndOverviewAnswerOnlyOnALoopbackHost(t *testing.T) {
 			request.Host = host
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)
-			api := strings.HasPrefix(target, "/api/")
-			if recorder.Code == http.StatusMisdirectedRequest || api && (recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "9.9.9-marker")) {
-				t.Errorf("%s on %s = %d %s, want it served", target, host, recorder.Code, recorder.Body.String())
+			want := map[string]struct {
+				status int
+				marker string
+			}{
+				"/api/v1/health":   {http.StatusOK, "9.9.9-marker"},
+				"/api/v1/overview": {http.StatusOK, "9.9.9-marker"},
+				"/":                {http.StatusOK, "WB operations"},
+				"/metrics":         {http.StatusOK, "WB Metrics"},
+				"/coverage":        {http.StatusFound, "test_coverage"},
+			}[target]
+			if recorder.Code != want.status || !strings.Contains(recorder.Body.String()+recorder.Header().Get("Location"), want.marker) {
+				t.Errorf("%s on %s = %d %s, want %d with %q", target, host, recorder.Code, recorder.Body.String(), want.status, want.marker)
 			}
 		}
 		for _, host := range []string{"attacker.example", "attacker.example:8766", "128.0.0.1:8766", "127.0.0.1:http", "[bad", ""} {
