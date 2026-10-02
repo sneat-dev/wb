@@ -2555,7 +2555,7 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		Mounts: cockpitServer.MountsWith(mount.handlers()), Hub: mount.hubHealth(), LogPath: logPath,
 		// The log is file content: only Cockpit's owner session reads it
 		// (cockpit#req:daemon-log-is-owner-only).
-		Owner: cockpitServer.IsOwner,
+		Owner: cockpitServer.IsOwner, Logf: fleetOptions.Logf,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)

@@ -211,6 +211,19 @@ live session. Without an owner the route answers 401 before the file is opened,
 without an owner check it answers 403, and its failures carry a closed code and
 no path.
 
+### Task 11: The dashboard's JSON routes answer only on a loopback host
+
+**Id:** task-11
+**Verifies:** cockpit#ac:dashboard-json-routes-answer-only-on-loopback
+**Depends-On:** 10
+**Status:** complete
+
+Added 2026-10-02, from the whole-branch security review. `GET /api/v1/health`
+and `GET /api/v1/overview` apply the Host check, by the rule Cockpit's guard
+applies (package `internal/loopbackhost`, which both ask), and a failed overview
+answers a closed code and a fixed message while its reason goes to the daemon's
+log.
+
 ## Open Questions
 
 - The Go package layout under `internal/cockpit` is settled in Task 1.

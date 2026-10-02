@@ -169,6 +169,9 @@ The raw policy applies only to `wb daemon operation submit`. Normal `wb run
 The default URL is `http://127.0.0.1:8766`. Keep the daemon on loopback. To
 reach it from another registered machine, route that local endpoint through a
 Cloudflare Tunnel protected by Cloudflare Access service authentication.
+`/api/v1/health` and `/api/v1/overview` answer only a request whose `Host`
+names a loopback host (421 `misdirected_request` otherwise), so have the tunnel
+send one (cloudflared: `httpHostHeader: 127.0.0.1:8766`).
 
 `wb daemon start` is idempotent. If the managed listener belongs to an older
 installed WB executable, it drains the old generation and hands the durable
