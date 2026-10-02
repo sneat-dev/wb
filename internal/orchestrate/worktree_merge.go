@@ -327,7 +327,14 @@ type WorktreeMergeLandOptions struct {
 	AllowUnfenced bool
 	OnFailure     string
 	Timeout       time.Duration
-	Retry         int
+	// WaitSlice, when positive, bounds only the exact-head check wait of one
+	// landing call. Zero keeps the historical behaviour in which Timeout is
+	// also the wait slice. Timeout still bounds every git and gh command, so
+	// a caller that wants a short wait cannot starve those commands: a short
+	// Timeout used as a wait budget made a slow host fail the publish step's
+	// git commands with conflict instead of stopping at checks_pending.
+	WaitSlice time.Duration
+	Retry     int
 	// ValidateLocally forces the old unconditional behavior: local candidate
 	// validation always runs, even when this call resolves the pull-request
 	// route and its target's authoritative required-check policy would
@@ -2902,11 +2909,21 @@ func worktreeMergePRTitle(subjects []string, sourceCount int) string {
 	return fmt.Sprintf("%s %s and %d related %s", selected.prefix, selected.summary, sourceCount-1, related)
 }
 
-func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {
+// checkWaitSlice is the budget of one exact-head check wait: WaitSlice when
+// set, otherwise Timeout, capped at 8 minutes either way.
+func (options WorktreeMergeLandOptions) checkWaitSlice() time.Duration {
 	slice := options.Timeout
+	if options.WaitSlice > 0 {
+		slice = options.WaitSlice
+	}
 	if slice <= 0 || slice > 8*time.Minute {
 		slice = 8 * time.Minute
 	}
+	return slice
+}
+
+func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {
+	slice := options.checkWaitSlice()
 	interval := options.CheckPollInterval
 	if interval <= 0 {
 		interval = DefaultCheckPollInterval
