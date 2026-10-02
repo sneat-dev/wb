@@ -273,6 +273,32 @@ var realStateSelectors = []string{"WB_HOME", "WB_PROJECTS_ROOT"}
 // binary must not rebuild the world because its home moved.
 var goToolVariables = []string{"GOCACHE", "GOMODCACHE", "GOPATH", "GOENV"}
 
+// UserStateRootEnv names the private root in the environment of every process
+// an isolated test binary starts, so a re-executed test binary adopts its
+// parent's isolation instead of building its own.
+const UserStateRootEnv = "WB_TEST_USER_ROOT"
+
+// userStateRootPrefix is the name every private root starts with.
+const userStateRootPrefix = "wb-test-user-"
+
+// defaultProjectsDirectory is the directory under the user's home that wb
+// resolves as its projects root when nothing names one (wbhome's default).
+const defaultProjectsDirectory = "projects"
+
+// inheritedUserStateRoot is the private root a parent test process passed
+// down, or empty when there is none to adopt: the variable is unset, or does
+// not name a private root that still exists.
+func inheritedUserStateRoot() string {
+	root := os.Getenv(UserStateRootEnv)
+	if !strings.HasPrefix(filepath.Base(root), userStateRootPrefix) {
+		return ""
+	}
+	if info, err := os.Stat(filepath.Join(root, "home")); err != nil || !info.IsDir() {
+		return ""
+	}
+	return root
+}
+
 var (
 	userStateRoot string
 	makeTempDir   = os.MkdirTemp
@@ -307,10 +333,27 @@ func productionGoEnvironmentValue(name string) (string, error) {
 // is not neutral: the developer's credential helpers and url.insteadOf
 // rewrites stay live, so a test that reaches a real remote does so with real
 // credentials.
+//
+// The private home holds an empty projects directory, because a wb process
+// given no --projects-root and no WB_PROJECTS_ROOT resolves, and opens,
+// ~/projects.
+//
+// A process the test binary starts inherits all of this through its
+// environment, and that includes the test binary re-executing itself as a
+// helper: its TestMain calls IsolateUserState again, finds UserStateRootEnv
+// naming a live private root, and adopts the environment it was given as it
+// is. Isolating afresh there would discard what the parent test deliberately
+// set for its children (a WB_PROJECTS_ROOT pointing at its fixture, say) and
+// leave them resolving an empty home of their own. The parent owns the root,
+// so an adopting process removes nothing.
 func IsolateUserState() (remove func(), err error) {
+	if inherited := inheritedUserStateRoot(); inherited != "" {
+		userStateRoot = inherited
+		return func() {}, nil
+	}
 	pinned := resolvedGoToolVariables()
 	gitConfigs := globalGitConfigFiles()
-	root, err := makeTempDir("", "wb-test-user-")
+	root, err := makeTempDir("", userStateRootPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +366,7 @@ func IsolateUserState() (remove func(), err error) {
 		include += "[include]\n\tpath = " + strconv.Quote(path) + "\n"
 	}
 	if err := errors.Join(os.Mkdir(home, 0o700), os.Mkdir(config, 0o700), os.Mkdir(state, 0o700),
+		os.Mkdir(filepath.Join(home, defaultProjectsDirectory), 0o700),
 		os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(include), 0o600)); err != nil {
 		_ = os.RemoveAll(root)
 		return nil, err
@@ -337,6 +381,7 @@ func IsolateUserState() (remove func(), err error) {
 	_ = os.Setenv("USERPROFILE", home)
 	_ = os.Setenv("XDG_CONFIG_HOME", config)
 	_ = os.Setenv("XDG_STATE_HOME", state)
+	_ = os.Setenv(UserStateRootEnv, root)
 	userStateRoot = root
 	return func() { _ = os.RemoveAll(root) }, nil
 }

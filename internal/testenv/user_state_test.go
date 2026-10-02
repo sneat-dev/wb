@@ -36,6 +36,7 @@ func ambientUser(t *testing.T) (home string) {
 			t.Fatal(err)
 		}
 	}
+	t.Setenv(UserStateRootEnv, "")
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", config)
@@ -178,4 +179,90 @@ func TestUserStateViolationsNameEveryEscapeFromThePrivateRoot(t *testing.T) {
 	if strings.Contains(violations, inside) || strings.Contains(violations, "WB_HOME") {
 		t.Fatalf("violations name a path inside the root or an unset variable: %q", violations)
 	}
+}
+
+// A wb process given no projects root resolves ~/projects and opens it, so the
+// private home has one, and every child inherits where the root is.
+//
+//nolint:paralleltest // rewrites the process environment that selects the user.
+func TestIsolatedUserHasTheDefaultProjectsRootAndNamesItsRootForChildren(t *testing.T) {
+	ambientUser(t)
+	remove, err := IsolateUserState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remove)
+	home, _ := os.UserHomeDir()
+	if info, err := os.Stat(filepath.Join(home, "projects")); err != nil || !info.IsDir() {
+		t.Fatalf("default projects root under the private home: %v", err)
+	}
+	if got := os.Getenv(UserStateRootEnv); got != userStateRoot || got == "" {
+		t.Fatalf("%s = %q, want the private root %q", UserStateRootEnv, got, userStateRoot)
+	}
+}
+
+// The test binary re-executed as a helper process runs TestMain again. It must
+// keep the environment its parent test gave it, not replace it with an empty
+// user of its own: reported from CI, where a helper's wb children lost the
+// parent's WB_PROJECTS_ROOT and opened a projects root that did not exist.
+//
+//nolint:paralleltest // rewrites the process environment that selects the user.
+func TestReexecutedTestBinaryAdoptsItsParentsIsolationUnchanged(t *testing.T) {
+	ambientUser(t)
+	removeParent, err := IsolateUserState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(removeParent)
+	parentRoot := userStateRoot
+	// What a parent test sets for the processes it starts.
+	fixture := t.TempDir()
+	t.Setenv("WB_PROJECTS_ROOT", fixture)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fixture, "config"))
+	parentHome, _ := os.UserHomeDir()
+
+	userStateRoot = "" // the child starts with no state of its own
+	removeChild, err := IsolateUserState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childHome, _ := os.UserHomeDir()
+	if userStateRoot != parentRoot || childHome != parentHome || os.Getenv("WB_PROJECTS_ROOT") != fixture ||
+		os.Getenv("XDG_CONFIG_HOME") != filepath.Join(fixture, "config") {
+		t.Fatalf("child root = %q, home = %q, WB_PROJECTS_ROOT = %q; want the parent's environment unchanged",
+			userStateRoot, childHome, os.Getenv("WB_PROJECTS_ROOT"))
+	}
+	removeChild()
+	if _, err := os.Stat(parentRoot); err != nil {
+		t.Fatalf("the child removed its parent's private root: %v", err)
+	}
+}
+
+//nolint:paralleltest // rewrites the process environment that selects the user.
+func TestAStaleOrForeignRootMarkerIsNotAdopted(t *testing.T) {
+	for name, marker := range map[string]string{
+		"root no longer exists": filepath.Join(t.TempDir(), "wb-test-user-gone"),
+		"not a private root":    t.TempDir(),
+		"private name, no home": mustMakeDirectory(t, filepath.Join(t.TempDir(), "wb-test-user-empty")),
+	} {
+		home := ambientUser(t)
+		t.Setenv(UserStateRootEnv, marker)
+		remove, err := IsolateUserState()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		isolated, _ := os.UserHomeDir()
+		if userStateRoot == marker || isolated == home || len(UserStateViolations()) != 0 {
+			t.Fatalf("%s: root = %q, home = %q, violations = %v; want a fresh private user", name, userStateRoot, isolated, UserStateViolations())
+		}
+		remove()
+	}
+}
+
+func mustMakeDirectory(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
