@@ -205,9 +205,6 @@ type Result struct {
 	ExcludeWritten bool
 }
 
-// Changed reports whether anything on disk moved.
-func (r Result) Changed() bool { return r.MarkerWritten || r.ExcludeWritten }
-
 // Apply writes the marker and its ignore rule, and is safe to run repeatedly.
 //
 // The ignore rule goes first. A marker written before its rule exists is a

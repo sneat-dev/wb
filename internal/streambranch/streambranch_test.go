@@ -25,17 +25,3 @@ func TestNameRendersTheBranch(t *testing.T) {
 		t.Fatalf("Name = %q", got)
 	}
 }
-
-func TestStreamNameExtractsOrRefuses(t *testing.T) {
-	t.Parallel()
-	name, ok := StreamName("refs/heads/stream/checkout-rewrite")
-	if !ok || name != "checkout-rewrite" {
-		t.Fatalf("StreamName = %q, %t", name, ok)
-	}
-	if _, ok := StreamName("main"); ok {
-		t.Error("StreamName accepted a non-stream branch")
-	}
-	if _, ok := StreamName("stream/"); ok {
-		t.Error("StreamName accepted an empty stream name")
-	}
-}

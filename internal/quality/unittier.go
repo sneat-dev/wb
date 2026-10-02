@@ -123,7 +123,7 @@ var UnitTierGitHelperNames = map[string]bool{
 	"gitPathUnchangedFromHEAD":       true, // internal/envguard, internal/locallink
 	"ShowFile":                       true, // internal/gitops/gitops.go
 	"OriginAddress":                  true, // internal/layout/layout.go
-	"OriginSlug":                     true, // internal/layout/layout.go
+	"OriginSlug":                     true, // internal/worktrees/worktrees.go
 	"GitMergeBase":                   true, // internal/quality/changed_packages.go
 	"GitTopLevel":                    true, // internal/quality/changed_packages.go
 	"GitTouchedFiles":                true, // internal/quality/ratchet.go

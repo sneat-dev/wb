@@ -723,14 +723,6 @@ func bumpOperationPrefix(ecosystem Ecosystem) string {
 	return "deps-bump-" + string(ecosystem) + "-"
 }
 
-// BumpOperationID returns the stable Go campaign identity for a sorted seed
-// set. Kept for backward compatibility with every caller that predates npm
-// support; new callers that also know the ecosystem should use
-// BumpOperationIDFor.
-func BumpOperationID(events []ReleaseEvent) string {
-	return BumpOperationIDFor(EcosystemGo, events)
-}
-
 // BumpOperationIDFor returns the stable campaign identity for a sorted seed
 // set of release events in the given ecosystem.
 func BumpOperationIDFor(ecosystem Ecosystem, events []ReleaseEvent) string {

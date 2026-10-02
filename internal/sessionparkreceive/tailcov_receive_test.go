@@ -450,11 +450,3 @@ func TestTailCovReceiveMembersReadyReplayDefaultsToRealVerifier(t *testing.T) {
 		t.Fatalf("members-ready replay re-received the member instead of verifying it: %v", err)
 	}
 }
-
-func TestTailCovTargetStoreRootJoinsParkDirectory(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	if got, want := TargetStoreRoot(home), filepath.Join(home, sessionpark.TargetDirName); got != want {
-		t.Fatalf("TargetStoreRoot(%q) = %q, want %q", home, got, want)
-	}
-}

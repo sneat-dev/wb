@@ -399,8 +399,9 @@ func (ticket *Ticket) Snapshot(budget int) State {
 	return snapshot(ticket.projectsRoot, ticket.namespace, ticket.pathLocked(), budget)
 }
 
-// Peek reports legacy-pool queue state without registering a waiter — used
-// by `wb run --queue` and by the initial "admitted (queue empty)" check.
+// Peek reports legacy-pool queue state without registering a waiter. No
+// production caller remains: `wb run --queue` lists through ListQueue. It is
+// kept for cmd/wb tests that observe the pool.
 func Peek(projectsRoot string, budget int) State {
 	return snapshot(projectsRoot, namespaceLegacy, "", budget)
 }

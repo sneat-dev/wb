@@ -2830,10 +2830,6 @@ func readWorkLogTerminalAt(runDir *os.File, claimID string) (workLogTerminalReco
 	return worktreeclaims.ReadWorkLogTerminalAt[workLogTerminalRecord](runDir, claimID, validSafeSegment)
 }
 
-func writeJSONAtomic(path string, value any, mode os.FileMode) error {
-	return filewrite.WriteJSONAtomic(path, value, mode)
-}
-
 func writeJSONAtomicAt(directory *os.File, name string, value any, mode os.FileMode) error {
 	return filewrite.WriteJSONAtomicAt(directory, name, value, mode)
 }

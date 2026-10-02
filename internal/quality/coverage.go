@@ -66,12 +66,6 @@ const (
 	StatusSkipped Status = "skipped"
 )
 
-// Cover measures all Go modules below path. It creates profiles in the system
-// temporary directory, never in the repository.
-func Cover(ctx context.Context, repository, path string) RepositoryCoverage {
-	return CoverWithOptions(ctx, repository, path, RunOptions{})
-}
-
 // CoverWithOptions measures coverage with a deadline and retries for each Go
 // module's test command.
 func CoverWithOptions(ctx context.Context, repository, path string, options RunOptions) RepositoryCoverage {

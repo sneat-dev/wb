@@ -23,11 +23,6 @@ type HarnessSpec struct {
 	Args       []string
 }
 
-func ValidateHarnessSelection(sourceRuntime, requested string) error {
-	_, err := NormalizeRuntime(sourceRuntime, requested)
-	return err
-}
-
 // NormalizeRuntime maps spoken harness names to the closed launch runtimes.
 // Empty requested keeps the source runtime. "claude" and "claude-code" both
 // select Claude Code; "codex" selects Codex.
@@ -105,14 +100,6 @@ func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string)
 		args = append(args, "--name", authority.SuccessorWBSessionID, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "claude", Args: args}, nil
 	}
-}
-
-func launchPrompt(request sessionmove.Request) string {
-	return launchPromptForAuthority(sessionauthority.Launch{
-		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
-		PredecessorWBSessionID: request.PredecessorWBSessionID, ContinuationKind: requestContinuationKind(request),
-		ContinuationPath: request.HandoverPath,
-	})
 }
 
 func launchPromptForAuthority(authority sessionauthority.Launch) string {

@@ -21,7 +21,7 @@ api/githubapp/dqcov_machine_snapshots_test.go	1	task-21
 api/githubapp/dqcov_provider_test.go	1	task-21
 api/githubapp/dqcov_service_test.go	1	task-21
 api/githubapp/dqcov_worktrees_test.go	1	task-21
-api/githubapp/machinesnapshot/zz_dqcov_model_test.go	11	task-21
+api/githubapp/machinesnapshot/zz_dqcov_model_test.go	10	task-21
 api/githubapp/repositoryevent/zz_dqcov_model_test.go	9	task-21
 cmd/wb/zz_cov_archive_worker_test.go	10	task-21
 cmd/wb/zz_cov_bridge_client_test.go	1	task-21
@@ -113,7 +113,7 @@ internal/landinglane/landinglane_tailcov_flock_unix_test.go	2	task-21
 internal/landinglane/landinglane_tailcov_test.go	14	task-21
 internal/landinglane/landinglane_tailcov_unix_test.go	2	task-21
 internal/layout/zz_tailcov_linux_test.go	2	task-21
-internal/layout/zz_tailcov_test.go	18	task-21
+internal/layout/zz_tailcov_test.go	15	task-21
 internal/locallink/zz_cov_lg_engine_test.go	1	task-21
 internal/locallink/zz_cov_lg_execports2_test.go	1	task-21
 internal/locallink/zz_cov_lg_execports_test.go	1	task-21
@@ -141,7 +141,7 @@ internal/policy/zz_gpcov_test.go	1	task-21
 internal/process/tailcov_process_test.go	6	task-21
 internal/progress/tailcov_progress_test.go	4	task-21
 internal/quality/dqcov_config_test.go	5	task-21
-internal/quality/dqcov_coverage_test.go	10	task-21
+internal/quality/dqcov_coverage_test.go	9	task-21
 internal/quality/dqcov_fault_test.go	4	task-21
 internal/quality/dqcov_runner_test.go	16	task-21
 internal/quality/dqcov_shards_test.go	4	task-21
@@ -196,7 +196,7 @@ internal/sessionmessage/zz_tailcov_test.go	23	task-21
 internal/sessionmessage/zz_tailcov_unix_test.go	3	task-21
 internal/sessionmessenger/sd_cov_test.go	1	task-21
 internal/sessionparkcourier/zz_tailcov_ssh_test.go	10	task-21
-internal/sessionparkreceive/tailcov_receive_test.go	24	task-21
+internal/sessionparkreceive/tailcov_receive_test.go	23	task-21
 internal/sessionreceive/sd_cov_test.go	1	task-21
 internal/streams/cov_stubs_test.go	1	task-21
 internal/streams/end_cov_test.go	1	task-21
@@ -214,7 +214,7 @@ internal/syncreport/tailcov_merge_test.go	4	task-21
 internal/syncreport/tailcov_parse_test.go	4	task-21
 internal/syncreport/tailcov_validate_test.go	10	task-21
 internal/taskoffload/tailcov_store_test.go	9	task-21
-internal/tui/tailcov_test.go	14	task-21
+internal/tui/tailcov_test.go	3	task-21
 internal/unixcompat/tailcov_unix_test.go	3	task-21
 internal/wbconfig/tailcov_test.go	7	task-21
 internal/wbhome/zz_tailcov_linux_test.go	2	task-21

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktreeproof"
@@ -63,85 +62,6 @@ func TestLifecycleProofGitOutputParsers(t *testing.T) {
 	}
 	if _, err := worktreeproof.ParseCommitTree("revision", "invalid"); err == nil {
 		t.Fatal("invalid tree accepted")
-	}
-}
-
-func TestLifecycleProofGitHubBranchReader(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	if _, err := landingReceiptService().GitHubPullRequestsForBranch(ctx, "", "invalid", "source", "main"); err == nil {
-		t.Fatal("branch pull-request query accepted an invalid repository")
-	}
-
-	execute := func(_ context.Context, _ string, args ...string) githubobserver.CommandResponse {
-		if len(args) != 3 || args[0] != "api" || args[1] != "--paginate" ||
-			!strings.Contains(args[2], "base=main") || !strings.Contains(args[2], "head=acme%3Asource") {
-			t.Fatalf("GitHub query arguments = %q", args)
-		}
-		return githubobserver.CommandResponse{Stdout: []byte(`[{"number":7,"state":"closed"}]`)}
-	}
-	pullRequests, err := githubPullRequestsForBranchWithExecute(ctx, "/worktree", "acme/app", "source", "main", execute)
-	if err != nil || len(pullRequests) != 1 || pullRequests[0].Number != 7 {
-		t.Fatalf("branch pull requests = %#v, %v", pullRequests, err)
-	}
-	boom := errors.New("GitHub unavailable")
-	if _, err := githubPullRequestsForBranchWithExecute(ctx, "/worktree", "acme/app", "source", "main", func(context.Context, string, ...string) githubobserver.CommandResponse {
-		return githubobserver.CommandResponse{Err: boom, Stderr: []byte("offline")}
-	}); err == nil || !strings.Contains(err.Error(), "offline") {
-		t.Fatalf("GitHub failure = %v", err)
-	}
-	if _, err := githubPullRequestsForBranchWithExecute(ctx, "/worktree", "acme/app", "source", "main", func(context.Context, string, ...string) githubobserver.CommandResponse {
-		return githubobserver.CommandResponse{Stdout: []byte("not-json")}
-	}); err == nil || !strings.Contains(err.Error(), "decode pull requests") {
-		t.Fatalf("GitHub decode failure = %v", err)
-	}
-}
-
-func TestLifecycleProofPullRequestResponseValidation(t *testing.T) {
-	t.Parallel()
-	mergedAt := time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC)
-	head := strings.Repeat("a", 40)
-	merge := strings.Repeat("b", 40)
-	validBody := `{"number":9,"html_url":"https://example.test/9","state":"closed","merged_at":"` + mergedAt.Format(time.RFC3339) + `","base":{"ref":"main","sha":"` + head + `"},"head":{"sha":"` + head + `"},"merge_commit_sha":"` + merge + `"}`
-
-	get := func(body string, err error) func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error) {
-		return func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
-			if request.Endpoint != "repos/acme/app/pulls/9" || request.FreshWindow != 0 {
-				t.Fatalf("GitHub request = %#v", request)
-			}
-			return githubobserver.Response{Body: []byte(body)}, err
-		}
-	}
-	if _, _, _, err := resolveAbsorbedByPullRequestWithGet(context.Background(), "/worktree", "acme/app", "main", 9, get("", errors.New("offline"))); err == nil {
-		t.Fatal("GitHub read failure accepted")
-	}
-	for _, tc := range []struct {
-		name string
-		body string
-		want string
-	}{
-		{name: "malformed", body: "not-json", want: "decode"},
-		{name: "not merged", body: `{"state":"closed"}`, want: "not merged"},
-		{name: "not closed", body: strings.Replace(validBody, `"state":"closed"`, `"state":"open"`, 1), want: "not closed"},
-		{name: "wrong base", body: strings.Replace(validBody, `"ref":"main"`, `"ref":"release"`, 1), want: "not the requested base"},
-		{name: "invalid merge", body: strings.Replace(validBody, merge, "invalid", 1), want: "invalid merge commit"},
-		{name: "invalid head", body: strings.Replace(validBody, `"head":{"sha":"`+head+`"}`, `"head":{"sha":"invalid"}`, 1), want: "invalid head commit"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			_, _, rejection, err := resolveAbsorbedByPullRequestWithGet(context.Background(), "/worktree", "acme/app", "main", 9, get(tc.body, nil))
-			combined := rejection
-			if err != nil {
-				combined += err.Error()
-			}
-			if !strings.Contains(combined, tc.want) {
-				t.Fatalf("result rejection=%q err=%v, want %q", rejection, err, tc.want)
-			}
-		})
-	}
-	landing, receipt, rejection, err := resolveAbsorbedByPullRequestWithGet(context.Background(), "/worktree", "acme/app", "main", 9, get(validBody, nil))
-	if err != nil || rejection != "" || landing != merge || receipt == nil || receipt.HeadSHA != head {
-		t.Fatalf("valid pull request = %q, %#v, %q, %v", landing, receipt, rejection, err)
 	}
 }
 

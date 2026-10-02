@@ -186,7 +186,7 @@ func TestDaemonStatusReportsAnUnrecordedRecordAsUnverified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := daemon.NewStarting(nil, daemonDefaultListen, current, "owner", time.Now())
+	state := daemon.NewStartingAt(nil, daemonDefaultListen, current, "owner", "", "", time.Now())
 	state.MarkReady(900, time.Now())
 	if err := controller.store.Save(state); err != nil {
 		t.Fatal(err)
@@ -243,7 +243,7 @@ func TestDaemonStartRefusesWhileADaemonServesTheLegacyRuntimeDirectory(t *testin
 	legacyDir := daemonLegacyFixture(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == 4321 }
-	legacy := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "legacy-owner", time.Now())
+	legacy := daemon.NewStartingAt(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "legacy-owner", "", "", time.Now())
 	legacy.MarkReady(4321, time.Now())
 	if err := (daemon.Store{Path: daemonLegacyStatePath(legacyDir)}).Save(legacy); err != nil {
 		t.Fatal(err)
@@ -452,7 +452,7 @@ func TestDaemonStatusNamesAnUnrecordedAnswerAndTheLegacyEndpoint(t *testing.T) {
 	legacyDir := daemonLegacyFixture(t)
 	deps := daemonTestDependencies(t, root)
 	deps.alive = func(pid int) bool { return pid == 700 }
-	legacy := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "legacy-owner", time.Now())
+	legacy := daemon.NewStartingAt(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "legacy-owner", "", "", time.Now())
 	legacy.MarkReady(700, time.Now())
 	if err := (daemon.Store{Path: daemonLegacyStatePath(legacyDir)}).Save(legacy); err != nil {
 		t.Fatal(err)

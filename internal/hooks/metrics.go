@@ -109,10 +109,6 @@ func cloneLabels(labels map[string]string) map[string]string {
 	return cloned
 }
 
-func AppendEvent(path string, event Event) error {
-	return AppendEvents(path, []Event{event})
-}
-
 func AppendEvents(path string, events []Event) error {
 	return appendEventsInjected(path, events, nil)
 }

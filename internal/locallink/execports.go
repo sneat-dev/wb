@@ -587,16 +587,6 @@ func nodeLinkStagePath(consumerDir, target string, info os.FileInfo) (string, er
 	return filepath.Join(parent, "."+filepath.Base(target)+".wb-locallink-stage"), nil
 }
 
-func copyBuiltPackage(source, destination string) error {
-	if err := validateBuiltPackageSource(source); err != nil {
-		return err
-	}
-	if err := os.Mkdir(destination, 0o755); err != nil {
-		return err
-	}
-	return copyBuiltPackageContents(source, destination)
-}
-
 func validateBuiltPackageSource(source string) error {
 	info, err := os.Lstat(source)
 	if err != nil {
@@ -608,15 +598,9 @@ func validateBuiltPackageSource(source string) error {
 	return nil
 }
 
-func copyBuiltPackageContents(source, destination string) error {
-	return copyBuiltPackageContentsInjected(source, destination, nil)
-}
-
-// copyBuiltPackageContentsInjected is copyBuiltPackageContents's test seam
-// (task-9 PR-8): every production call site reaches it only through
-// copyBuiltPackageContents, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged. A test passes its own Injector to
-// reach the create/write/close failure branches deterministically. The
+// copyBuiltPackageContentsInjected copies a built package tree. Production
+// call sites pass a nil *filewrite.Injector, so production behaviour is
+// unchanged; a test passes its own Injector to reach the create/write/close failure branches deterministically. The
 // copy itself goes through io.Copy into a filewrite.Writer wrapping output,
 // which restores io.Copy's copy_file_range/splice/sendfile fast path
 // because input is a real *os.File (review-t9-pr6 N3).
