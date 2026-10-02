@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
@@ -198,8 +197,6 @@ type branchSweepOptions struct {
 	SupersededBy   string
 	IncludeRetired bool
 }
-
-type branchRepositoryInspection func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string)
 
 func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOutcome, error) {
 	started := time.Now()
