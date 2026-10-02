@@ -90,30 +90,61 @@ type Options struct {
 // platforms that ship one.
 const SystemExecutable = "/usr/bin/ssh"
 
+// pathFacts is what the trust rule reads of a file or directory: its mode and
+// the user that owns it (-1 where the platform does not say).
+type pathFacts struct {
+	mode  os.FileMode
+	owner int
+}
+
+// replaceable reports whether a process other than root's or the user's own
+// could replace what facts describes: it is owned by someone else, or its group
+// or everyone may write to it. Windows has neither fact, and nothing there is
+// reported.
+func (facts pathFacts) replaceable(goos string, user int) bool {
+	if goos == "windows" {
+		return false
+	}
+	return (facts.owner != 0 && facts.owner != user) || facts.mode.Perm()&0o022 != 0
+}
+
 // ResolveTrusted finds the ssh a background caller runs without anyone watching.
 // It is the system's own (preferred, normally SystemExecutable) when that is a
 // regular executable file. Otherwise it is what lookPath finds, held to
-// Resolve's rule and to two more: neither the file nor its directory may be
-// writable by its group or by everyone, and it may not be under home (the
-// user's home directory; empty means unknown and is not checked), so that a
-// program a less trusted process could have put on the PATH is never run in
-// the user's name. Windows has no such mode bits and no system path; there the
-// lookup's result is held to Resolve's rule and the home rule.
+// Resolve's rule, followed through every symbolic link to the file itself, and
+// held to two more rules: the file and its directory are owned by root or by
+// this user and are not writable by their group or by everyone, and the file is
+// not under home (the user's home directory; empty means unknown and is not
+// checked). So a program that a less trusted process could have put on the PATH
+// is never run in the user's name. Windows has no such owner or mode bits and
+// no system path; there the result is held to Resolve's rule and the home rule.
 func ResolveTrusted(lookPath func(string) (string, error), preferred, home string) (string, error) {
+	return resolveTrusted(lookPath, preferred, home, runtime.GOOS, os.Getuid(), inspectPath)
+}
+
+// resolveTrusted is ResolveTrusted for the platform goos and the user with the
+// id user, reading files' owners and modes through inspect.
+func resolveTrusted(lookPath func(string) (string, error), preferred, home, goos string, user int, inspect func(string) (pathFacts, error)) (string, error) {
 	if info, err := os.Stat(preferred); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
 		return preferred, nil
 	}
-	executable, err := Resolve(lookPath)
+	found, err := Resolve(lookPath)
 	if err != nil {
 		return "", err
 	}
-	if home != "" && strings.HasPrefix(executable, filepath.Clean(home)+string(filepath.Separator)) {
-		return "", fmt.Errorf("resolve ssh executable: %q is under the home directory", executable)
+	// Resolve has found the file, so its links resolve.
+	executable, _ := filepath.EvalSymlinks(found)
+	if home != "" {
+		if resolved, err := filepath.EvalSymlinks(home); err == nil {
+			home = resolved
+		}
+		if strings.HasPrefix(executable, filepath.Clean(home)+string(filepath.Separator)) {
+			return "", fmt.Errorf("resolve ssh executable: %q is under the home directory", executable)
+		}
 	}
 	for _, path := range []string{executable, filepath.Dir(executable)} {
-		// Resolve has already found the file, so both exist.
-		if info, _ := os.Stat(path); runtime.GOOS != "windows" && (info == nil || info.Mode().Perm()&0o022 != 0) {
-			return "", fmt.Errorf("resolve ssh executable: %q can be written by its group or by everyone", path)
+		if facts, err := inspect(path); err != nil || facts.replaceable(goos, user) {
+			return "", fmt.Errorf("resolve ssh executable: %q is not owned by root or this user, or can be written by its group or by everyone", path)
 		}
 	}
 	return executable, nil
@@ -174,8 +205,8 @@ func run(ctx context.Context, executable string, args []string, stdin []byte, st
 	return prepare(ctx, executable, args, stdin, stdout, stderr, group).Run()
 }
 
-// prepare is the command run starts. With group it is given
-// AllowedEnvironment, runs in a process group of its own, which the end of ctx
+// prepare is the command run starts. With group it is given the allow-listed
+// environment, runs in a session and process group of its own, which the end of ctx
 // kills whole, and has a bounded wait for its output pipes.
 func prepare(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer, group bool) *exec.Cmd {
 	command := exec.CommandContext(ctx, executable, args...)
@@ -183,7 +214,7 @@ func prepare(ctx context.Context, executable string, args []string, stdin []byte
 	command.Stdout = stdout
 	command.Stderr = stderr
 	if group {
-		command.Env = AllowedEnvironment(os.Environ(), executable)
+		command.Env = commandEnvironment(executable)
 		command.WaitDelay = groupWaitDelay
 		ownGroup(command)
 	}
@@ -199,8 +230,9 @@ const groupWaitDelay = 2 * time.Second
 // group (ssh and any helper it started, a ProxyCommand say), not ssh alone. Run
 // returns only after the process has been waited for, so no call leaves a
 // zombie, and a helper that survives with the output pipes open cannot hold Run
-// for longer than groupWaitDelay. The command is given AllowedEnvironment, not
-// the caller's environment. On Windows there is no process group to signal:
+// for longer than groupWaitDelay. The command is given an allow-listed
+// environment (allowedEnvironment), not the caller's, and a session of its own,
+// so that neither ssh nor anything it starts has a terminal to prompt on. On Windows there is no process group to signal:
 // only the process itself (ssh.exe) is killed, and a helper it started (a
 // ProxyCommand, say) may outlive it.
 type GroupRunner struct{}
@@ -209,34 +241,83 @@ type GroupRunner struct{}
 // of the executable itself.
 const safePath = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-// passedEnvironment is the variables a GroupRunner's command inherits.
-var passedEnvironment = []string{"HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK"}
+// passedEnvironment is the variables a GroupRunner's command inherits, and
+// passedOnWindows the ones it inherits there besides: ssh.exe needs them to
+// start and to find the user's ssh configuration.
+var (
+	passedEnvironment = []string{"HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK"}
+	passedOnWindows   = []string{"SystemRoot", "USERPROFILE"}
+)
 
-// AllowedEnvironment is the environment a GroupRunner gives its command, made
-// from environ (the caller's, as os.Environ returns it): HOME, USER, LOGNAME
-// and SSH_AUTH_SOCK as they are, when set; a fixed PATH of the system
-// directories and the directory of executable; and LANG=C, so that what ssh
-// says is not translated. Everything else is dropped: DISPLAY and SSH_ASKPASS
-// (nothing may prompt), GIT_* and WB_* variables, tokens and whatever else the
-// daemon was started with.
-func AllowedEnvironment(environ []string, executable string) []string {
-	path := safePath
-	if directory := filepath.Dir(executable); filepath.IsAbs(directory) && !slices.Contains(filepath.SplitList(safePath), directory) {
-		path += string(os.PathListSeparator) + directory
+// commandEnvironment is the environment a GroupRunner gives executable.
+func commandEnvironment(executable string) []string {
+	return allowedEnvironment(runtime.GOOS, os.Environ(), pathDirectory(executable, runtime.GOOS, inspectPath))
+}
+
+// pathDirectory is the directory of executable when it may be added to the
+// command's PATH, else "": a directory the user (or anyone but root) can write
+// to is not added, so nothing placed there is found by name by ssh or by a
+// command ssh starts. Windows has no such facts, and its directory is added.
+func pathDirectory(executable, goos string, inspect func(string) (pathFacts, error)) string {
+	directory := filepath.Dir(executable)
+	if !filepath.IsAbs(executable) {
+		return ""
 	}
-	allowed := []string{"PATH=" + path, "LANG=C"}
-	for _, name := range passedEnvironment {
+	if goos == "windows" {
+		return directory
+	}
+	if facts, err := inspect(directory); err != nil || facts.replaceable(goos, 0) {
+		return ""
+	}
+	return directory
+}
+
+// allowedEnvironment is the environment a GroupRunner gives its command on the
+// platform goos, made from environ (the caller's, as os.Environ returns it) and
+// directory (pathDirectory's answer). It is an allow-list: HOME, USER, LOGNAME
+// and SSH_AUTH_SOCK as they are, when set; a fixed PATH; and LANG=C, so that
+// what ssh says is not translated. Everything else is dropped: DISPLAY and
+// SSH_ASKPASS (nothing may prompt), GIT_* and WB_* variables, tokens and
+// whatever else the daemon was started with.
+//
+// The PATH is the system directories and directory. On Windows it is the
+// system's OpenSSH directory, System32 and directory, under the caller's
+// SystemRoot, and SystemRoot and USERPROFILE are passed too; names are matched
+// there without regard to case, as Windows does.
+func allowedEnvironment(goos string, environ []string, directory string) []string {
+	windows := goos == "windows"
+	value := func(name string) (string, bool) {
 		for _, entry := range environ {
-			if value, found := strings.CutPrefix(entry, name+"="); found && value != "" {
-				allowed = append(allowed, entry)
-				break
+			key, held, _ := strings.Cut(entry, "=")
+			if held != "" && (key == name || (windows && strings.EqualFold(key, name))) {
+				return held, true
 			}
+		}
+		return "", false
+	}
+	separator, directories := ":", strings.Split(safePath, ":")
+	passed := passedEnvironment
+	if windows {
+		root, found := value("SystemRoot")
+		if !found {
+			root = `C:\Windows`
+		}
+		separator, directories = ";", []string{root + `\System32\OpenSSH`, root + `\System32`}
+		passed = slices.Concat(passedOnWindows, passedEnvironment)
+	}
+	if directory != "" && !slices.Contains(directories, directory) {
+		directories = append(directories, directory)
+	}
+	allowed := []string{"PATH=" + strings.Join(directories, separator), "LANG=C"}
+	for _, name := range passed {
+		if held, found := value(name); found {
+			allowed = append(allowed, name+"="+held)
 		}
 	}
 	return allowed
 }
 
-// Run executes the command as ExecRunner does, in its own process group.
+// Run executes the command as ExecRunner does, in its own session and group.
 func (GroupRunner) Run(ctx context.Context, executable string, args []string, stdin []byte, stdout, stderr io.Writer) error {
 	return run(ctx, executable, args, stdin, stdout, stderr, true)
 }
