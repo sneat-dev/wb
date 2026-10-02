@@ -160,13 +160,6 @@ type VerificationEntry struct {
 	Attempts int                      `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
-// Verify runs the requested conventional Go and Node checks. The caller owns
-// cross-repository parallelism; checks within one module run in the requested
-// order to keep output and failures clear.
-func Verify(ctx context.Context, repository, path string, checks []Check) VerificationReport {
-	return VerifyWithOptions(ctx, repository, path, checks, RunOptions{})
-}
-
 // VerifyWithOptions runs the requested checks with per-command reliability
 // controls. The returned report includes every attempted, skipped, passed, or
 // failed command.
