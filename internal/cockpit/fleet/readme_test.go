@@ -188,7 +188,8 @@ func TestFleetRouteIsMetadataAndReadmeIsOwnerOnly(t *testing.T) {
 // is served from bytes marshalled once, with conditional requests.
 func TestFleetResponseCarriesAStrongETagAndAnswersIfNoneMatch(t *testing.T) {
 	t.Parallel()
-	snapshotter, clock := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), nil)
+	sources := oneRepoSources(t.TempDir())
+	snapshotter, clock := newSnapshotter(sources.collectors(), nil)
 	refreshAndSettle(t, snapshotter)
 	server := newCockpitServer(t, snapshotter)
 	first := server.get(cockpit.APIPrefix+FleetRoute, nil)
@@ -204,7 +205,16 @@ func TestFleetResponseCarriesAStrongETagAndAnswersIfNoneMatch(t *testing.T) {
 	if stale := server.get(cockpit.APIPrefix+FleetRoute, nil, "If-None-Match", `"stale"`); stale.Code != http.StatusOK || stale.Body.String() != first.Body.String() {
 		t.Errorf("a stale validator = %d, want the document", stale.Code)
 	}
+	// A later look that finds the fleet as it was keeps the document and its
+	// ETag; one that finds a change publishes a new document with a new one.
 	clock.advance(time.Second)
+	if err := snapshotter.RefreshRepository(t.Context(), localRepositoryID(testMachine, oneRepoSources("").repos[0])); err != nil {
+		t.Fatal(err)
+	}
+	if _, same := snapshotter.Body(); same != etag {
+		t.Error("a look that found nothing changed gave the document a new ETag")
+	}
+	sources.change(func(f *fakeSources) { f.branch = "trunk" })
 	if err := snapshotter.RefreshRepository(t.Context(), localRepositoryID(testMachine, oneRepoSources("").repos[0])); err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package fleet
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
 )
@@ -44,6 +45,11 @@ func Register(server *cockpit.Server, snapshotter *Snapshotter) {
 // machine whose document also shows many other machines: such a read is never
 // demand for them.
 func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, from demand) {
+	// When the document was last found current: on a 304 too, since a document
+	// that did not change keeps its ETag.
+	if checked := s.CheckedAt(); !checked.IsZero() {
+		writer.Header().Set(cockpit.CheckedAtHeader, checked.UTC().Format(time.RFC3339))
+	}
 	scope := request.URL.Query().Get(scopeQuery)
 	if scope != ScopeOwn && scope != ScopeMachine {
 		s.fleetRead(from)

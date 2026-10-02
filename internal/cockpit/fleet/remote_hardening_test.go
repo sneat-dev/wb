@@ -338,8 +338,17 @@ func TestExportPayloadIsPreparedOncePerVersionAndSaysWhatItLeftOut(t *testing.T)
 	if lines := logs.all(); len(lines) != 1 || lines[0] != want || strings.Contains(lines[0], "secret") {
 		t.Errorf("log = %q, want %q once", lines, want)
 	}
+	// A pass that finds the fleet as it was is no new version: nothing is prepared.
+	refreshAndSettle(t, snapshotter)
+	before = compressed.Load()
+	snapshotter.ExportPayload(false)
+	snapshotter.ExportPayload(true)
+	if got := compressed.Load() - before; got != 0 {
+		t.Errorf("after a pass over an unchanged fleet %d bodies were compressed, want none", got)
+	}
 	// A new publication is a new version: the full export is prepared again, the
 	// metrics-only one is not, and the same drops are not logged twice.
+	sources.change(func(f *fakeSources) { f.branch = "trunk" })
 	refreshAndSettle(t, snapshotter)
 	before = compressed.Load()
 	snapshotter.ExportPayload(false)
@@ -763,17 +772,31 @@ func TestAPublicationPreparedOutsideTheLockGivesWayToALaterOne(t *testing.T) {
 	if len(snapshotter.Document().Agents) == 0 {
 		t.Fatal("the fixture has no agent")
 	}
+	// Something changed, so there is a document to prepare.
+	changed := func() {
+		snapshotter.mu.Lock()
+		snapshotter.throttled = !snapshotter.throttled
+		snapshotter.mu.Unlock()
+	}
 	published := publishesOf(snapshotter)
+	changed()
 	interleave.Store(true)
 	snapshotter.publishUnlocked()
 	if got := publishesOf(snapshotter); got != published+1 || len(snapshotter.Document().Agents) != 0 {
 		t.Fatalf("%d publications and %d agents, want the later document alone", got-published, len(snapshotter.Document().Agents))
+	}
+	// With nothing changed nothing is prepared, and the document was found current.
+	clock.advance(time.Second)
+	snapshotter.publishUnlocked()
+	if got := publishesOf(snapshotter); got != published+1 || !snapshotter.CheckedAt().Equal(clock.Now()) {
+		t.Fatalf("an unchanged document was published again (%d publications) or not found current at %s", got-published, snapshotter.CheckedAt())
 	}
 	// During a pass that has just published, nothing is published.
 	snapshotter.mu.Lock()
 	snapshotter.passing, snapshotter.lastPublish = true, clock.Now()
 	snapshotter.mu.Unlock()
 	published = publishesOf(snapshotter)
+	changed()
 	snapshotter.publishUnlocked()
 	if got := publishesOf(snapshotter); got != published {
 		t.Errorf("a publication inside the pass's rate: %d", got-published)

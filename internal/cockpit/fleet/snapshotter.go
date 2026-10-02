@@ -277,12 +277,15 @@ type Snapshotter struct {
 	// complete says the warm-up has ended: the first pass ran to its end, or no
 	// listing of the repositories has ever worked (listed) and the document says
 	// so in its error.
-	complete    bool
-	listed      bool
-	passing     bool
-	listError   string
-	gitChecked  bool
-	gitOld      bool
+	complete   bool
+	listed     bool
+	passing    bool
+	listError  string
+	gitChecked bool
+	gitOld     bool
+	// lastPublish is when the document was last assembled, whether or not it
+	// had changed, and publishes counts the documents that were published: it is
+	// the document's version, and moves only when its content does.
 	lastPublish time.Time
 	publishes   int
 	repos       map[string]*repoState
@@ -487,6 +490,50 @@ func (s *Snapshotter) Payload() cockpit.Payload {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.payload
+}
+
+// CheckedAt is when the daemon last assembled the document and found the
+// published one current (or published the one that had changed): the freshness
+// of what a reader holds, which the body does not carry because a body that did
+// not change keeps its bytes and its ETag. It is zero before the first look.
+func (s *Snapshotter) CheckedAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastPublish
+}
+
+// sameContent reports whether two documents say the same but for when they
+// were taken: the document's own snapshot_at and the observed_at of this
+// machine's entries, which a pass stamps anew whether or not anything changed.
+// Every other time is content (a pull request's checked_at, an activity, the
+// time another machine's entries were observed at).
+func sameContent(held, assembled Document) bool {
+	held.SnapshotAt, assembled.SnapshotAt = time.Time{}, time.Time{}
+	collections := [][2]any{
+		{held.Machines, assembled.Machines}, {held.Repositories, assembled.Repositories}, {held.Worktrees, assembled.Worktrees},
+		{held.PullRequests, assembled.PullRequests}, {held.Agents, assembled.Agents},
+	}
+	held.Machines, held.Repositories, held.Worktrees, held.PullRequests, held.Agents = nil, nil, nil, nil, nil
+	assembled.Machines, assembled.Repositories, assembled.Worktrees, assembled.PullRequests, assembled.Agents = nil, nil, nil, nil, nil
+	if !reflect.DeepEqual(held, assembled) {
+		return false
+	}
+	return sameEntries(collections[0][0].([]Machine), collections[0][1].([]Machine), func(item *Machine) *Entry { return &item.Entry }) &&
+		sameEntries(collections[1][0].([]Repository), collections[1][1].([]Repository), func(item *Repository) *Entry { return &item.Entry }) &&
+		sameEntries(collections[2][0].([]Worktree), collections[2][1].([]Worktree), func(item *Worktree) *Entry { return &item.Entry }) &&
+		sameEntries(collections[3][0].([]PullRequest), collections[3][1].([]PullRequest), func(item *PullRequest) *Entry { return &item.Entry }) &&
+		sameEntries(collections[4][0].([]Agent), collections[4][1].([]Agent), func(item *Agent) *Entry { return &item.Entry })
+}
+
+// sameEntries compares two lists of entries, taking two entries of this
+// machine for the same whatever time each was observed at.
+func sameEntries[T any](held, assembled []T, entry func(*T) *Entry) bool {
+	return slices.EqualFunc(held, assembled, func(a, b T) bool {
+		if first, second := entry(&a), entry(&b); first.Route == RouteLocal && second.Route == RouteLocal {
+			first.ObservedAt, second.ObservedAt = time.Time{}, time.Time{}
+		}
+		return reflect.DeepEqual(a, b)
+	})
 }
 
 // Branches returns the branch list of the local repository with id, prepared for
@@ -1376,12 +1423,30 @@ func (s *Snapshotter) publishMaybeLocked() {
 	s.publishLocked()
 }
 
-// publishLocked assembles the document, prepares its body and makes it the
-// published one. The caller holds s.mu.
+// publishLocked assembles the document and, when it says something the
+// published one does not, prepares its body and makes it the published one. A
+// document that says the same is not published again: the published one keeps
+// its bytes, its snapshot_at and its ETag, so a client that revalidates is
+// answered 304 for as long as the fleet is quiet, and only the time it was
+// last found current moves (CheckedAt). The caller holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
 	document, sizes := s.assemble(now)
+	if s.current(document, now) {
+		return
+	}
 	s.commit(document, s.prepare(document), now, sizes)
+}
+
+// current reports whether the published document already says what document
+// does, and if so records that it was found current at now. Before anything was
+// published nothing is current. The caller holds s.mu.
+func (s *Snapshotter) current(document Document, now time.Time) bool {
+	if s.publishes == 0 || !sameContent(s.doc, document) {
+		return false
+	}
+	s.lastPublish = now
+	return true
 }
 
 // documentSizes is what the size guard decided for one assembled document: the
@@ -1423,6 +1488,10 @@ func (s *Snapshotter) publishUnlocked() {
 		return
 	}
 	document, sizes := s.assemble(now)
+	if s.current(document, now) {
+		s.mu.Unlock()
+		return
+	}
 	generation := s.generation
 	s.mu.Unlock()
 	payload := s.prepare(document)

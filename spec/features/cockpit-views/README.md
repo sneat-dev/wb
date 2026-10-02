@@ -108,8 +108,10 @@ Home, Tasks, Repositories, Worktrees, Agents and Machines; the palette entry; a
 `owner`). A tab badge is shown only for a signal: Home shows the number of tasks in
 "Needs you" (REQ:home-needs-you), written `99+` above 99 with the whole number in its tooltip, and Agents the number of running agents (REQ:field-tables
 defines "running"), highlighted when above zero. No tab shows a badge for a static count.
-The freshness chip reads "updated N s ago" with the age of the snapshot, turns amber when
-the snapshot is older than two refresh intervals (the document's
+The freshness chip reads "updated N s ago" with the time since the daemon last found the
+document current (the `X-Wb-Cockpit-Checked-At` response header of the fleet read, which a `304`
+carries too, REQ:compressed-responses; not `snapshot_at`, which does not move while the fleet is
+quiet), turns amber when that is older than two refresh intervals (the document's
 `refresh_interval_seconds`), and while the daemon is warming up shows how many repositories
 have been scanned.
 
@@ -769,9 +771,11 @@ host is the host of a repository of this machine; otherwise the entry has no lin
 **Every entry** (machines, repositories, worktrees, pull requests, agents): `id` string; `machine`
 string, the machine's name; `machine_id` string, the id of its machine entry; `route` string,
 `local`, `cached` or `live-remote`; `observed_at` time, opt. (the snapshot's time for a cached or
-live-remote entry). Both.
+live-remote entry; for an entry of this machine, the time of the pass that produced the published
+document, see `snapshot_at`). Both.
 
-**Document**: `schema_version` int (2); `snapshot_at` time; `warming_up` bool;
+**Document**: `schema_version` int (2); `snapshot_at` time (when the published document was
+taken: it moves when the document's content does, not on every pass, REQ:compressed-responses); `warming_up` bool;
 `repositories_total` int; `repositories_scanned` int; `diagnostics` int; `error` string opt.
 (a code); `code_index_provider` string opt.; `refresh_interval_seconds` int; `throughput`
 object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` bool opt.; the collections `machines`, `repositories`,
@@ -873,6 +877,17 @@ strong and specific to the encoding (`"<hash>-gzip"` for the gzip body),
 `If-None-Match` accepts either form and a match is answered `304`, and every
 such response carries `Vary: Origin, Accept-Encoding`. The gzip bytes of the
 fleet document are computed once when the snapshot is stored, never per request.
+A snapshot is stored only when it says something the stored one does not. A pass, or a side read
+(the other machines' snapshots, the agents' activity, the pull-request records, the throughput
+scan, an export of another machine), that finds the fleet as it was publishes nothing: the body,
+its `snapshot_at`, the `observed_at` of this machine's entries and the ETag stay as they are, so a
+client that polls a quiet fleet is answered `304` and not a full body. What "the same" ignores is
+only when the document was taken (`snapshot_at` and the `observed_at` of this machine's own
+entries); every other time is content (a pull request's `checked_at`, another machine's
+`observed_at`). The freshness a client needs is not in the body: every answer of the fleet route,
+a `304` included, carries the response header `X-Wb-Cockpit-Checked-At`, the RFC 3339 time at
+which the daemon last assembled the document and found the published one current (or published a
+changed one).
 Static assets are compressed at build time; content-hashed assets carry
 `Cache-Control: public, max-age=31536000, immutable`; the index document, which
 has its nonce substituted per response, stays `no-cache` and is compressed per
@@ -882,8 +897,8 @@ response.
 
 The two new GET routes are deliberately readable by the configured hosted
 origin, as the fleet document is. For that origin the responses MUST expose
-`ETag` and the preflight MUST allow `If-None-Match`, so that conditional
-requests and `304` work from the hosted page.
+`ETag` and `X-Wb-Cockpit-Checked-At` and the preflight MUST allow `If-None-Match`, so that conditional
+requests and `304` work from the hosted page and it can read how fresh what it holds is.
 
 #### REQ: lazy-branches-route
 
@@ -2565,7 +2580,7 @@ Then every compressed response carries `Content-Encoding: gzip`, an ETag ending 
 Scenario: Many requests, one snapshot
 Given a snapshot stored once and a counter on the compressor
 When the fleet document is requested 100 times with gzip
-Then the compressor ran once for that snapshot, and it runs once more after a new snapshot is stored
+Then the compressor ran once for that snapshot, and it runs once more after a new snapshot is stored, and passes over an unchanged fleet with every side read on store no snapshot: the ETag and `snapshot_at` stay, a poll with `If-None-Match` is answered `304`, and `X-Wb-Cockpit-Checked-At` moves with each pass
 
 ### AC: static-assets-are-precompressed-and-immutable
 
@@ -2583,7 +2598,7 @@ Then the asset is served from a build-time compressed file with `Cache-Control: 
 Scenario: A preflight and a response from the hosted origin
 Given `cockpit.hosted_url` is `https://hosted.example.test/wb/cockpit/`
 When the origin `https://hosted.example.test` requests the fleet document and the branches route, with a preflight first, and then repeats with `If-None-Match`
-Then the preflight allows `If-None-Match`, the responses expose `ETag`, the repeat is answered `304`, and a request from any other foreign origin is still refused with status 403
+Then the preflight allows `If-None-Match`, the responses expose `ETag` and `X-Wb-Cockpit-Checked-At`, the repeat is answered `304`, and a request from any other foreign origin is still refused with status 403
 
 ### AC: branches-leave-the-document
 

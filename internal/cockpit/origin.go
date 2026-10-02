@@ -64,13 +64,20 @@ func (server *Server) originKindOf(request *http.Request) originKind {
 	return originForeign
 }
 
+// CheckedAtHeader is the response header in which a metadata route says when
+// the daemon last found what it serves to be current, as an RFC 3339 time. It
+// is not part of the body, so a body that did not change keeps its ETag and is
+// answered 304 while the header moves on: a client reads the freshness of what
+// it holds from it.
+const CheckedAtHeader = "X-Wb-Cockpit-Checked-At"
+
 // allowHosted writes the cross-origin allowance for the hosted origin and
 // exposes the ETag, so the hosted page can revalidate with it
-// (cockpit-views#req:hosted-origin-conditional-requests). It never allows
-// credentials.
+// (cockpit-views#req:hosted-origin-conditional-requests), and the time the
+// document was last found current. It never allows credentials.
 func (server *Server) allowHosted(writer http.ResponseWriter) {
 	writer.Header().Set("Access-Control-Allow-Origin", server.hosted)
-	writer.Header().Set("Access-Control-Expose-Headers", "ETag")
+	writer.Header().Set("Access-Control-Expose-Headers", "ETag, "+CheckedAtHeader)
 }
 
 // preflightHeaders are the request headers the hosted page may send: the

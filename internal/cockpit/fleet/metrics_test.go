@@ -199,7 +199,7 @@ func TestMetricsRouteIsCompressedAndRevalidatable(t *testing.T) {
 	zipped := server.get(target, nil, "Origin", hostedOrigin, "Accept-Encoding", "gzip")
 	header := zipped.Header()
 	if zipped.Code != 200 || header.Get("Content-Encoding") != "gzip" || !strings.HasSuffix(header.Get("ETag"), `-gzip"`) || header.Get("Vary") != "Origin, Accept-Encoding" ||
-		header.Get("Access-Control-Expose-Headers") != "ETag" || header.Get("Access-Control-Allow-Origin") != hostedOrigin {
+		header.Get("Access-Control-Expose-Headers") != "ETag, "+cockpit.CheckedAtHeader || header.Get("Access-Control-Allow-Origin") != hostedOrigin {
 		t.Fatalf("gzip response = %d %v", zipped.Code, header)
 	}
 	var response MetricsResponse

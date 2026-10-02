@@ -911,7 +911,13 @@ func TestPublicationsDuringAPassAreRateLimited(t *testing.T) {
 	if paced.publishes != 6 {
 		t.Errorf("a pass whose repositories each take longer than the interval published %d times, want 5 and the final", paced.publishes)
 	}
+	// A request outside a pass publishes at once what it found changed, and
+	// nothing when it found the repository as it was.
 	before := paced.publishes
+	if err := paced.RefreshRepository(t.Context(), localRepositoryID(testMachine, slow.repos[0])); err != nil || paced.publishes != before {
+		t.Errorf("a request outside a pass that found nothing changed published %d times, err %v", paced.publishes-before, err)
+	}
+	slow.change(func(f *fakeSources) { f.branch = "trunk" })
 	if err := paced.RefreshRepository(t.Context(), localRepositoryID(testMachine, slow.repos[0])); err != nil || paced.publishes != before+1 {
 		t.Errorf("a request outside a pass published %d times, err %v", paced.publishes-before, err)
 	}
