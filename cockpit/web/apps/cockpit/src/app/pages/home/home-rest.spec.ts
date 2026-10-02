@@ -4,7 +4,8 @@ import { FETCH, FleetStore, Session } from '@cockpit/fleet-data'
 import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { FIXED_CLOCK, fleet, modelOf } from './home-testing'
-import { ACTION_CAPABILITIES, HomeRest, PHONE_QUERY, registryTargets } from './home-rest'
+import { ACTION_CAPABILITIES, HomeRest, registryTargets } from './home-rest'
+import { PHONE_QUERY } from './home-phone'
 import { HomeRegistry } from './home-registry'
 
 const session = (capabilities: string[]): Session => ({ principal: 'owner', capabilities, code_browser_url: 'https://codegrapher.dev/' })
@@ -67,9 +68,9 @@ describe('registryTargets', () => {
 describe('HomeRest', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('shows every section after "Needs you", in order, on a desktop', async () => {
+  it('shows every section after "Needs you", in order, on a desktop, with no Throughput of its own when the document has charts (they are on top of Home)', async () => {
     const { root } = await render()
-    expect(headings(root)).toEqual(['Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2', 'Throughput'])
+    expect(headings(root)).toEqual(['Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2'])
     expect(root.querySelector('button.home-more-toggle')).toBeNull()
   })
 
@@ -124,7 +125,7 @@ describe('HomeRest', () => {
     await new Promise((done) => setTimeout(done, 10))
     await fixture.whenStable()
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    expect(headings(root)).toEqual(['Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2', 'Throughput'])
+    expect(headings(root)).toEqual(['Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2'])
     expect(root.querySelector('#home-more')).not.toBeNull()
     toggle.click()
     await fixture.whenStable()

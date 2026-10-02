@@ -122,8 +122,6 @@ test('360 px: a list drops its low-priority columns, the tabs are a scrolling st
   const strip = await page.locator('.tabs').evaluate((element) => ({ overflowX: getComputedStyle(element).overflowX, scrolls: element.scrollWidth > element.clientWidth }))
   expect(strip).toEqual({ overflowX: 'auto', scrolls: true })
   await page.goto('/cockpit/')
-  await page.getByRole('button', { name: 'More' }).click()
-  await page.getByRole('heading', { level: 2, name: 'Throughput' }).scrollIntoViewIfNeeded()
   const cards = page.locator('.charts-grid .chart-card')
   await expect(cards).toHaveCount(2)
   const [first, second] = await Promise.all([cards.nth(0).boundingBox(), cards.nth(1).boundingBox()])
