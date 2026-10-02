@@ -299,16 +299,6 @@ func SplitAgentRef(reference string) (machine, agentID string, err error) {
 	return "", trimmed, nil
 }
 
-// StripAgentID returns the bare run ID from a possibly machine-qualified
-// reference.
-func StripAgentID(reference string) string {
-	_, agentID, err := SplitAgentRef(reference)
-	if err != nil {
-		return strings.TrimSpace(reference)
-	}
-	return agentID
-}
-
 // RemoteDeps are the seams the local side needs to reach another machine.
 type RemoteDeps struct {
 	// LookPath resolves the local ssh executable.
