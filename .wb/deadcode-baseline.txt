@@ -144,7 +144,6 @@ github.com/sneat-dev/wb/internal/layout.OriginSlug
 github.com/sneat-dev/wb/internal/layout.splitSlug
 github.com/sneat-dev/wb/internal/locallink.copyBuiltPackage
 github.com/sneat-dev/wb/internal/locallink.copyBuiltPackageContents
-github.com/sneat-dev/wb/internal/migrate.campaign.repositoryLayers
 github.com/sneat-dev/wb/internal/orchestrate.canonicalClonePath
 github.com/sneat-dev/wb/internal/orchestrate.persistReceiptCollisionAcknowledgement
 github.com/sneat-dev/wb/internal/orchestrate.persistSelfSupersessionCorrection
@@ -171,6 +170,7 @@ github.com/sneat-dev/wb/internal/quality.ReadCoverageSummary
 github.com/sneat-dev/wb/internal/quality.ScanExecWriteFileCallSites
 github.com/sneat-dev/wb/internal/quality.UnitTierMatch.String
 github.com/sneat-dev/wb/internal/quality.Verify
+github.com/sneat-dev/wb/internal/quality.buildConstraintRequiresE2E
 github.com/sneat-dev/wb/internal/quality.callArgIsOSArgsZero
 github.com/sneat-dev/wb/internal/quality.callArgsMentionAppendFlag
 github.com/sneat-dev/wb/internal/quality.callArgsMentionCreateFlag
@@ -257,6 +257,7 @@ github.com/sneat-dev/wb/internal/secureopen.Fake.OpenRoot
 github.com/sneat-dev/wb/internal/secureopen.Fake.next
 github.com/sneat-dev/wb/internal/secureopen.NewFake
 github.com/sneat-dev/wb/internal/sessioncourier.DeliverSSH
+github.com/sneat-dev/wb/internal/sessioncustody.now
 github.com/sneat-dev/wb/internal/sessionlaunch.ValidateHarnessSelection
 github.com/sneat-dev/wb/internal/sessionlaunch.launchPrompt
 github.com/sneat-dev/wb/internal/sessionlaunch.loadPlan
@@ -305,14 +306,17 @@ github.com/sneat-dev/wb/internal/sessiontransport/transporttest.run
 github.com/sneat-dev/wb/internal/streambranch.StreamName
 github.com/sneat-dev/wb/internal/streams.IsStreamBranch
 github.com/sneat-dev/wb/internal/streams.PreflightChecks
+github.com/sneat-dev/wb/internal/streams.npmPackageManifests
 github.com/sneat-dev/wb/internal/testenv.ConfigureGitAutoMaintenanceOff
 github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffEnv
 github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffProcess
 github.com/sneat-dev/wb/internal/testenv.InitBareRemoteForTest
 github.com/sneat-dev/wb/internal/testenv.Isolate
+github.com/sneat-dev/wb/internal/testenv.IsolateHarnessProcess
 github.com/sneat-dev/wb/internal/testenv.IsolateProcess
 github.com/sneat-dev/wb/internal/testenv.SetGitAutoMaintenanceOff
 github.com/sneat-dev/wb/internal/testenv.WriteExecutableFile
+github.com/sneat-dev/wb/internal/testenv.isolateEnvironment
 github.com/sneat-dev/wb/internal/testsweep.Sweep
 github.com/sneat-dev/wb/internal/tui.NewResultsModel
 github.com/sneat-dev/wb/internal/tui.ResultsModel.Init
@@ -367,6 +371,7 @@ github.com/sneat-dev/wb/internal/worktrees.decorateBranchCommit
 github.com/sneat-dev/wb/internal/worktrees.decorateBranchCommits
 github.com/sneat-dev/wb/internal/worktrees.exactBranchPullRequests
 github.com/sneat-dev/wb/internal/worktrees.githubPullRequestsForBranchWithExecute
+github.com/sneat-dev/wb/internal/worktrees.grantOwnerWriteAt
 github.com/sneat-dev/wb/internal/worktrees.inspectRepositoryBranches
 github.com/sneat-dev/wb/internal/worktrees.inspectRepositoryBranchesWithHeartbeat
 github.com/sneat-dev/wb/internal/worktrees.listLocalRefs
@@ -376,6 +381,7 @@ github.com/sneat-dev/wb/internal/worktrees.listRetiredRemoteRefs
 github.com/sneat-dev/wb/internal/worktrees.listRetiredTags
 github.com/sneat-dev/wb/internal/worktrees.mergeResultTree
 github.com/sneat-dev/wb/internal/worktrees.openJournalComponent
+github.com/sneat-dev/wb/internal/worktrees.parkedSessionWorkLogSnapshotWithReads
 github.com/sneat-dev/wb/internal/worktrees.platformGitFilesystemCapabilityConfines
 github.com/sneat-dev/wb/internal/worktrees.protectedEvidence
 github.com/sneat-dev/wb/internal/worktrees.resolveAbsorbedByPullRequestWithGet
