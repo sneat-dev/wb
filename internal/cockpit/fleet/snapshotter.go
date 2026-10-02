@@ -688,9 +688,14 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	return errors.Join(append(failures, machineFailures...)...)
 }
 
-// checkGit reads the Git version once, the first time a pass runs with a live
-// context, and records whether Git is too old (or unreadable) to run. Until it
-// has answered Git is assumed usable only by the pass that asked.
+// checkGit reads the Git version at the start of a pass that runs with a live
+// context, until it has a definite answer, and records whether Git may be run.
+// A Git that is too old is a definite answer and is not asked about again. A
+// version that could not be read (the command failed, timed out or panicked) is
+// not: Git-backed reads are off for that pass, which cannot know that they are
+// safe, and the next pass asks again, so one failed `git version` does not turn
+// Git off until the daemon restarts. When Git becomes usable after such a pass
+// every repository's Git state is read on that pass, whatever its fingerprint.
 func (s *Snapshotter) checkGit(ctx context.Context) {
 	if s.gitChecked || s.collectors.Git == nil || ctx.Err() != nil {
 		return
@@ -698,13 +703,27 @@ func (s *Snapshotter) checkGit(ctx context.Context) {
 	usable := false
 	checkCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
 	defer cancel()
-	if catch(func() error { usable = s.collectors.Git.GitUsable(checkCtx); return nil }) != nil || !usable {
-		s.logf("cockpit fleet: Git is too old or unreadable; Git-backed reads are off (%s)", ErrorGitTooOld)
-		s.mu.Lock()
-		s.gitOld = true
-		s.mu.Unlock()
+	unreadable := catch(func() (err error) { usable, err = s.collectors.Git.GitUsable(checkCtx); return err }) != nil
+	off := unreadable || !usable
+	s.mu.Lock()
+	was := s.gitOld
+	s.gitOld = off
+	if was && !off {
+		// What was recorded while Git was off holds no Git state.
+		for _, state := range s.repos {
+			state.gitRead = false
+		}
 	}
-	s.gitChecked = true
+	s.mu.Unlock()
+	switch {
+	case off && !was && unreadable:
+		s.logf("cockpit fleet: the Git version could not be read; Git-backed reads are off for this pass (%s) and the next pass asks again", ErrorGitTooOld)
+	case off && !was:
+		s.logf("cockpit fleet: Git is too old; Git-backed reads are off (%s)", ErrorGitTooOld)
+	case was && !off:
+		s.logf("cockpit fleet: the Git version was read and Git is usable; Git-backed reads are on again")
+	}
+	s.gitChecked = !unreadable
 }
 
 // beginCodeIndex reads the indexer receipts for a pass and keeps the result

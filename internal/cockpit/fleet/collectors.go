@@ -70,9 +70,12 @@ type WorktreeRecord struct {
 
 // GitGate says whether Git is new enough to be run against untrusted
 // repositories at all: before 2.45 GIT_NO_LAZY_FETCH is ignored, so a
-// repository's promisor remote could be contacted. The snapshotter asks once.
+// repository's promisor remote could be contacted. An error says the version
+// could not be read at all (the command failed or did not answer in time),
+// which is not an answer: the snapshotter keeps Git off for that pass and asks
+// again on the next, and stops asking once it has a definite answer.
 type GitGate interface {
-	GitUsable(ctx context.Context) bool
+	GitUsable(ctx context.Context) (usable bool, err error)
 }
 
 // RepositoryCollector lists this machine's canonical clones.
@@ -207,10 +210,14 @@ type LocalCollectors struct {
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
-// whether it names Git 2.45 or newer.
-func (c LocalCollectors) GitUsable(ctx context.Context) bool {
+// whether it names Git 2.45 or newer. A command that fails is an error, not a
+// Git that is too old.
+func (c LocalCollectors) GitUsable(ctx context.Context) (bool, error) {
 	out, err := c.git(ctx, ".", "version")
-	return err == nil && gitVersionUsable(string(out))
+	if err != nil {
+		return false, err
+	}
+	return gitVersionUsable(string(out)), nil
 }
 
 // git runs the Git binary through the hardened helper.

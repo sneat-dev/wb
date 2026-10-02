@@ -1088,11 +1088,13 @@ func TestRemoteEntriesThatAreUnusableOrOurOwnAreSkipped(t *testing.T) {
 
 // TestGitTooOldTurnsEveryGitBackedReadOff makes the version gate refuse: no
 // branch or default-branch read happens, the document says why with a stable
-// code, the README route says so, and the gate is asked once however many
-// passes run; a panicking gate counts as refusing.
+// code, the README route says so, and a gate that answered is asked once
+// however many passes run. A gate that panics has not answered: Git stays off
+// and it is asked again on every pass, and the change is logged once.
 func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 	t.Parallel()
 	for name, gate := range map[string]*fakeGate{"too old": {usable: false}, "panicking": {panics: true}} {
+		wantAsks := map[string]int64{"too old": 1, "panicking": 2}[name]
 		sources := oneRepoSources(t.TempDir())
 		collectors := sources.collectors()
 		collectors.Git = gate
@@ -1103,8 +1105,8 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 		refreshAndSettle(t, snapshotter)
 		refreshAndSettle(t, snapshotter)
 		document := snapshotter.Document()
-		if gate.asked.Load() != 1 || logged.Load() != 1 || document.Error != ErrorGitTooOld {
-			t.Errorf("%s: gate asked %d times, logged %d, document error %q", name, gate.asked.Load(), logged.Load(), document.Error)
+		if gate.asked.Load() != wantAsks || logged.Load() != 1 || document.Error != ErrorGitTooOld {
+			t.Errorf("%s: gate asked %d times (want %d), logged %d, document error %q", name, gate.asked.Load(), wantAsks, logged.Load(), document.Error)
 		}
 		if len(snapshotter.allBranches()) != 0 || len(localWorktrees(document)) != 2 {
 			t.Errorf("%s: %d branches, %d worktrees; Git-backed reads must be off and file reads kept", name, len(snapshotter.allBranches()), len(localWorktrees(document)))
@@ -1137,6 +1139,52 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 	untouched.checkGit(cancelled)
 	if fresh.asked.Load() != 0 || untouched.gitChecked {
 		t.Error("a pass with a cancelled context asked the Git gate")
+	}
+}
+
+// TestAGitVersionThatCouldNotBeReadIsAskedAgainOnTheNextPass: one failed
+// `git version` (a busy machine, a timeout) is not an answer. That pass runs
+// with Git off and says so; the next asks again, and when the version is read
+// and usable the error goes, every repository's Git state is read although no
+// fingerprint moved, and the gate is not asked a third time.
+func TestAGitVersionThatCouldNotBeReadIsAskedAgainOnTheNextPass(t *testing.T) {
+	t.Parallel()
+	gate := &fakeGate{usable: true, failures: 1}
+	sources := oneRepoSources(t.TempDir())
+	collectors := sources.collectors()
+	collectors.Git = gate
+	logs := &logRecorder{}
+	snapshotter, clock := newSnapshotter(collectors, func(options *Options) {
+		options.Logf = logs.logf
+		options.Fingerprint = newConstFingerprint("unchanged").get
+	})
+	refreshAndSettle(t, snapshotter)
+	if document := snapshotter.Document(); document.Error != ErrorGitTooOld || len(snapshotter.allBranches()) != 0 || len(localWorktrees(document)) != 2 {
+		t.Fatalf("the pass whose version read failed: error %q, %d branches, %d worktrees; want Git off and the file reads kept", document.Error, len(snapshotter.allBranches()), len(localWorktrees(document)))
+	}
+	clock.advance(time.Minute)
+	refreshAndSettle(t, snapshotter)
+	if document := snapshotter.Document(); document.Error != "" || len(snapshotter.allBranches()) == 0 {
+		t.Fatalf("the pass after it: error %q, %d branches; want Git read again", document.Error, len(snapshotter.allBranches()))
+	}
+	clock.advance(time.Minute)
+	refreshAndSettle(t, snapshotter)
+	if gate.asked.Load() != 2 {
+		t.Errorf("the gate was asked %d times, want twice: once failing, once answering", gate.asked.Load())
+	}
+	if logs.count("could not be read") != 1 || logs.count("on again") != 1 || logs.count("too old;") != 0 {
+		t.Errorf("log = %q, want the failed read and the recovery once each", logs.all())
+	}
+	// A definite "too old" after a failed read stays, and is said once.
+	old := &fakeGate{usable: false, failures: 1}
+	collectors.Git = old
+	oldLogs := &logRecorder{}
+	stuck, _ := newSnapshotter(collectors, func(options *Options) { options.Logf = oldLogs.logf })
+	for range 3 {
+		refreshAndSettle(t, stuck)
+	}
+	if old.asked.Load() != 2 || stuck.Document().Error != ErrorGitTooOld || oldLogs.count("Git-backed reads are off") != 1 {
+		t.Errorf("a Git that is too old after a failed read: asked %d times, error %q, log %q", old.asked.Load(), stuck.Document().Error, oldLogs.all())
 	}
 }
 

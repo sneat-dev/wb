@@ -537,15 +537,20 @@ func (s *Snapshotter) Document() Document {
 type fakeGate struct {
 	usable bool
 	panics bool
-	asked  atomic.Int64
+	// failures is how many asks fail to read the version before one answers.
+	failures int64
+	asked    atomic.Int64
 }
 
-func (g *fakeGate) GitUsable(context.Context) bool {
-	g.asked.Add(1)
+func (g *fakeGate) GitUsable(context.Context) (bool, error) {
+	asked := g.asked.Add(1)
 	if g.panics {
 		panic("a gate panicked")
 	}
-	return g.usable
+	if asked <= g.failures {
+		return false, errors.New("git version: exit status 128")
+	}
+	return g.usable, nil
 }
 
 // Body is the last published document as marshalled JSON, and its strong ETag,
