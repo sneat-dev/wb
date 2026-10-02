@@ -116,26 +116,78 @@ var valueFlags = setOf(
 	"--absorbed-by", "--actor", "--add", "--agent", "--agent-id", "--agent-runtime", "--approved-by",
 	"--base", "--body", "--body-file", "--branch", "--branch-prefix", "--changed", "--check-interval",
 	"--check-timeout", "--checks", "--claim", "--closed-pr", "--cli", "--closes", "--config", "--context-file",
-	"--defer-direct-ci-pr", "--disposition", "--effort", "--exclude", "--filter", "--format",
+	"--defer-direct-ci-pr", "--derived-path", "--disposition", "--effort", "--exclude",
+	"--expected-candidate", "--expected-current-source", "--expected-current-target",
+	"--expected-historical-refresh-source", "--expected-immutable-claim-sha256",
+	"--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256",
+	"--expected-target", "--filter", "--format",
 	"--github-dir", "--go-private", "--handover-file", "--harness", "--hold", "--include-task",
 	"--initiator", "--keep-commits", "--lane-reason", "--library", "--manifest", "--match",
 	"--max-waves", "--merge-method", "--message", "--mode", "--model", "--module-ref",
 	"--new-worktree", "--note", "--older-than", "--on-failure", "--org", "--original-prompt-file",
 	"--override-secret", "--parallel", "--peer-evidence", "--pid", "--poll-interval",
-	"--prepare-timeout", "--profile", "--projects-root", "--provider", "--reason", "--ref",
+	"--prepare-timeout", "--profile", "--projects-root", "--provider", "--reason", "--rebatch-receipt", "--ref",
 	"--refresh-after", "--regex", "--release-poll", "--remaining", "--repo", "--report-dir",
-	"--require-host", "--residue-depth", "--resume", "--retry", "--review-comment",
+	"--require-host", "--residue-depth", "--retry", "--review-comment",
 	"--review-comment-file", "--role", "--route", "--run", "--runtime", "--scope",
 	"--session-freshness", "--sha", "--shard-attempt-timeout", "--stale", "--subject", "--successor",
 	"--summary", "--superseded-by", "--target", "--task", "--task-file", "--timeout", "--title",
-	"--to", "--ttl", "--undo", "--use-worktree", "--validation", "--verify", "--version", "--via",
+	"--to", "--ttl", "--undo", "--use-worktree", "--validation", "--version", "--via",
 	"--wb-session-id", "--workers", "-j", "-m", "-o",
 )
 
+// ScopedFlag is a flag whose reading depends on the verb it is given to: Path
+// is the command path (or a prefix of it) the reading holds for.
+type ScopedFlag struct {
+	Name string
+	Path []string
+}
+
+// scopedValueFlags take a value on some verbs and are boolean on others
+// (`wb session move --resume <session>` against `wb migrate --resume
+// --apply`), so listing them in valueFlags would step over the next word of
+// a verb where it is a flag of its own, which can be `--apply`.
+var scopedValueFlags = []ScopedFlag{
+	{Name: "--resume", Path: []string{"session", "move"}},
+	{Name: "--verify", Path: []string{"migrate"}},
+}
+
+// scopedReadOnlyFlags are short or verb-specific spellings of a read-only
+// request, beside the --help, -h and --dry-run every verb is read as taking.
+// TestScopedReadOnlyFlagsAreBooleanFlagsOfTheirVerb in cmd/wb checks them.
+var scopedReadOnlyFlags = []ScopedFlag{
+	{Name: "-n", Path: []string{"sync"}},
+	{Name: "--check", Path: []string{"self-update"}},
+}
+
 // MaskedPipelineValueFlag reports whether the policy knows name (a flag as
-// typed, with its dashes) as taking a value.
-func MaskedPipelineValueFlag(name string) bool {
-	return valueFlags[name]
+// typed, with its dashes) as taking a value on the verb at path.
+func MaskedPipelineValueFlag(path []string, name string) bool {
+	return valueFlags[name] || scopedFlagApplies(scopedValueFlags, path, name)
+}
+
+// MaskedPipelineScopedReadOnlyFlags lists the read-only markers that belong to
+// one verb, so a test in the command package can check each one against the
+// real command tree.
+func MaskedPipelineScopedReadOnlyFlags() []ScopedFlag {
+	return append([]ScopedFlag(nil), scopedReadOnlyFlags...)
+}
+
+func scopedFlagApplies(flags []ScopedFlag, path []string, name string) bool {
+	for _, flag := range flags {
+		if flag.Name == name && hasWordPrefix(verbPathAlias(path), flag.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+// verbPathAlias spells the `wt` and `worktrees` aliases of worktree out.
+func verbPathAlias(path []string) []string {
+	if len(path) > 0 && (path[0] == "wt" || path[0] == "worktrees") {
+		return append([]string{"worktree"}, path[1:]...)
+	}
+	return path
 }
 
 // verbMatch is a recognised state-changing invocation.
@@ -157,13 +209,14 @@ func statefulWBVerb(words []string) (verbMatch, bool) {
 	for index := 1; index < len(words); index++ {
 		word := words[index]
 		switch {
-		case word == "--help" || word == "-h" || word == "--dry-run" || word == "--apply=false":
+		case word == "--help" || word == "-h" || word == "--dry-run" || word == "--apply=false" ||
+			scopedFlagApplies(scopedReadOnlyFlags, path, word):
 			readOnly = true
 		case word == "--apply" || word == "--apply=true":
 			apply = true
 		case word == "--format=json":
 			asJSON = true
-		case valueFlags[word]:
+		case MaskedPipelineValueFlag(path, word):
 			if word == "--format" && index+1 < len(words) && words[index+1] == "json" {
 				asJSON = true
 			}
@@ -176,9 +229,7 @@ func statefulWBVerb(words []string) (verbMatch, bool) {
 	if readOnly || len(path) == 0 {
 		return verbMatch{}, false
 	}
-	if path[0] == "wt" || path[0] == "worktrees" {
-		path[0] = "worktree"
-	}
+	path = verbPathAlias(path)
 	for _, verb := range statefulWBVerbs {
 		if !hasWordPrefix(path, verb.Path) {
 			continue
@@ -216,58 +267,189 @@ type openScope struct {
 	before bool
 }
 
+// pipelineWalk is the state of a walk over one command line's simple commands:
+// the groups and compound commands it is inside, the pipefail state the shell
+// has at the command being read, and how many shell -c payloads deep it is.
+type pipelineWalk struct {
+	open     []openScope
+	loops    []openCompound
+	pipefail bool
+	depth    int
+}
+
 // inspectMaskedPipelinesDepth walks command's simple commands in order, keeping
 // the pipefail state the shell would have at each one. pipefail is the state at
 // the start of command.
 func inspectMaskedPipelinesDepth(command string, pipefail bool, depth int) *finding {
-	var open []openScope
+	walk := &pipelineWalk{pipefail: pipefail, depth: depth}
 	for _, current := range splitSegments(command) {
-		open, pipefail = syncScopes(open, current.Scope, pipefail)
+		walk.open, walk.pipefail = syncScopes(walk.open, current.Scope, walk.pipefail)
 		for _, body := range current.Substitutions {
-			if result := inspectMaskedPipelinesDepth(body, pipefail, depth); result != nil {
+			if result := inspectMaskedPipelinesDepth(body, walk.pipefail, depth); result != nil {
 				return result
 			}
 		}
 		if len(current.Words) == 0 {
 			continue
 		}
-		if on, toggled := pipefailSetting(programName(current.Words[0]), current.Words); toggled {
-			if segmentRunsUnconditionally(current) {
-				pipefail = on
-			} else if !on {
-				// Whether a conditional `set +o pipefail` ran is unknown, so
-				// pipefail is not relied on afterwards.
-				pipefail = false
-			}
-			continue
+		result, settled := walk.segment(current)
+		if result != nil {
+			return result
 		}
-		words := stripCommandPrefixes(current.Words).Words
-		if len(words) == 0 {
-			continue
-		}
-		name := programName(words[0])
-		if readings, ok := shellInterpreters[name]; ok && depth < maxShellUnwrapDepth {
-			if payloads := shellDashCPayloads(words, readings); len(payloads) > 0 {
-				// A child shell does not inherit the parent's pipefail: its
-				// payload starts with it off unless the shell's own options or
-				// the payload's own body turn it on.
-				own := shellOwnPipefail(words)
-				for _, payload := range payloads {
-					if result := inspectMaskedPipelinesDepth(payload, own, depth+1); result != nil {
-						return result
-					}
-				}
-				continue
-			}
-		}
-		if name != "wb" || !statusIsMasked(current, open, pipefail) {
-			continue
-		}
-		if verb, ok := statefulWBVerb(words); ok {
-			return &finding{Message: maskedPipelineRefusal(verb)}
+		// Pipefail is only ever relied on when it is certain: a command that
+		// names it and is not a plain switch-on (`if x; then set -o pipefail;
+		// fi`, `command set +o pipefail`, `eval 'set +o pipefail'`, `shopt -u
+		// -o pipefail`, `emulate sh`) leaves it unknown, which counts as off.
+		if !settled && mentionsPipefail(current.Words) {
+			walk.pipefail = false
 		}
 	}
 	return nil
+}
+
+// segment checks one command. settled is set when the command has itself set
+// the pipefail state the walk goes on with: a switch, or a child shell, whose
+// options never reach this one.
+func (w *pipelineWalk) segment(current segment) (result *finding, settled bool) {
+	if finding := trackCompound(&w.loops, current, w.pipefail); finding != nil {
+		return finding, false
+	}
+	if on, toggled := pipefailSetting(programName(current.Words[0]), current.Words); toggled {
+		// Only a certain switch-on counts. A conditional `set +o pipefail`
+		// may or may not have run, so pipefail is not relied on afterwards
+		// either way.
+		w.pipefail = on && segmentRunsUnconditionally(current, len(w.loops) > 0)
+		return nil, true
+	}
+	words := stripCommandPrefixes(current.Words).Words
+	if len(words) == 0 {
+		return nil, false
+	}
+	name := programName(words[0])
+	if readings, ok := shellInterpreters[name]; ok && w.depth < maxShellUnwrapDepth {
+		if payloads := shellDashCPayloads(words, readings); len(payloads) > 0 {
+			// The payload runs in a child shell, so a pipe after the command
+			// hides the status of whatever it runs last.
+			if verb, found := firstWatchedVerb(payloads, w.depth+1); found {
+				if statusIsMasked(current, w.open, w.pipefail) {
+					return &finding{Message: maskedPipelineRefusal(verb)}, false
+				}
+				markCompounds(w.loops, verb)
+			}
+			// A child shell does not inherit the parent's pipefail: its
+			// payload starts with it off unless the shell's own options or
+			// the payload's own body turn it on.
+			own := shellOwnPipefail(words)
+			for _, payload := range payloads {
+				if result := inspectMaskedPipelinesDepth(payload, own, w.depth+1); result != nil {
+					return result, false
+				}
+			}
+			return nil, true
+		}
+	}
+	if name != "wb" {
+		return nil, false
+	}
+	if verb, ok := statefulWBVerb(words); ok {
+		if statusIsMasked(current, w.open, w.pipefail) {
+			return &finding{Message: maskedPipelineRefusal(verb)}, false
+		}
+		markCompounds(w.loops, verb)
+	}
+	return nil, false
+}
+
+// mentionsPipefail reports whether any word names the pipefail option in any
+// spelling bash or zsh accept (pipefail, PIPE_FAIL, NO_PIPE_FAIL), or is
+// `emulate`, which resets every option.
+func mentionsPipefail(words []string) bool {
+	for _, word := range words {
+		name := strings.ReplaceAll(strings.ToLower(word), "_", "")
+		if strings.Contains(name, "pipefail") || name == "emulate" {
+			return true
+		}
+	}
+	return false
+}
+
+// openCompound is a for, while, until, select, if or case compound command the
+// walk is inside, with the pipefail state it was opened in and the first
+// watched verb seen in it.
+type openCompound struct {
+	before  bool
+	watched *verbMatch
+}
+
+var (
+	compoundOpeners = setOf("for", "select", "while", "until", "if", "case")
+	compoundClosers = setOf("done", "fi", "esac")
+	// compoundLeaders may stand in front of an opener on the same command.
+	compoundLeaders = setOf("then", "do", "else", "elif", "!", "time")
+)
+
+// trackCompound keeps the compound commands the walk is inside. A pipe after
+// `done`, `fi` or `esac` pipes the whole compound command, so, like a piped
+// group, it hides the status of the watched verb inside it unless pipefail was
+// on where the compound command began.
+func trackCompound(loops *[]openCompound, current segment, pipefail bool) *finding {
+	words := current.Words
+	for len(words) > 1 && compoundLeaders[words[0]] {
+		words = words[1:]
+	}
+	switch {
+	case compoundOpeners[words[0]]:
+		*loops = append(*loops, openCompound{before: pipefail})
+	case compoundClosers[words[0]] && len(*loops) > 0:
+		last := (*loops)[len(*loops)-1]
+		*loops = (*loops)[:len(*loops)-1]
+		if current.Piped && !last.before && last.watched != nil {
+			return &finding{Message: maskedPipelineRefusal(*last.watched)}
+		}
+	}
+	return nil
+}
+
+// markCompounds records a watched verb in every compound command it is inside.
+func markCompounds(loops []openCompound, verb verbMatch) {
+	for index := range loops {
+		if loops[index].watched == nil {
+			loops[index].watched = &verb
+		}
+	}
+}
+
+// firstWatchedVerb returns the first watched verb that any of the command
+// lines would run, looking through shell -c payloads and the bodies of
+// double-quoted substitutions. Whether a pipe hides its status is the
+// caller's question.
+func firstWatchedVerb(commands []string, depth int) (verbMatch, bool) {
+	if depth > maxShellUnwrapDepth {
+		return verbMatch{}, false
+	}
+	for _, command := range commands {
+		for _, current := range splitSegments(command) {
+			if verb, found := firstWatchedVerb(current.Substitutions, depth+1); found {
+				return verb, true
+			}
+			words := stripCommandPrefixes(current.Words).Words
+			if len(words) == 0 {
+				continue
+			}
+			name := programName(words[0])
+			if name == "wb" {
+				if verb, ok := statefulWBVerb(words); ok {
+					return verb, true
+				}
+			}
+			if readings, ok := shellInterpreters[name]; ok {
+				if verb, found := firstWatchedVerb(shellDashCPayloads(words, readings), depth+1); found {
+					return verb, true
+				}
+			}
+		}
+	}
+	return verbMatch{}, false
 }
 
 // syncScopes brings the walk's open groups in line with the groups segment
@@ -292,19 +474,21 @@ func syncScopes(open []openScope, scope []*scopeFrame, pipefail bool) ([]openSco
 }
 
 // segmentRunsUnconditionally reports whether a command is certain to run in the
-// shell that goes on to read the next command: it does not follow && or ||, is
-// not part of a pipeline (each side of one is a child shell), and is not in a
-// group that is conditional or piped.
-func segmentRunsUnconditionally(current segment) bool {
+// shell that goes on to read the next command: it does not follow && or || (on
+// the same line or the one before), is not backgrounded, is not part of a
+// pipeline (each side of one is a child shell), is not in a compound command's
+// body (then, else, do, a case arm), and is not in a group that is
+// conditional, piped, backgrounded or a function body.
+func segmentRunsUnconditionally(current segment, inCompound bool) bool {
 	switch current.Separator {
 	case "&&", "||", "|", "|&":
 		return false
 	}
-	if current.Piped {
+	if current.Piped || current.Behind || current.Background || inCompound {
 		return false
 	}
 	for _, frame := range current.Scope {
-		if frame.Conditional || frame.Piped {
+		if frame.Conditional || frame.Piped || frame.Background {
 			return false
 		}
 	}
@@ -339,7 +523,10 @@ func pipefailName(word string) (isPipefail, negated bool) {
 // names pipefail wins (`set -o pipefail +o pipefail` is off). A negated spelling
 // (`nopipefail`, `NO_PIPE_FAIL`) is off however it is switched, which is the
 // safe reading. Words after `--` or after the first non-option word are
-// positional parameters, not options.
+// positional parameters, not options. bash is case sensitive and has no
+// underscores in the name, so `set` reads only the exact name `pipefail`; any
+// other spelling of it (`set -o PIPEFAIL`) is not a setting, and the caller
+// treats the command as one that names pipefail without setting it.
 func pipefailSetting(name string, words []string) (on, toggled bool) {
 	switch name {
 	case "set":
@@ -353,9 +540,13 @@ func pipefailSetting(name string, words []string) (on, toggled bool) {
 					continue
 				}
 				index++
-				if isPipefail, negated := pipefailName(words[index]); isPipefail {
-					on, toggled = word[0] == '-' && !negated, true
+				if isPipefail, _ := pipefailName(words[index]); !isPipefail {
+					continue
 				}
+				if words[index] != "pipefail" {
+					return false, false
+				}
+				on, toggled = word[0] == '-', true
 			}
 		}
 	case "setopt", "unsetopt":

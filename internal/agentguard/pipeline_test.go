@@ -115,6 +115,168 @@ var maskedPipelineHoles = []struct {
 	{"self-update", "wb self-update | tail"},
 }
 
+// maskedPipelineRound2Holes are the shapes the second review of wb#816 found
+// allowed although they still hide a verb's status, with the real nested
+// substitutions the quoted-heredoc fix must keep reading.
+var maskedPipelineRound2Holes = []struct {
+	name    string
+	command string
+}{
+	// A real substitution that runs a piped verb is still read as a command.
+	{"quoted substitution running a piped verb", `echo "$(wb pr create | tail)"`},
+	{"nested quoted substitutions", `x="$(echo "$(wb pr create | tail)")"`},
+	{"command after a heredoc in a quoted substitution", "echo \"$(cat <<'EOF'\n1) prose\nEOF\nwb pr create | tail)\""},
+	{"command after a heredoc with two operators", "echo \"$(cat <<'A' <<-'B'\n1) a\nA\n2) b\nB\nwb pr create | tail)\""},
+	{"a backtick substitution beside the quoted one", "echo \"$(cat <<'EOF'\nprose\nEOF\n)\" `wb pr create | tail`"},
+	{"a quoted substitution after a heredoc one", "x=\"$(cat <<'EOF'\nprose `wb sync | tail`\nEOF\n)\"; y=\"$(wb pr create | tail)\""},
+
+	// A piped compound command pipes everything inside it.
+	{"for loop piped", "for t in a b; do wb pr land o/r#$t; done 2>&1 | tail -5"},
+	{"for loop piped with a here-string redirect", "for t in a b; do wb pr land o/r#$t; done <<< x | tail"},
+	{"if piped", "if true; then wb pr create; fi | tail"},
+	{"if else piped", "if true; then echo a; else wb pr create; fi | tail"},
+	{"while with an input redirect piped", "while read r; do wb pr land \"$r\"; done < list | tail"},
+	{"until piped", "until false; do wb pr land o/r#1; done | tail"},
+	{"case piped", "case $x in a) wb pr land o/r#1;; esac | tail"},
+	{"select piped", "select t in a b; do wb pr land o/r#$t; done | tail"},
+	{"nested compound piped on the outside", "for a in b; do if x; then wb pr create; fi; done | tail"},
+	{"compound after a leader", "if x; then for a in b; do wb pr land o/r#$a; done | tail; fi"},
+	{"a wrapper shell inside a piped loop", "for t in a; do bash -c 'wb pr land o/r#1'; done | tail"},
+	{"pipefail set only inside the loop does not reach the pipe", "for t in a; do set -o pipefail; wb pr land o/r#1; done | tail"},
+	{"loop on several lines", "for t in a b\ndo\n  wb pr land o/r#$t\ndone | tail -1"},
+
+	// A piped wrapper shell hides the status of whatever it runs last.
+	{"bash -c piped", "bash -c 'cd x && wb pr create' | tail"},
+	{"zsh -lc piped with 2>&1", "zsh -lc 'wb pr create' 2>&1 | tail -1"},
+	{"bash -c piped with its own pipefail", "bash -o pipefail -c 'wb pr create' | tail"},
+	{"bash -c piped with a payload that ends in the verb and --quiet", "bash -c 'wb pr create --quiet' | tail"},
+	{"sh -c in a piped group", "{ sh -c 'wb land .'; } | tail"},
+	{"nested wrapper shells piped", `sh -c "bash -c 'wb land .'" | tail`},
+	{"wrapper with a quoted substitution payload piped", `bash -c 'x="$(wb pr create --quiet)"' | tail`},
+	{"env wrapper shell piped", "env X=1 bash -c 'wb pr create' | tail"},
+	{"wrapper piped under a pipefail set in a subshell that closed", "(set -o pipefail); bash -c 'wb pr create' | tail"},
+
+	// --resume and --verify are boolean on most watched verbs.
+	{"migrate --resume --apply", "wb migrate --resume --apply | tail"},
+	{"migrate --apply --resume", "wb migrate --apply --resume | tail"},
+	{"fleet merge-policy --resume --apply", "wb fleet merge-policy --resume --apply | tail"},
+	{"stream sync --verify", "wb stream sync --verify s | tail"},
+	{"worktree create --resume", "wb worktree create --resume t o/r | tail"},
+	{"session move --resume takes a value", "wb session move --resume --help | tail"},
+	{"migrate --verify takes a value", "wb migrate --verify --check --apply | tail"},
+
+	// pipefail is relied on only when it is certain.
+	{"switch-on in an if body", "if false; then set -o pipefail; fi; wb pr create | tail"},
+	{"switch-on in an if body on its own line", "if false; then\n  set -o pipefail\nfi\nwb pr create | tail"},
+	{"switch-on in a for body", "for x in; do echo; set -o pipefail; done; wb pr create | tail"},
+	{"switch-on in a while body", "while false; do set -o pipefail; done; wb pr create | tail"},
+	{"switch-on in a case arm", "case a in b) set -o pipefail;; esac; wb pr create | tail"},
+	{"switch-on in an else body", "if true; then :; else set -o pipefail; fi; wb pr create | tail"},
+	{"switch-on in a function body", "pf() { set -o pipefail; }; wb pr create | tail"},
+	{"switch-on in a function body with the keyword", "function pf { set -o pipefail; }; wb pr create | tail"},
+	{"switch-on in a function body with keyword and parentheses", "function pf() { set -o pipefail; }; wb pr create | tail"},
+	{"switch-on in a function body on later lines", "pf()\n{\n  set -o pipefail\n}\nwb pr create | tail"},
+	{"switch-on backgrounded", "set -o pipefail & wb pr create | tail"},
+	{"switch-on backgrounded on its own line", "set -o pipefail &\nwb pr create | tail"},
+	{"switch-on in a backgrounded group", "{ set -o pipefail; } & wb pr create | tail"},
+	{"switch-on after a line ending in &&", "false &&\nset -o pipefail\nwb pr create | tail"},
+	{"switch-on after a line ending in ||", "true ||\nset -o pipefail\nwb pr create | tail"},
+	{"switch-on after && and a blank line", "false &&\n\nset -o pipefail\nwb pr create | tail"},
+	{"switch-on behind && opening a group", "false &&\n{ set -o pipefail; }; wb pr create | tail"},
+	{"switch-off in an if body", "set -o pipefail; if true; then set +o pipefail; fi; wb pr create | tail"},
+	{"switch-off behind command", "set -o pipefail; command set +o pipefail; wb pr create | tail"},
+	{"switch-off behind builtin", "set -o pipefail; builtin set +o pipefail; wb pr create | tail"},
+	{"switch-off behind an assignment", "set -o pipefail; X=1 set +o pipefail; wb pr create | tail"},
+	{"switch-off behind time", "set -o pipefail; time set +o pipefail; wb pr create | tail"},
+	{"switch-off behind a bang", "set -o pipefail; ! set +o pipefail; wb pr create | tail"},
+	{"switch-off in eval", "set -o pipefail; eval 'set +o pipefail'; wb pr create | tail"},
+	{"switch-off by shopt", "set -o pipefail; shopt -u -o pipefail; wb pr create | tail"},
+	{"switch-off by emulate sh", "set -o pipefail; emulate sh; wb pr create | tail"},
+	{"switch-off by emulate -R zsh", "set -o pipefail; emulate -R zsh; wb pr create | tail"},
+	{"switch-off by a setopt in another case", "set -o pipefail; setopt NoPipeFail; wb pr create | tail"},
+	{"pipefail in the wrong case is not a switch-on", "set -o PIPEFAIL; wb pr create | tail"},
+	{"pipefail in zsh case under set is not a switch-on", "set -o PIPE_FAIL; wb pr create | tail"},
+	{"a mention in an echo", "set -o pipefail; echo pipefail; wb pr create | tail"},
+	{"a mention in a grep", "set -o pipefail; grep -n pipefail script.sh; wb pr create | tail"},
+	{"a conditional switch-on after a switch-on", "set -o pipefail; true && set -o pipefail; wb pr create | tail"},
+	{"switch-on with the option name in the wrong case later", "set -o pipefail -o PIPEFAIL; wb pr create | tail"},
+	{"a mention in a wrapper shell with no payload", "set -o pipefail; bash -o pipefail script.sh; wb pr create | tail"},
+}
+
+// maskedPipelineRound2Allowed are shapes that hide no verb's status that the
+// second review of wb#816 found refused, or that the fixes must keep allowing.
+var maskedPipelineRound2Allowed = []struct {
+	name    string
+	command string
+}{
+	// Prose in a quoted heredoc inside a quoted substitution is text.
+	{"git commit message quoting a piped verb in backticks", "git commit -m \"$(cat <<'EOF'\nfix: the shape `wb pr create | tail -1` is refused\n\nCo-Authored-By: x\nEOF\n)\""},
+	{"git commit message quoting a nested substitution", "git commit -m \"$(cat <<'EOF'\nfix: refuse $(wb pr create | tail) text\nEOF\n)\""},
+	{"gh pr comment body quoting a piped verb", "gh pr comment 816 --body \"$(cat <<'EOF'\nMajor: `wb worktree create t o/r 2>&1 | tail -1 && cd /x && wb pr create` passes.\nEOF\n)\""},
+	{"gh pr comment with a repo flag", "gh pr comment 816 --repo sneat-dev/wb --body \"$(cat <<'EOF'\nMajor: `wb pr create | tail`\nEOF\n)\""},
+	{"gh pr create body", "gh pr create --title x --body \"$(cat <<'EOF'\n## Summary\n- refuses `wb land . | tail`\nEOF\n)\""},
+	{"wb pr create body", "wb pr create --title x --body \"$(cat <<'EOF'\nRefuses `wb pr land o/r#1 | tail -1`.\nEOF\n)\""},
+	{"wb pr create body then --quiet", "wb pr create --title x --body \"$(cat <<'EOF'\nRefuses `wb pr land o/r#1 | tail -1`.\nEOF\n)\" --quiet"},
+	{"prose with parentheses and a plain pipe", "gh issue create --title x --body \"$(cat <<'EOF'\n1) wb pr create | tail\n2) (wb pr land | tail)\nEOF\n)\""},
+	{"message with several backtick pairs", "git commit -m \"$(cat <<'EOF'\nfix: refuse wb pr create | tail\n\nThe shape `wb pr create | tail -1 && wb pr land` and `wb sync | tail` are refused.\nEOF\n)\""},
+	{"echo of a heredoc in a substitution", "echo \"$(cat <<'EOF'\n`wb sync | tail`\nEOF\n)\""},
+	{"an unquoted delimiter", "git commit -m \"$(cat <<EOF\nfix: the shape (wb pr create | tail) is refused\nEOF\n)\""},
+	{"a dash heredoc", "git commit -m \"$(cat <<-'EOF'\n\tfix: `wb pr create | tail`\n\tEOF\n)\""},
+	{"two heredocs", "echo \"$(cat <<'A' <<'B'\n1) `wb sync | tail`\nA\n2) `wb sync | tail`\nB\n)\""},
+	{"a here-string beside a heredoc", "echo \"$(cat <<< x <<'EOF'\n1) `wb sync | tail`\nEOF\n)\""},
+	{"a backtick after an early closing quote", "git commit -m \"$(cat <<'EOF'\nthe \"foo flag: `wb pr create | tail -1` bar\nEOF\n)\""},
+	{"a heredoc with a delimiter at the very end", "echo \"$(cat <<'EOF'\n1) `wb sync | tail`\nEOF"},
+	{"a heredoc whose delimiter is missing", "echo \"$(cat <<'EOF'\n1) `wb sync | tail`"},
+	{"a heredoc with no delimiter word", "echo \"$(cat <<\n)\""},
+	{"a double-quoted backtick substitution holding backticks as prose", "echo \"`echo \\`wb pr create | tail\\``\""},
+
+	// A loop, a conditional or a wrapper shell nobody pipes.
+	{"loop with --quiet and no pipe", "for t in a b; do wb pr land o/r#$t --quiet; done"},
+	{"loop whose own output is piped holds no watched verb", "for t in a b; do echo $t; done | tail"},
+	{"read verbs in a piped loop", "for t in a b; do wb worktree list; done | tail"},
+	{"if with a read verb piped", "if true; then wb worktree list; fi | tail"},
+	{"case with no verb piped", "case $x in a) echo a;; esac | tail"},
+	{"piped loop under pipefail", "set -o pipefail; for t in a; do wb pr land o/r#$t; done | tail"},
+	{"piped if under pipefail", "set -euo pipefail; if true; then wb pr create; fi | tail"},
+	{"wrapper under pipefail piped", "set -o pipefail; bash -c 'wb pr create' | tail"},
+	{"wrapper with a read verb piped", "bash -c 'wb worktree list' | tail"},
+	{"wrapper with no verb piped", "bash -c 'echo hi' | tail"},
+	{"wrapper not piped", "bash -c 'wb pr create --quiet'"},
+	{"loop closed before the pipe", "for t in a; do wb pr land o/r#$t --quiet; done; echo x | tail"},
+	{"a stray closer", "done | tail"},
+	{"a compound word as an argument", "echo for | tail"},
+
+	// --resume and --verify.
+	{"deps bump --resume --dry-run", "wb deps bump --resume --dry-run | tail"},
+	{"migrate --verify takes a value so --apply is not seen", "wb migrate --verify --apply | tail"},
+	{"session move --resume takes the session", "wb session move --resume sess --dry-run | tail"},
+
+	// Read-only spellings.
+	{"sync -n", "wb sync -n | tail"},
+	{"sync -n after other flags", "wb sync -o sneat-co -n | tail"},
+	{"self-update --check", "wb self-update --check | tail"},
+	{"worktree alias with a scoped flag", "wb wt end --help | tail"},
+
+	// pipefail that is certain.
+	{"set -euo pipefail", "set -euo pipefail; wb pr create | tail"},
+	{"set -eo pipefail", "set -eo pipefail; wb pr create | tail"},
+	{"set -o errexit -o pipefail", "set -o errexit -o pipefail; wb pr create | tail"},
+	{"setopt pipefail", "setopt pipefail; wb pr create | tail"},
+	{"set -o pipefail && verb", "set -o pipefail && wb pr create | tail"},
+	{"bash -o pipefail -c", "bash -o pipefail -c 'wb pr create | tail'"},
+	{"bash -c with set inside", "bash -c 'set -o pipefail; wb pr create | tail'"},
+	{"first line: set -euo pipefail", "set -euo pipefail\nwb pr create | tail"},
+	{"first line: set -eo pipefail", "set -eo pipefail\nwb pr create | tail"},
+	{"first line: set -o errexit -o pipefail", "set -o errexit -o pipefail\nwb pr create | tail"},
+	{"first line: setopt pipefail", "setopt pipefail\nwb pr create | tail"},
+	{"first line: set -o pipefail &&", "set -o pipefail && wb pr create | tail\necho done"},
+	{"first line: bash -o pipefail -c", "bash -o pipefail -c 'wb pr create | tail'\necho done"},
+	{"first line: bash -c with set inside", "bash -c 'set -o pipefail; wb pr create | tail'\necho done"},
+	{"a parent's pipefail survives a child shell that names it", "set -o pipefail; bash -o pipefail -c true; wb pr create | tail"},
+	{"a plain pipefail after a function definition", "pf() { echo; }; set -o pipefail; wb pr create | tail"},
+	{"a plain switch-on after a brace group", "{ echo; }; set -o pipefail; wb pr create | tail"},
+}
+
 func TestBashRefusesAPipedStateChangingWBVerb(t *testing.T) {
 	t.Parallel()
 	commands := []struct {
@@ -163,6 +325,7 @@ func TestBashRefusesAPipedStateChangingWBVerb(t *testing.T) {
 		{"branch cleanup with --apply", "wb branch cleanup --apply | tail"},
 	}
 	commands = append(commands, maskedPipelineHoles...)
+	commands = append(commands, maskedPipelineRound2Holes...)
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -284,6 +447,7 @@ func TestBashAllowsEveryShapeThatDoesNotHideAVerbStatus(t *testing.T) {
 		{"wb check stays maskable", "wb check | tail"},
 		{"wb run stays maskable", "wb run -- go test ./... | tail"},
 	}
+	commands = append(commands, maskedPipelineRound2Allowed...)
 	for _, testCase := range commands {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -406,7 +570,11 @@ func TestSplitSegmentsTreatsPipeAmpersandAndAPipeContinuationAsPipes(t *testing.
 		{"plain pipe", "a | b", []segment{{Words: []string{"a"}, Piped: true}, {Words: []string{"b"}, Separator: "|"}}},
 		{"newline after the pipe", "a |\n b", []segment{{Words: []string{"a"}, Piped: true}, {Words: []string{"b"}, Separator: "|"}}},
 		{"newline after pipe ampersand", "a |&\n b", []segment{{Words: []string{"a"}, Piped: true}, {Words: []string{"b"}, Separator: "|&"}}},
-		{"a lone ampersand still backgrounds", "a & b", []segment{{Words: []string{"a"}}, {Words: []string{"b"}, Separator: "&"}}},
+		{"a lone ampersand still backgrounds", "a & b", []segment{{Words: []string{"a"}, Background: true}, {Words: []string{"b"}, Separator: "&"}}},
+		{"a command after && is behind it", "a && b", []segment{{Words: []string{"a"}}, {Words: []string{"b"}, Separator: "&&", Behind: true}}},
+		{"a command after || on the next line is behind it", "a ||\n\n b\nc", []segment{{Words: []string{"a"}}, {Words: []string{"b"}, Separator: "\n", Behind: true}, {Words: []string{"c"}, Separator: "\n"}}},
+		{"a command after && and a comment is behind it", "a && # why\n b", []segment{{Words: []string{"a"}}, {Words: []string{"b"}, Separator: "\n", Behind: true}}},
+		{"a command on the line after a finished one is not", "a && b\n c", []segment{{Words: []string{"a"}}, {Words: []string{"b"}, Separator: "&&", Behind: true}, {Words: []string{"c"}, Separator: "\n"}}},
 		{"a newline after a heredoc line after the pipe", "a | cat <<EOF\nbody\nEOF\nb", []segment{{Words: []string{"a"}, Piped: true}, {Words: []string{"cat"}, Separator: "|"}, {Words: []string{"b"}, Separator: "\n"}}},
 	}
 	for _, testCase := range cases {
@@ -490,8 +658,16 @@ func TestMaskedPipelineVerbPathsAndValueFlagsAreExported(t *testing.T) {
 	if got := MaskedPipelineVerbPaths(); len(got) != len(statefulWBVerbs) {
 		t.Fatalf("MaskedPipelineVerbPaths() has %d paths, want %d", len(got), len(statefulWBVerbs))
 	}
-	if !MaskedPipelineValueFlag("--title") || MaskedPipelineValueFlag("--dry-run") {
+	if !MaskedPipelineValueFlag(nil, "--title") || MaskedPipelineValueFlag(nil, "--dry-run") {
 		t.Error("MaskedPipelineValueFlag does not tell a value-taking flag from a boolean one")
+	}
+	session := []string{"session", "move"}
+	if !MaskedPipelineValueFlag(session, "--resume") || MaskedPipelineValueFlag([]string{"migrate"}, "--resume") ||
+		MaskedPipelineValueFlag(nil, "--resume") || !MaskedPipelineValueFlag([]string{"migrate", "x"}, "--verify") {
+		t.Error("MaskedPipelineValueFlag does not scope --resume and --verify to the verbs where they take a value")
+	}
+	if got := MaskedPipelineScopedReadOnlyFlags(); len(got) != len(scopedReadOnlyFlags) {
+		t.Errorf("MaskedPipelineScopedReadOnlyFlags() has %d flags, want %d", len(got), len(scopedReadOnlyFlags))
 	}
 }
 
@@ -568,7 +744,12 @@ func TestSplitSegmentsRecordsSubstitutionBodies(t *testing.T) {
 		{"an escaped backtick stays in the body", "echo `a \\` b`", []string{"a \\` b"}},
 		{"an unterminated backtick", "echo `a b", []string{"a b"}},
 		{"double-quoted dollar-paren", `x="$(a | b)"`, []string{"a | b"}},
-		{"nested parentheses", `x="$(a $(b) c)"`, []string{"a $(b) c", "b"}},
+		{"nested parentheses are read with the outer body", `x="$(a $(b) c)"`, []string{"a $(b) c"}},
+		{"a backtick nested in a dollar-paren is read with the outer body", "x=\"$(a `b` c)\"", []string{"a `b` c"}},
+		{"a dollar-paren nested in a backtick is read with the outer body", "x=\"`a $(b) c`\"", []string{"a $(b) c"}},
+		{"a substitution after the first one closed", `x="$(a)$(b)"`, []string{"a", "b"}},
+		{"a backtick after the quote closed", "x=\"$(a)\" `b`", []string{"a", "b"}},
+		{"a heredoc body does not close the substitution", "x=\"$(cat <<'E'\n1) x `y`\nE\n)\"", []string{"cat <<'E'\n1) x `y`\nE\n"}},
 		{"an escaped paren in the body", `x="$(a \) b)"`, []string{`a \) b`}},
 		{"an unterminated substitution", `x="$(a b`, []string{"a b"}},
 		{"double-quoted backticks", "x=\"`a | b` and `c`\"", []string{"a | b", "c"}},
@@ -618,6 +799,10 @@ func TestPipefailSettingReadsOptionsInOrder(t *testing.T) {
 		{"unsetopt negated is not relied on", "unsetopt nopipefail", false, true},
 		{"setopt another option", "setopt extendedglob", false, false},
 		{"another command", "echo -o pipefail", false, false},
+		{"set -o in bash's case is not pipefail", "set -o PIPEFAIL", false, false},
+		{"set -o in zsh's spelling is not a setting", "set -o PIPE_FAIL", false, false},
+		{"set +o negated is not a setting", "set +o nopipefail", false, false},
+		{"another spelling after a setting", "set -o pipefail -o PIPEFAIL", false, false},
 	}
 	for _, testCase := range cases {
 		words := strings.Fields(testCase.command)
@@ -671,5 +856,112 @@ func TestEveryStatefulWBVerbNamesAWellFormedCommandPath(t *testing.T) {
 				t.Errorf("verb path %q holds an unusable word %q", key, word)
 			}
 		}
+	}
+}
+
+func TestSplitSegmentsMarksFunctionBodiesAndBackgroundedGroups(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		command string
+		inner   string
+		check   func(*scopeFrame) bool
+	}{
+		{"name with parentheses", "f() { x; }", "x", func(frame *scopeFrame) bool { return frame.Conditional }},
+		{"function keyword", "function f { x; }", "x", func(frame *scopeFrame) bool { return frame.Conditional }},
+		{"function keyword and parentheses", "function f() { x; }", "x", func(frame *scopeFrame) bool { return frame.Conditional }},
+		{"a plain group is not", "{ x; }", "x", func(frame *scopeFrame) bool { return !frame.Conditional }},
+		{"a group after a subshell is not", "(a); { x; }", "x", func(frame *scopeFrame) bool { return !frame.Conditional }},
+		{"a function inside a function", "f() { g() { x; }; }", "x", func(frame *scopeFrame) bool { return frame.Conditional }},
+		{"a group behind && on the previous line", "a &&\n{ x; }", "x", func(frame *scopeFrame) bool { return frame.Conditional }},
+		{"a backgrounded group", "{ x; } & y", "x", func(frame *scopeFrame) bool { return frame.Background }},
+		{"a group that is not backgrounded", "{ x; } && y", "x", func(frame *scopeFrame) bool { return !frame.Background }},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			for _, current := range splitSegments(testCase.command) {
+				if len(current.Words) == 1 && current.Words[0] == testCase.inner {
+					last := current.Scope[len(current.Scope)-1]
+					if !testCase.check(last) {
+						t.Fatalf("splitSegments(%q): innermost group of %q is %+v", testCase.command, testCase.inner, *last)
+					}
+					return
+				}
+			}
+			t.Fatalf("splitSegments(%q) has no command %q", testCase.command, testCase.inner)
+		})
+	}
+}
+
+func TestDollarParenBodyReadsAHeredocBodyAsText(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		rest string
+		want string
+	}{
+		{"no heredoc", "a (b) c) d", "a (b) c"},
+		{"a heredoc with a parenthesis in the body", "cat <<'E'\n1) x\nE\n) tail", "cat <<'E'\n1) x\nE\n"},
+		{"a dash heredoc with an indented delimiter", "cat <<-E\n\t1) x\n\tE\n) tail", "cat <<-E\n\t1) x\n\tE\n"},
+		{"a double-quoted delimiter", "cat <<\"E\"\n1) x\nE\n) tail", "cat <<\"E\"\n1) x\nE\n"},
+		{"a backslash delimiter", "cat <<\\E\n1) x\nE\n) tail", "cat <<\\E\n1) x\nE\n"},
+		{"a space before the delimiter", "cat << E\n1) x\nE\n) tail", "cat << E\n1) x\nE\n"},
+		{"two heredocs on one line", "cat <<A <<B\n1) a\nA\n2) b\nB\n) tail", "cat <<A <<B\n1) a\nA\n2) b\nB\n"},
+		{"a here-string is not a heredoc", "cat <<< x\n) tail", "cat <<< x\n"},
+		{"a command after the heredoc", "cat <<E\nx\nE\nb)", "cat <<E\nx\nE\nb"},
+		{"a heredoc with no delimiter word", "cat <<\n) tail", "cat <<\n"},
+		{"an unterminated heredoc runs to the end", "cat <<E\n1) x\n", "cat <<E\n1) x\n"},
+		{"a delimiter on the last line without a newline", "cat <<E\n1) x\nE", "cat <<E\n1) x\nE"},
+		{"a less-than that is not a heredoc", "a < b)", "a < b"},
+		{"a heredoc whose operator ends the text", "cat <<", "cat <<"},
+	}
+	for _, testCase := range cases {
+		if got := dollarParenBody(testCase.rest); got != testCase.want {
+			t.Errorf("%s: dollarParenBody(%q) = %q, want %q", testCase.name, testCase.rest, got, testCase.want)
+		}
+	}
+}
+
+func TestMentionsPipefailReadsEverySpelling(t *testing.T) {
+	t.Parallel()
+	for command, want := range map[string]bool{
+		"set -o pipefail":        true,
+		"set +o PIPEFAIL":        true,
+		"setopt NO_PIPE_FAIL":    true,
+		"setopt PipeFail":        true,
+		"eval 'set +o pipefail'": true,
+		"emulate -R zsh":         true,
+		"EMULATE sh":             true,
+		"echo emulated":          false,
+		"set -e":                 false,
+		"ls":                     false,
+	} {
+		if got := mentionsPipefail(strings.Fields(command)); got != want {
+			t.Errorf("mentionsPipefail(%q) = %t, want %t", command, got, want)
+		}
+	}
+}
+
+func TestFirstWatchedVerbLooksThroughPayloadsAndStopsAtTheDepthBound(t *testing.T) {
+	t.Parallel()
+	if _, found := firstWatchedVerb([]string{"echo hi", "wb worktree list"}, 0); found {
+		t.Error("a command line with no watched verb reported one")
+	}
+	verb, found := firstWatchedVerb([]string{"echo hi", "env X=1 bash -c \"sh -c 'wb pr land o/r#1'\""}, 0)
+	if !found || strings.Join(verb.Path, " ") != "pr land" {
+		t.Errorf("firstWatchedVerb through two shells = %v, %t, want pr land", verb.Path, found)
+	}
+	if verb, found := firstWatchedVerb([]string{`echo "$(wb pr create --quiet)"`}, 0); !found || strings.Join(verb.Path, " ") != "pr create" {
+		t.Errorf("firstWatchedVerb in a quoted substitution = %v, %t, want pr create", verb.Path, found)
+	}
+	if _, found := firstWatchedVerb([]string{"wb pr create"}, maxShellUnwrapDepth+1); found {
+		t.Error("firstWatchedVerb went past the depth bound")
+	}
+	if _, found := firstWatchedVerb([]string{"bash -c 'wb pr create'"}, 0); !found {
+		t.Error("firstWatchedVerb missed a verb in a payload")
+	}
+	if _, found := firstWatchedVerb([]string{"FOO=1"}, 0); found {
+		t.Error("an assignment on its own reported a verb")
 	}
 }

@@ -345,35 +345,111 @@ func TestEveryStatefulWBVerbIsAWBCommand(t *testing.T) {
 	}
 }
 
-func TestEveryValueTakingFlagOfAWatchedVerbIsKnownToTheMaskedPipelinePolicy(t *testing.T) {
-	t.Parallel()
+// watchedCommands returns every command the masked-pipeline policy watches and
+// every command below one, so the leaves of `worktree merge` are read as well
+// as the entry the policy lists.
+func watchedCommands(t *testing.T) []*cobra.Command {
+	t.Helper()
 	root := newRootCmd()
-	missing := map[string]bool{}
-	check := func(flag *pflag.Flag) {
-		if flag.Value.Type() == "bool" || flag.NoOptDefVal != "" {
-			return
-		}
-		if !agentguard.MaskedPipelineValueFlag("--" + flag.Name) {
-			missing["--"+flag.Name] = true
-		}
-		if flag.Shorthand != "" && !agentguard.MaskedPipelineValueFlag("-"+flag.Shorthand) {
-			missing["-"+flag.Shorthand] = true
+	var found []*cobra.Command
+	var visit func(command *cobra.Command)
+	visit = func(command *cobra.Command) {
+		found = append(found, command)
+		for _, child := range command.Commands() {
+			visit(child)
 		}
 	}
 	for _, path := range agentguard.MaskedPipelineVerbPaths() {
 		command, _, err := root.Find(path)
-		if err != nil {
+		if err != nil || command == root {
 			continue
+		}
+		visit(command)
+	}
+	return found
+}
+
+func commandPathWords(command *cobra.Command) []string {
+	return strings.Fields(strings.TrimPrefix(command.CommandPath(), "wb "))
+}
+
+// takesValue reports whether a flag needs a value word, the way the policy has
+// to read it: a boolean flag, or one that stands alone when given no value,
+// does not.
+func takesValue(flag *pflag.Flag) bool {
+	return flag.Value.Type() != "bool" && flag.NoOptDefVal == ""
+}
+
+// TestEveryValueTakingFlagOfAWatchedVerbIsKnownToTheMaskedPipelinePolicy keeps
+// the policy's flag tables in step with the command tree in both directions: a
+// flag that takes a value must be known as one, or the policy reads its value
+// as a word of the command, and a boolean flag must not be known as one, or the
+// policy steps over the word after it (`wb migrate --resume --apply` would
+// lose its --apply). It reads every command below a watched verb with the
+// flags that command has, local and inherited.
+func TestEveryValueTakingFlagOfAWatchedVerbIsKnownToTheMaskedPipelinePolicy(t *testing.T) {
+	t.Parallel()
+	problems := map[string]bool{}
+	for _, command := range watchedCommands(t) {
+		path := commandPathWords(command)
+		check := func(flag *pflag.Flag) {
+			spellings := []string{"--" + flag.Name}
+			if flag.Shorthand != "" {
+				spellings = append(spellings, "-"+flag.Shorthand)
+			}
+			for _, spelling := range spellings {
+				known := agentguard.MaskedPipelineValueFlag(path, spelling)
+				switch {
+				case takesValue(flag) && !known:
+					problems["add "+spelling+" to the value flags for `wb "+strings.Join(path, " ")+"` in internal/agentguard/pipeline.go"] = true
+				case !takesValue(flag) && known:
+					problems["remove "+spelling+" from the value flags for `wb "+strings.Join(path, " ")+"` in internal/agentguard/pipeline.go: it is a boolean flag there"] = true
+				}
+			}
 		}
 		command.LocalFlags().VisitAll(check)
 		command.InheritedFlags().VisitAll(check)
 	}
-	if len(missing) > 0 {
-		names := make([]string, 0, len(missing))
-		for name := range missing {
-			names = append(names, name)
+	if len(problems) > 0 {
+		lines := make([]string, 0, len(problems))
+		for line := range problems {
+			lines = append(lines, line)
 		}
-		sort.Strings(names)
-		t.Errorf("add these value-taking flags to valueFlags in internal/agentguard/pipeline.go:\n%q", names)
+		sort.Strings(lines)
+		t.Errorf("the masked-pipeline policy's flag tables have drifted from the command tree:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestWatchedCommandsIncludeTheLeavesOfWorktreeMerge(t *testing.T) {
+	t.Parallel()
+	leaves := 0
+	for _, command := range watchedCommands(t) {
+		if path := commandPathWords(command); len(path) == 3 && path[0] == "worktree" && path[1] == "merge" {
+			leaves++
+		}
+	}
+	if leaves == 0 {
+		t.Error("the flag drift test does not descend into the leaves of `worktree merge`")
+	}
+}
+
+func TestScopedReadOnlyFlagsAreBooleanFlagsOfTheirVerb(t *testing.T) {
+	t.Parallel()
+	root := newRootCmd()
+	for _, scoped := range agentguard.MaskedPipelineScopedReadOnlyFlags() {
+		command, _, err := root.Find(scoped.Path)
+		if err != nil || command == root {
+			t.Errorf("the policy reads %s as read-only on `wb %s`, which is not a wb command", scoped.Name, strings.Join(scoped.Path, " "))
+			continue
+		}
+		var flag *pflag.Flag
+		if strings.HasPrefix(scoped.Name, "--") {
+			flag = command.Flags().Lookup(strings.TrimPrefix(scoped.Name, "--"))
+		} else {
+			flag = command.Flags().ShorthandLookup(strings.TrimPrefix(scoped.Name, "-"))
+		}
+		if flag == nil || takesValue(flag) {
+			t.Errorf("%s is not a boolean flag of `wb %s`", scoped.Name, strings.Join(scoped.Path, " "))
+		}
 	}
 }

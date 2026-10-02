@@ -87,16 +87,32 @@ it is in effect where the pipeline runs, and otherwise the command is refused:
   because a child shell does not inherit the parent's; only its own options
   (`-o pipefail`) or its own body turn it on;
 - a `set -o pipefail` inside `( )`, `$( )` or a backtick substitution is gone
-  once that group closes, and one behind `&&`, `||`, a pipe or `then`, or in a
-  group that is, may not have run;
+  once that group closes, and one behind `&&`, `||` (also at the end of the
+  previous line), a pipe or `&`, in a `then`, `else`, `do` or `case` body, in a
+  function body, or in a group that is, may not have run, so only an
+  unconditional top-level `set` or `setopt` counts;
+- any other command that names pipefail in any spelling or runs `emulate`
+  (`if x; then set +o pipefail; fi`, `command set +o pipefail`, `eval 'set +o
+  pipefail'`, `shopt -u -o pipefail`, `emulate sh`) leaves it unknown, which
+  counts as off, and bash's option name is case sensitive (`set -o PIPEFAIL` is
+  not a switch-on);
 - the last option wins (`set -o pipefail +o pipefail`, `setopt nopipefail`,
   `NO_PIPE_FAIL`), and words after `--` are positional parameters;
 - a group whose output is piped (`{ cmd; } 2>&1 | tail`, `(cmd) | tail`) hides
   the status of the group, so the pipefail in effect where the group opened
   decides, and backtick and double-quoted `$( )` substitutions are read like
   `$( )`;
+- a piped `done`, `fi` or `esac` pipes the whole loop, conditional or `case`,
+  like a piped group, and a piped `bash -c`, `zsh -lc` or other shell wrapper
+  hides the status of whatever its payload runs, so a watched verb in either is
+  refused unless pipefail is in effect where the pipe runs;
 - a flag's value is never read as a marker: in `wb pr create --title --help` the
-  title is `--help`.
+  title is `--help`, and `--resume` and `--verify` take a value only on the
+  verbs where they do (`session move`, `migrate`); `sync -n` and `self-update
+  --check` are read-only requests, like `--dry-run`;
+- the text of a heredoc inside a double-quoted `$( )` (a commit message or pull
+  request body quoting `wb pr create | tail` in backticks) is prose, not a
+  command; a real substitution in the same `$( )` still is one.
 
 There is no other escape hatch and no environment override. The refusal explains
 the hazard in two lines and names the fix: `--quiet` where the verb has it, or,
