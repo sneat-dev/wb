@@ -117,6 +117,7 @@ func TestSecureHookCapabilityRootsRejectBlockedRuntimeAndSkipBlockedCache(t *tes
 	t.Setenv("GOMODCACHE", "relative")
 	t.Setenv("GOCACHE", "relative")
 	for _, name := range []string{"blocked runtime", "blocked cache"} {
+		//nolint:paralleltest // The cache case temporarily replaces process-wide GOCACHE with t.Setenv.
 		t.Run(name, func(t *testing.T) {
 			root, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
