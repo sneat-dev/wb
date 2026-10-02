@@ -18,6 +18,17 @@ package quality
 // error is what makes it safe to gate on: false negatives cost coverage, never
 // a broken build.
 //
+// The analysis is per platform. deadcode type-checks one GOOS at a time, so a
+// Linux-only file (procfs readers, cgroup supervision) is invisible on macOS
+// and a Windows-only helper is invisible on Linux: the same tree gave a
+// different verdict depending on the host that ran the gate. The gate now
+// analyses every supported platform (DefaultDeadcodePlatforms) with a fixed
+// GOARCH and CGO setting, whatever host runs it, and calls a function dead
+// only when it is unreachable on every one of them. A function reachable on
+// any supported platform is in use. A function that exists on one platform
+// only cannot be told apart from "absent" on the others in a per-platform
+// report, so it is never reported.
+//
 // Real repositories start with existing unreachable code, so a gate that
 // demanded zero findings could never be switched on. The baseline is the
 // ratchet: today's findings are recorded and tolerated, and only findings
@@ -30,11 +41,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // DefaultDeadcodeBaseline is the repository-relative baseline path. It sits
@@ -45,7 +58,22 @@ const DefaultDeadcodeBaseline = ".wb/deadcode-baseline.txt"
 // DefaultDeadcodeTool pins the analyzer the way .wb/quality.yaml pins
 // golangci-lint: an unpinned analyzer silently changes the gate's verdict
 // between runs, which is the one thing a ratchet must never do.
-var DefaultDeadcodeTool = []string{"go", "run", "golang.org/x/tools/cmd/deadcode@v0.50.0"}
+var DefaultDeadcodeTool = []string{"go", "run", deadcodeToolPackage}
+
+// DefaultDeadcodePlatforms is the supported GOOS set the gate analyses. A
+// function is reported only when it is unreachable on every entry, so the
+// verdict does not depend on which of them the gate happens to run on.
+var DefaultDeadcodePlatforms = []string{"linux", "darwin", "windows"}
+
+// deadcodeAnalysisArch fixes GOARCH for every platform run, so the verdict
+// does not change between an arm64 laptop and an amd64 runner.
+const deadcodeAnalysisArch = "amd64"
+
+// deadcodeToolPackage is the pinned analyzer, installed once per run so the
+// per-platform runs execute the host binary with GOOS set for the analysis
+// only. `go run` cannot do this: it would build the analyzer itself for the
+// target platform and then fail to execute it.
+const deadcodeToolPackage = "golang.org/x/tools/cmd/deadcode@v0.50.0"
 
 // DeadcodeOptions configures one reachability run.
 type DeadcodeOptions struct {
@@ -54,8 +82,22 @@ type DeadcodeOptions struct {
 	Patterns []string
 	// BaselinePath is relative to the repository root when not absolute.
 	BaselinePath string
-	// Tool overrides the analyzer invocation; nil uses DefaultDeadcodeTool.
+	// Tool overrides the analyzer invocation. When set, the analyzer runs once
+	// per Platforms entry, or once with the host environment when Platforms is
+	// empty. When nil, the pinned analyzer is installed and run once per
+	// platform; Platforms empty then means DefaultDeadcodePlatforms.
 	Tool []string
+	// Platforms lists the GOOS values to analyse. A function is reported only
+	// when it is unreachable on all of them.
+	Platforms []string
+	// ToolDirectory is the parent directory the analyzer is installed under;
+	// empty means the operating system's temporary directory.
+	ToolDirectory string
+	// Runner starts the analyzer and the go tool; nil uses the real runner.
+	Runner runner.Runner
+	// GoCommand is the go tool used to install the pinned analyzer; empty
+	// means "go".
+	GoCommand string
 	// Filter is deadcode's -filter regular expression. Empty keeps deadcode's
 	// own default, which reports the module of the first listed package.
 	Filter string
@@ -82,6 +124,10 @@ type DeadcodeFinding struct {
 
 // DeadcodeReport is the verdict of one run.
 type DeadcodeReport struct {
+	// Platforms lists the GOOS values analysed; Findings, New and Fixed refer
+	// to functions unreachable on all of them. Empty when one unscoped run was
+	// made with an explicit analyzer.
+	Platforms []string `yaml:"platforms,omitempty" json:"platforms,omitempty"`
 	// Findings is every unreachable function found, baselined or not.
 	Findings []DeadcodeFinding `yaml:"findings" json:"findings"`
 	// New is the gate: findings absent from the baseline. Non-empty fails.
@@ -121,9 +167,29 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
+	run := options.Runner
+	if run == nil {
+		run = runner.New()
+	}
+	runContext := ctx
+	if options.Timeout > 0 {
+		var cancel context.CancelFunc
+		runContext, cancel = context.WithTimeout(ctx, options.Timeout)
+		defer cancel()
+	}
+
 	tool := options.Tool
+	platforms := options.Platforms
 	if len(tool) == 0 {
-		tool = DefaultDeadcodeTool
+		binary, cleanup, err := installDeadcodeTool(runContext, run, repositoryPath, options.GoCommand, options.ToolDirectory)
+		if err != nil {
+			return DeadcodeReport{}, err
+		}
+		defer cleanup()
+		tool = []string{binary}
+		if len(platforms) == 0 {
+			platforms = DefaultDeadcodePlatforms
+		}
 	}
 
 	arguments := append([]string(nil), tool[1:]...)
@@ -136,38 +202,28 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 	}
 	arguments = append(arguments, patterns...)
 
-	runContext := ctx
-	if options.Timeout > 0 {
-		var cancel context.CancelFunc
-		runContext, cancel = context.WithTimeout(ctx, options.Timeout)
-		defer cancel()
-	}
-
-	command := exec.CommandContext(runContext, tool[0], arguments...)
-	command.Dir = repositoryPath
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		// deadcode exits 0 even when it reports findings, so a non-zero exit
-		// is a real failure — a build error, a missing module, a timeout. It
-		// must fail the gate rather than be read as "nothing is dead".
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
+	var findings []DeadcodeFinding
+	if len(platforms) == 0 {
+		var err error
+		findings, err = runDeadcodeAnalyzer(runContext, run, repositoryPath, tool[0], arguments, nil)
+		if err != nil {
+			return DeadcodeReport{}, err
 		}
-		if runContext.Err() != nil {
-			return DeadcodeReport{}, fmt.Errorf("deadcode analysis in %s: %w: %s", repositoryPath, runContext.Err(), detail)
+	} else {
+		perPlatform := make([][]DeadcodeFinding, 0, len(platforms))
+		for _, platform := range platforms {
+			// Sequential on purpose: each analysis type-checks the whole
+			// module, and running them together would multiply the peak load.
+			found, err := runDeadcodeAnalyzer(runContext, run, repositoryPath, tool[0], arguments, deadcodePlatformEnv(platform))
+			if err != nil {
+				return DeadcodeReport{}, fmt.Errorf("platform %s: %w", platform, err)
+			}
+			perPlatform = append(perPlatform, found)
 		}
-		return DeadcodeReport{}, fmt.Errorf("deadcode analysis in %s: %w: %s", repositoryPath, err, detail)
+		findings = intersectDeadcodeFindings(perPlatform)
 	}
 
-	findings, err := parseDeadcodeOutput(stdout.Bytes())
-	if err != nil {
-		return DeadcodeReport{}, fmt.Errorf("deadcode analysis in %s: %w", repositoryPath, err)
-	}
-
-	report := DeadcodeReport{Findings: findings}
+	report := DeadcodeReport{Findings: findings, Platforms: append([]string(nil), platforms...)}
 	baselinePath := options.BaselinePath
 	if baselinePath == "" {
 		return report, nil
@@ -290,4 +346,96 @@ func WriteDeadcodeBaseline(path string, findings []DeadcodeFinding) error {
 		return fmt.Errorf("write deadcode baseline %s: %w", path, err)
 	}
 	return nil
+}
+
+// deadcodePlatformEnv is the analysis environment for one GOOS: the platform,
+// a fixed architecture, and cgo off so a cgo file cannot make the analysis
+// differ between a host with a C toolchain and one without.
+func deadcodePlatformEnv(platform string) []string {
+	return []string{"GOOS=" + platform, "GOARCH=" + deadcodeAnalysisArch, "CGO_ENABLED=0"}
+}
+
+// runDeadcodeAnalyzer runs the analyzer once and parses its findings. extraEnv
+// is appended to the process environment, so its entries win.
+func runDeadcodeAnalyzer(ctx context.Context, run runner.Runner, repositoryPath, program string, arguments, extraEnv []string) ([]DeadcodeFinding, error) {
+	var options runner.RunOptions
+	if len(extraEnv) > 0 {
+		options.Env = append(os.Environ(), extraEnv...)
+	}
+	result, err := run.RunOpts(ctx, repositoryPath, options, program, arguments...)
+	if err != nil {
+		// deadcode exits 0 even when it reports findings, so a non-zero exit
+		// is a real failure — a build error, a missing module, a timeout. It
+		// must fail the gate rather than be read as "nothing is dead".
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = strings.TrimSpace(result.Stdout)
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("deadcode analysis in %s: %w: %s", repositoryPath, ctx.Err(), detail)
+		}
+		return nil, fmt.Errorf("deadcode analysis in %s: %w: %s", repositoryPath, err, detail)
+	}
+	findings, err := parseDeadcodeOutput([]byte(result.Stdout))
+	if err != nil {
+		return nil, fmt.Errorf("deadcode analysis in %s: %w", repositoryPath, err)
+	}
+	return findings, nil
+}
+
+// intersectDeadcodeFindings keeps the functions present in every platform's
+// findings, in identity order. The first platform's position is kept.
+func intersectDeadcodeFindings(perPlatform [][]DeadcodeFinding) []DeadcodeFinding {
+	counts := make(map[string]int)
+	for _, findings := range perPlatform {
+		seen := make(map[string]bool, len(findings))
+		for _, finding := range findings {
+			if !seen[finding.Identity] {
+				seen[finding.Identity] = true
+				counts[finding.Identity]++
+			}
+		}
+	}
+	var common []DeadcodeFinding
+	for _, finding := range perPlatform[0] {
+		if counts[finding.Identity] == len(perPlatform) {
+			common = append(common, finding)
+			counts[finding.Identity] = 0 // a duplicate identity is reported once
+		}
+	}
+	return common
+}
+
+// installDeadcodeTool installs the pinned analyzer for the host into a
+// temporary directory and returns the binary and a cleanup. GOOS and GOARCH
+// are pinned to the host so an ambient cross-compilation setting cannot
+// produce a binary this machine cannot execute.
+func installDeadcodeTool(ctx context.Context, run runner.Runner, repositoryPath, goCommand, parent string) (string, func(), error) {
+	if goCommand == "" {
+		goCommand = "go"
+	}
+	directory, err := os.MkdirTemp(parent, "wb-deadcode-tool-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create deadcode analyzer directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(directory) }
+	env := append(os.Environ(), "GOBIN="+directory, "GOOS="+runtime.GOOS, "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0", "GOFLAGS=")
+	result, err := run.RunOpts(ctx, repositoryPath, runner.RunOptions{Env: env, CaptureCombined: true}, goCommand, "install", deadcodeToolPackage)
+	if err != nil {
+		cleanup()
+		output := result.CombinedOutput
+		if output == "" {
+			output = result.Stdout + result.Stderr
+		}
+		return "", nil, fmt.Errorf("install deadcode analyzer %s: %w: %s", deadcodeToolPackage, err, strings.TrimSpace(output))
+	}
+	return filepath.Join(directory, deadcodeBinaryName(runtime.GOOS)), cleanup, nil
+}
+
+// deadcodeBinaryName is the file `go install` writes for the analyzer on goos.
+func deadcodeBinaryName(goos string) string {
+	if goos == "windows" {
+		return "deadcode.exe"
+	}
+	return "deadcode"
 }

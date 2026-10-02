@@ -51,6 +51,11 @@ is reachable, so a function it reports is genuinely unreachable, apart from
 reflection and //go:linkname. Errors fall on the side of reporting too little,
 which is what makes this safe to gate on.
 
+The analysis runs once each for linux, darwin and windows, whatever host runs
+it, and a function is reported only when it is unreachable on all three. A
+Linux-only or Windows-only file therefore cannot make the verdict differ
+between machines.
+
 Existing unreachable code is tolerated through a baseline, so the gate can be
 switched on in a repository that is not already clean. Only findings absent
 from the baseline fail. Removing dead code, or giving it a caller, shrinks the
