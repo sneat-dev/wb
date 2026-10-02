@@ -1202,3 +1202,116 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 		t.Errorf("this test names %d document fields and the document has %d", len(handled), len(jsonFields(Document{})))
 	}
 }
+
+// TestNoEntryOfAnotherMachineCarriesAnIDOfThisMachine pins the one marker a
+// client has of whose word a field is. Another machine sends, live, this
+// machine's own entries back under its own machine entry (every id but the
+// machine's is one of this machine's), with sync facts and a merged pull
+// request of its own choosing, and publishes a snapshot that names this
+// machine's repository and task. In the document every entry of this machine
+// has route `local` and this machine's id, every other entry has another route
+// and another machine id, no id of this machine's entries appears on an entry
+// of another route, and the facts the other machine reported are carried only
+// on entries whose route says they are reported.
+func TestNoEntryOfAnotherMachineCarriesAnIDOfThisMachine(t *testing.T) {
+	t.Parallel()
+	local, _ := newSnapshotter(vmSources().collectors(), nil)
+	refreshAndSettle(t, local)
+	own := local.Document()
+	localIDs := map[string]bool{}
+	for _, id := range allIDs(own) {
+		// allIDs names each id with its kind.
+		localIDs[id[strings.LastIndex(id, " ")+1:]] = true
+	}
+	ownWorktrees, ownPulls := map[string]Worktree{}, map[string]PullRequest{}
+	for _, worktree := range own.Worktrees {
+		ownWorktrees[worktree.ID] = worktree
+	}
+	for _, pull := range own.PullRequests {
+		ownPulls[pull.ID] = pull
+	}
+	// The hostile export: this machine's own export, under another machine entry.
+	hostile := local.Export(false)
+	foreignMachine := entryID(kindMachine, "somebody-else")
+	hostile.Machine = "somebody-else"
+	fleet := *hostile.Fleet
+	hostile.Fleet = &fleet
+	fleet.Machines = []Machine{fleet.Machines[0]}
+	fleet.Machines[0].ID, fleet.Machines[0].MachineID = foreignMachine, foreignMachine
+	ahead, green, upstream := 0, true, true
+	fleet.Repositories, fleet.Worktrees, fleet.PullRequests, fleet.Agents = slices.Clone(fleet.Repositories), slices.Clone(fleet.Worktrees), slices.Clone(fleet.PullRequests), slices.Clone(fleet.Agents)
+	for index := range fleet.Repositories {
+		fleet.Repositories[index].MachineID = foreignMachine
+	}
+	for index := range fleet.Worktrees {
+		fleet.Worktrees[index].MachineID = foreignMachine
+		fleet.Worktrees[index].Ahead, fleet.Worktrees[index].Behind, fleet.Worktrees[index].HasUpstream, fleet.Worktrees[index].Lifecycle = &ahead, &ahead, &upstream, "merged"
+	}
+	for index := range fleet.PullRequests {
+		fleet.PullRequests[index].MachineID = foreignMachine
+		fleet.PullRequests[index].State, fleet.PullRequests[index].Mergeable, fleet.PullRequests[index].ChecksGreen = "merged", "clean", &green
+	}
+	for index := range fleet.Agents {
+		fleet.Agents[index].MachineID = foreignMachine
+	}
+	if err := hostile.Validate(false, newClock().Now()); err != nil {
+		t.Fatalf("the hostile export is refused at the boundary, so it tests nothing: %v", err)
+	}
+	published := remotestate.Entry{Snapshot: remotestate.Snapshot{
+		Login: "mallory", Machine: testMachine, PublishedAt: newClock().Now().Add(-time.Hour), KnownRepositories: []string{"acme/engine"},
+		Worktrees: []remotestate.WorktreeState{{Task: "vm-task-1", Repository: "acme/engine", Branch: "feature/vm-1", Lifecycle: "merged"}},
+	}}
+	sources := vmSources()
+	sources.remote = []remotestate.Entry{published}
+	reader, _ := newLive(t, sources, &fakeExporter{answer: answering(hostile, hostile)}, nil)
+	refreshAndSettle(t, reader)
+	pollAndSettle(t, reader)
+	document := reader.Document()
+	requireUniqueIDs(t, document)
+	machineID := localMachineID(testMachine)
+	routes := map[string]int{}
+	check := func(kind string, entry Entry) {
+		t.Helper()
+		routes[entry.Route]++
+		isLocal := entry.Route == RouteLocal
+		if isLocal != (entry.MachineID == machineID) || isLocal != localIDs[entry.ID] {
+			t.Errorf("%s %s has route %s, machine id %s (this machine's: %v), an id of this machine's entries: %v", kind, entry.ID, entry.Route, entry.MachineID, entry.MachineID == machineID, localIDs[entry.ID])
+		}
+	}
+	for _, machine := range document.Machines {
+		check("machine", machine.Entry)
+	}
+	for _, repository := range document.Repositories {
+		check("repository", repository.Entry)
+	}
+	for _, worktree := range document.Worktrees {
+		check("worktree", worktree.Entry)
+		// What this machine observed of its own worktree is untouched by what the
+		// other machine said of it.
+		if observed := ownWorktrees[worktree.ID]; worktree.Route == RouteLocal && (worktree.Lifecycle != observed.Lifecycle || !reflect.DeepEqual(worktree.Ahead, observed.Ahead) || !reflect.DeepEqual(worktree.HasUpstream, observed.HasUpstream)) {
+			t.Errorf("a local worktree carries what another machine reported: %+v, observed %+v", worktree, observed)
+		}
+	}
+	for _, pull := range document.PullRequests {
+		check("pull request", pull.Entry)
+		if observed := ownPulls[pull.ID]; pull.Route == RouteLocal && (pull.State != observed.State || pull.State == "merged" || pull.ChecksGreen != nil || pull.Mergeable != "") {
+			t.Errorf("a local pull request carries what another machine reported: %+v, observed %+v", pull, observed)
+		}
+	}
+	for _, agent := range document.Agents {
+		check("agent", agent.Entry)
+	}
+	if routes[RouteLocal] == 0 || routes[RouteLiveRemote] < 5 || routes[RouteCached] < 3 {
+		t.Fatalf("entries by route = %v, want this machine's, the live machine's and the published one's (the test would be vacuous)", routes)
+	}
+	// The reported facts are carried, on the entries whose route says so.
+	reported := 0
+	for _, pull := range document.PullRequests {
+		if pull.Route == RouteLiveRemote && pull.State == "merged" && pull.ChecksGreen != nil && pull.Mergeable == "clean" {
+			reported++
+		}
+	}
+	if reported != 1 {
+		t.Errorf("%d live-remote pull requests carry the other machine's report, want 1", reported)
+	}
+}

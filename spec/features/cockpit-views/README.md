@@ -750,6 +750,13 @@ not rendered. Existing field names are not renamed. Times are RFC 3339 strings. 
 entry is the exporting machine's own local entry, validated and re-mapped
 (REQ:remote-entries-replace-cached), so it carries the fields marked "local only" as that machine
 observed them; "local only" excludes `cached` entries, whose published snapshot does not hold them.
+What a `live-remote` entry says (`ahead`, `behind`, `has_upstream`, `checks_green`, `mergeable`, a
+pull request `state` of `merged`, a worktree `lifecycle`) is that machine's report, not an
+observation of this daemon. `route` is the marker of whose word a field is, and it cannot be forged:
+no entry with a route other than `local` ever carries an id of one of this machine's entries or this
+machine's `machine_id`, whatever ids the other machine sent. A client therefore decides the state of a
+task that has an entry of this machine from its `local` entries alone, and shows any other entry's
+facts as reported by its machine.
 A link of another machine's entry (`cached` or `live-remote`) is never taken as that machine sent it:
 a pull request's `url` is rebuilt by this daemon from the host of its repository (or, for a
 repository published with no host, the host of the address sent), the repository's `owner/name` and
