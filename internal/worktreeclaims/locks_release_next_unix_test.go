@@ -33,6 +33,67 @@ func retainReleaseDuplicate(t *testing.T, original *os.File) *os.File {
 	return duplicate
 }
 
+func TestLocksReclaimDeclinedUnlocksRetainedDuplicate(t *testing.T) {
+	t.Parallel()
+	directory, path := openLockDirectory(t)
+	lockPath := filepath.Join(path, ".lock")
+	if err := os.WriteFile(lockPath, []byte("operation=interrupted\npid=999999\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var duplicate *os.File
+	_, err = ReclaimInterruptedLock(directory, false, OperationLockPorts{AfterHold: func(file *os.File) {
+		duplicate = retainReleaseDuplicate(t, file)
+	}})
+	if err == nil || !strings.Contains(err.Error(), "was interrupted") {
+		t.Fatalf("declined reclaim=%v", err)
+	}
+	if _, err := duplicate.Stat(); err != nil {
+		t.Fatalf("retained descriptor was closed: %v", err)
+	}
+	after, err := os.Stat(lockPath)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("declined reclaim changed lock inode: %v", err)
+	}
+	// This reference to the same open file description remains alive, just as
+	// a forked child can keep it alive after the inspecting parent closes it.
+	recovered, err := ReclaimInterruptedLock(directory, true)
+	if err != nil {
+		t.Fatalf("declined reclaim left kernel lock held through duplicate: %v", err)
+	}
+	if err := recovered.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocksReclaimDeclinedReportsUnlockFailure(t *testing.T) {
+	t.Parallel()
+	directory, path := openLockDirectory(t)
+	lockPath := filepath.Join(path, ".lock")
+	if err := os.WriteFile(lockPath, []byte("operation=interrupted\npid=999999\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReclaimInterruptedLock(directory, false, OperationLockPorts{AfterHold: func(file *os.File) {
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}})
+	if !errors.Is(err, syscall.EBADF) || !strings.Contains(err.Error(), "unlock inspected interrupted") {
+		t.Fatalf("unlock failure was swallowed: %v", err)
+	}
+	after, statErr := os.Stat(lockPath)
+	if statErr != nil || !os.SameFile(before, after) {
+		t.Fatalf("unlock failure changed lock inode: %v", statErr)
+	}
+}
+
 func TestLocksReleaseNextEmptyLockReacquiresWithRetainedDuplicate(t *testing.T) {
 	t.Parallel()
 	directory, path := openLockDirectory(t)
