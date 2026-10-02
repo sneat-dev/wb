@@ -65,6 +65,28 @@ func TestAFutureDatedPublishedSnapshotIsNeverShownAsNewerThanNow(t *testing.T) {
 	}
 }
 
+// TestAPullRequestAPublishedSnapshotListsTwiceIsOneEntry: two worktrees of a
+// published snapshot that name the same pull request of one repository give one
+// pull request entry, and the repeat is not counted as cut.
+func TestAPullRequestAPublishedSnapshotListsTwiceIsOneEntry(t *testing.T) {
+	t.Parallel()
+	now := newClock().Now()
+	pull := &remotestate.PullRequestState{Number: 7, State: "open", URL: "https://github.com/o/r/pull/7"}
+	view := mapRemoteForTest("", "", []remotestate.Entry{{Snapshot: remotestate.Snapshot{
+		Login: "a", Machine: "twice", PublishedAt: now.Add(-time.Hour),
+		Worktrees: []remotestate.WorktreeState{
+			{Task: "first", Repository: "o/r", Branch: "first", PullRequest: pull},
+			{Task: "second", Repository: "o/r", Branch: "second", PullRequest: pull},
+		},
+	}}})
+	if len(view.pullRequests) != 1 || view.pullRequests[0].Number != 7 {
+		t.Fatalf("pull requests = %+v, want the one pull request once", view.pullRequests)
+	}
+	if len(view.machines) != 1 || view.machines[0].ExportDropped != 0 {
+		t.Errorf("machines = %+v, want one machine with nothing counted as cut", view.machines)
+	}
+}
+
 // TestAnOversizedPublishedSnapshotIsCutAtTheLiveCaps holds a published snapshot
 // to the caps of a live export: at most 2000 repositories, 2000 worktrees and
 // 500 pull requests of one machine, the same ones on every read, the rest
