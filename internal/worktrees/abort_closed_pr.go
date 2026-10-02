@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,6 +81,10 @@ func productionClosedPullRequestResolver(ctx context.Context, worktree, slug, ba
 	return landingReceiptService().ResolveClosedPullRequest(ctx, worktree, slug, base, pointer)
 }
 
+func closedPullRequestAuditName(task, repository, head string) string {
+	return closedPullRequestAuditNamePattern.ReplaceAllString(task+"-"+strings.ReplaceAll(repository, "/", "-")+"-"+head, "_") + ".json"
+}
+
 // recordClosedPullRequestDiscard writes the audit record that outlives the
 // checkout. The name carries task, repository, and exact head, so two
 // discards never overwrite each other and a re-run of the same one rewrites
@@ -92,13 +97,16 @@ func recordClosedPullRequestDiscard(home, task string, result *AbortResult) erro
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create closed pull request audit directory: %w", err)
 	}
-	name := closedPullRequestAuditNamePattern.ReplaceAllString(task+"-"+strings.ReplaceAll(result.Repository, "/", "-")+"-"+result.HeadSHA, "_") + ".json"
+	name := closedPullRequestAuditName(task, result.Repository, result.HeadSHA)
 	path := filepath.Join(directory, name)
 	record := closedPullRequestAudit{
 		Task: task, Repository: result.Repository, Branch: result.Branch, WorktreeDir: result.WorktreeDir,
 		HeadSHA: result.HeadSHA, Evidence: *result.ClosedPullRequest, RecordedAt: time.Now().UTC(),
 	}
-	if err := filewrite.WriteJSONAtomic(path, record, 0o600); err != nil {
+	// The record holds only strings, an integer and a timestamp: encoding it
+	// cannot fail.
+	content, _ := json.MarshalIndent(record, "", "  ")
+	if err := filewrite.WriteBytesAtomic(directory, name, append(content, '\n'), 0o600); err != nil {
 		return fmt.Errorf("record closed pull request discard for %s: %w", result.Repository, err)
 	}
 	result.ClosedPullRequest.AuditPath = path

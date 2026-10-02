@@ -190,4 +190,14 @@ func TestE2EAbortDiscardedClosedPullRequestReprovesUnderTheTaskLock(t *testing.T
 	if _, err := abortWithPorts(context.Background(), options, ports); err == nil || !strings.Contains(err.Error(), "could not be re-read") {
 		t.Fatalf("re-read error = %v", err)
 	}
+
+	// A failed audit write refuses the discard before anything is removed.
+	ports = closedPullRequestPorts(answerWith(pull))
+	ports.recordClosedPullRequest = func(string, string, *AbortResult) error { return errors.New("disk full") }
+	if _, err := abortWithPorts(context.Background(), options, ports); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("audit failure error = %v", err)
+	}
+	if _, statErr := os.Stat(created.WorktreeDir); statErr != nil {
+		t.Fatalf("worktree removed although its audit record failed: %v", statErr)
+	}
 }
