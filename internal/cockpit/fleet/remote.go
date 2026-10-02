@@ -79,9 +79,10 @@ const (
 	metricsOnlyInterval = 30 * time.Second
 	metricsDemandWindow = 60 * time.Second
 	// maxRemoteBackoff caps the delay between attempts on a machine that fails,
-	// and maxAuthBackoff the delay after a refused SSH login (auth_failed): a
-	// login that is refused stays refused until a person repairs it, and each
-	// attempt is an entry in the remote's authentication log.
+	// and maxAuthBackoff the delay before SSH is tried again after a refused
+	// login (auth_failed): a login that is refused stays refused until a person
+	// repairs it, and each attempt is an entry in the remote's authentication
+	// log. It is SSH's alone: an HTTP route of the same machine keeps the other.
 	maxRemoteBackoff = 5 * time.Minute
 	maxAuthBackoff   = time.Hour
 	// fleetDemandWindow is how long after a read of the fleet document the other
@@ -89,8 +90,10 @@ const (
 	// read once per idleKeepalive (or per interval, when that is longer).
 	fleetDemandWindow = 5 * time.Minute
 	idleKeepalive     = 15 * time.Minute
-	// minRemoteInterval is the least time between two fleet exports of a machine,
-	// whatever cockpit.refresh_interval says.
+	// minRemoteInterval is the least time between the starts of two exports of a
+	// machine, of either kind and whatever came of the first, and so also the
+	// least refresh interval a machine is read at, whatever
+	// cockpit.refresh_interval says.
 	minRemoteInterval = 30 * time.Second
 	// remoteExportTimeout bounds one machine's export over all its transports,
 	// whatever a transport's own timeout is.
@@ -267,15 +270,16 @@ func (f fallback) after(started time.Time, result exportResult) fallback {
 	return fallback{}
 }
 
-// routed is the transports an export may use: all of them, in order, or SSH
-// alone within a cool-down.
-func routed(transports []RemoteTransport, cooling bool) []RemoteTransport {
-	if !cooling {
+// routed is the transports an export may use: all of them, in order; SSH alone
+// within a cool-down; and every one but SSH while SSH is barred after a refused
+// login, which comes first.
+func routed(transports []RemoteTransport, cooling, sshBarred bool) []RemoteTransport {
+	if !cooling && !sshBarred {
 		return transports
 	}
 	var kept []RemoteTransport
 	for _, transport := range transports {
-		if transport.Name == TransportSSH {
+		if (transport.Name == TransportSSH) != sshBarred {
 			kept = append(kept, transport)
 		}
 	}
@@ -299,10 +303,37 @@ type remoteSchedule struct {
 	asked  time.Time
 	// failures counts the attempts that failed since the last success.
 	failures int
+	// earliest is the soonest any export of the machine, of either kind, may
+	// start: every export is a login to it.
+	earliest time.Time
+	// authFailures counts the SSH logins that were refused since the last export
+	// SSH answered, and authUntil is until when SSH is not tried again.
+	authFailures int
+	authUntil    time.Time
+}
+
+// exported is how one export ended, as far as the schedule cares: which kind it
+// was, whether it brought an envelope, whether SSH supplied it, and whether it
+// failed with a refused SSH login (auth_failed).
+type exported struct {
+	metricsOnly, ok, ssh, refused bool
+}
+
+// sshBarred reports whether SSH is not to be tried at now, after a refused
+// login. The bar is on that transport alone: a machine that also has an HTTP
+// route is still read over it, on the ordinary backoff.
+func (r remoteSchedule) sshBarred(now time.Time) bool {
+	return now.Before(r.authUntil)
 }
 
 // due reports whether an export is due at now, and whether it is the
-// metrics-only one. A fleet export is due when a client read the fleet document
+// metrics-only one. sshAlone says SSH is the machine's only transport.
+//
+// Nothing is due before earliest (minRemoteInterval after the last export of
+// either kind started, whatever came of it), nor, for a machine read over SSH
+// alone, while SSH is barred after a refused login.
+//
+// A fleet export is due when a client read the fleet document
 // within fleetDemandWindow and the machine's interval has passed (nextFleet), or,
 // with no such reader, when its keepalive has (idleFleet); a machine never read
 // is due at once. So the first reader after a quiet time finds the export due
@@ -311,7 +342,10 @@ type remoteSchedule struct {
 // asked for the machine's metrics within metricsDemandWindow, at most every
 // metricsOnlyInterval, and only while the machine is not failing (a failing
 // machine is retried by its fleet export's backoff alone).
-func (r remoteSchedule) due(now time.Time) (fetch, metricsOnly bool) {
+func (r remoteSchedule) due(now time.Time, sshAlone bool) (fetch, metricsOnly bool) {
+	if now.Before(r.earliest) || (sshAlone && r.sshBarred(now)) {
+		return false, false
+	}
 	viewed := !r.viewed.IsZero() && now.Sub(r.viewed) <= fleetDemandWindow
 	if (viewed && !now.Before(r.nextFleet)) || !now.Before(r.idleFleet) {
 		return true, false
@@ -322,27 +356,39 @@ func (r remoteSchedule) due(now time.Time) (fetch, metricsOnly bool) {
 	return false, false
 }
 
-// after is the schedule once an export started at started has ended. A success
+// after is the schedule once an export started at started has ended as outcome.
+// Whatever came of it, and whichever kind it was, the next export of either kind
+// is at least minRemoteInterval on. A success
 // clears the failures, sets the next fleet export one interval on for a reader
 // and one keepalive on without one (for a fleet export), and the next
 // metrics-only export metricsOnlyInterval on (every export carries the
 // metrics). A failed fleet export is tried again after a delay that doubles
-// with each failure up to limit, never sooner than the interval and, with no
-// reader, never sooner than the keepalive; a failed metrics-only export leaves
-// the fleet export's time alone and stops the metrics-only exports until a
-// success.
-func (r remoteSchedule) after(started time.Time, metricsOnly, ok bool, interval, limit time.Duration) remoteSchedule {
-	if ok {
+// with each failure up to maxRemoteBackoff, never sooner than the interval and,
+// with no reader, never sooner than the keepalive; a failed metrics-only export
+// leaves the fleet export's time alone and stops the metrics-only exports until
+// a success. A refused SSH login, in an export of either kind, bars SSH for a
+// delay that doubles with each refusal up to maxAuthBackoff, for both kinds; an
+// export SSH answers lifts the bar.
+func (r remoteSchedule) after(started time.Time, outcome exported, interval time.Duration) remoteSchedule {
+	r.earliest = started.Add(minRemoteInterval)
+	switch {
+	case outcome.ok && outcome.ssh:
+		r.authFailures, r.authUntil = 0, time.Time{}
+	case !outcome.ok && outcome.refused:
+		r.authFailures++
+		r.authUntil = started.Add(remoteBackoff(interval, r.authFailures, maxAuthBackoff))
+	}
+	if outcome.ok {
 		r.failures = 0
 		r.nextMetrics = started.Add(metricsOnlyInterval)
-		if !metricsOnly {
+		if !outcome.metricsOnly {
 			r.nextFleet, r.idleFleet = started.Add(interval), started.Add(keepalive(interval))
 		}
 		return r
 	}
 	r.failures++
-	if !metricsOnly {
-		delay := remoteBackoff(interval, r.failures, limit)
+	if !outcome.metricsOnly {
+		delay := remoteBackoff(interval, r.failures, maxRemoteBackoff)
 		r.nextFleet, r.idleFleet = started.Add(delay), started.Add(max(delay, keepalive(interval)))
 	}
 	return r
@@ -352,14 +398,6 @@ func (r remoteSchedule) after(started time.Time, metricsOnly, ok bool, interval,
 // looking at.
 func keepalive(interval time.Duration) time.Duration {
 	return max(idleKeepalive, interval)
-}
-
-// backoffLimit is the cap of the delay after an export that failed with code.
-func backoffLimit(code string) time.Duration {
-	if code == RemoteErrorAuthFailed {
-		return maxAuthBackoff
-	}
-	return maxRemoteBackoff
 }
 
 // remoteBackoff is the delay before the attempt that follows failures failed
@@ -844,6 +882,12 @@ func (s *Snapshotter) runRemotes(ctx context.Context) {
 	}
 }
 
+// sshAlone reports whether SSH is the only transport the machine can be read
+// over: it has no HTTP route, or the daemon has no HTTP transport.
+func (s *Snapshotter) sshAlone(machine *liveMachine) bool {
+	return machine.target.HTTP == nil || !slices.ContainsFunc(s.transports, func(transport RemoteTransport) bool { return transport.Name == TransportHTTP })
+}
+
 // remoteInterval is the time between two fleet exports of a machine a client is
 // reading: the refresh interval, and never less than minRemoteInterval.
 func (s *Snapshotter) remoteInterval() time.Duration {
@@ -894,7 +938,7 @@ func (s *Snapshotter) pollRemotes(ctx context.Context) {
 		if viewed := s.fleetAsked.Load(); viewed != 0 {
 			schedule.viewed = time.Unix(0, viewed)
 		}
-		fetch, metricsOnly := schedule.due(now)
+		fetch, metricsOnly := schedule.due(now, s.sshAlone(machine))
 		if !fetch {
 			continue
 		}
@@ -945,9 +989,9 @@ func (s *Snapshotter) exportRemote(parent context.Context, machine *liveMachine,
 	defer cancel()
 	key := machine.target.Machine
 	s.mu.RLock()
-	cooling := machine.cooling.active(started)
+	cooling, barred := machine.cooling.active(started), machine.schedule.sshBarred(started)
 	s.mu.RUnlock()
-	result := exportFrom(ctx, routed(s.transports, cooling), machine.target, metricsOnly, s.now)
+	result := exportFrom(ctx, routed(s.transports, cooling, barred), machine.target, metricsOnly, s.now)
 	received := s.now()
 	var view liveView
 	var digest [sha256.Size]byte
@@ -1019,12 +1063,14 @@ func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine,
 	}
 	if result.warming {
 		if machine.fresh(received, interval) {
-			machine.schedule = machine.schedule.after(started, metricsOnly, true, interval, maxRemoteBackoff)
+			machine.schedule = machine.schedule.after(started, exported{metricsOnly: metricsOnly, ok: true}, interval)
 			return false
 		}
 		result = exportResult{failure: RemoteErrorWarmingUp}
 	}
-	machine.schedule = machine.schedule.after(started, metricsOnly, result.ok, interval, backoffLimit(result.failure))
+	machine.schedule = machine.schedule.after(started, exported{
+		metricsOnly: metricsOnly, ok: result.ok, ssh: result.transport == TransportSSH, refused: result.failure == RemoteErrorAuthFailed,
+	}, interval)
 	if !result.ok {
 		publish = machine.remoteError != result.failure
 		machine.remoteError = result.failure

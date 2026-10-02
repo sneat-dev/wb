@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -320,29 +319,28 @@ func TestFailedSSHExportShowsATypedErrorAndNeverTheRemotesText(t *testing.T) {
 	otherGeneration := bytes.Replace(marshalled(t, full), []byte(`"schema_version":1`), []byte(`"schema_version":2`), 1)
 	unknownField := bytes.Replace(marshalled(t, full), []byte(`{"schema_version":1`), []byte(`{"commands":["`+said+`"],"schema_version":1`), 1)
 	for name, test := range map[string]struct {
-		answer   func([]string) sshAnswer
-		hang     bool
-		noSSH    bool
-		want     string
-		noStderr bool
-		quiet    bool
-		logged   string
+		answer func([]string) sshAnswer
+		hang   bool
+		noSSH  bool
+		want   string
+		quiet  bool
+		logged string
 	}{
 		"an unresolvable host":  {answer: failingSSH(255, "", "ssh: Could not resolve hostname "+said), want: RemoteErrorSSHUnavailable},
 		"a refused login":       {answer: failingSSH(255, "", said+": Permission denied (publickey)."), want: RemoteErrorAuthFailed},
-		"a deadline overrun":    {hang: true, want: RemoteErrorTimeout, noStderr: true},
+		"a deadline overrun":    {hang: true, want: RemoteErrorTimeout},
 		"no wb":                 {answer: failingSSH(127, "", "sh: wb: command not found "+said), want: RemoteErrorWBMissing},
 		"an old wb":             {answer: failingSSH(2, "", `unknown command "cockpit export" `+said), want: RemoteErrorWBTooOld},
 		"no daemon":             {answer: failingSSH(1, typed(ErrorDaemonNotRunning), "wb cockpit export: daemon_not_running "+said), want: RemoteErrorDaemonNotRunning},
 		"a daemon that refuses": {answer: failingSSH(1, typed(ErrorExportRefused), said), want: RemoteErrorExportRefused},
 		"a failed export":       {answer: failingSSH(1, typed(ErrorExportFailed), said), want: RemoteErrorBadPayload},
-		"an invalid payload":    {answer: func([]string) sshAnswer { return sshAnswer{stdout: unknownField} }, want: RemoteErrorBadPayload, noStderr: true, quiet: true},
+		"an invalid payload":    {answer: func([]string) sshAnswer { return sshAnswer{stdout: unknownField} }, want: RemoteErrorBadPayload, quiet: true},
 		"not an envelope at all": {answer: func([]string) sshAnswer {
 			return sshAnswer{stdout: append([]byte("Welcome to "+said+"\n"), marshalled(t, full)...)}
-		}, want: RemoteErrorBadPayload, noStderr: true, logged: "bad_payload: output before the envelope)"},
-		"a wb of another generation":  {answer: func([]string) sshAnswer { return sshAnswer{stdout: otherGeneration} }, want: RemoteErrorWBTooOld, noStderr: true},
-		"no local ssh":                {noSSH: true, want: RemoteErrorSSHUnavailable, noStderr: true},
-		"a daemon that is warming up": {answer: failingSSH(1, typed(ErrorWarmingUp), said), want: RemoteErrorWarmingUp, noStderr: true, quiet: true},
+		}, want: RemoteErrorBadPayload, logged: "bad_payload: output before the envelope)"},
+		"a wb of another generation":  {answer: func([]string) sshAnswer { return sshAnswer{stdout: otherGeneration} }, want: RemoteErrorWBTooOld},
+		"no local ssh":                {noSSH: true, want: RemoteErrorSSHUnavailable},
+		"a daemon that is warming up": {answer: failingSSH(1, typed(ErrorWarmingUp), said), want: RemoteErrorWarmingUp, quiet: true},
 	} {
 		runner := &fakeSSH{answer: test.answer, hang: test.hang}
 		sources := &fakeSources{}
@@ -385,8 +383,12 @@ func TestFailedSSHExportShowsATypedErrorAndNeverTheRemotesText(t *testing.T) {
 		if got := logs.count("the ssh export of vm failed (" + test.want); (got == 1) == test.quiet || logs.count(test.logged) == 0 {
 			t.Errorf("%s: %d log lines of the ssh failure: %q", name, got, logs.all())
 		}
-		if test.noStderr == (logs.count(said) > 0) && !test.noSSH {
-			t.Errorf("%s: the log = %q", name, logs.all())
+		// Nothing ssh or the remote wrote is in the log either: the dashboard's log
+		// route serves it.
+		for _, absent := range []string{said, "Permission denied", "command not found", "unknown command", "resolve hostname", "vm.example"} {
+			if logs.count(absent) > 0 {
+				t.Errorf("%s: the log holds %q: %q", name, absent, logs.all())
+			}
 		}
 		// The next success clears the code, after the failure's backoff.
 		runner.mu.Lock()
@@ -430,7 +432,7 @@ func TestAFailingSSHMachineIsRetriedWithADelayThatDoublesToFiveMinutes(t *testin
 		t.Errorf("the failing machine = %+v", vm)
 	}
 	// The same failure, five times, is logged once.
-	if got := logs.count("the ssh export of vm failed (ssh_unavailable: ssh: connect to host"); got != 1 {
+	if got := logs.count("the ssh export of vm failed (ssh_unavailable)"); got != 1 {
 		t.Errorf("%d log lines of one repeated failure: %q", got, logs.all())
 	}
 }
@@ -581,18 +583,17 @@ func TestTheLocalSSHIsSearchedForUntilFoundKeptAndSearchedForAgainWhenItCannotBe
 	}
 }
 
-// TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog: the end of what ssh or
-// the remote writes to stderr (a long banner cannot push the refusal out of it)
-// is rendered as one line of printable characters, at most
-// remotessh.MaxDiagnosticBytes, and written to the daemon's log once per code,
-// however the remote words it each time; the error an export returns is its
-// code and nothing else.
-func TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog(t *testing.T) {
+// TestSSHStderrDecidesTheCodeFromItsEndAndGoesNowhere: the end of what ssh or
+// the remote writes to stderr is held (a long banner cannot push the refusal out
+// of it) to tell a refused login from an unreachable host, and is then dropped:
+// the error an export returns is its code, and the log line is the code, written
+// once per code.
+func TestSSHStderrDecidesTheCodeFromItsEndAndGoesNowhere(t *testing.T) {
 	t.Parallel()
 	attempt := 0
 	runner := &fakeSSH{answer: func([]string) sshAnswer {
 		attempt++
-		banner := strings.Repeat("banner \x1b[31m\u202e\u2028", 400)
+		banner := strings.Repeat(sentinel+"banner \x1b[31m\u202e\u2028", 400)
 		return sshAnswer{stdout: []byte(sentinel + "stdout"), err: exitStatus(255),
 			stderr: []byte(banner + fmt.Sprintf("\r\nattempt %d\x00\x07 alex@vm.example: Permission denied (publickey).\n", attempt))}
 	}}
@@ -610,17 +611,8 @@ func TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog(t *testing.T) {
 			t.Fatalf("the error = %v", err)
 		}
 	}
-	lines := logs.all()
-	if len(lines) != 1 {
-		t.Fatalf("%d log lines of one failure worded three ways: %q", len(lines), lines)
-	}
-	line := lines[0]
-	if !strings.HasPrefix(line, "cockpit fleet: the ssh export of vm failed (auth_failed: ...") || !strings.HasSuffix(line, "attempt 1 alex@vm.example: Permission denied (publickey).)") ||
-		len(line) > remotessh.MaxDiagnosticBytes+100 || strings.Contains(line, "stdout") ||
-		strings.ContainsFunc(line, func(character rune) bool {
-			return character != ' ' && !strconv.IsPrint(character) || character == '\u202e'
-		}) {
-		t.Fatalf("the log line = %q", line)
+	if lines := logs.all(); len(lines) != 1 || lines[0] != "cockpit fleet: the ssh export of vm failed (auth_failed)" {
+		t.Fatalf("the log of one failure worded three ways = %q", lines)
 	}
 	// Another code is another line, and after a success the same code is said
 	// again.
@@ -634,8 +626,11 @@ func TestSSHStderrIsBoundedSanitisedAndGoesOnlyToTheLog(t *testing.T) {
 	}
 	runner.set(failingSSH(127, "", "sh: wb: command not found"))
 	_ = export()
-	if got := logs.count("failed (wb_missing: sh: wb: command not found)"); got != 2 || len(logs.all()) != 3 {
+	if got := logs.count("the ssh export of vm failed (wb_missing)"); got != 2 || len(logs.all()) != 3 {
 		t.Fatalf("the log = %q", logs.all())
+	}
+	if maxSSHDiagnosticBytes != remotessh.MaxDiagnosticBytes {
+		t.Fatalf("stderr is held to %d bytes", maxSSHDiagnosticBytes)
 	}
 }
 
@@ -764,16 +759,19 @@ func TestTheCoolDownOnSSHIsAPureRule(t *testing.T) {
 		return strings.Join(joined, ",")
 	}
 	for name, test := range map[string]struct {
-		transports []RemoteTransport
-		cooling    bool
-		want       string
+		transports      []RemoteTransport
+		cooling, barred bool
+		want            string
 	}{
-		"both, not cooling": {[]RemoteTransport{http, ssh}, false, "http,ssh"},
-		"both, cooling":     {[]RemoteTransport{http, ssh}, true, "ssh"},
-		"http alone":        {[]RemoteTransport{http}, true, ""},
-		"none":              {nil, true, ""},
+		"both, not cooling":            {[]RemoteTransport{http, ssh}, false, false, "http,ssh"},
+		"both, cooling":                {[]RemoteTransport{http, ssh}, true, false, "ssh"},
+		"http alone, cooling":          {[]RemoteTransport{http}, true, false, ""},
+		"none":                         {nil, true, false, ""},
+		"both, ssh barred":             {[]RemoteTransport{http, ssh}, false, true, "http"},
+		"the bar comes before cooling": {[]RemoteTransport{http, ssh}, true, true, "http"},
+		"ssh alone, barred":            {[]RemoteTransport{ssh}, false, true, ""},
 	} {
-		if got := names(routed(test.transports, test.cooling)); got != test.want {
+		if got := names(routed(test.transports, test.cooling, test.barred)); got != test.want {
 			t.Errorf("%s: the transports = %q, want %q", name, got, test.want)
 		}
 	}

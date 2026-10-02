@@ -40,8 +40,9 @@ import (
 //   - stdout is read through DecodeEnvelope, as every transport's bytes are, and
 //     never more than MaxEnvelopeBytes of it is held.
 //   - A failure is a code. The end of stderr (maxSSHDiagnosticBytes of it) is
-//     rendered by remotessh.SanitizeDiagnostic and written to the daemon's own
-//     log only: it never reaches the document, an error value or any reader.
+//     held only to tell a refused login from an unreachable host, and is then
+//     dropped: it never reaches the document, an error value, the daemon's log
+//     (which the dashboard's log route serves) or any reader.
 //
 // The code is chosen by the exit status (sshFailure). ssh passes the remote
 // command's status on, so a remote command that itself exits 255, 127, 126 or 2
@@ -144,8 +145,7 @@ type SSHExporter struct {
 	// started with it; a search that fails is made again at the next export.
 	executable string
 	// logged is, by machine, the code of its last logged failure, so a machine
-	// that keeps failing the same way is logged once, whatever its stderr says
-	// each time.
+	// that keeps failing the same way is logged once.
 	logged map[string]string
 }
 
@@ -215,7 +215,7 @@ func (e *SSHExporter) Export(ctx context.Context, target RemoteTarget, metricsOn
 			return Envelope{}, ctx.Err()
 		}
 		if call.Err() != nil {
-			return Envelope{}, e.failed(target.Machine, RemoteErrorTimeout, said(stderr))
+			return Envelope{}, e.failed(target.Machine, RemoteErrorTimeout, "")
 		}
 		code, started := sshFailure(runErr, stdout.Bytes(), stderr.Bytes())
 		if !started {
@@ -224,7 +224,7 @@ func (e *SSHExporter) Export(ctx context.Context, target RemoteTarget, metricsOn
 		if code == "" {
 			return Envelope{}, ErrRemoteWarmingUp
 		}
-		return Envelope{}, e.failed(target.Machine, code, said(stderr))
+		return Envelope{}, e.failed(target.Machine, code, "")
 	}
 	body := stdout.Bytes()
 	envelope, err := DecodeEnvelope(bytes.NewReader(body), metricsOnly, e.now())
@@ -240,16 +240,6 @@ func (e *SSHExporter) Export(ctx context.Context, target RemoteTarget, metricsOn
 	// The refusal names a rule and never a value; the scheduler shows it as
 	// bad_payload.
 	return Envelope{}, err
-}
-
-// said is the end of what a call wrote to stderr, as one sanitised line, with
-// a leading "..." when earlier output was dropped.
-func said(stderr *remotessh.TailBuffer) string {
-	diagnostic := remotessh.SanitizeDiagnostic(stderr.Bytes(), false)
-	if stderr.Discarded() {
-		return "..." + diagnostic
-	}
-	return diagnostic
 }
 
 // sshFailure is the code of a call that ended with runErr, or "" for a remote
@@ -336,20 +326,20 @@ func otherSchema(body []byte) bool {
 var sshTransportCodes = []string{RemoteErrorSSHUnavailable, RemoteErrorAuthFailed, RemoteErrorTimeout, RemoteErrorWBMissing, RemoteErrorWBTooOld}
 
 // failed is the error of an export of machine that failed with code, and
-// writes the daemon's log line for it: the code and detail, which is the end of
-// what stderr held (as remotessh.SanitizeDiagnostic renders it: one line of
-// printable characters, at most remotessh.MaxDiagnosticBytes) or a fixed cause.
-// The line is written when the code differs from the last one logged for the
-// machine: a remote that words its stderr anew each time is still logged once.
-func (e *SSHExporter) failed(machine, code, detail string) error {
+// writes the daemon's log line for it: the code and, when there is one, cause,
+// which is a fixed text of this file. Nothing ssh or the remote wrote is in the
+// line: the daemon's log is served by the dashboard's log route, to whoever can
+// reach the listener, so it is held to the same rule as the document. The line
+// is written when the code differs from the last one logged for the machine.
+func (e *SSHExporter) failed(machine, code, cause string) error {
 	e.mu.Lock()
 	changed := e.logged[machine] != code
 	e.logged[machine] = code
 	e.mu.Unlock()
 	if changed {
 		line := code
-		if detail != "" {
-			line += ": " + detail
+		if cause != "" {
+			line += ": " + cause
 		}
 		e.logf("cockpit fleet: the ssh export of %s failed (%s)", machine, line)
 	}

@@ -186,24 +186,154 @@ func TestAnIdleMachinesEntriesGoWhenItsKeepaliveFails(t *testing.T) {
 	}
 }
 
-// TestAMachineIsNeverReadMoreOftenThanEveryThirtySeconds: a refresh interval
-// under 30 seconds is the local snapshot's; another machine's fleet is read at
-// most every 30 seconds, and its entries are held fresh against that.
+// TestAMachineIsNeverReadMoreOftenThanEveryThirtySeconds: every export, of
+// either kind, is a login to the machine, and no two start within 30 seconds of
+// each other, whatever cockpit.refresh_interval says and whoever asks. A refresh
+// interval under 30 seconds is the local snapshot's; the machine's entries are
+// held fresh against the 30 seconds.
 func TestAMachineIsNeverReadMoreOftenThanEveryThirtySeconds(t *testing.T) {
 	t.Parallel()
 	full := exportOf(t, vmOwnName, vmSources(), 6, false)
-	runner := &fakeSSH{answer: exporting(t, full, full)}
+	only := exportOf(t, vmOwnName, vmSources(), 6, true)
+	for _, interval := range []time.Duration{10 * time.Second, 45 * time.Second, time.Minute, 70 * time.Second} {
+		runner := &fakeSSH{answer: exporting(t, full, only)}
+		snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, func(options *Options) { options.Interval = interval })
+		refreshAndSettle(t, snapshotter)
+		server := newCockpitServer(t, snapshotter)
+		// A reader of the fleet document and of the machine's metrics, for an hour.
+		for elapsed := time.Duration(0); elapsed < time.Hour; elapsed += remoteStep {
+			server.get(cockpit.APIPrefix+FleetRoute, nil)
+			if vm, found := machineNamed(snapshotter.Document(), vmKey); found {
+				server.get(metricsURL+vm.ID, nil)
+				if vm.Route != RouteLiveRemote {
+					t.Fatalf("interval %s: at %s the machine = %+v", interval, elapsed, vm)
+				}
+			}
+			pollIdle(t, snapshotter)
+			clock.advance(remoteStep)
+		}
+		starts := runner.seconds()
+		for index := 1; index < len(starts); index++ {
+			if starts[index]-starts[index-1] < 30 {
+				t.Fatalf("interval %s: logins at %d s and %d s", interval, starts[index-1], starts[index])
+			}
+		}
+		// The floor does not starve the machine: it is read at least once a minute
+		// and a half, and with a short interval every 30 seconds.
+		if len(starts) < 40 || (interval <= 30*time.Second && len(starts) != 120) {
+			t.Errorf("interval %s: %d logins in the hour, at %v", interval, len(starts), starts)
+		}
+	}
+	// The interval itself: with a 10 second refresh interval the fleet is read
+	// every 30 seconds.
+	runner := &fakeSSH{answer: exporting(t, full, only)}
 	snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, func(options *Options) { options.Interval = 10 * time.Second })
 	refreshAndSettle(t, snapshotter)
 	for range 2 * time.Minute / remoteStep {
 		pollAndSettle(t, snapshotter)
 		clock.advance(remoteStep)
-		if vm, found := machineNamed(snapshotter.Document(), vmKey); !found || vm.Route != RouteLiveRemote {
-			t.Fatalf("at %v the machine = %+v", runner.seconds(), vm)
-		}
 	}
 	if got, want := runner.seconds(), []int{0, 30, 60, 90}; !slices.Equal(got, want) || snapshotter.remoteInterval() != minRemoteInterval {
 		t.Fatalf("exports at %v seconds, want %v", got, want)
+	}
+}
+
+// TestARefusedMetricsLoginHoldsTheFleetLoginBackToo: with a 70 second interval a
+// metrics-only export at 30 seconds meets a refused login. The fleet export that
+// was due at 70 seconds is not started: SSH is barred for both kinds until the
+// refusal's backoff has passed, and the machine shows auth_failed meanwhile.
+func TestARefusedMetricsLoginHoldsTheFleetLoginBackToo(t *testing.T) {
+	t.Parallel()
+	full := exportOf(t, vmOwnName, vmSources(), 6, false)
+	good := exporting(t, full, full)
+	runner := &fakeSSH{answer: func(args []string) sshAnswer {
+		if slices.Contains(args, "--metrics-only") {
+			return sshAnswer{stderr: []byte("alex@vm.example: Permission denied (publickey)."), err: exitStatus(255)}
+		}
+		return good(args)
+	}}
+	snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, func(options *Options) { options.Interval = 70 * time.Second })
+	refreshAndSettle(t, snapshotter)
+	watching(t, snapshotter, clock, newCockpitServer(t, snapshotter), 4*time.Minute, true, true)
+	// The refusal at 30 s bars ssh for 140 s (the interval, doubled).
+	if got, want := runner.seconds(), []int{0, 30, 170, 200}; !slices.Equal(got, want) {
+		t.Fatalf("logins at %v seconds, want %v", got, want)
+	}
+	calls := runner.all()
+	if slices.Contains(calls[2], "--metrics-only") || !slices.Contains(calls[1], "--metrics-only") {
+		t.Fatalf("the login after the bar was not the fleet export: %v", calls[2])
+	}
+	snapshotter.mu.RLock()
+	shown := snapshotter.live[vmKey].remoteError
+	snapshotter.mu.RUnlock()
+	if shown != RemoteErrorAuthFailed {
+		t.Fatalf("the machine shows %q", shown)
+	}
+}
+
+// TestAFleetReadRightAfterAMetricsLoginWaitsForTheFloor: a read of the fleet
+// document that makes the fleet export due one second after a metrics-only
+// login wakes the loop, and the export still starts 30 seconds after that login,
+// not at once.
+func TestAFleetReadRightAfterAMetricsLoginWaitsForTheFloor(t *testing.T) {
+	t.Parallel()
+	full := exportOf(t, vmOwnName, vmSources(), 6, false)
+	only := exportOf(t, vmOwnName, vmSources(), 6, true)
+	runner := &fakeSSH{answer: exporting(t, full, only)}
+	snapshotter, clock, _ := newSSHLive(t, oneRepoSources("/repos/widgets"), runner, sshTotalTimeout, nil)
+	refreshAndSettle(t, snapshotter)
+	server := newCockpitServer(t, snapshotter)
+	pollIdle(t, snapshotter)
+	vm, _ := machineNamed(snapshotter.Document(), vmKey)
+	clock.advance(100 * time.Second)
+	server.get(metricsURL+vm.ID, nil)
+	pollIdle(t, snapshotter)
+	clock.advance(time.Second)
+	server.get(cockpit.APIPrefix+FleetRoute, nil)
+	if len(snapshotter.kick) != 1 {
+		t.Fatal("the read did not wake the loop")
+	}
+	pollIdle(t, snapshotter)
+	clock.advance(28 * time.Second)
+	pollIdle(t, snapshotter)
+	if got, want := runner.seconds(), []int{0, 100}; !slices.Equal(got, want) {
+		t.Fatalf("logins at %v seconds, want %v: the fleet export did not wait", got, want)
+	}
+	clock.advance(time.Second)
+	pollIdle(t, snapshotter)
+	if got, want := runner.seconds(), []int{0, 100, 130}; !slices.Equal(got, want) || slices.Contains(runner.all()[2], "--metrics-only") {
+		t.Fatalf("logins at %v seconds, want %v, the last a fleet export", got, want)
+	}
+}
+
+// TestARefusedSSHLoginDoesNotDelayTheHTTPRetry: the hour is SSH's alone. A
+// machine whose HTTP route fails and whose SSH login is refused is still asked
+// over HTTP on the five-minute backoff, while SSH is tried again after 2, 4, 8,
+// 16, 32 and 60 minutes (at the HTTP attempt that follows each).
+func TestARefusedSSHLoginDoesNotDelayTheHTTPRetry(t *testing.T) {
+	t.Parallel()
+	overHTTP := &fakeExporter{answer: failing(&RemoteError{Code: RemoteErrorHTTPUnavailable, Fallback: true})}
+	runner := &fakeSSH{answer: failingSSH(255, "", "alex@vm.example: Permission denied (publickey).")}
+	var clock *manualClock
+	snapshotter, clock := newSnapshotter(oneRepoSources("/repos/widgets").collectors(), func(options *Options) {
+		options.Remotes = []RemoteTarget{{Machine: vmKey, HTTP: &HTTPRoute{URL: "https://vm.example", TokenFile: "/etc/wb/vm.token"}, SSH: &vmRoute}}
+		options.Transports = []RemoteTransport{
+			{Name: TransportHTTP, Exporter: overHTTP},
+			{Name: TransportSSH, Exporter: NewSSHExporter(foundSSH(t, nil), runner, func() time.Time { return clock.Now() }, nil)},
+		}
+	})
+	overHTTP.clock, runner.clock = clock, clock
+	refreshAndSettle(t, snapshotter)
+	watching(t, snapshotter, clock, newCockpitServer(t, snapshotter), 3*time.Hour, true, true)
+	if got, want := runner.seconds(), []int{0, 120, 360, 960, 2160, 4260, 7860}; !slices.Equal(got, want) {
+		t.Errorf("ssh logins at %v seconds, want %v", got, want)
+	}
+	attempts := overHTTP.callsAt(false)
+	if got := inTheHourFrom(attempts, 7200); got != 12 || len(overHTTP.callsAt(true)) != 0 {
+		t.Errorf("%d http attempts in the last hour, want one every five minutes (at %v)", got, attempts)
+	}
+	if vm, found := machineNamed(snapshotter.Document(), vmKey); !found || !slices.Contains(remoteErrorCodes, vm.RemoteError) {
+		t.Errorf("the machine = %+v", vm)
 	}
 }
 
