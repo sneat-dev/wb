@@ -237,3 +237,12 @@ func TestMeasureStopsWhenTheContextIsCancelled(t *testing.T) {
 		t.Fatal("a cancelled measurement must report the cancellation")
 	}
 }
+
+func TestAddSumsTwoMeasurements(t *testing.T) {
+	t.Parallel()
+	total := Usage{ApparentBytes: 10, UnsharedBytes: 4, SharedBytes: 6, Files: 1}
+	total = total.Add(Usage{ApparentBytes: 5, UnsharedBytes: 5, Files: 2})
+	if total != (Usage{ApparentBytes: 15, UnsharedBytes: 9, SharedBytes: 6, Files: 3}) {
+		t.Fatalf("total = %#v", total)
+	}
+}

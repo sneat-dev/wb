@@ -28,3 +28,12 @@ func TestSDCovLoopbackFallsBackToInProcessReceive(t *testing.T) {
 		t.Fatalf("loopback fallback returned the local-machine guard: %v", err)
 	}
 }
+
+func TestSDCovDeliverSSHReportsConstructorFailure(t *testing.T) {
+	t.Parallel()
+	_, raw := courierTestRequest(t)
+	_, err := DeliverSSH(context.Background(), sessionmove.SSHConfig{Host: "target;touch"}, raw)
+	if err == nil || !strings.Contains(err.Error(), "must start with a letter or digit") {
+		t.Fatalf("DeliverSSH error = %v, want config validation refusal", err)
+	}
+}

@@ -854,3 +854,33 @@ func TestRunBumpFailsForGenuinelyUnrelatedModuleCollision(t *testing.T) {
 		t.Fatalf("error must name both repositories; got %v", err)
 	}
 }
+
+func TestBumpOperationIDForUsesTheEcosystemPrefixAndBumpOperationIDStaysGoOnly(t *testing.T) {
+	t.Parallel()
+	events := []ReleaseEvent{{Dependency: "@sneat/core", Version: "1.2.3"}}
+	goID := BumpOperationIDFor(EcosystemGo, events)
+	npmID := BumpOperationIDFor(EcosystemNPM, events)
+	if !strings.HasPrefix(goID, "deps-bump-go-") {
+		t.Fatalf("go operation id = %q", goID)
+	}
+	if !strings.HasPrefix(npmID, "deps-bump-npm-") {
+		t.Fatalf("npm operation id = %q", npmID)
+	}
+	if goID == npmID {
+		t.Fatalf("go and npm campaigns for the same events must not collide: %s", goID)
+	}
+	// BumpOperationID (no ecosystem parameter) is the pre-npm public API;
+	// every existing caller must keep getting exactly the Go-prefixed id.
+	if BumpOperationID(events) != goID {
+		t.Fatalf("BumpOperationID(events) = %q, want %q", BumpOperationID(events), goID)
+	}
+}
+
+func TestBumpOperationIDIsIndependentOfEventOrder(t *testing.T) {
+	t.Parallel()
+	left := []ReleaseEvent{{Dependency: "example.com/b", Version: "v1.2.0"}, {Dependency: "example.com/a", Version: "v0.4.0"}}
+	right := []ReleaseEvent{left[1], left[0]}
+	if BumpOperationID(left) != BumpOperationID(right) {
+		t.Fatalf("operation IDs differ: %s != %s", BumpOperationID(left), BumpOperationID(right))
+	}
+}

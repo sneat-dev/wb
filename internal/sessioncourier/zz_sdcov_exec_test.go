@@ -1,7 +1,9 @@
 package sessioncourier
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,4 +219,58 @@ func TestSDCovMessageTransportRecordsAcceptDispatch(t *testing.T) {
 			"--handler", synchestraSessionAcceptHandler, "--invocation-id", request.HandoffID, "--format", "json"}) {
 		t.Fatalf("transport calls = %#v", runner.calls)
 	}
+}
+
+func TestSDCovDeliverSSHThroughResolvedExecutable(t *testing.T) {
+	sdCovUseFakeExecutable(t, "ssh")
+	request, raw := courierTestRequest(t)
+	t.Setenv(sdCovFakeExecStdoutEnv, sdCovWriteTempFile(t, encodeCourierResult(t, validCourierResult(request, raw))))
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	t.Setenv(sdCovFakeExecStdinFileEnv, stdinPath)
+
+	result, err := DeliverSSH(context.Background(), sessionmove.SSHConfig{Host: "hetzner-vm1", WBPath: "/opt/wb/bin/wb"}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, validCourierResult(request, raw)) {
+		t.Fatalf("DeliverSSH result = %#v", result)
+	}
+	delivered, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(delivered, raw) {
+		t.Fatalf("exec runner stdin = %q, want exact request %q", delivered, raw)
+	}
+}
+
+func TestSDCovDeliverSSHFailureBranchesThroughResolvedExecutable(t *testing.T) {
+	sdCovUseFakeExecutable(t, "ssh")
+	_, raw := courierTestRequest(t)
+
+	t.Run("already cancelled context", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := DeliverSSH(ctx, sessionmove.SSHConfig{Host: "target"}, raw)
+		if err == nil || !strings.Contains(err.Error(), "ssh session delivery to target") || !errors.Is(err, context.Canceled) {
+			t.Fatalf("DeliverSSH error = %v, want wrapped context cancellation", err)
+		}
+	})
+	t.Run("silent process failure", func(t *testing.T) {
+		t.Setenv(sdCovFakeExecExitEnv, "3")
+		_, err := DeliverSSH(context.Background(), sessionmove.SSHConfig{Host: "target"}, raw)
+		if err == nil || err.Error() != "ssh session delivery to target: exit status 3" {
+			t.Fatalf("DeliverSSH error = %v, want undecorated exit status", err)
+		}
+	})
+	t.Run("stderr diagnostic", func(t *testing.T) {
+		t.Setenv(sdCovFakeExecExitEnv, "255")
+		t.Setenv(sdCovFakeExecStderrEnv, "Permission denied (publickey).\n")
+		_, err := DeliverSSH(context.Background(), sessionmove.SSHConfig{Host: "target"}, raw)
+		if err == nil || !strings.Contains(err.Error(), "Permission denied (publickey).") ||
+			strings.ContainsAny(err.Error(), "\r\n") {
+			t.Fatalf("DeliverSSH error = %v, want sanitized single-line diagnostic", err)
+		}
+	})
 }
