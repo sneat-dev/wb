@@ -97,7 +97,7 @@ describe('MachinePanelView', () => {
   it('names a live machine by its transport and age, its history, and how many entries its export left out', async () => {
     const { panel } = await open('mach-vm')
     expect(text(panel.querySelector('app-panel-state .why'))).toBe('live over http, just now')
-    expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('live-remote: 30 samples, fetched just now')
+    expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('live: 30 samples, fetched just now')
     expect(facts(panel)).toMatchObject({ 'Reached by': 'http', Observed: 'just now', 'Left out': '3 entries of its export' })
     await vi.waitFor(() => expect(panel.querySelectorAll('app-machine-charts app-chart')).toHaveLength(4))
   })

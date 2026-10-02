@@ -1,10 +1,12 @@
 import { TestBed } from '@angular/core/testing'
 import { ClipboardWriter } from './clipboard'
 import { COPIED_FEEDBACK_MS, CopyButton } from './copy-button'
+import { StatusAnnouncer } from './status-announcer'
 
-async function render(copyResult: boolean) {
+async function render(copyResult: boolean, sharedRegion = true) {
   const copy = vi.fn().mockResolvedValue(copyResult)
-  TestBed.configureTestingModule({ providers: [{ provide: ClipboardWriter, useValue: { copy } }] })
+  // Without the shared region (it has a timer of its own), a test can count the button's timers alone.
+  TestBed.configureTestingModule({ providers: [{ provide: ClipboardWriter, useValue: { copy } }, ...(sharedRegion ? [] : [{ provide: StatusAnnouncer, useValue: { say: () => undefined, message: () => '' } }])] })
   const fixture = TestBed.createComponent(CopyButton)
   fixture.componentRef.setInput('text', 'wb fleet status')
   fixture.componentRef.setInput('label', 'Copy command: fleet status')
@@ -12,7 +14,11 @@ async function render(copyResult: boolean) {
   fixture.componentInstance.copied.subscribe((text) => copied.push(text))
   await fixture.whenStable()
   const root: HTMLElement = fixture.nativeElement
-  return { fixture, root, copy, copied, button: root.querySelector('button') as HTMLButtonElement, status: root.querySelector('[role="status"]') as HTMLElement }
+  // What the one shared status region says (the button has none of its own).
+  const announcer = TestBed.inject(StatusAnnouncer)
+  const status = { get textContent() { return announcer.message() } }
+  expect(root.querySelector('[role="status"]')).toBeNull()
+  return { fixture, root, copy, copied, button: root.querySelector('button') as HTMLButtonElement, status }
 }
 
 describe('CopyButton', () => {
@@ -51,7 +57,7 @@ describe('CopyButton', () => {
   })
 
   it('restarts the feedback on a second press, and stops the timer when destroyed', async () => {
-    const { fixture, button } = await render(true)
+    const { fixture, button } = await render(true, false)
     vi.useFakeTimers()
     button.click()
     await vi.advanceTimersByTimeAsync(1500)
@@ -79,14 +85,15 @@ describe('CopyButton', () => {
     await vi.advanceTimersByTimeAsync(0)
     fixture.detectChanges()
     expect(root.querySelector('button')?.textContent?.trim()).toBe('Copied')
-    expect(root.querySelector('[role="status"]')?.textContent).toBe('Copied; edit the <…> parts before running')
+    expect(TestBed.inject(StatusAnnouncer).message()).toBe('Copied; edit the <…> parts before running')
   })
 
   it('does nothing when the browser answers after the page has gone: no state, no event, no timer', async () => {
     let answer: (ok: boolean) => void = () => undefined
     const copy = vi.fn(() => new Promise<boolean>((resolve) => (answer = resolve)))
     TestBed.resetTestingModule()
-    TestBed.configureTestingModule({ providers: [{ provide: ClipboardWriter, useValue: { copy } }] })
+    // The shared region has its own timer; this test is about the button's.
+    TestBed.configureTestingModule({ providers: [{ provide: ClipboardWriter, useValue: { copy } }, { provide: StatusAnnouncer, useValue: { say: () => undefined } }] })
     const fixture = TestBed.createComponent(CopyButton)
     fixture.componentRef.setInput('text', 'x')
     const copied: string[] = []

@@ -117,9 +117,10 @@ export function formatAge(observedAt: string | undefined, now: number): string {
   return `${Math.floor(elapsed / DAY)} d ago`
 }
 
-/** The route label every row carries; a cached row adds how old it is. */
+/** The route label every row carries, in the one vocabulary of routes (`local`, `live`, `cached`); a cached row adds how old it is. */
 export function routeLabel(entry: Entry, now: number): string {
-  return entry.route === 'cached' ? `cached, ${formatAge(entry.observed_at, now)}` : 'local'
+  if (entry.route === 'cached') return `cached, ${formatAge(entry.observed_at, now)}`
+  return entry.route === 'live-remote' ? 'live' : 'local'
 }
 
 /** The command that opens an owner session. */

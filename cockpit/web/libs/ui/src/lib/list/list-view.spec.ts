@@ -413,6 +413,71 @@ describe('ListView', () => {
     expect(page.router.url).toBe('/list')
   })
 
+  // cockpit-views#ac:list-selection-does-not-refilter
+  it('does not filter or sort again for a change of selection alone, and j and k add no history entry', async () => {
+    const page = await open('/list?chips=unpushed')
+    const before = page.list().result()
+    const history = vi.spyOn(page.router, 'navigate')
+    page.viewport.focus()
+    keydown(page.viewport, 'Enter')
+    await page.settle()
+    expect(page.router.url).toContain('sel=')
+    // The same result object: nothing was filtered or sorted again for the selection.
+    expect(page.list().result()).toBe(before)
+    keydown(page.viewport, 'j')
+    await page.settle()
+    keydown(page.viewport, 'k')
+    await page.settle()
+    expect(page.list().result()).toBe(before)
+    // Opening is an entry of its own; moving with j and k replaces it.
+    expect(history.mock.calls.map((call) => (call[1] as { replaceUrl: boolean }).replaceUrl)).toEqual([false, true, true])
+    // A change of the filters does compute again.
+    button(page.root, 'Unpushed').click()
+    await page.settle()
+    expect(page.list().result()).not.toBe(before)
+  })
+
+  // cockpit-views#ac:list-accessibility
+  it('says the count once for the user\'s own change of the filters, and nothing for a refresh of the data', async () => {
+    const page = await open('/list')
+    const live = () => text(page.root.querySelector('section > [role=status]'))
+    expect(page.root.querySelectorAll('.count[role=status]').length).toBe(0)
+    expect(page.root.querySelector('app-list-toolbar [role=status]')).toBeNull()
+    // A refresh: the document changes, and a poll that adds a row says nothing.
+    page.store.document.set({ ...documentOf(), worktrees: [...documentOf().worktrees, { ...worktree('w9', 'r1', 'alpha'), task: 'new-one' }] })
+    await page.settle()
+    await frame()
+    expect(text(page.root.querySelector('.count'))).toBe('7 of 7')
+    expect(live()).toBe('')
+    // The user filters: it is said.
+    await type(page, 'fix')
+    await vi.waitFor(() => expect(live()).toBe('1 of 7 worktrees'))
+    await frame()
+    // A chip is a filter too, and a refresh after it is silent again.
+    button(page.root, 'Unpushed').click()
+    await page.settle()
+    await vi.waitFor(() => expect(live()).toMatch(/^\d of 7 worktrees$/))
+    await new Promise((done) => setTimeout(done, 2100))
+    page.store.document.set({ ...documentOf(), worktrees: documentOf().worktrees })
+    await page.settle()
+    expect(live()).toBe('')
+  })
+
+  // cockpit-views#ac:list-selection-does-not-refilter
+  it('replaces the history entry for a chip, a machine, a header sort and the s key, rather than pushing one', async () => {
+    const page = await open('/list')
+    const history = vi.spyOn(page.router, 'navigate')
+    button(page.root, 'Unpushed').click()
+    await page.settle()
+    button(page.root, 'Machine').click()
+    await page.settle()
+    page.viewport.focus()
+    keydown(page.viewport, 's')
+    await page.settle()
+    expect(history.mock.calls.length).toBe(3)
+    for (const call of history.mock.calls) expect(call[1]).toMatchObject({ replaceUrl: true })
+  })
+
   it('does not select a row for a click on a link or a button in it, on the header, or on the empty space', async () => {
     const page = await open('/list')
     page.root.querySelector<HTMLElement>('.task')?.addEventListener('click', (event) => event.preventDefault())
@@ -430,6 +495,48 @@ describe('ListView', () => {
     expect(controls.length).toBeGreaterThan(10)
     expect(controls.every((control) => control.getAttribute('tabindex') === '-1')).toBe(true)
     expect(page.viewport.getAttribute('tabindex')).toBe('0')
+  })
+
+  // cockpit-views#ac:list-keyboard
+  it('keeps a control that a cell renders later out of the tab order too', async () => {
+    const page = await open('/list')
+    const cell = page.root.querySelector('.row [role=gridcell]') as HTMLElement
+    const late = document.createElement('button')
+    late.textContent = 'later'
+    const field = document.createElement('input')
+    cell.append(late, field)
+    expect(late.tabIndex).toBe(0)
+    await frame()
+    expect(late.tabIndex).toBe(-1)
+    expect(field.tabIndex).toBe(-1)
+  })
+
+  // cockpit-views#ac:list-keyboard
+  it('takes the row keys from a control inside the grid, leaves it Enter, Space and its own typing, and gives the focus back to the list', async () => {
+    const page = await open('/list')
+    const link = rowElements(page.root)[0].querySelector('.task') as HTMLElement
+    link.focus()
+    expect(document.activeElement).toBe(link)
+    // Enter and Space belong to the link or button.
+    expect(keydown(link, 'Enter').defaultPrevented).toBe(false)
+    expect(keydown(link, ' ').defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(link)
+    // Tab and keys the list has no use for are not touched, and a text field keeps all of its keys.
+    expect(keydown(link, 'Tab').defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(link)
+    const field = document.createElement('input')
+    link.parentElement?.append(field)
+    field.focus()
+    expect(keydown(field, 'j').defaultPrevented).toBe(false)
+    // j moves the keyboard on to the next row and the list takes the focus back, so the next key is a row key as well.
+    expect(keydown(link, 'j').defaultPrevented).toBe(true)
+    await page.settle()
+    expect(document.activeElement).toBe(page.viewport)
+    expect(page.list().focused()).toBe(1)
+    keydown(page.viewport, 'k')
+    expect(page.list().focused()).toBe(0)
+    // Modifier chords are the browser's.
+    expect(keydown(link, 'j', { ctrlKey: true }).defaultPrevented).toBe(false)
   })
 
   it('offers each row\'s own page as a button at the row end, out of the tab order', async () => {
@@ -717,9 +824,10 @@ describe('ListView', () => {
       expect(keydown(page.viewport, 'k', init).defaultPrevented).toBe(false)
     }
     expect(keydown(page.viewport, 'x').defaultPrevented).toBe(false)
+    // A row key typed with the focus on a link in a row is a row key too (the control keeps Enter and Space).
     keydown(page.root.querySelector('.task') as Element, 'k')
     await page.settle()
-    expect(focused()).toBe(5)
+    expect(focused()).toBe(4)
     expect(page.router.url).toBe('/list')
   })
 
@@ -862,15 +970,30 @@ describe('ListView', () => {
     expect(page.root.querySelector('app-side-panel')).toBeNull()
   })
 
-  it('is a modal sheet on a phone: focus goes in even for a pasted address, the list is inert, and Esc closes it', async () => {
-    const page = await open('/list?sel=w2', { phone: true })
-    const aside = page.root.querySelector('.side-panel') as HTMLElement
-    expect(aside.getAttribute('role')).toBe('dialog')
-    expect(document.activeElement).toBe(aside)
-    expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(true)
-    expect(closePanel?.()).toBe(true)
-    await page.settle()
-    expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(false)
+  // cockpit-views#ac:phone-panel-is-a-sheet
+  it('is a modal sheet on a phone: focus goes in even for a pasted address, the list is inert, and closing it puts the focus back on the row that was open', async () => {
+    // A browser does not focus an inert element; jsdom does, so the test says what the browser would.
+    const focus = HTMLElement.prototype.focus
+    const spy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+      if (this.closest('[inert]') === null) focus.call(this, options)
+    })
+    try {
+      const page = await open('/list?sel=w2', { phone: true })
+      const aside = page.root.querySelector('.side-panel') as HTMLElement
+      expect(aside.getAttribute('role')).toBe('dialog')
+      expect(document.activeElement).toBe(aside)
+      expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(true)
+      expect(closePanel?.()).toBe(true)
+      await page.settle()
+      expect(page.root.querySelector('section.list')?.hasAttribute('inert')).toBe(false)
+      // The focus is on the list, whose focused row is the one the sheet showed, and not lost on the removed sheet.
+      expect(document.activeElement).toBe(page.viewport)
+      expect(page.viewport.getAttribute('aria-activedescendant')).toBe(rowElements(page.root)[0].id)
+      expect(rowElements(page.root)[0].classList.contains('focused')).toBe(true)
+      expect(text(rowElements(page.root)[0])).toContain('add-search')
+    } finally {
+      spy.mockRestore()
+    }
     const beside = await open('/list?sel=w2')
     expect(beside.root.querySelector('section.list')?.hasAttribute('inert')).toBe(false)
   })

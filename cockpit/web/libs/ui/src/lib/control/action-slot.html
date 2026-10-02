@@ -70,3 +70,8 @@
     }
   </div>
 }
+@if (!shown()) {
+  @if (copy(); as fallback) {
+    <app-lazy-copy [build]="fallback.build" [label]="fallback.label" [idleWord]="copyWord()" [quiet]="fallback.quiet === true" [iconOnly]="fallback.quiet === true" />
+  }
+}

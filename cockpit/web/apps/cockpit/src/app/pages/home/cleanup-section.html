@@ -12,7 +12,7 @@
         </p>
         <div class="home-action">
           <a class="home-act" [routerLink]="cleanup().reviewLink.path" [queryParams]="cleanup().reviewLink.query">Review &amp; clean</a>
-          <app-lazy-copy idleWord="Copy command" label="Copy command: the dry-run plan of the fleet's cleanup" [build]="dryRun" />
+          <app-lazy-copy label="Copy wb worktree gc: the dry-run plan of the fleet's cleanup" [build]="dryRun" />
           <button type="button" class="home-toggle" [attr.aria-expanded]="open()" aria-controls="home-cleanup-chart" (click)="toggle()">
             <app-glyph [paths]="chevron" class="chevron" [class.open]="open()" />
             Ages

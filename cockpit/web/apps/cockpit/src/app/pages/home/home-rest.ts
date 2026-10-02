@@ -17,7 +17,7 @@ export const PHONE_QUERY = '(max-width: 480px)'
  * The capabilities that cockpit-actions adds. A session that holds one has a daemon with an action registry.
  * TODO(cockpit-actions): the session does not say whether the registry route exists, and asking a daemon
  * without one is a 404 (a console error on every load). Until the session advertises the registry, only a
- * session that holds an action capability is asked; the others see the "Copy command" buttons.
+ * session that holds an action capability is asked; the others see the "Copy" buttons.
  */
 export const ACTION_CAPABILITIES: readonly string[] = ['git.commit', 'branch.push', 'branch.delete', 'worktree.discard', 'pr.create', 'pr.land']
 
@@ -56,7 +56,8 @@ export class HomeRest {
   protected readonly phone = signal(false)
   protected readonly moreOpen = signal(false)
   protected readonly chevron = GLYPH_CHEVRON_DOWN
-  private readonly targets = computed(() => registryTargets(this.model()))
+  /** The same list again (a poll that changes nothing about the rows) is not news: the registry is not asked again. */
+  private readonly targets = computed(() => registryTargets(this.model()), { equal: (a, b) => a.length === b.length && a.every((target, index) => target === b[index]) })
 
   constructor() {
     // The machines are polled every 10 seconds while Home is shown (REQ:machine-metrics-polling); the strip that shows them is in this chunk.

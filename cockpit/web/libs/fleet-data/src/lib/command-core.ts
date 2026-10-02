@@ -37,10 +37,11 @@ const PLACEHOLDER_VALUES: ReadonlySet<string> = new Set(Object.values(PLACEHOLDE
 // (U+2060-2064), the blank Hangul fillers (U+115F, U+3164), variation selectors and the tag characters.
 const INVISIBLE =
   '\\u007f-\\u009f\\u00a0\\u00ad\\u061c\\u115f\\u2000-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\u3000\\u3164\\ufe00-\\ufe0f\\ufeff\\u{e0000}-\\u{e007f}\\u{e0100}-\\u{e01ef}'
-// eslint-disable-next-line no-control-regex
+// The variation selectors and tag characters are exactly what this refuses, so the rule that flags them in a class is off here.
+// eslint-disable-next-line no-misleading-character-class
 const FORBIDDEN = new RegExp(`[\\u0000-\\u001f\\u2028\\u2029${INVISIBLE}]`, 'u')
 // A multi-line text (a brief) may hold tabs and line breaks, and nothing else of the above.
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-misleading-character-class
 const FORBIDDEN_IN_TEXT = new RegExp(`[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029${INVISIBLE}]`, 'u')
 
 /** Why a value cannot be copied into a command; undefined when it can. `multiline` allows tabs and line breaks (a brief). */

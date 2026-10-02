@@ -20,13 +20,17 @@ async function render(rows = healthRows(buildHealth(modelOf(fleet())), 0)) {
 const text = (element: Element | null | undefined) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
 describe('HealthSection', () => {
-  it('has one line per problem, each with where its command runs and "Copy fix command"', async () => {
+  it('has one line per problem, each with where its command runs and "Copy"', async () => {
     const { root, items, fixture, copy } = await render()
     expect(text(root.querySelector('h2'))).toBe('Fleet health 2')
     expect(root.querySelector('.home-count')?.classList.contains('warn')).toBe(true)
     expect(items.map((item) => text(item.querySelector('.home-task')))).toEqual(['old has not published for over 24 hours', 'old runs an older WB (0.170.2)'])
     expect(items.map((item) => text(item.querySelector('.home-where-run')))).toEqual(['run on old', 'run on old'])
-    expect(items.map((item) => text(item.querySelector('button')))).toEqual(['Copy fix command', 'Copy fix command'])
+    expect(items.map((item) => text(item.querySelector('button')))).toEqual(['Copy', 'Copy'])
+    expect(items.map((item) => item.querySelector('button')?.getAttribute('aria-label'))).toEqual([
+      'Copy wb remote publish: old has not published for over 24 hours',
+      'Copy wb self-update: old runs an older WB (0.170.2)',
+    ])
     expect(items[0].querySelector('a.home-task')?.getAttribute('href')).toBe('/machines?chips=stale')
     expect(items[1].querySelector('a.home-task')?.getAttribute('href')).toBe('/machines?chips=outdated')
     ;(items[0].querySelector('button') as HTMLButtonElement).click()

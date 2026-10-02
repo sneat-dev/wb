@@ -5,6 +5,8 @@ import { stub, watch } from './support'
 // build (dist-preview, served beside the production build), and the sign-in card
 // of the production shell.
 const gallery = `http://127.0.0.1:${Number(process.env['COCKPIT_E2E_PREVIEW_PORT'] || Number(process.env['COCKPIT_E2E_PORT'] || '4300') + 1)}/cockpit/gallery`
+// With a handler bound, which no page of the application has yet: the registry's own buttons.
+const handled = `${gallery}?handler=1`
 
 test('the gallery draws every chart on a canvas under the strict policy, with a text alternative each', async ({ page }) => {
   await stub(page)
@@ -38,7 +40,7 @@ test('a copy button puts exactly the library command on the clipboard and says s
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(gallery).origin })
   await stub(page)
   const requests: string[] = []
-  await page.goto(gallery)
+  await page.goto(handled)
   await expect(page.locator('app-copy-command-list').first()).toBeVisible()
   // The gallery's charts load Chart.js (two chunks) once they have rendered, which can be after the command list is
   // visible. They are the last thing the page fetches by itself, and a chart is on its canvas only once they are in,
@@ -54,12 +56,12 @@ test('a copy button puts exactly the library command on the clipboard and says s
   await page.getByRole('button', { name: 'Open pull request', exact: true }).first().click()
   await expect(page.getByText('Emitted pr.create for worktree:wt-1; nothing ran.')).toBeVisible()
   expect(requests).toEqual([])
-  expect(page.url()).toBe(gallery)
+  expect(page.url()).toBe(handled)
 })
 
 test('disabled actions keep their reason, and the absent registry leaves no box', async ({ page }) => {
   await stub(page)
-  await page.goto(gallery)
+  await page.goto(handled)
   const disabled = page.getByRole('button', { name: 'Push branch' }).first()
   await expect(disabled).toHaveAttribute('aria-disabled', 'true')
   await expect(disabled).toHaveAccessibleDescription('Nothing to push')

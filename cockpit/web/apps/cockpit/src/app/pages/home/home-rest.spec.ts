@@ -94,6 +94,24 @@ describe('HomeRest', () => {
     }
   })
 
+  // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it
+  it('does not ask the registry again for a poll that leaves its rows as they were, only when the rows change', async () => {
+    const { fixture, request } = await render({ capabilities: ['fleet.read', 'pr.land'] })
+    expect(request).toHaveBeenCalledTimes(1)
+    // A new model for every snapshot (a poll once a minute) with the same rows: the same targets are not news.
+    for (let poll = 0; poll < 3; poll++) {
+      fixture.componentRef.setInput('model', modelOf(fleet()))
+      await fixture.whenStable()
+    }
+    expect(request).toHaveBeenCalledTimes(1)
+    // A fleet with other rows is a new list of targets.
+    const other = fleet()
+    other.pull_requests = other.pull_requests.filter((pullRequest) => pullRequest.id !== 'pr-r1')
+    fixture.componentRef.setInput('model', modelOf(other))
+    await fixture.whenStable()
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
   it('puts everything after "In flight" behind one "More" disclosure on a phone, and opens and closes it', async () => {
     const media = stubPhone(true)
     const { fixture, root } = await render()

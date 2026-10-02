@@ -60,16 +60,19 @@ describe('WorktreePanelView', () => {
   })
 
   // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it
-  it('renders the registry\'s actions for this worktree and its pull requests, and no action area without them', async () => {
+  it('gives the slots of this worktree and its pull requests the registry\'s answers, draws no button for them without a handler, and has no action area without them', async () => {
     const registry = new Map([
       ['worktree:w1', [registryAction('branch.push', 'Push')]],
       ['pull_request:p1', [registryAction('pr.land', 'Land', { target_types: ['pull_request'] })]],
     ])
-    expect([...(await render('w1', false, {}, registry)).querySelectorAll('section.actions app-action-slot button')].map(text)).toEqual(['Push', 'Land'])
+    const root = await render('w1', false, {}, registry)
+    expect(root.querySelectorAll('section.actions app-action-slot')).toHaveLength(2)
+    // No page handles an action: a slot is its Copy control or nothing, never the registry's button.
+    expect(root.querySelectorAll('section.actions app-action-slot button')).toHaveLength(0)
     expect((await render('w1')).querySelector('section.actions')?.children).toHaveLength(0)
     expect((await render('w1', false, {}, new Map())).querySelector('section.actions')?.children).toHaveLength(0)
     // A worktree read from another machine has no slot of its own; its pull request on this machine keeps one.
-    expect([...(await render('w1', false, { route: 'cached' }, registry)).querySelectorAll('section.actions app-action-slot button')].map(text)).toEqual(['Land'])
+    expect((await render('w1', false, { route: 'cached' }, registry)).querySelectorAll('section.actions app-action-slot')).toHaveLength(1)
   })
 
   it('is the detail page when asked', async () => {

@@ -77,10 +77,12 @@ describe('InFlightSection', () => {
     expect(rows[3].querySelector('button')).toBeNull()
   })
 
-  it('offers "Copy stop" and "Copy log" only for a dispatched run on this machine, and copies the library\'s commands', async () => {
+  it('offers "Copy" for stop and for log only for a dispatched run on this machine, and copies the library\'s commands', async () => {
     const { fixture, rows, copy } = await render()
     const buttons = [...rows[0].querySelectorAll<HTMLButtonElement>('button')]
-    expect(buttons.map((button) => text(button))).toEqual(['Copy stop', 'Copy log'])
+    expect(buttons.map((button) => text(button))).toEqual(['Copy', 'Copy'])
+    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy wb agent stop: claude opus', 'Copy wb agent logs: claude opus'])
+    expect([...rows[0].querySelectorAll('.home-where-run')].map((word) => text(word))).toEqual(['stop', 'log'])
     // Quiet: the state badge is the signal of the row, not these.
     expect(buttons.every((button) => button.classList.contains('quiet'))).toBe(true)
     expect(rows[1].querySelector('button')).toBeNull()

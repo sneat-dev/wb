@@ -197,7 +197,7 @@ export interface HealthItem {
   /** What is wrong, in words. */
   text: string
   /** The command to copy to fix it, with its "run on <machine>" label. */
-  command: { text: string; label: string; needsEdit: boolean } | { reason: string }
+  command: { text: string; label: string; needsEdit: boolean; quoteTwice?: boolean } | { reason: string }
   link: AppLink
 }
 

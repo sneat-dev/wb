@@ -4,13 +4,14 @@ import {
   ALWAYS,
   fitColumns,
   ListColumn,
-  MAX_RENDERED_ROWS,
+  rowCap,
   addressKey,
   isEmptyCell,
   MAX_COLUMNS,
   addressChange,
   describeFilters,
   effectiveSort,
+  sameFilters,
   scrollToRow,
   sortedBy,
   toggled,
@@ -131,10 +132,17 @@ describe('virtualWindow', () => {
     expect(virtualWindow(0, 320, 0)).toEqual({ first: 0, last: 0 })
   })
 
-  it('never renders more than the cap, however tall the viewport', () => {
-    expect(MAX_RENDERED_ROWS).toBe(80)
-    const { first, last } = virtualWindow(0, 4000, 600)
-    expect(last - first).toBe(MAX_RENDERED_ROWS)
+  // cockpit-views#ac:one-line-virtual-rows
+  it('caps the rendered rows by the height of the viewport, not by a fixed number', () => {
+    expect(rowCap(320, 32, 8)).toBe(27)
+    for (const height of [200, 320, 900, 4000]) {
+      const { first, last } = virtualWindow(32 * 100, height, 10_000)
+      expect(last - first).toBeLessThanOrEqual(rowCap(height))
+      // Everything in view is rendered: a tall viewport is not cut off at a fixed 80 rows.
+      expect(last * 32).toBeGreaterThanOrEqual(32 * 100 + height)
+    }
+    expect(virtualWindow(0, 4000, 10_000).last).toBeGreaterThan(80)
+    expect(rowCap(4000) - rowCap(900)).toBe(Math.ceil(4000 / 32) - Math.ceil(900 / 32))
   })
 
   it('clamps a scroll position that is past the end of a list that shrank', () => {
@@ -201,5 +209,16 @@ describe('fitColumns', () => {
     expect(fitColumns(worktrees, 300).tracks).toBe('minmax(0, 300fr) minmax(0, 230fr) minmax(0, 96fr) 32px')
     expect(fitColumns(worktrees, 340).tracks).toBe('minmax(120px, 300fr) minmax(92px, 230fr) minmax(80px, 96fr) 32px')
     expect(fitColumns([some('only', { priority: ALWAYS, min: 0 })], 20).tracks).toBe('minmax(0, 1fr) 32px')
+  })
+})
+
+describe('sameFilters', () => {
+  const base = { q: 'a', sort: 'activity', dir: 'desc' as const, machines: ['m1'], chips: ['stale'] }
+
+  it('ignores the selection and nothing else', () => {
+    expect(sameFilters(base, { ...base, sel: 'w1', machines: ['m1'], chips: ['stale'] })).toBe(true)
+    for (const other of [{ q: 'b' }, { sort: 'machine' }, { dir: 'asc' as const }, { machines: ['m2'] }, { machines: [] }, { chips: ['stale', 'x'] }, { chips: ['other'] }]) {
+      expect(sameFilters(base, { ...base, ...other })).toBe(false)
+    }
   })
 })

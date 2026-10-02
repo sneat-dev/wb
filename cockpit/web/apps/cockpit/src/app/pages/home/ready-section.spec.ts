@@ -34,7 +34,7 @@ describe('ReadySection', () => {
     expect(text(rows[0].querySelector('app-state-badge'))).toContain('ready to land')
   })
 
-  it('has one pull request line per pull request, each linking out safely, with "Copy command" for `wb pr land` where there is no registry', async () => {
+  it('has one pull request line per pull request, each linking out safely, with "Copy" for `wb pr land`', async () => {
     const { fixture, rows, copy } = await render()
     const lines = [...rows[0].querySelectorAll('.home-pr')]
     expect(lines.map((line) => text(line.querySelector('.home-pr-number')))).toEqual(['#12', '#7'])
@@ -44,20 +44,24 @@ describe('ReadySection', () => {
     expect(link.getAttribute('rel')).toBe('noopener noreferrer')
     expect(link.getAttribute('aria-label')).toBe('Pull request 12, opens in a new tab')
     const buttons = lines.map((line) => line.querySelector('button') as HTMLButtonElement)
-    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy command: wb pr land sneat-dev/wb#12', 'Copy command: wb pr land sneat-co/sneat-go#7'])
+    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy wb pr land: sneat-dev/wb#12', 'Copy wb pr land: sneat-co/sneat-go#7'])
+    expect(buttons.map((button) => text(button))).toEqual(['Copy', 'Copy'])
     buttons[0].click()
     await fixture.whenStable()
     expect(copy).toHaveBeenCalledWith("wb pr land 'sneat-dev/wb#12'")
-    expect(rows[0].querySelectorAll('app-action-slot')).toHaveLength(0)
+    // The slot has no handler, so it is the Copy control and never a registry button.
+    expect(rows[0].querySelectorAll('app-action-slot .slot, app-action-slot .action')).toHaveLength(0)
   })
 
-  it("puts the registry's landing action in a slot for each pull request that has one", async () => {
+  // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it
+  it("does not draw the registry's landing action as a button: no page handles it, so every pull request keeps its Copy", async () => {
     const { rows } = await render(fleet(), { offered: ['pull_request:pr-r1'] })
     const lines = [...rows[0].querySelectorAll('.home-pr')]
-    expect(lines[0].querySelector('app-action-slot button')?.textContent?.trim()).toBe('Land')
-    expect(lines[0].querySelector('app-copy-button')).toBeNull()
-    expect(lines[1].querySelector('app-action-slot')).toBeNull()
-    expect(lines[1].querySelector('app-copy-button')).not.toBeNull()
+    for (const line of lines) {
+      expect(line.querySelectorAll('app-action-slot button')).toHaveLength(1)
+      expect(text(line.querySelector('app-action-slot button'))).toBe('Copy')
+      expect(line.querySelector('.slot')).toBeNull()
+    }
   })
 
   it('lists the tasks that wait on checks below, muted, with how long ago the checks were read and no action', async () => {
@@ -73,7 +77,7 @@ describe('ReadySection', () => {
     const { rows } = await render(document, { offered: ['pull_request:pr-r1'] })
     expect(text(rows[0].querySelector('.home-reason'))).toMatch(/^as reported by vm · /)
     const line = rows[0].querySelector('.home-pr') as HTMLElement
-    expect(text(line)).toContain('vm')
+    expect(text(line)).toContain('reported by vm')
     expect(line.querySelector('app-action-slot, button')).toBeNull()
   })
 

@@ -127,7 +127,7 @@ describe('entity panels', () => {
     expect(runPanel?.related.task?.name).toBe('fix-ci')
     const session = buildAgentPanel(model, 's1')
     expect(session?.summary).toMatchObject({ controllable: false, task: undefined, repository: 'sneat-dev/wb' })
-    expect(session?.commands.map((c) => c.title)).toEqual(['List sessions'])
+    expect(session?.commands).toEqual([])
     expect(session?.summary.nextStep).toBeUndefined()
     expect(session?.related).toEqual({ task: undefined, worktrees: [], pullRequests: [] })
     const remote = buildAgentPanel(model, 's2')
@@ -159,7 +159,7 @@ describe('entity panels', () => {
     expect(remote?.commands.map((c) => [c.title, c.command.ok && c.command.text])).toEqual([['List sessions', 'ssh alex@vm.example /usr/local/bin/wb session list']])
     expect(remote?.summary.nextStep).toMatch(/run "wb session send" in a terminal on vm/)
     // A session without a recorded id has no command to send to.
-    expect(buildAgentPanel(model, 'b3')?.commands.map((c) => c.title)).toEqual(['List sessions'])
+    expect(buildAgentPanel(model, 'b3')?.commands).toEqual([])
   })
 
   // cockpit-views#ac:remote-entities-have-no-mutating-command

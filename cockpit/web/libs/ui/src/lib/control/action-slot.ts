@@ -1,8 +1,10 @@
 import { DOCUMENT } from '@angular/common'
-import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, inject, input, output, signal, viewChild } from '@angular/core'
-import { RegistryAction } from '@cockpit/fleet-data'
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, inject, input, signal, viewChild } from '@angular/core'
+import { CopyCommand, RegistryAction } from '@cockpit/fleet-data'
+import { copyWord } from './copy-label'
 import { Glyph } from './glyph'
 import { GLYPH_MORE } from './glyphs'
+import { LazyCopy } from './lazy-copy'
 
 /** The one explanation an action the caller may not run carries, whatever the action (REQ:owner-gating-is-visible). */
 export const OWNER_ONLY_EXPLANATION = 'Needs an owner session'
@@ -12,6 +14,20 @@ export interface ActionActivation {
   action: RegistryAction
   /** `<type>:<id>`, as the registry route takes it. */
   target: string
+}
+
+/**
+ * What a slot offers instead of a button when it cannot run the registry's action: the library's command for the
+ * same intent, built when it is pressed, as a "Copy" button (or "Copy template" when it has a part to edit).
+ */
+export interface SlotCopy {
+  build: () => Promise<CopyCommand>
+  /** The accessible name, which starts with the button's word (`copyLabel`). */
+  label: string
+  /** The command has a placeholder to edit: the button says "Copy template". */
+  template?: boolean
+  /** A secondary, icon-only button, for a row that has a primary action beside it. */
+  quiet?: boolean
 }
 
 /** Why an action cannot be activated, in words; undefined when it can. A missing capability outranks the snapshot's applicability. */
@@ -44,10 +60,13 @@ interface Entry {
  * once, shown in words on hover, focus and tap, and, for a caller without the
  * capability, the same single explanation for every action.
  *
- * With no registry (`actions` undefined) or no action for the target, nothing is
- * rendered at all: no placeholder, and since the host is `display: contents` no
- * box and no gap. Activating an action only emits `activated`; the preview and
- * the execution belong to the cockpit-actions Feature, and no navigation or
+ * A registry action is a live button only when BOTH the registry returned it AND the page
+ * gave the slot a handler (`run`): the daemon has no actions route yet, and a button nothing
+ * handles would be a lie. Without a handler the slot renders the Copy control of its `copy`
+ * command instead (and nothing when it has none). With no registry (`actions` undefined) or no
+ * action for the target and no `copy`, nothing is rendered at all: no placeholder, and since
+ * the host is `display: contents` no box and no gap. Activating an action only calls `run`;
+ * the preview and the execution belong to the cockpit-actions Feature, and no navigation or
  * request happens here.
  *
  * The overflow menu is a manual popover where the browser has them (it is then in
@@ -58,7 +77,7 @@ interface Entry {
  */
 @Component({
   selector: 'app-action-slot',
-  imports: [Glyph],
+  imports: [Glyph, LazyCopy],
   templateUrl: './action-slot.html',
   styleUrl: './action-slot.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -68,7 +87,10 @@ export class ActionSlot {
   /** What the registry returned for the target; undefined when the registry route is absent. */
   readonly actions = input<readonly RegistryAction[] | undefined>()
   readonly target = input.required<string>()
-  readonly activated = output<ActionActivation>()
+  /** The page's handler for an activated action. Without one the registry's actions are not buttons: the slot is `copy`. */
+  readonly run = input<(activation: ActionActivation) => void>()
+  /** The Copy control shown when the slot has no handler (or the registry offered nothing). */
+  readonly copy = input<SlotCopy>()
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef)
   private readonly document = inject(DOCUMENT)
@@ -86,7 +108,9 @@ export class ActionSlot {
   private readonly entries = computed<Entry[]>(() => (this.actions() ?? []).map((action) => ({ action, reason: disabledReason(action) })))
   protected readonly direct = computed(() => this.entries().filter((entry) => isDirect(entry.action)))
   protected readonly overflow = computed(() => this.entries().filter((entry) => !isDirect(entry.action)))
-  protected readonly shown = computed(() => this.entries().length > 0)
+  /** Live buttons need both a registry entry and a handler. */
+  protected readonly shown = computed(() => this.entries().length > 0 && this.run() !== undefined)
+  protected readonly copyWord = computed(() => copyWord(this.copy()?.template === true))
 
   /** The button the open menu hangs from. */
   private anchor: HTMLElement | undefined
@@ -112,13 +136,13 @@ export class ActionSlot {
 
   protected activate(entry: Entry): void {
     if (entry.reason !== undefined) return this.showReason(entry)
-    this.activated.emit({ action: entry.action, target: this.target() })
+    this.run()?.({ action: entry.action, target: this.target() })
   }
 
   protected choose(entry: Entry): void {
     if (entry.reason !== undefined) return
     this.close(true)
-    this.activated.emit({ action: entry.action, target: this.target() })
+    this.run()?.({ action: entry.action, target: this.target() })
   }
 
   private place(trigger: HTMLElement): void {

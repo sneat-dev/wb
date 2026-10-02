@@ -11,9 +11,11 @@ import {
   contentChildren,
   effect,
   inject,
+  Injector,
   input,
   linkedSignal,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
@@ -41,6 +43,7 @@ import {
   describeFilters,
   effectiveSort,
   fitColumns,
+  sameFilters,
   scrollToRow,
   sortedBy,
   toggled,
@@ -54,6 +57,11 @@ const CLOCK_BUCKET_MS = 60_000
 export const SKELETON_ROWS = 12
 /** A filter that reads the clock: an `age:` term, or the `idle30` chip. */
 const AGE_TERM = /(^|\s)-?age:/i
+
+/** What a row can hold that takes Tab. */
+const ROW_CONTROLS = '.row a, .row button, .row input, .row select, .row textarea, .row [tabindex]'
+/** What handles Enter and Space itself, so a row key does not take them from it. */
+const OWN_KEYS = 'a, button, input, select, textarea, summary'
 
 let nextId = 0
 
@@ -110,6 +118,7 @@ export class ListView<T = unknown> {
 
   protected readonly store = inject(FleetStore)
   private readonly router = inject(Router)
+  private readonly injector = inject(Injector)
   private readonly route = inject(ActivatedRoute)
   private readonly shortcuts = inject(LIST_SHORTCUTS)
   private readonly clipboard = inject(ClipboardWriter)
@@ -147,10 +156,17 @@ export class ListView<T = unknown> {
     source: () => this.address().q,
     computation: (q, previous) => (this.writing.includes(q) ? (previous as { value: string }).value : q),
   })
-  protected readonly query = computed<ListQuery>(() => ({ ...this.address(), q: this.text() }))
-  private readonly clock = computed(() => (AGE_TERM.test(this.query().q) || this.query().chips.includes('idle30') ? Math.floor(this.store.now() / CLOCK_BUCKET_MS) * CLOCK_BUCKET_MS : 0))
-  protected readonly result = computed(() => applyListQuery(this.page(), this.items(), this.query(), this.clock()))
-  protected readonly sort = computed(() => effectiveSort(this.page(), this.query()))
+  /**
+   * What the rows are filtered and sorted by: the address and the typed text, without the selection. A change of
+   * selection alone is not news to it (`sameFilters`), so choosing a row, or moving with `j` and `k`, filters
+   * and sorts nothing again.
+   */
+  protected readonly filters = computed<ListQuery>(() => ({ ...this.address(), q: this.text(), sel: undefined }), { equal: sameFilters })
+  /** The whole state, with the selection, as the address writes it. */
+  protected readonly query = computed<ListQuery>(() => ({ ...this.filters(), sel: this.address().sel }))
+  private readonly clock = computed(() => (AGE_TERM.test(this.filters().q) || this.filters().chips.includes('idle30') ? Math.floor(this.store.now() / CLOCK_BUCKET_MS) * CLOCK_BUCKET_MS : 0))
+  protected readonly result = computed(() => applyListQuery(this.page(), this.items(), this.filters(), this.clock()))
+  protected readonly sort = computed(() => effectiveSort(this.page(), this.filters()))
   protected readonly width = signal(0)
   private readonly fitted = computed(() =>
     fitColumns(
@@ -168,10 +184,10 @@ export class ListView<T = unknown> {
   protected readonly fields = computed(() => [...declaredFields(this.page())].sort().join(', '))
   protected readonly machines = computed(() => {
     const options = this.store.machineOptions()
-    return options.length > 1 || this.query().machines.length > 0 ? options : []
+    return options.length > 1 || this.filters().machines.length > 0 ? options : []
   })
   protected readonly nothingMatched = computed(() =>
-    describeFilters(this.query(), new Map(this.chips().map((chip) => [chip.id, chip.label])), new Map(this.store.machineOptions().map((machine) => [machine.id, machine.label]))),
+    describeFilters(this.filters(), new Map(this.chips().map((chip) => [chip.id, chip.label])), new Map(this.store.machineOptions().map((machine) => [machine.id, machine.label]))),
   )
 
   protected readonly selected = computed(() => {
@@ -211,6 +227,8 @@ export class ListView<T = unknown> {
   })
 
   private frame: number | undefined
+  /** A filter the user just changed: the count that follows is said once, and a refresh of the same list says nothing. */
+  private announceCount = false
   private readonly links = new WeakMap<object, AppLink>()
   private scrolledTo: string | undefined
 
@@ -218,6 +236,14 @@ export class ListView<T = unknown> {
     const destroyed = inject(DestroyRef)
     destroyed.onDestroy(this.shortcuts.registerPanel(() => this.closePanel()))
     destroyed.onDestroy(() => this.cancelFrame())
+    // The result count is announced for the user's own change of the filters, never for a refresh of the data.
+    effect(() => {
+      const count = this.result().rows.length
+      const total = this.result().total
+      if (!this.announceCount) return
+      this.announceCount = false
+      untracked(() => this.announcer.say(`${count} of ${total} ${this.noun()}`))
+    })
     // A selection that is there is where the keyboard goes next, and a deep link or back from a page shows it.
     effect(() => {
       const row = this.selected()
@@ -235,10 +261,16 @@ export class ListView<T = unknown> {
     // The one tab stop is the list: the links and buttons its rows hold are reached with the mouse or the list's own keys.
     afterRenderEffect(() => {
       this.visible()
-      for (const control of this.viewport().nativeElement.querySelectorAll<HTMLElement>('.row a, .row button')) control.tabIndex = -1
+      this.keepOutOfTabOrder()
     })
     afterNextRender(() => {
       this.measure()
+      // A cell can render a control later than its row (a lazy block, an answer that arrives): the list keeps it out too.
+      if (typeof MutationObserver !== 'undefined') {
+        const mutations = new MutationObserver(() => this.keepOutOfTabOrder())
+        mutations.observe(this.viewport().nativeElement, { childList: true, subtree: true })
+        destroyed.onDestroy(() => mutations.disconnect())
+      }
       // The viewport grows when data replaces the placeholders and when the window is resized: measure each time.
       if (typeof ResizeObserver !== 'undefined') {
         const observer = new ResizeObserver(() => this.measure())
@@ -255,6 +287,11 @@ export class ListView<T = unknown> {
         }),
       )
     })
+  }
+
+  /** Takes every control a row holds out of the Tab order: the list is the one tab stop. */
+  private keepOutOfTabOrder(): void {
+    for (const control of this.viewport().nativeElement.querySelectorAll<HTMLElement>(ROW_CONTROLS)) if (control.tabIndex !== -1) control.tabIndex = -1
   }
 
   protected cellOf(id: string) {
@@ -297,6 +334,7 @@ export class ListView<T = unknown> {
 
   /** Filtering reacts at once; the address follows within the next frame, without a history entry for each key. */
   protected setText(value: string): void {
+    this.announceCount = true
     this.text.set(value)
     this.toTop()
     if (this.frame === undefined) {
@@ -316,7 +354,7 @@ export class ListView<T = unknown> {
   }
 
   protected sortBy(column: string): void {
-    this.commit(sortedBy(this.page(), this.query(), column))
+    this.commit(sortedBy(this.page(), this.query(), column), false)
   }
 
   protected clearFilters(): void {
@@ -324,26 +362,34 @@ export class ListView<T = unknown> {
     this.commit({ ...this.query(), q: '', chips: [], machines: [], sel: undefined })
   }
 
-  /** A change of the filters, which carries the text too: a queued write of the text is no longer needed. */
-  private commit(query: ListQuery): void {
+  /**
+   * A change of the filters or the sort, which carries the text too (a queued write of the text is no longer needed).
+   * It replaces the history entry: a chip or a sort is a tweak of the view, and back should leave the list, not
+   * undo the tweaks one by one. Opening and closing the panel are entries of their own.
+   */
+  private commit(query: ListQuery, announce = true): void {
+    this.announceCount = announce
     this.cancelFrame()
     this.toTop()
-    void this.go(query)
+    void this.go(query, true)
   }
 
   /**
    * Selects a row and opens its panel, or with no row closes it. Going from one row to another replaces the
    * history entry, so back leaves the panel's rows at once; opening and closing are entries of their own.
    */
-  protected select(id: string | undefined): void {
-    void this.go({ ...this.query(), sel: id }, id !== undefined && this.address().sel !== undefined)
+  protected select(id: string | undefined): Promise<void> {
+    return this.go({ ...this.query(), sel: id }, id !== undefined && this.address().sel !== undefined)
   }
 
-  /** Closes the panel and says whether one was open; the focus returns to the list, on the row that was open. */
+  /**
+   * Closes the panel and says whether one was open. The focus returns to the list, on the row that was open, once the
+   * navigation has resolved and the page has rendered: on a phone the list is `inert` while the sheet is open, and an
+   * inert element cannot take focus, so focusing at once would leave the focus on the sheet that is going away.
+   */
   protected closePanel(): boolean {
     if (!this.panelOpen()) return false
-    this.select(undefined)
-    this.viewport().nativeElement.focus()
+    void this.select(undefined).then(() => afterNextRender(() => this.viewport().nativeElement.focus(), { injector: this.injector }))
     return true
   }
 
@@ -353,13 +399,17 @@ export class ListView<T = unknown> {
     const row = target.closest<HTMLElement>('[data-index]')
     if (row === null || target.closest('a, button') !== null) return
     this.focusRow(Number(row.dataset['index']))
-    this.select(this.result().rows[this.focused()].id)
+    void this.select(this.result().rows[this.focused()].id)
     this.viewport().nativeElement.focus()
   }
 
   protected keydown(event: KeyboardEvent): void {
-    // Keys typed in a link or button inside a row belong to it.
-    if (event.target !== event.currentTarget || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
+    // The row keys work with the focus on the list or on a control inside it (a link a pointer pressed, say); the control
+    // keeps what it uses itself: Enter and Space, and every key of a field that takes text.
+    const inside = event.target !== event.currentTarget
+    const control = inside ? (event.target as Element).closest(OWN_KEYS) : null
+    if (inside && control !== null && (event.key === 'Enter' || event.key === ' ' || control.matches('input, select, textarea'))) return
     const rows = this.result().rows
     const page = Math.max(1, Math.floor(this.height() / ROW_HEIGHT) - 1)
     switch (event.key) {
@@ -401,6 +451,8 @@ export class ListView<T = unknown> {
       default:
         return
     }
+    // The list takes the focus back, so the next key is a row key too.
+    if (inside) this.viewport().nativeElement.focus()
     event.preventDefault()
   }
 
@@ -413,7 +465,7 @@ export class ListView<T = unknown> {
   /** Sorts by a column and says so, for the keyboard, which has no header to look at. */
   private sortAnnounced(column: string): void {
     const query = sortedBy(this.page(), this.query(), column)
-    this.commit(query)
+    this.commit(query, false)
     const now = effectiveSort(this.page(), query)
     this.announcer.say(`Sorted by ${now.sort}, ${now.dir === 'asc' ? 'ascending' : 'descending'}`)
   }
@@ -424,7 +476,7 @@ export class ListView<T = unknown> {
     if (row === undefined) return
     const panel = this.panelHost()
     if (panel !== undefined && this.selected()?.id === row.id) panel.focus()
-    else this.select(row.id)
+    else void this.select(row.id)
   }
 
   private async copyName(name: string): Promise<void> {
@@ -439,7 +491,7 @@ export class ListView<T = unknown> {
     this.focusRow(index)
     const element = this.viewport().nativeElement
     this.scrollTo(scrollToRow(index, element.scrollTop, element.clientHeight || this.height()))
-    if (this.panelOpen()) this.select(this.result().rows[index].id)
+    if (this.panelOpen()) void this.select(this.result().rows[index].id)
   }
 
   private focusRow(index: number): void {

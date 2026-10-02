@@ -140,14 +140,17 @@ describe('AgentPanelView', () => {
     expect(text(run.panel.querySelector('[aria-label="Pull requests"] li'))).toMatch(/^#7/)
   })
 
-  it('hands the slot of a local run the actions the registry returned for it', async () => {
+  it('hands the slot of a local run the actions the registry returned for it, and draws no button without a handler', async () => {
     await open('run-1')
     const action = { id: 'agent.stop', title: 'Stop', target_types: ['agent'], applicable: true, parameters: [], capability: 'agent.stop', safety: 'guarded', permitted: true } as unknown as RegistryAction
     const fixture = TestBed.createComponent(AgentPanelView)
     fixture.componentRef.setInput('id', 'run-1')
     fixture.componentRef.setInput('registry', new Map([['agent:run-1', [action]]]))
     await fixture.whenStable()
-    expect(text(fixture.nativeElement.querySelector('app-action-slot'))).toContain('Stop')
+    // The slot got the registry's answer, and with no handler it draws no button for it.
+    expect(fixture.nativeElement.querySelector('app-action-slot')).not.toBeNull()
+    expect(fixture.nativeElement.querySelector('app-action-slot .slot')).toBeNull()
+    expect(text(fixture.nativeElement.querySelector('app-action-slot'))).toBe('')
     const bare = TestBed.createComponent(AgentPanelView)
     bare.componentRef.setInput('id', 'run-1')
     await bare.whenStable()

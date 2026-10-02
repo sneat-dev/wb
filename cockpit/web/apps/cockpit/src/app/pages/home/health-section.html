@@ -14,7 +14,10 @@
           @if (row.command; as command) {
             @if ('text' in command) {
               <span class="home-where-run">{{ row.where }}</span>
-              <app-copy-button [text]="command.text" [idleWord]="command.needsEdit ? 'Copy template' : 'Copy fix command'" label="Copy fix command: {{ row.text }}" />
+              <app-copy-button [text]="command.text" [idleWord]="word(command.needsEdit)" [label]="name(command, row.text)" />
+              @if (command.quoteTwice) {
+                <span class="home-reason">{{ quoteTwice }}</span>
+              }
             } @else {
               <span class="home-reason">{{ command.reason }}</span>
             }

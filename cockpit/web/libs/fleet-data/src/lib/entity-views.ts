@@ -271,12 +271,11 @@ export function buildRepositoryPanel(model: FleetModel, key: string): Repository
 /**
  * A session's commands. One that waits for input (`blocked`) gets the next step: `wb session send` with its message
  * to edit, for a session of this machine; for another machine's, where to run it, and the reading command over ssh
- * (or labelled with the machine). Other sessions have only the reading command.
+ * (or labelled with the machine). Any other session has no command: it cannot be controlled from here.
  */
 function sessionCommands(agent: Agent, target: CommandTarget): PanelCommand[] {
-  const list = entry('List sessions', sessionList(target))
-  if (agent.activity !== 'blocked' || agent.session_id === undefined) return [list]
-  return [...changing('Send a message (edit it first)', sessionSend(agent.session_id, PLACEHOLDERS.message, target)), list]
+  if (agent.activity !== 'blocked' || agent.session_id === undefined) return []
+  return [...changing('Send a message (edit it first)', sessionSend(agent.session_id, PLACEHOLDERS.message, target)), entry('List sessions', sessionList(target))]
 }
 
 function nextStepOf(agent: Agent): string | undefined {

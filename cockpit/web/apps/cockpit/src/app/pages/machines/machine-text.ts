@@ -24,7 +24,7 @@ export function barsOf(load: MachineLoad): { cpu: number; memory: number } | und
   return load.cpuPercent === undefined || load.memoryPercent === undefined ? undefined : { cpu: percent(load.cpuPercent), memory: percent(load.memoryPercent) }
 }
 
-const ROUTE_WORDS = { local: 'local', 'live-remote': 'live-remote', cached: 'cached', none: 'no samples' } as const
+const ROUTE_WORDS = { local: 'local', 'live-remote': 'live', cached: 'cached', none: 'no samples' } as const
 
 /** The words of the sample behind a machine's load: its route and age, or that there is none. */
 export function sampleWords(load: MachineLoad, now: number): string {
@@ -84,7 +84,7 @@ export function metricsView(entry: MetricsEntry | undefined, now: number): Metri
   }
   const taken = formatAge(sample.sampled_at, now)
   if (metrics.route === 'cached') return { ...base, kind: 'cached', source: `cached: the latest sample of its published snapshot, ${taken}`, latest, charts: false }
-  if (metrics.route === 'live-remote') return { ...base, kind: 'live-remote', source: `live-remote: ${count}, fetched ${formatAge(metrics.fetched_at, now)}`, latest, charts: true }
+  if (metrics.route === 'live-remote') return { ...base, kind: 'live-remote', source: `live: ${count}, fetched ${formatAge(metrics.fetched_at, now)}`, latest, charts: true }
   return { ...base, kind: 'local', source: `local: this machine's own history, ${count}, latest ${taken}`, latest, charts: true }
 }
 
