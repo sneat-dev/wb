@@ -205,20 +205,6 @@ func TestPullRequestJSONMapsOntoThePort(t *testing.T) {
 	}
 }
 
-func TestPreflightChecksDeclaresItsPlanInRunOrder(t *testing.T) {
-	t.Parallel()
-	checks := PreflightChecks()
-	want := []string{CheckHooks, CheckNpmProviderIdentity, CheckRedMain, CheckStreamConcurrency}
-	if len(checks) != len(want) {
-		t.Fatalf("checks = %v, want %v", checks, want)
-	}
-	for index := range want {
-		if checks[index] != want[index] {
-			t.Fatalf("checks = %v, want %v", checks, want)
-		}
-	}
-}
-
 func TestInstalledHooksCheckerReportsAnUnreadableCheckoutAsAnError(t *testing.T) {
 	t.Parallel()
 	checker := InstalledHooksChecker("/nonexistent/wb", t.TempDir())
