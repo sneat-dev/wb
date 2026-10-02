@@ -17,7 +17,8 @@ import (
 )
 
 // cockpitOpenResult is the one JSON object `wb cockpit --format json` prints.
-// It never carries a login code: the URL has no query string.
+// It never carries a login code or a session key: the URL has no query string
+// and no fragment.
 type cockpitOpenResult struct {
 	URL   string `json:"url"`
 	Scope string `json:"scope"`
@@ -28,13 +29,20 @@ type cockpitOpenResult struct {
 
 // cockpitLocalSession is what a local invocation learns from the daemon: its
 // listen address, a non-fatal warning from the start-or-reuse path, and, when
-// one was requested, the login code and the path it is redeemed at.
+// one was requested, the login code, the path it is redeemed at and the
+// session key of the session the code starts (cockpit#req:session-key).
 type cockpitLocalSession struct {
 	Listen  string
 	Warning string
 	Code    string
 	Path    string
+	Key     string
 }
+
+// cockpitNoSessionKeyWarning is what the command says when the daemon minted a
+// login code with no session key: it is an older wb than this one, still
+// running from before an update.
+const cockpitNoSessionKeyWarning = "the running daemon is an older wb that issues no Cockpit session key; restart it (`wb daemon restart`, then `wb cockpit` again) so that the session cookie alone no longer makes an owner"
 
 type cockpitCommandDependencies struct {
 	daemon daemonDependencies
@@ -101,6 +109,7 @@ func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, 
 	}
 	var issued struct {
 		Code string `json:"code"`
+		Key  string `json:"key"`
 		Path string `json:"path"`
 	}
 	if err := client.call(ctx, cockpit.LoginCodeRPCPath, struct{}{}, &issued); err != nil {
@@ -112,7 +121,7 @@ func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, 
 	if issued.Path != cockpit.LoginPath {
 		return cockpitLocalSession{}, fmt.Errorf("request a cockpit login code: the daemon named the login path %q, want %q", issued.Path, cockpit.LoginPath)
 	}
-	session.Code, session.Path = issued.Code, issued.Path
+	session.Code, session.Path, session.Key = issued.Code, issued.Path, issued.Key
 	return session, nil
 }
 
@@ -159,12 +168,14 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 		Short: "Open the Cockpit web workspace for this machine's fleet",
 		Long: "Open Cockpit. By default it starts or reuses this machine's loopback daemon, requests a " +
 			"single-use login code (valid for 60 seconds) and opens the login URL on the canonical origin. " +
+			"The URL's fragment carries the session key, which the page keeps and sends with each request: the " +
+			"session cookie alone, which every server on the loopback host receives, does not make an owner. " +
 			"--listen names the loopback address of the daemon to start (default 127.0.0.1:8766); without it a daemon " +
 			"already running here is used wherever it listens. A running daemon on another address is never replaced: " +
 			"the command refuses and names it. Non-loopback addresses are refused before anything starts. " +
 			"--hosted opens the configured cockpit.hosted_url and starts nothing. " +
 			"JSON output and non-interactive invocations print the URL without launching a browser; " +
-			"JSON output never carries a login code.",
+			"JSON output never carries a login code or a session key.",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			format, err := daemonOutputFormat(format, jsonOut)
@@ -202,6 +213,14 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 				result.URL, target = plain.String(), plain.String()
 				if session.Code != "" {
 					origin.Path, origin.RawQuery = session.Path, url.Values{"code": {session.Code}}.Encode()
+					// The key goes in the fragment, which a browser sends to no
+					// server: the page takes it from there
+					// (cockpit#req:session-key).
+					if session.Key != "" {
+						origin.Fragment = cockpit.LoginKeyFragment + "=" + session.Key
+					} else {
+						_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", cockpitNoSessionKeyWarning)
+					}
 					target = origin.String()
 				}
 			}

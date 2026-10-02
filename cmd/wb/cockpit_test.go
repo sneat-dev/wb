@@ -29,7 +29,7 @@ func cockpitTestDependencies(t *testing.T, opened *[]string, mints *int) cockpit
 			session := cockpitLocalSession{Listen: "127.0.0.1:8766"}
 			if mint {
 				*mints++
-				session.Code, session.Path = "abc123", cockpit.LoginPath
+				session.Code, session.Path, session.Key = "abc123", cockpit.LoginPath, "k3y_-K"
 			}
 			return session, nil
 		},
@@ -55,9 +55,39 @@ func TestCockpitLocalOpensTheLoginURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "http://127.0.0.1:8766/cockpit/session/login?code=abc123"
+	// The session key is in the fragment, which no server is sent
+	// (cockpit#ac:session-key-reaches-the-page-in-the-fragment).
+	want := "http://127.0.0.1:8766/cockpit/session/login?code=abc123#key=k3y_-K"
 	if len(opened) != 1 || opened[0] != want || mints != 1 || stdout != "cockpit: "+want+"\n" {
 		t.Fatalf("opened = %v, mints = %d, stdout = %q", opened, mints, stdout)
+	}
+	if parsed, err := url.Parse(want); err != nil || parsed.RawQuery != "code=abc123" || parsed.Fragment != "key=k3y_-K" || strings.Contains(parsed.RequestURI(), "k3y_-K") {
+		t.Fatalf("the login URL %q sends the key to the server: %+v (%v)", want, parsed, err)
+	}
+}
+
+// A daemon still running from before an update mints a code and no key. The
+// login URL then has no fragment and the command says how to get one.
+func TestCockpitSaysWhenAnOlderDaemonIssuesNoSessionKey(t *testing.T) {
+	var opened []string
+	deps := cockpitTestDependencies(t, &opened, new(int))
+	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
+		return cockpitLocalSession{Listen: "127.0.0.1:8766", Code: "abc123", Path: cockpit.LoginPath}, nil
+	}
+	stdout, stderr, err := runCockpit(t, &invocation{projectsRoot: "/root"}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "cockpit: http://127.0.0.1:8766/cockpit/session/login?code=abc123\n"; stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if !strings.Contains(stderr, "issues no Cockpit session key") || !strings.Contains(stderr, "wb daemon restart") {
+		t.Fatalf("stderr = %q, want the restart advice", stderr)
+	}
+	// With a key there is no such warning.
+	_, stderr, err = runCockpit(t, &invocation{projectsRoot: "/root"}, cockpitTestDependencies(t, &opened, new(int)))
+	if err != nil || stderr != "" {
+		t.Fatalf("stderr with a key = %q (%v), want nothing", stderr, err)
 	}
 }
 
@@ -315,6 +345,12 @@ func TestCockpitLocalFromDaemonMintsOverTheOwnerChannel(t *testing.T) {
 	if err != nil || login.Path != cockpit.LoginPath || login.Query().Get("code") == "" {
 		t.Fatalf("stdout = %q, err = %v", stdout.String(), err)
 	}
+	// The key the daemon minted beside the code is in the fragment and nowhere
+	// the server is sent.
+	key, isKey := strings.CutPrefix(login.Fragment, cockpit.LoginKeyFragment+"=")
+	if !isKey || len(key) < 43 || key == login.Query().Get("code") || strings.Contains(login.RequestURI(), key) {
+		t.Fatalf("the login URL's fragment is %q, want the session key and only there", login.Fragment)
+	}
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Get(test.URL + login.Path + "?code=" + login.Query().Get("code"))
 	if err != nil {
@@ -323,6 +359,23 @@ func TestCockpitLocalFromDaemonMintsOverTheOwnerChannel(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) == 0 {
 		t.Fatalf("login exchange = %s, cookies = %v", response.Status, response.Cookies())
+	}
+	// The printed key is the one that session is bound to: with the cookie it
+	// is the owner, and the cookie alone is no session (this server has
+	// anonymous metadata off, so it is refused).
+	principal := func(withKey bool) string {
+		request := httptest.NewRequest(http.MethodGet, cockpit.APIPrefix+"session", nil)
+		request.Host = "127.0.0.1:8766"
+		request.AddCookie(&http.Cookie{Name: "wb_cockpit_session_8766", Value: response.Cookies()[0].Value})
+		if withKey {
+			request.Header.Set(cockpit.SessionKeyHeader, key)
+		}
+		recorder := httptest.NewRecorder()
+		server.Mounts()[cockpit.APIPrefix].ServeHTTP(recorder, request)
+		return recorder.Body.String()
+	}
+	if with, without := principal(true), principal(false); !strings.Contains(with, `"principal":"owner"`) || !strings.Contains(without, "an owner session is required") {
+		t.Fatalf("with the printed key: %s; with the cookie alone: %s", with, without)
 	}
 }
 
