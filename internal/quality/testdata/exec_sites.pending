@@ -53,8 +53,7 @@ internal/recipe/command.go	1	task-15
 internal/remotessh/remotessh.go	1	task-8
 internal/runqueue/queue.go	1	task-14
 internal/sessioncourier/ssh.go	1	task-15
-internal/sessionlaunch/launch.go	3	task-14
-internal/sessionlaunch/private.go	2	task-14
+internal/sessionlaunch/launch.go	1	task-14
 internal/sessionlaunch/tmux.go	5	task-14
 internal/sessionmessage/tmux.go	1	task-15
 internal/sessionparkcourier/ssh.go	1	task-8
@@ -68,5 +67,4 @@ internal/worktrees/git_capability_darwin.go	1	task-18
 internal/worktrees/git_executable_darwin.go	1	task-18
 internal/worktrees/heartbeat.go	1	task-18
 internal/worktrees/patchid.go	2	task-18
-internal/worktrees/repository_relocate.go	5	task-18
 internal/worktrees/worktrees.go	4	task-18

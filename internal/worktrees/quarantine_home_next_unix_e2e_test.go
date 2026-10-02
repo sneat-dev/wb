@@ -62,24 +62,24 @@ func TestE2EQuarantineReservationRetainsNativeParentFailures(t *testing.T) {
 	})
 	t.Run("ancestor sync refuses unreadable parent", func(t *testing.T) {
 		t.Parallel()
-		parent := filepath.Join(t.TempDir(), "unreadable")
-		if err := os.Mkdir(parent, 0700); err != nil {
+		unreadableParent := filepath.Join(t.TempDir(), "unreadable")
+		if err := os.Mkdir(unreadableParent, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(parent, 0000); err != nil {
+		if err := os.Chmod(unreadableParent, 0000); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			if err := os.Chmod(parent, 0700); err != nil {
+			if err := os.Chmod(unreadableParent, 0700); err != nil {
 				t.Error(err)
 			}
 		})
-		report := filepath.Join(parent, "run")
+		report := filepath.Join(unreadableParent, "run")
 		err := reserveQuarantineReportDir(report)
 		if !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("native ancestor sync error=%v, want permission refusal", err)
 		}
-		if err := os.Chmod(parent, 0700); err != nil {
+		if err := os.Chmod(unreadableParent, 0700); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(report); !errors.Is(err, os.ErrNotExist) {

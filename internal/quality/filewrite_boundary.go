@@ -201,7 +201,6 @@ var NotAFileWritePublishExemptions = map[string]string{
 	"internal/locallink/execports.go:ExecNode.unlinkWithObservations":  "renames an existing backup directory back into place; not a temp-file write",
 	"internal/locallink/execports.go:renameInstalledPackageForLink":    "moves the existing installed package aside; not a temp-file write or content publication",
 	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":   "renames a request file into a quarantine directory; not a write publish",
-	"internal/hooks/manager.go:moveExpectedManagedHookNoReplace":       "moves a managed hook after an identity check, without writing new content; not a file write",
 
 	// The renameNoReplace primitive's own per-OS implementation: a thin
 	// wrapper around Renameat2/RenameatxNp, with no write of its own.
@@ -216,7 +215,6 @@ var NotAFileWritePublishExemptions = map[string]string{
 	// bare append), never a temp name, never a rename or link. There is no
 	// create/write/publish sequence here for internal/filewrite to replace.
 	"internal/agentguard/gh.go:recordGhPrMergeOverride": "O_APPEND log write, not a create/publish sequence",
-	"internal/hooks/metrics.go:AppendEvents":            "O_APPEND log write, not a create/publish sequence",
 	"internal/runlog/runlog.go:appendInjected":          "O_APPEND log write (flock-guarded), not a create/publish sequence",
 }
 

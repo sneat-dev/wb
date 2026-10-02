@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestStaleHookCleanupRetainsOwnedDescriptorRefusals(t *testing.T) {
@@ -47,7 +49,7 @@ func TestStaleUserHookRewriteRefusesNativeSourceSubstitution(t *testing.T) {
 	active := filepath.Join(root, "stale")
 	saved := filepath.Join(root, "retained-original")
 	original := shimManagedSection("", "stale", "", "", "", false) + "echo retained user commands\n"
-	if err := os.WriteFile(active, []byte(original), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(active, []byte(original), 0700); err != nil {
 		t.Fatal(err)
 	}
 	var actions []string
@@ -58,7 +60,7 @@ func TestStaleUserHookRewriteRefusesNativeSourceSubstitution(t *testing.T) {
 		if err := os.Rename(active, saved); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(active, []byte("replacement occupant"), 0700); err != nil {
+		if err := testenv.WriteExecutableFile(active, []byte("replacement occupant"), 0700); err != nil {
 			t.Fatal(err)
 		}
 	})

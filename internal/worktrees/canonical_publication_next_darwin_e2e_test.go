@@ -16,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -106,7 +107,7 @@ func TestE2ECanonicalPublicationDarwinDeveloperGitAdmission(t *testing.T) {
 	t.Parallel()
 	path := t.TempDir()
 	regular := filepath.Join(path, "git")
-	if err := os.WriteFile(regular, []byte("fixture"), 0600); err != nil {
+	if err := testenv.WriteExecutableFile(regular, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, path, diagnostic string }{
@@ -280,11 +281,12 @@ func TestE2ECanonicalPublicationDestinationPlanning(t *testing.T) {
 				}
 				exists = true
 				if name == "unreadable" {
-					if err := os.Chmod(path, 0); err != nil {
+					directoryPath := path
+					if err := os.Chmod(directoryPath, 0); err != nil {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() {
-						if err := os.Chmod(path, 0700); err != nil {
+						if err := os.Chmod(directoryPath, 0700); err != nil {
 							t.Error(err)
 						}
 					})

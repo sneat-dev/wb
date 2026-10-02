@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestManagedHookQuarantineRefusesSymlinkSubstitutionWithoutTouchingTarget(t *testing.T) {
@@ -15,10 +17,10 @@ func TestManagedHookQuarantineRefusesSymlinkSubstitutionWithoutTouchingTarget(t 
 	active := filepath.Join(root, "pre-commit")
 	saved := filepath.Join(root, "original")
 	target := filepath.Join(t.TempDir(), "target")
-	if err := os.WriteFile(active, []byte("original"), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(active, []byte("original"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(target, []byte("external occupant"), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(target, []byte("external occupant"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	directory, err := os.Open(root)

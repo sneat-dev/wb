@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
+
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
@@ -18,7 +20,7 @@ func TestManagedHookSnapshotRefusesClosedOwnedDescriptor(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "pre-commit")
 			original := []byte("#!/bin/sh\necho retained\n")
-			if err := os.WriteFile(path, original, 0700); err != nil {
+			if err := testenv.WriteExecutableFile(path, original, 0700); err != nil {
 				t.Fatal(err)
 			}
 			directory := openOwnedHookTestDirectory(t, root)
@@ -61,7 +63,7 @@ func TestTemporaryHookIdentityFailurePreservesActiveHook(t *testing.T) {
 	t.Cleanup(managed.close)
 	path := filepath.Join(managed.path, "pre-commit")
 	original := []byte("#!/bin/sh\necho retained\n")
-	if err := os.WriteFile(path, original, 0700); err != nil {
+	if err := testenv.WriteExecutableFile(path, original, 0700); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := readManagedHook(managed.directory, "pre-commit")
