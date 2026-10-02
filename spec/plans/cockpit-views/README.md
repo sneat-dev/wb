@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Approved
+status: Implemented
 ---
 # Plan: Cockpit Views
 
-**Status:** Approved
+**Status:** Implemented
 **Source Feature:** cockpit-views
 **Date:** 2026-10-01
 **Owner:** alex
@@ -300,7 +300,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-20
 **Verifies:** cockpit-views#ac:usable-at-360-wide, cockpit-views#ac:no-layout-shift-on-arrival, cockpit-views#ac:state-is-never-colour-only, cockpit-views#ac:views-coverage-gates-hold, cockpit-views#ac:every-number-is-a-link, cockpit-views#ac:every-tab-lists-its-collection
 **Depends-On:** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
-**Status:** planning
+**Status:** complete
 
 Update the stubbed Playwright suite and the Linux-CI real-daemon journey for the new pages and routes (the journey is expected red from task 1 until the UI foundation tasks land and is made green here at the latest; existing e2e tests are otherwise updated by the task that breaks them); assert the budgets on the fixture end to end; run the accessibility pass (focus order, `aria-current`, chart text alternatives, contrast in both themes, 360 px width and the phone Home, cumulative layout shift under 0.01); audit the enumerated count cells of REQ:every-number-is-a-link; and update the docs, command manifests and Agent Skill text that describe the Cockpit pages. Confirm every component has a rendering test and the thresholds still hold.
 

@@ -71,7 +71,7 @@ application) prove it. A new field or route also extends `internal/cockpit/fleet
 | What | How | Cadence |
 |---|---|---|
 | This machine's fleet | the daemon's snapshotter | `cockpit.refresh_interval` (default 1 minute) |
-| Another machine, live | its daemon's hub export route (HTTP); `wb cockpit export` over SSH is the fallback for a machine with no HTTP route (it is being added: `cockpit.remote_ssh` is already accepted) | at each refresh while fresh; an export stays live for 2 refresh intervals; a failing machine backs off to at most 5 minutes |
+| Another machine, live | its daemon's hub export route (HTTP); `wb cockpit export` over SSH is the fallback when HTTP is absent or fails | at each refresh while a client read the fleet in the last 5 minutes, otherwise a keepalive every max(15 min, interval); never more than one login per 30 s per machine; a failing machine backs off to at most 5 minutes, a refused SSH login to at most 1 hour |
 | Another machine, metrics only | the same, metrics only | every 30 seconds while a client asked in the last minute |
 | Another machine, cached | the snapshot it published to the remote store | `remote.publish.interval` (minimum 5 minutes; unset means by hand only) |
 | This machine's metrics | the daemon's sampler (`/proc` on Linux, sysctl and gopsutil on macOS) | every 10 seconds, 360 samples, in memory |
