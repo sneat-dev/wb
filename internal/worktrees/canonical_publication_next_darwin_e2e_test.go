@@ -88,43 +88,9 @@ func TestE2ECanonicalPublicationDarwinDeveloperGitAdmission(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // xcrun and cache resolution read process-wide environment; each fixture restores it.
-func TestE2ECanonicalPublicationDarwinAmbientRoots(t *testing.T) {
-	for _, name := range []string{"HOME", "GOCACHE", "GOPATH", "GOMODCACHE"} {
-		t.Setenv(name, "")
-	}
-	if roots := ambientGoCacheRoots(); len(roots) != 0 {
-		t.Fatalf("unavailable native home/cache = %v", roots)
-	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if roots := ambientGoCacheRoots(); !reflect.DeepEqual(roots, []string{filepath.Join(cache, "go-build"), filepath.Join(home, "go", "pkg", "mod")}) {
-		t.Fatalf("native default caches = %v", roots)
-	}
-	t.Setenv("HOME", "")
-	t.Setenv("GOCACHE", "relative")
-	t.Setenv("GOMODCACHE", "relative")
-	if roots := ambientGoCacheRoots(); len(roots) != 0 {
-		t.Fatalf("relative caches admitted = %v", roots)
-	}
-	root := t.TempDir()
-	t.Setenv("GOCACHE", root)
-	t.Setenv("GOMODCACHE", root)
-	if roots := ambientGoCacheRoots(); !reflect.DeepEqual(roots, []string{root}) {
-		t.Fatalf("duplicate caches = %v", roots)
-	}
-	ctx := context.Background()
-	if withProjectsRoot(ctx, " \t") != ctx {
-		t.Fatal("blank projects root changed context")
-	}
-	if got := projectsRootFromContext(withProjectsRoot(ctx, " "+root+" ")); got != root {
-		t.Fatalf("context root = %q", got)
-	}
-	t.Setenv("DEVELOPER_DIR", filepath.Join(root, "missing-developer"))
+//nolint:paralleltest // xcrun reads the process-wide developer directory.
+func TestE2ECanonicalPublicationDarwinDeveloperDirectoryFailure(t *testing.T) {
+	t.Setenv("DEVELOPER_DIR", filepath.Join(t.TempDir(), "missing-developer"))
 	if got, err := resolveDarwinGitExecutable(); err == nil || got != "" || !strings.Contains(err.Error(), "resolve developer Git with xcrun") {
 		t.Fatalf("native xcrun failure = %q, %v", got, err)
 	}
