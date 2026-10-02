@@ -17,7 +17,6 @@ import (
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -938,15 +937,6 @@ func cloneURLFor(repository Repository) string {
 // resolution every package shares.
 func CanonicalClonePath(githubDir string, repository Repository) (string, error) {
 	return worktrees.CanonicalRepositoryPathForURL(githubDir, repository.Slug, cloneURLFor(repository))
-}
-
-// canonicalClonePath is where a repository's canonical clone belongs below
-// githubDir: <githubDir>/{host}/{owner}/{repository} when the clone URL names a
-// literal forge hostname, and the legacy <githubDir>/{owner}/{repository} when
-// it does not. The host comes from the same URL EnsureCanonical would clone
-// from, so it is never invented and the two can never disagree.
-func canonicalClonePath(githubDir, owner, name, cloneURL string) string {
-	return repopath.FromCloneURL(cloneURL, owner, name).Path(githubDir)
 }
 
 func splitRepository(slug string) (string, string, error) {

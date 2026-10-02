@@ -497,10 +497,6 @@ func sameReceiptCollisionAcknowledgement(left, right WorktreeMergeReceiptCollisi
 		left.Actor == right.Actor && left.Reason == right.Reason
 }
 
-func persistReceiptCollisionAcknowledgement(path string, ack WorktreeMergeReceiptCollisionAcknowledgement) error {
-	return persistReceiptCollisionAcknowledgementInjected(path, ack, nil)
-}
-
 // persistReceiptCollisionAcknowledgementInjected is
 // persistReceiptCollisionAcknowledgement's test seam (task-9 PR-4): every
 // production call site reaches it only through
@@ -3131,10 +3127,6 @@ func readSelfSupersessionCorrection(path string, receipt WorktreeMergeReceipt, s
 		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("self-supersession correction %s has invalid immutable identity", path)
 	}
 	return correction, nil
-}
-
-func persistSelfSupersessionCorrection(path string, correction WorktreeMergeSelfSupersessionCorrection) error {
-	return persistSelfSupersessionCorrectionInjected(path, correction, nil)
 }
 
 // persistSelfSupersessionCorrectionInjected is
