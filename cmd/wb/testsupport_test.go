@@ -45,18 +45,12 @@ func newRunQueueProgress(out io.Writer, enabled bool, configPath string) *runQue
 	return newRunQueueProgressWithHeartbeat(out, enabled, configPath, universalProgressHeartbeat)
 }
 
-// runPreparedNpmPublish owns the irreversible boundary after the complete
-// preflight has selected a stable fleet. Keeping it separate makes the
-// campaign-lock contract directly testable without a live GitHub or npm call.
+// runPreparedNpmPublish drives the production entry point
+// (runNpmPublishWithPreflight: lock, preflight, operation check, dispatch)
+// with a preflight that answers a prepared fleet, so tests exercise the
+// campaign-lock contract without a live GitHub or npm call.
 func runPreparedNpmPublish(command *cobra.Command, options npmPublishOptions, prepared npmPublishPrepared, inv *invocation) error {
-	// Every path below writes a durable report. Take both campaign and
-	// package-version locks before either a dry-run plan or --apply can touch
-	// it, so a plan cannot overwrite an in-progress apply/resume handoff and an
-	// overlapping campaign cannot publish the same npm version concurrently.
-	locks, err := acquireNpmPublicationLocks(inv, prepared.operation, prepared.releases, options.resume)
-	if err != nil {
-		return err
-	}
-	defer locks.Release()
-	return runPreparedNpmPublishLocked(command, options, prepared, inv)
+	return runNpmPublishWithPreflight(command, options, func(*invocation, npmPublishOptions) (npmPublishPrepared, error) {
+		return prepared, nil
+	}, inv)
 }
