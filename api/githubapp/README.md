@@ -58,13 +58,15 @@ credentials, repository diagnostics, or command output.
 `RemoteStateWorktreeReadModel` consumes the public
 `machinesnapshot.SnapshotStore` directly and projects rows without importing
 or reconstructing any WB CLI remote-state type.
-The durable adapter uses
-`machinesnapshot.Collection/{machinesnapshot.SnapshotKey(login,machine)}`.
-Each document is exactly `machinesnapshot.StoredSnapshot`: the allowlisted
-`snapshot` map plus server `received_at` and payload `digest`. The key is a
-`machine_`-prefixed SHA-256 of the validated login, a NUL delimiter, and the
-validated machine; the source identity remains inside the document for
-transaction verification.
+The hub's durable adapter (`hub/machine_snapshot_store.go`) keeps one document
+per enrolled machine in the `workbench_machine_snapshots` collection, keyed by
+the hex SHA-256 of the machine's enrolment ID (`MachineID`), not by login and
+machine name. Each document is a `hub.StoredMachineSnapshot`: the allowlisted
+`snapshot`, the owning `identity_id` and `machine_id`, the server `received_at`
+and the payload `digest`; the identity stays inside the document for
+transaction verification. `machinesnapshot.SnapshotPath` names the daemon-facing
+route, and `machinesnapshot.ResolveLatest` is the comparison adapters apply
+inside their transaction.
 
 `GET /v0/workbench/events` is the default server-to-browser transport. It is
 resumable SSE: `after` (or `Last-Event-ID`) replays durable events with strictly

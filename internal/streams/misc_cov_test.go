@@ -367,48 +367,6 @@ func TestCheckStreamConcurrencyReportsEveryRefusal(t *testing.T) {
 	})
 }
 
-func TestNpmPackageManifestsReportsUnreadableAndUnparseableManifests(t *testing.T) {
-	t.Parallel()
-	broken := t.TempDir()
-	if err := os.Symlink(filepath.Join(broken, "missing"), filepath.Join(broken, "package.json")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := npmPackageManifests(broken); err == nil {
-		t.Fatal("npmPackageManifests reported success for an unreadable manifest")
-	}
-
-	malformed := t.TempDir()
-	writeFiles(t, malformed, map[string]string{"package.json": "{not json"})
-	if _, err := npmPackageManifests(malformed); err == nil {
-		t.Fatal("npmPackageManifests reported success for an unparseable manifest")
-	}
-}
-
-func TestNpmPackageManifestsRecordsAWorkspaceRoot(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	writeFiles(t, root, map[string]string{
-		"package.json":           `{"name":"root","workspaces":["libs/*"]}`,
-		"libs/core/package.json": `{"name":"@acme/core"}`,
-	})
-	manifests, err := npmPackageManifests(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	byPath := map[string]npmPackageManifest{}
-	for _, manifest := range manifests {
-		byPath[manifest.Path] = manifest
-	}
-	core, ok := byPath["libs/core/package.json"]
-	if !ok || core.Root || core.Workspace != "." {
-		t.Fatalf("libs/core manifest = %#v", core)
-	}
-	rootManifest, ok := byPath["package.json"]
-	if !ok || !rootManifest.Root || rootManifest.Workspace != "." {
-		t.Fatalf("root manifest = %#v", rootManifest)
-	}
-}
-
 func TestInstalledHooksCheckerReportsFindings(t *testing.T) {
 	t.Parallel()
 	root, _ := gitFixture(t)
@@ -472,5 +430,47 @@ func TestAmbiguousProviderFindingsSkipUniquelyOwnedPackages(t *testing.T) {
 	}
 	if findings[0].Repository != "acme/a" || findings[1].Repository != "acme/b" {
 		t.Fatalf("findings = %#v, want owners sorted", findings)
+	}
+}
+
+func TestNpmPackageManifestsWithReadReportsUnreadableAndUnparseableManifests(t *testing.T) {
+	t.Parallel()
+	broken := t.TempDir()
+	if err := os.Symlink(filepath.Join(broken, "missing"), filepath.Join(broken, "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := npmPackageManifestsWithRead(broken, os.ReadFile); err == nil {
+		t.Fatal("npmPackageManifests reported success for an unreadable manifest")
+	}
+
+	malformed := t.TempDir()
+	writeFiles(t, malformed, map[string]string{"package.json": "{not json"})
+	if _, err := npmPackageManifestsWithRead(malformed, os.ReadFile); err == nil {
+		t.Fatal("npmPackageManifests reported success for an unparseable manifest")
+	}
+}
+
+func TestNpmPackageManifestsWithReadRecordsAWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"package.json":           `{"name":"root","workspaces":["libs/*"]}`,
+		"libs/core/package.json": `{"name":"@acme/core"}`,
+	})
+	manifests, err := npmPackageManifestsWithRead(root, os.ReadFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]npmPackageManifest{}
+	for _, manifest := range manifests {
+		byPath[manifest.Path] = manifest
+	}
+	core, ok := byPath["libs/core/package.json"]
+	if !ok || core.Root || core.Workspace != "." {
+		t.Fatalf("libs/core manifest = %#v", core)
+	}
+	rootManifest, ok := byPath["package.json"]
+	if !ok || !rootManifest.Root || rootManifest.Workspace != "." {
+		t.Fatalf("root manifest = %#v", rootManifest)
 	}
 }

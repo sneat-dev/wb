@@ -93,7 +93,7 @@ printf 'mode: %%s\nexample.test/app/app.go:2.1,2.30 1 1\nexample.test/app/app.go
 				t.Fatal(err)
 			}
 			baseline := BaselineFromProfile(blocks, "example.test/app", "same-checkout-sha")
-			results, _ := EvaluateRatchet(blocks, ChangedLines{"app.go": {3: true}}, map[string]bool{"app.go": true}, nil, baseline, "example.test/app")
+			results, _ := EvaluateRatchet(blocks, ChangedLines{"app.go": {3: true}}, map[string]bool{"app.go": true}, nil, baseline, "example.test/app", nil)
 			if len(results) != 1 || !results[0].Pass {
 				t.Fatalf("actual profile union failed changed-line ratchet: %+v", results)
 			}

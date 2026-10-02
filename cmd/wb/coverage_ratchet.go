@@ -72,6 +72,15 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return fmt.Errorf("--changed requires exactly one Go module at %s: %w", repoPath, err)
 	}
 
+	// The timing tolerance is read from repoPath, the checkout being judged,
+	// and before anything is measured: a malformed policy must not cost a
+	// full coverage run to discover. The merge-base checkout's copy is never
+	// consulted, so a change that adds or tightens an entry is judged by it.
+	tolerances, err := quality.LoadRatchetTolerances(repoPath)
+	if err != nil {
+		return err
+	}
+
 	mergeBase, err := quality.GitMergeBase(ctx, repoPath, options.target)
 	if err != nil {
 		return err
@@ -180,9 +189,11 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return err
 	}
 
-	warnRedBase(cmd.ErrOrStderr(), baseline.RedBase)
+	annotate := githubActionsEnabled(os.Getenv)
+	warnRedBase(cmd.ErrOrStderr(), baseline.RedBase, annotate)
 
-	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath, changedOwners)
+	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath, tolerances, changedOwners)
+	warnToleratedCoverage(cmd.ErrOrStderr(), results, annotate)
 
 	report := changedCoverageReport{
 		MergeBase:    mergeBase,
@@ -282,15 +293,58 @@ type changedCoverageReport struct {
 // warnRedBase tells the reader the ratchet was judged against a merge base
 // whose own tests fail. That is allowed, because a red base can only be
 // repaired through a pull request, but it must never pass unnoticed.
-func warnRedBase(stderr io.Writer, redBase *quality.RedBaseline) {
+func warnRedBase(stderr io.Writer, redBase *quality.RedBaseline, annotate bool) {
 	if redBase == nil {
 		return
+	}
+	if annotate {
+		writeWorkflowWarning(stderr, "Coverage baseline measured on a red merge base", fmt.Sprintf("%d test(s) fail at %s: %s. The count-rise check is looser for their packages.", len(redBase.FailedTests), redBase.SHA, strings.Join(redBase.FailedTests, ", ")))
 	}
 	_, _ = fmt.Fprintf(stderr, "WARNING: the coverage baseline was measured on a RED merge base: %d test(s) fail at %s.\n", len(redBase.FailedTests), redBase.SHA)
 	for _, name := range redBase.FailedTests {
 		_, _ = fmt.Fprintf(stderr, "  failed at base: %s\n", name)
 	}
 	_, _ = fmt.Fprintln(stderr, "  The baseline uses the coverage those test runs still wrote, so the uncovered counts of their packages are an upper bound and the count-rise check is looser for them. Changed statements are still held to full coverage.")
+}
+
+// githubActionsEnabled reports whether the run is a GitHub Actions step, the
+// only place a workflow-command annotation means anything.
+func githubActionsEnabled(getenv func(string) string) bool {
+	return getenv("GITHUB_ACTIONS") == "true"
+}
+
+// writeWorkflowWarning emits a GitHub Actions `::warning` workflow command,
+// which the run page shows as an annotation even when the job is green: a
+// plain WARNING line is otherwise buried in a passing step's log. It goes to
+// stderr, which the runner also scans for workflow commands, so `--format
+// json` stdout stays a single JSON document. The escaping matches
+// internal/policy's escapeWorkflow.
+func writeWorkflowWarning(stderr io.Writer, title, message string) {
+	replacer := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", "::", "%3A%3A")
+	_, _ = fmt.Fprintf(stderr, "::warning title=%s::%s\n", title, replacer.Replace(message))
+}
+
+// warnToleratedCoverage reports every package that passed only because of
+// its configured timing tolerance (.wb/coverage-ratchet.yaml). The tolerance
+// is a stopgap, so each use is said out loud; a run that needed none prints
+// nothing.
+func warnToleratedCoverage(stderr io.Writer, results []quality.PackageRatchet, annotate bool) {
+	for _, result := range results {
+		if len(result.Tolerated) == 0 {
+			continue
+		}
+		if annotate {
+			statements := make([]string, 0, len(result.Tolerated))
+			for _, statement := range result.Tolerated {
+				statements = append(statements, fmt.Sprintf("%s:%d (%s)", statement.File, statement.Line, statement.Function))
+			}
+			writeWorkflowWarning(stderr, "Coverage ratchet tolerance used", fmt.Sprintf("%s: uncovered count %d is above baseline %d, within the configured tolerance of %d statement(s). Tolerated: %s. Reason: %s", result.Package, result.Uncovered, result.BaselineUncovered, result.Tolerance, strings.Join(statements, ", "), result.Tolerated[0].Reason))
+		}
+		_, _ = fmt.Fprintf(stderr, "WARNING: coverage ratchet tolerance used for %s: uncovered count %d is above baseline %d, within the configured tolerance of %d statement(s). Reason: %s\n", result.Package, result.Uncovered, result.BaselineUncovered, result.Tolerance, result.Tolerated[0].Reason)
+		for _, statement := range result.Tolerated {
+			_, _ = fmt.Fprintf(stderr, "  tolerated: %s:%d (in %s): %s\n", statement.File, statement.Line, statement.Function, quality.ReasonNewlyUncoveredAtBase)
+		}
+	}
 }
 
 func changedCoverageRatchetError(results []quality.PackageRatchet) error {
@@ -373,6 +427,9 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		_, _ = fmt.Fprintf(out, "  %s %s: uncovered %d (%s)\n", status, result.Package, result.Uncovered, baselineText)
 		for _, finding := range result.NewlyUncoveredChanged {
 			_, _ = fmt.Fprintf(out, "    %s:%d: %s\n", finding.File, finding.Line, finding.Reason)
+		}
+		for _, statement := range result.Tolerated {
+			_, _ = fmt.Fprintf(out, "    TOLERATED (tolerance %d) %s:%d (in %s): %s\n", result.Tolerance, statement.File, statement.Line, statement.Function, statement.Reason)
 		}
 	}
 	for _, warning := range report.Warnings {

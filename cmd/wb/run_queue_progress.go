@@ -29,10 +29,6 @@ type runQueueProgress struct {
 	heartbeatEvery time.Duration
 }
 
-func newRunQueueProgress(out io.Writer, enabled bool, configPath string) *runQueueProgress {
-	return newRunQueueProgressWithHeartbeat(out, enabled, configPath, universalProgressHeartbeat)
-}
-
 func newRunQueueProgressWithHeartbeat(out io.Writer, enabled bool, configPath string, heartbeat time.Duration) *runQueueProgress {
 	return &runQueueProgress{
 		live:           newLiveProgress(out, enabled),

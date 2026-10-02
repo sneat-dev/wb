@@ -146,11 +146,6 @@ type cursorState struct {
 	PendingAck *repositoryevent.AckRequest `json:"pending_ack,omitempty"`
 }
 
-func (store CursorStore) Load() (string, error) {
-	state, err := store.loadState()
-	return state.Cursor, err
-}
-
 func (store CursorStore) loadState() (cursorState, error) {
 	raw, err := os.ReadFile(store.Path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -175,10 +170,6 @@ func (store CursorStore) loadState() (cursorState, error) {
 		}
 	}
 	return state, nil
-}
-
-func (store CursorStore) Save(cursor string) error {
-	return store.saveState(cursorState{Version: repositoryevent.ContractVersion, Cursor: cursor})
 }
 
 func (store CursorStore) saveState(state cursorState) error {

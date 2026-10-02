@@ -119,15 +119,6 @@ activates only when its output stream is a terminal. Pass --non-interactive, or
 set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
 even when a terminal is attached.`
 
-// newRootCmd builds the command tree for callers that only inspect it (help
-// text, subcommand paths, flag matrices) rather than execute it through
-// runWithStdin. It is the ~50 existing test call sites' entry point, and
-// stays a zero-argument constructor: it hands newRootCmdFor a throwaway
-// invocation that is never read back.
-func newRootCmd() *cobra.Command {
-	return newRootCmdFor(&invocation{})
-}
-
 // newRootCmdFor builds the command tree for one invocation, closing over inv
 // so PersistentPreRunE and flag bindings write into it directly instead of
 // into a package-level var or a value fished back out of cobra's context.

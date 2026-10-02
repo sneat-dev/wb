@@ -71,7 +71,7 @@ func TestDqCovStoreSaveReportsUnwritableTemporaryFile(t *testing.T) {
 	}
 	directory := t.TempDir()
 	path := filepath.Join(directory, "state.json")
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 
 	dqCovZeroFileSizeLimit(t)
 	err := (Store{Path: path}).Save(state)

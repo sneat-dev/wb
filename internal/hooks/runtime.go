@@ -58,37 +58,6 @@ func ResolveExecutionLayout(repoRoot, projectsRoot string) (ExecutionLayout, err
 	}, nil
 }
 
-func SecureExecutionWriteRoots(repoPath, configPath, projectsRoot string) ([]string, error) {
-	policy, err := LoadPolicy(repoPath, configPath)
-	if err != nil {
-		return nil, err
-	}
-	layout, err := ResolveExecutionLayout(policy.RepoRoot, projectsRoot)
-	if err != nil {
-		return nil, err
-	}
-	roots := []string{layout.Root}
-	if policy.Metrics.Enabled {
-		roots = append(roots, filepath.Dir(policy.Metrics.Path))
-	}
-	return uniqueSortedPaths(roots), nil
-}
-
-func ReplayPendingMetrics(repoPath, configPath, projectsRoot string) (int, error) {
-	policy, err := LoadPolicy(repoPath, configPath)
-	if err != nil {
-		return 0, err
-	}
-	layout, err := ResolveExecutionLayout(policy.RepoRoot, projectsRoot)
-	if err != nil {
-		return 0, err
-	}
-	if err := ensureExecutionLayout(layout); err != nil {
-		return 0, err
-	}
-	return replayPendingMetrics(policy.Metrics.Path, layout)
-}
-
 func ensureExecutionLayout(layout ExecutionLayout) error {
 	return ensureExecutionLayoutInjected(layout, nil)
 }
@@ -211,21 +180,6 @@ func readPendingMetricsReceipt(path string) (PendingMetricsReceipt, error) {
 		return PendingMetricsReceipt{}, fmt.Errorf("pending hook metrics receipt %s uses schema version %d; supported version is %d", path, receipt.SchemaVersion, pendingMetricsReceiptSchemaVersion)
 	}
 	return receipt, nil
-}
-
-func uniqueSortedPaths(paths []string) []string {
-	seen := make(map[string]bool, len(paths))
-	unique := make([]string, 0, len(paths))
-	for _, path := range paths {
-		path = filepath.Clean(strings.TrimSpace(path))
-		if path == "" || seen[path] {
-			continue
-		}
-		seen[path] = true
-		unique = append(unique, path)
-	}
-	sort.Strings(unique)
-	return unique
 }
 
 func sanitizeRuntimeSegment(segment string) string {

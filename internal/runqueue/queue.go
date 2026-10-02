@@ -466,17 +466,6 @@ func (lease *Lease) Release() {
 	}
 }
 
-// Heartbeat refreshes this Lease's holder record(s) immediately, on top of
-// the automatic background heartbeat armHeartbeat already runs. Safe to call
-// on a nil Lease or one with nothing to refresh; callers no longer need to
-// call this on a timer themselves.
-func (lease *Lease) Heartbeat() {
-	if lease == nil || lease.heartbeat == nil {
-		return
-	}
-	lease.heartbeat()
-}
-
 // Acquire waits for units from one projects-root budget-sum lease pool
 // (the small-machine table, and any other caller — e.g.
 // internal/repositoryevents — sharing plain unit-weighted capacity). Each

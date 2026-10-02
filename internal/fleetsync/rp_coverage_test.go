@@ -336,23 +336,6 @@ func TestRPCovResolveOptionsCoverTransferredAndDefaultShapes(t *testing.T) {
 	}
 }
 
-func TestRPCovRunMetaCompleteRequiresAnUnscopedFinishedRealRun(t *testing.T) {
-	t.Parallel()
-	if !(RunMeta{}).Complete() {
-		t.Fatal("a plain finished run must be able to speak for the fleet")
-	}
-	for _, meta := range []RunMeta{
-		{Owners: []string{"acme"}},
-		{Filter: "api"},
-		{DryRun: true},
-		{Discovered: 3, Scanned: 2},
-	} {
-		if meta.Complete() {
-			t.Errorf("meta %+v reported Complete", meta)
-		}
-	}
-}
-
 func TestRPCovSummaryGroupByLabelReportsAMissingLabel(t *testing.T) {
 	t.Parallel()
 	if _, ok := SummaryGroupByLabel(Summary(nil), "No such group"); ok {

@@ -25,14 +25,3 @@ func Name(stream string) string { return Prefix + stream }
 func Is(ref string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(ref, "refs/heads/"), Prefix)
 }
-
-// StreamName extracts the stream name from a branch or ref, reporting false
-// when the ref is not a stream branch.
-func StreamName(ref string) (string, bool) {
-	branch := strings.TrimPrefix(ref, "refs/heads/")
-	name, found := strings.CutPrefix(branch, Prefix)
-	if !found || name == "" {
-		return "", false
-	}
-	return name, true
-}
