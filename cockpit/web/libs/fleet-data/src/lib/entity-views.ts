@@ -181,7 +181,7 @@ function taskCommands(model: FleetModel, task: TaskView): PanelCommand[] {
     // A pull request with no repository has no command to copy.
     return panel.commands.map((command) => ({ ...command, title: `${command.title} ${panel.summary.repository as string}#${pr.number}` }))
   })
-  return [reading[0], ...changing('Commit and open pull request', pullRequestCreate(task.name, PLACEHOLDERS.message, target)), reading[1], ...land]
+  return [reading[0], ...changing('Commit and open pull request', pullRequestCreate(task.name, target, PLACEHOLDERS.message)), reading[1], ...land]
 }
 
 /** A worktree's panel commands: its task's reading and pushing commands, run where this worktree is. */
@@ -189,7 +189,7 @@ function worktreeCommands(model: FleetModel, worktree: Worktree): PanelCommand[]
   const target = model.targetOf(worktree)
   return [
     entry('List worktrees', worktreeList(worktree.task, target)),
-    ...changing('Commit and open pull request', pullRequestCreate(worktree.task, PLACEHOLDERS.message, target)),
+    ...changing('Commit and open pull request', pullRequestCreate(worktree.task, target, PLACEHOLDERS.message)),
     entry('Plan cleanup (dry run)', worktreeCleanup(worktree.task, target)),
   ]
 }
@@ -275,7 +275,7 @@ export function buildRepositoryPanel(model: FleetModel, key: string): Repository
  */
 function sessionCommands(agent: Agent, target: CommandTarget): PanelCommand[] {
   if (agent.activity !== 'blocked' || agent.session_id === undefined) return []
-  return [...changing('Send a message (edit it first)', sessionSend(agent.session_id, PLACEHOLDERS.message, target)), entry('List sessions', sessionList(target))]
+  return [...changing('Send a message (edit it first)', sessionSend(agent.session_id, target, PLACEHOLDERS.message)), entry('List sessions', sessionList(target))]
 }
 
 function nextStepOf(agent: Agent): string | undefined {

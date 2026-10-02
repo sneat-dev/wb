@@ -16,7 +16,7 @@ func TestMetricsDashboardRoutes(t *testing.T) {
 	})
 
 	// 1. GET /metrics returns the metrics HTML
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := loopbackRequest("/metrics")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -40,7 +40,7 @@ func TestMetricsDashboardRoutes(t *testing.T) {
 	}
 
 	// 2. GET /coverage redirects to /metrics?type=test_coverage
-	reqCov := httptest.NewRequest(http.MethodGet, "/coverage", nil)
+	reqCov := loopbackRequest("/coverage")
 	recCov := httptest.NewRecorder()
 	handler.ServeHTTP(recCov, reqCov)
 	if recCov.Code != http.StatusFound {

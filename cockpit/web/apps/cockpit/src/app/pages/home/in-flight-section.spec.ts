@@ -52,6 +52,17 @@ describe('flightRows', () => {
   })
 })
 
+describe('flightRows for another machine', () => {
+  // cockpit#req:copy-the-command: the agent's machine is the target, so Stop is refused for an agent that is not here.
+  it("offers no stop command for an agent of another machine, and the one of this machine's own", async () => {
+    const rows = flightRows(modelOf(fleet()))
+    const remote = rows.filter((row) => row.remote)
+    expect(remote.length).toBeGreaterThan(0)
+    for (const row of remote) expect(await row.stop()).toMatchObject({ ok: false })
+    for (const row of rows.filter((candidate) => !candidate.remote)) expect(await row.stop()).toMatchObject({ ok: true })
+  })
+})
+
 describe('InFlightSection', () => {
   it('lists each running agent with its runtime and model, work, machine, running time and activity or "state not reported"', async () => {
     const { root, rows } = await render()

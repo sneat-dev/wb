@@ -63,7 +63,7 @@ func TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex(t *testing.T) {
 
 	for _, path := range []string{"/api/v1/peers", "/api/v1/peers/machine_1"} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		handler.ServeHTTP(response, loopbackRequest(path))
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status = %d, want 200", path, response.Code)
 		}
@@ -74,7 +74,7 @@ func TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex(t *testing.T) {
 
 	// The index and health routes must still answer as before.
 	index := httptest.NewRecorder()
-	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(index, loopbackRequest("/"))
 	if index.Code != http.StatusOK {
 		t.Fatalf("index status = %d, want 200", index.Code)
 	}
@@ -92,7 +92,7 @@ func TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex(t *testing.T) {
 func TestPeersOptionOmittedLeavesTheRouteUnmounted(t *testing.T) {
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3"})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/peers", nil))
+	handler.ServeHTTP(response, loopbackRequest("/api/v1/peers"))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "WB operations") {
 		t.Fatalf("status = %d, body = %q, want the catch-all index", response.Code, response.Body.String())
 	}
@@ -183,7 +183,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 
 	for _, target := range []string{"/v0/workbench/github/status", "/workbench/dashboard/", "/workbench"} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		handler.ServeHTTP(recorder, loopbackRequest(target))
 		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Body.String(), "mounted ") {
 			t.Fatalf("%s = %d %q", target, recorder.Code, recorder.Body.String())
 		}
@@ -196,7 +196,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 		t.Fatalf("health = %d %q", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/nil/", nil))
+	handler.ServeHTTP(recorder, loopbackRequest("/nil/"))
 	if recorder.Code != http.StatusOK || strings.HasPrefix(recorder.Body.String(), "mounted ") {
 		t.Fatalf("a nil mount was registered: %d %q", recorder.Code, recorder.Body.String())
 	}
@@ -208,7 +208,7 @@ func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/workbench/dashboard/", nil))
+	handler.ServeHTTP(recorder, loopbackRequest("/workbench/dashboard/"))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "<") {
 		t.Fatalf("/workbench/dashboard/ = %d; want the catch-all index page", recorder.Code)
 	}
@@ -292,23 +292,33 @@ func loopbackRequest(target string) *http.Request {
 
 // TestHealthAndOverviewAnswerOnlyOnALoopbackHost: the dashboard's own JSON
 // routes sit on Cockpit's listener and hold the machine's name, the daemon's
-// process id and the names of its worktrees. A request whose Host names
+// process id and the names of its worktrees, and its HTML routes share the rule. A request whose Host names
 // anything but a loopback host (a page that rebound DNS to 127.0.0.1) is
 // refused with 421 and is told none of it; the three loopback names are served.
 func TestHealthAndOverviewAnswerOnlyOnALoopbackHost(t *testing.T) {
 	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "9.9.9-marker", DaemonPID: 4242})
-	for _, target := range []string{"/api/v1/health", "/api/v1/overview"} {
-		for _, host := range []string{"127.0.0.1:8766", "localhost:8766", "[::1]:8766", "LOCALHOST"} {
+	for _, target := range []string{"/api/v1/health", "/api/v1/overview", "/", "/metrics", "/coverage"} {
+		for _, host := range []string{"127.0.0.1:8766", "localhost:8766", "[::1]:8766", "LOCALHOST", "127.0.0.2:8766"} {
 			request := httptest.NewRequest(http.MethodGet, target, nil)
 			request.Host = host
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)
-			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "9.9.9-marker") {
-				t.Errorf("%s on %s = %d %s, want it served", target, host, recorder.Code, recorder.Body.String())
+			want := map[string]struct {
+				status int
+				marker string
+			}{
+				"/api/v1/health":   {http.StatusOK, "9.9.9-marker"},
+				"/api/v1/overview": {http.StatusOK, "9.9.9-marker"},
+				"/":                {http.StatusOK, "WB operations"},
+				"/metrics":         {http.StatusOK, "WB Metrics"},
+				"/coverage":        {http.StatusFound, "test_coverage"},
+			}[target]
+			if recorder.Code != want.status || !strings.Contains(recorder.Body.String()+recorder.Header().Get("Location"), want.marker) {
+				t.Errorf("%s on %s = %d %s, want %d with %q", target, host, recorder.Code, recorder.Body.String(), want.status, want.marker)
 			}
 		}
-		for _, host := range []string{"attacker.example", "attacker.example:8766", "127.0.0.2:8766", "127.0.0.1:http", "[bad", ""} {
+		for _, host := range []string{"attacker.example", "attacker.example:8766", "128.0.0.1:8766", "127.0.0.1:http", "[bad", ""} {
 			request := httptest.NewRequest(http.MethodGet, target, nil)
 			request.Host = host
 			recorder := httptest.NewRecorder()

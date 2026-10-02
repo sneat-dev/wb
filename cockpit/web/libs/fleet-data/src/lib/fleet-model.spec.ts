@@ -509,7 +509,7 @@ describe('machines and Fleet health', () => {
       ['vm', 'live', false, false, 0],
       ['beta', 'cached', false, true, 1],
       ['old', 'stale', false, false, 0],
-      ['none', 'cached', false, false, 0],
+      ['none', 'stale', false, false, 0], // no observed time: unknown, never fresh
     ])
     expect(views[0].uptimeMs).toBe(3 * DAY)
     expect(views[0].ageMs).toBe(0)
