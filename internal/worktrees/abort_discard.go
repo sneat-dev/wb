@@ -23,6 +23,9 @@ type abortPorts struct {
 	preflightMember   func(context.Context, string, AbortOptions, *cleanupTaskHandle, AbortResult, string) (ListResult, string, *DirtyWorktreeEvidence, bool, error)
 	applyDiscarded    func(context.Context, string, AbortOptions, *cleanupTaskHandle, string, *AbortResult) error
 	transferWorkLog   func(string, string, string, string, string, ClaimExecutionIdentity) error
+	// closedPullRequest and recordClosedPullRequest serve --closed-pr only.
+	closedPullRequest       func(context.Context, string, string, string, string) (*githubPullRequest, string, error)
+	recordClosedPullRequest func(string, string, *AbortResult) error
 }
 
 func productionAbortPorts() abortPorts {
@@ -33,7 +36,8 @@ func productionAbortPorts() abortPorts {
 		list: ListWithDiagnostics, reservations: abortPreApplyRenameReservations,
 		resumeBacklog: resumeLifecycleBacklog, acquireTask: acquireCleanupTaskAtOrCreate,
 		preflightWorkLog: preflightAbortWorkLog, dirtyEvidence: dirtyWorktreeEvidence,
-		transferWorkLog: transferWorkLogClaim,
+		transferWorkLog:   transferWorkLogClaim,
+		closedPullRequest: productionClosedPullRequestResolver, recordClosedPullRequest: recordClosedPullRequestDiscard,
 	}
 	ports.preflightMember = func(ctx context.Context, root string, options AbortOptions, task *cleanupTaskHandle, result AbortResult, home string) (ListResult, string, *DirtyWorktreeEvidence, bool, error) {
 		return preflightAbortRepositoryWithPorts(ctx, root, options, task, result, home, member)

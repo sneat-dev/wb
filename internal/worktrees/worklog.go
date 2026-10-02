@@ -2284,7 +2284,11 @@ func legacyRepositoryRelocationForCleanupObserved(ctx context.Context, home, pro
 	if err != nil {
 		return false, fmt.Errorf("recheck exact immutable head containment: %w", err)
 	}
-	if !contained {
+	// A rebase-merged or absorbed head is never an ancestor of the target (the
+	// landing replayed or squashed its commits); the merged-pull-request proof
+	// that set these flags already verified the landing, so ancestry is not
+	// required of it. Every other head must still be contained.
+	if !contained && !entry.RebaseMergedAtOrigin && !entry.AbsorbedAtOrigin {
 		return false, fmt.Errorf("exact immutable head is no longer contained in the fetched origin target")
 	}
 

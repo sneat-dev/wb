@@ -81,6 +81,25 @@ func ParseRefUpdates(r io.Reader) ([]RefUpdate, error) {
 	return updates, nil
 }
 
+// OnlyRemoteRefDeletions reports whether Git's pre-push ref list is non-empty
+// and every line deletes a remote ref. Such a push sends nothing from the
+// checkout it runs in, so no property of that checkout (its branch, its
+// working tree) can make it unsafe: it is how `wb pr land`, `wb worktree land`
+// and `wb worktree cleanup` retire a merged branch from the canonical clone,
+// whatever that clone has checked out (sneat-dev/wb#824).
+func OnlyRemoteRefDeletions(r io.Reader) (bool, error) {
+	updates, err := ParseRefUpdates(r)
+	if err != nil || len(updates) == 0 {
+		return false, err
+	}
+	for _, update := range updates {
+		if !isDeletion(update) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func isZeroOID(value string) bool {
 	return value == zeroOID40 || value == zeroOID64
 }

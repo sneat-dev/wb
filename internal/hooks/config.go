@@ -617,8 +617,16 @@ if [ "$WB_HOOK" != "pre-commit" ]; then
     wb_admission=off
 fi
 
+# A pre-push that only deletes remote refs (how WB retires a merged branch)
+# sends nothing from this checkout, so the guard passes it without inspecting
+# the checkout: the canonical clone may be on any branch, clean or dirty.
+wb_push_stdin=""
+if [ "$WB_HOOK" = "pre-push" ]; then
+    wb_push_stdin="--pre-push-stdin"
+fi
+
 if "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" worktree guard --quiet \
-    --admission "$wb_admission" "$WB_REPO_ROOT"; then
+    --admission "$wb_admission" $wb_push_stdin "$WB_REPO_ROOT"; then
     exit 0
 else
     guard_status=$?

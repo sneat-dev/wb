@@ -142,7 +142,12 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. By default, a worktree is created in the central
+contains active local work. More generally, which branch a canonical clone has
+checked out is never a WB precondition: `wb pr land`, `wb worktree land`,
+`wb worktree cleanup` and the managed hooks work whatever branch it is on, clean
+or dirty (only uncommitted work is protected, and a push that merely deletes
+remote refs, which is how a merged branch is retired, sends nothing from the
+clone and passes the guard unconditionally). By default, a worktree is created in the central
 store at `<root>/.worktrees/<task>/<host>/<org>/<repository>`, where `<root>` is
 the projects root: the task is the first level, so every checkout of a
 multi-repository task stays together, and a search scoped to one task, one host,

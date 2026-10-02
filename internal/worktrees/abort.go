@@ -50,6 +50,12 @@ type AbortOptions struct {
 	// accepted only by the terminal discarded path and is re-proved before
 	// removal; it never turns a human assertion into deletion authority.
 	AbsorbedBy string
+	// ClosedPullRequest names a pull request GitHub reports closed WITHOUT
+	// merging (a duplicate, a superseded attempt) whose exact head is this
+	// checkout's exact head. With Reason it lets the terminal discarded path
+	// retire a checkout no merged pull request will ever absorb. It is
+	// re-proved before removal and recorded in a durable audit file.
+	ClosedPullRequest string
 	// ClaimID, Actor, and Reason form the explicit authority boundary for an
 	// orphaned terminal record. Orphaned claims have no live checkout from
 	// which task/repository identity can be reconstructed, so apply always
@@ -98,13 +104,16 @@ type AbortResult struct {
 	// run. It is never preflighted or mutated regardless of Eligible, and
 	// recording it here — rather than omitting it — is what lets a filtered
 	// abort report precisely which repositories still remain unresolved.
-	Excluded      bool                   `json:"excluded,omitempty"`
-	Applied       bool                   `json:"applied"`
-	WorktreeGone  bool                   `json:"worktree_gone"`
-	BranchDeleted bool                   `json:"branch_deleted"`
-	RemoteDeleted bool                   `json:"remote_deleted"`
-	BacklogID     string                 `json:"backlog_id,omitempty"`
-	DirtyCapture  *DirtyWorktreeEvidence `json:"dirty_capture,omitempty"`
+	Excluded bool `json:"excluded,omitempty"`
+	// ClosedPullRequest is the verified closed-unmerged pull request evidence
+	// a --closed-pr discard rests on, including its durable audit record.
+	ClosedPullRequest *ClosedPullRequestEvidence `json:"closed_pull_request,omitempty"`
+	Applied           bool                       `json:"applied"`
+	WorktreeGone      bool                       `json:"worktree_gone"`
+	BranchDeleted     bool                       `json:"branch_deleted"`
+	RemoteDeleted     bool                       `json:"remote_deleted"`
+	BacklogID         string                     `json:"backlog_id,omitempty"`
+	DirtyCapture      *DirtyWorktreeEvidence     `json:"dirty_capture,omitempty"`
 	// WorkLogRecoveryPlanned discloses the narrow legacy path which will
 	// reconstruct a missing private claim from independently corroborated
 	// immutable manifest and claimed-outbox evidence. WorkLogRecovered is set
@@ -152,6 +161,7 @@ func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts)
 	}
 	options.Successor = strings.TrimSpace(options.Successor)
 	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
+	options.ClosedPullRequest = strings.TrimSpace(options.ClosedPullRequest)
 	terminalWithoutSuccessor := options.Disposition == AbortDiscarded || options.Disposition == AbortOrphaned
 	if !terminalWithoutSuccessor && (options.Successor == "" || len(options.Successor) > 200 || strings.ContainsAny(options.Successor, "\x00\r\n")) {
 		return nil, fmt.Errorf("--successor is required exactly once for %s", options.Disposition)
@@ -161,6 +171,18 @@ func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts)
 	}
 	if options.AbsorbedBy != "" && options.Disposition != AbortDiscarded {
 		return nil, fmt.Errorf("--absorbed-by is valid only with discarded")
+	}
+	if options.ClosedPullRequest != "" {
+		if options.Disposition != AbortDiscarded {
+			return nil, fmt.Errorf("--closed-pr is valid only with discarded")
+		}
+		if options.AbsorbedBy != "" {
+			return nil, fmt.Errorf("--closed-pr and --absorbed-by are mutually exclusive: a pull request is either merged or closed unmerged")
+		}
+		options.Reason = strings.TrimSpace(options.Reason)
+		if options.Reason == "" || len(options.Reason) > 500 || strings.ContainsAny(options.Reason, "\x00\r\n") {
+			return nil, fmt.Errorf("--reason is required with --closed-pr: one line, at most 500 characters, saying why the pull request was closed")
+		}
 	}
 	identitySupplied := strings.TrimSpace(options.SuccessorIdentity.Model) != "" || strings.TrimSpace(options.SuccessorIdentity.CLI) != "" || strings.TrimSpace(options.SuccessorIdentity.Provider) != ""
 	if !terminalWithoutSuccessor && (options.Apply || identitySupplied) {
@@ -173,8 +195,11 @@ func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts)
 	if options.Disposition == AbortOrphaned {
 		return abortOrphanedClaim(ctx, options)
 	}
-	if strings.TrimSpace(options.ClaimID) != "" || strings.TrimSpace(options.Actor) != "" || strings.TrimSpace(options.Reason) != "" {
-		return nil, fmt.Errorf("--claim, --actor, and --reason are valid only with the orphaned disposition")
+	if strings.TrimSpace(options.ClaimID) != "" || strings.TrimSpace(options.Actor) != "" {
+		return nil, fmt.Errorf("--claim and --actor are valid only with the orphaned disposition")
+	}
+	if options.ClosedPullRequest == "" && strings.TrimSpace(options.Reason) != "" {
+		return nil, fmt.Errorf("--reason is valid only with the orphaned disposition or --closed-pr")
 	}
 	resolution, err := ports.resolve(projectsRoot)
 	if err != nil {
@@ -256,7 +281,19 @@ func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts)
 			reason = "--absorbed-by requires a clean worktree"
 		}
 		excluded := abortRepositoryExcludedByFilter(filter, entry.Repository, entry.WorktreeDir)
-		results[i] = AbortResult{ListResult: entry, Disposition: options.Disposition, Successor: options.Successor, Eligible: eligible, Excluded: excluded, Reason: reason}
+		var closed *ClosedPullRequestEvidence
+		if options.ClosedPullRequest != "" && eligible && !excluded {
+			evidence, rejection, closedErr := verifyClosedPullRequest(ctx, ports.closedPullRequest, entry, options.ClosedPullRequest, options.Reason)
+			switch {
+			case closedErr != nil:
+				eligible, reason = false, "--closed-pr proof could not be read: "+closedErr.Error()
+			case rejection != "":
+				eligible, reason = false, rejection
+			default:
+				closed = evidence
+			}
+		}
+		results[i] = AbortResult{ListResult: entry, Disposition: options.Disposition, Successor: options.Successor, Eligible: eligible, Excluded: excluded, Reason: reason, ClosedPullRequest: closed}
 	}
 	if len(backlogQuarantine) > 0 && len(results) > 0 {
 		results[0].Quarantined = backlogQuarantine
@@ -383,6 +420,22 @@ func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts)
 		}
 		result := &results[i]
 		if options.Disposition == AbortDiscarded {
+			if result.ClosedPullRequest != nil {
+				// The plan's GitHub answer is minutes old by now; prove it again
+				// against the freshly inspected checkout, then keep the audit
+				// record before anything is removed.
+				evidence, rejection, closedErr := verifyClosedPullRequest(ctx, ports.closedPullRequest, result.ListResult, options.ClosedPullRequest, options.Reason)
+				if closedErr != nil {
+					return results, fmt.Errorf("--closed-pr proof could not be re-read for %s: %w", result.Repository, closedErr)
+				}
+				if rejection != "" {
+					return results, fmt.Errorf("--closed-pr proof no longer verifies for %s: %s", result.Repository, rejection)
+				}
+				result.ClosedPullRequest = evidence
+				if err := ports.recordClosedPullRequest(resolution.Write.Home, task, result); err != nil {
+					return results, err
+				}
+			}
 			if err := ports.applyDiscarded(ctx, projectsRoot, options, taskHandle, resolution.Write.Home, result); err != nil {
 				return results, err
 			}
