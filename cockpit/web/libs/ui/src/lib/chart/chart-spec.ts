@@ -46,6 +46,8 @@ export interface StackedBarsSpec extends Base {
   kind: 'stacked-bars'
   series: { name: string; tone: 'primary' | 'soft' | 'muted' }[]
   bars: { label: string; values: number[] }[]
+  /** The value axis ends at the tallest stack rounded up to an even number, with two steps, and is not padded beyond it (a small plot). */
+  fitAxis?: boolean
 }
 
 export type ChartSpec = TimeSeriesSpec | BarsSpec | HorizontalBarsSpec | StackedBarsSpec

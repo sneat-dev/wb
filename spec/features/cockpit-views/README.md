@@ -515,7 +515,7 @@ whatever they hold: no title, legend or caption of a card overlaps another or is
 On a phone (480 px or less) the section stays on top, not behind "more", and is dense: each
 chart's legend or caption shares its title's row (cut with an ellipsis when it does not fit), the
 cards are close together and tightly padded, the "Time to finish" plot is as tall as its five rows
-of labels (11 px) need, and at 375 x 812 px the "Needs you" heading is at or above y 400 with both
+of labels (11 px) need, and at 375 x 812 px the "Needs you" heading is at or above y 425 with both
 charts readable. The sections after Throughput keep their order: Needs you, Ready to land, In
 flight, Resume, Cleanup, Fleet health.
 
@@ -2419,7 +2419,7 @@ Then "Throughput" is the first section of Home in every state; the slot is a ske
 Scenario: 360 px wide
 Given a viewport 360 px wide, in hosted mode
 When Home and each other page are opened
-Then sections 1 to 3 are cards, sections 4 to 6 are behind "more", the Throughput charts are on top, both shown, and compact so that the "Needs you" heading is at or above y 400 at 375 x 812 px, and no page scrolls horizontally or breaks
+Then sections 1 to 3 are cards, sections 4 to 6 are behind "more", the Throughput charts are on top, both shown, and compact so that the "Needs you" heading is at or above y 425 at 375 x 812 px, and no page scrolls horizontally or breaks
 
 ### AC: repository-identity-merges-local-and-cached
 

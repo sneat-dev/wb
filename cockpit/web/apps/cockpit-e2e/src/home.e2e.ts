@@ -267,14 +267,14 @@ test('a block with nothing in it is the calm line in the slot of Throughput', as
 })
 
 // cockpit-views#ac:home-phone-layout: dense on a phone, both charts shown, readable, and "Needs you" high on the first screen.
-test('at 375 x 812 both charts are shown and the "Needs you" heading is at or above y 400', async ({ page }) => {
+test('at 375 x 812 both charts are shown and the "Needs you" heading is at or above y 425', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
   await serve(page)
   await page.goto('/cockpit/')
   await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
   await expect(page.locator('.chart-card')).toHaveCount(2)
   const y = (await page.getByRole('heading', { level: 2, name: /^Needs you/ }).boundingBox())!.y
-  expect(y).toBeLessThanOrEqual(400)
+  expect(y).toBeLessThanOrEqual(425)
   const cards = await page.locator('.chart-card').evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height))
   const slot = await page.locator('.throughput-slot').evaluate((element) => element.getBoundingClientRect().height)
   // The slot is the two cards and the gap between them (8 px): nothing is left over.

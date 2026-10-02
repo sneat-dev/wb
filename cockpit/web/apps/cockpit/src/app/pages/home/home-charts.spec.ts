@@ -129,7 +129,9 @@ describe('HomeCharts on a phone', () => {
   it('draws shorter plots at 480 px and less, and follows the viewport when it changes', async () => {
     const media = stubMedia(true)
     const { fixture, root } = await render()
-    expect(plots(root)).toEqual(['4.25rem', '5.75rem'])
+    expect(plots(root)).toEqual(['5.5rem', '5.75rem'])
+    expect(throughputSpecs(series(), true).perDay.fitAxis).toBe(true)
+    expect(throughputSpecs(series()).perDay.fitAxis).toBe(false)
     media.listeners[0]({ matches: false })
     await fixture.whenStable()
     expect(plots(root)).toEqual(['9rem', '9rem'])

@@ -48,7 +48,7 @@ main:has(.home) > app-skeleton-rows.warming {
 
 @media (max-width: 480px) {
   .throughput-slot {
-    --chart-card-1: 6.625rem;
+    --chart-card-1: 7.875rem;
     --chart-card-2: 8.125rem;
     --chart-card-gap: var(--space-2);
   }

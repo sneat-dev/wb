@@ -24,9 +24,9 @@ const HOUR = 3600
 
 /** The height of a plot in rem: Throughput is the first section of Home, so on a phone it is shorter and "Needs you" stays near the top. */
 export const PLOT_HEIGHT = 9
-/** On a phone the "Time to finish" plot is as tall as its five rows of 11 px labels need (with the value axis), and "Finished per day" gives the pixels up. */
+/** On a phone the "Time to finish" plot is as tall as its five rows of 11 px labels need (with the value axis), and "Finished per day" gets a little less than on a wide screen, with its axis fitted to its data (`fitAxis`). */
 export const COMPACT_SLOWEST_HEIGHT = 5.75
-export const COMPACT_PER_DAY_HEIGHT = 4.25
+export const COMPACT_PER_DAY_HEIGHT = 5.5
 
 /** What the stacked chart's series are called, in the order they stack and in the legend. */
 export function seriesNames(series: Pick<ThroughputSeries, 'hasLanded'>): string[] {
@@ -38,7 +38,7 @@ export function seriesNames(series: Pick<ThroughputSeries, 'hasLanded'>): string
  * a subset of finished work, so with a `landed` count the finished bar is split in two ("landed" and
  * the rest, "finished") and nothing is counted twice.
  */
-export function throughputSpecs(series: ThroughputSeries): { slowest: HorizontalBarsSpec; perDay: StackedBarsSpec } {
+export function throughputSpecs(series: ThroughputSeries, compact = false): { slowest: HorizontalBarsSpec; perDay: StackedBarsSpec } {
   const names = seriesNames(series)
   return {
     slowest: {
@@ -49,6 +49,7 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
     },
     perDay: {
       kind: 'stacked-bars',
+      fitAxis: compact,
       title: `Finished per day, last ${series.windowDays} days`,
       valueLabel: 'Tasks per day',
       series: names.map((name) => ({ name, tone: name === 'landed' ? 'primary' : name === 'finished' ? (series.hasLanded ? 'soft' : 'primary') : 'muted' })),
@@ -107,7 +108,7 @@ export class HomeCharts {
   private readonly compact = signal(false)
   protected readonly perDayHeight = computed(() => (this.compact() ? COMPACT_PER_DAY_HEIGHT : PLOT_HEIGHT))
   protected readonly slowestHeight = computed(() => (this.compact() ? COMPACT_SLOWEST_HEIGHT : PLOT_HEIGHT))
-  protected readonly specs = computed(() => throughputSpecs(this.series()))
+  protected readonly specs = computed(() => throughputSpecs(this.series(), this.compact()))
   protected readonly caption = computed(() => [durationCaption(this.series()), this.series().capped ? 'scan capped' : undefined].filter((part) => part !== undefined).join(' \u00b7 ') || undefined)
 
   constructor() {
