@@ -57,13 +57,25 @@ caller write. `POST /v0/workbench/coverage`, `POST /v0/workbench/metrics` and
 the installation `connect` and `authorize` routes answer 401 unless the request
 carries the owner's credential: either `Authorization: Bearer <token>` with
 the machine credential above (any machine the owner enrolled, never a peer
-credential), or the Cockpit owner session a browser gets from `wb cockpit`. A
+credential), or the Cockpit owner session a browser gets from `wb cockpit`: the
+session cookie together with the session key in `X-Wb-Cockpit-Session-Key`,
+which only a request made by the signed-in Cockpit page carries. A link or an
+address typed into the browser carries the cookie alone and is refused. A
 script that posted to those routes with no header must now send the bearer:
 
 ```sh
 curl -H "Authorization: Bearer $(cat ~/.config/wb/credentials/hub-local-<machine>.token)" \
   -H 'Content-Type: application/json' -d @metric.json http://127.0.0.1:8766/v0/workbench/metrics
 ```
+
+A metric or coverage record is refused with 400 `invalid_metric_record` or
+`invalid_coverage_record` when a field is outside its form: the repository is
+`owner/name`, the status one of its closed set, the metric type, owner, name,
+ref and commit short identifiers, the formatted value a number with a unit, the
+workflow run address `https`, and metadata values and dimension details numbers,
+booleans or short text with no angle bracket, quote, backtick, backslash or
+control character and no nested value. The dashboard pages show these records
+on the origin that holds the owner's Cockpit session, so markup is not stored.
 
 ### Store engines
 

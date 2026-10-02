@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -11,12 +10,13 @@ import (
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
-// errUnsafeRecord marks a metric or coverage record refused for holding a value
-// outside the form its field has. The pages that show these records share an
-// origin with Cockpit, so a record is a place a client could plant markup; the
-// pages are built to be safe against any stored value, and this is the second
-// layer: such a value is not stored in the first place.
-var errUnsafeRecord = errors.New("record holds a value outside the form of its field")
+// A metric or coverage record is refused when a field holds a value outside the
+// form the field has. The pages that show these records share an origin with
+// Cockpit, so a record is a place a client could plant markup; the pages are
+// built to be safe against any stored value, and this is the second layer:
+// such a value is not stored in the first place. The refusal wraps the store's
+// own errInvalidMetricRecord or errInvalidCoverageRecord, so the routes answer
+// it with their closed code, and it names the field, never its value.
 
 // The bounds of a record. They are far above what a real report holds and
 // exist so that a field cannot carry a document.
@@ -118,8 +118,8 @@ func recordIdentity(repository, owner, name, ref, sha string) string {
 	return ""
 }
 
-func unsafeField(field string) error {
-	return fmt.Errorf("%w: %s", errUnsafeRecord, field)
+func unsafeField(invalid error, field string) error {
+	return fmt.Errorf("%w: %s is outside the form of the field", invalid, field)
 }
 
 // validateMetricRecord refuses a metric whose fields are outside their forms:
@@ -128,33 +128,33 @@ func unsafeField(field string) error {
 // short plain text. The error names the field and never its value.
 func validateMetricRecord(metric RepositoryMetric) error {
 	if field := recordIdentity(metric.Repository, metric.Owner, metric.Name, metric.Ref, metric.SHA); field != "" {
-		return unsafeField(field)
+		return unsafeField(errInvalidMetricRecord, field)
 	}
 	switch {
 	case !optional(recordTokenPattern, metric.MetricType):
-		return unsafeField("metric_type")
+		return unsafeField(errInvalidMetricRecord, "metric_type")
 	case !metricStatus(metric.Status):
-		return unsafeField("status")
+		return unsafeField(errInvalidMetricRecord, "status")
 	case len(metric.FormattedValue) > maxFormattedValueLen || !recordFormattedPattern.MatchString(metric.FormattedValue):
-		return unsafeField("formatted_value")
+		return unsafeField(errInvalidMetricRecord, "formatted_value")
 	case !recordValues(metric.Metadata):
-		return unsafeField("metadata")
+		return unsafeField(errInvalidMetricRecord, "metadata")
 	case len(metric.Dimensions) > maxRecordDimensions:
-		return unsafeField("dimensions")
+		return unsafeField(errInvalidMetricRecord, "dimensions")
 	}
 	if address, isText := metric.Metadata["workflow_run_url"].(string); isText && !httpsRecordURL(address) {
-		return unsafeField("metadata.workflow_run_url")
+		return unsafeField(errInvalidMetricRecord, "metadata.workflow_run_url")
 	}
 	for _, dimension := range metric.Dimensions {
 		switch {
 		case dimension.Name == "" || !plainRecordText(dimension.Name, maxRecordNameBytes):
-			return unsafeField("dimensions.name")
+			return unsafeField(errInvalidMetricRecord, "dimensions.name")
 		case !metricStatus(dimension.Status):
-			return unsafeField("dimensions.status")
+			return unsafeField(errInvalidMetricRecord, "dimensions.status")
 		case len(dimension.FormattedValue) > maxFormattedValueLen || !recordFormattedPattern.MatchString(dimension.FormattedValue):
-			return unsafeField("dimensions.formatted_value")
+			return unsafeField(errInvalidMetricRecord, "dimensions.formatted_value")
 		case !recordValues(dimension.Details):
-			return unsafeField("dimensions.details")
+			return unsafeField(errInvalidMetricRecord, "dimensions.details")
 		}
 	}
 	return nil
@@ -165,27 +165,27 @@ func validateMetricRecord(metric RepositoryMetric) error {
 // the names of its modules and packages are plain text.
 func validateCoverageRecord(record StoredRepositoryCoverage) error {
 	if field := recordIdentity(record.Repository, record.Owner, record.Name, record.Ref, record.SHA); field != "" {
-		return unsafeField(field)
+		return unsafeField(errInvalidCoverageRecord, field)
 	}
 	switch record.Status {
 	case "", quality.StatusPassed, quality.StatusFailed, quality.StatusSkipped:
 	default:
-		return unsafeField("status")
+		return unsafeField(errInvalidCoverageRecord, "status")
 	}
 	if !httpsRecordURL(record.WorkflowRunURL) {
-		return unsafeField("workflow_run_url")
+		return unsafeField(errInvalidCoverageRecord, "workflow_run_url")
 	}
 	if len(record.Modules) > maxRecordDimensions || len(record.Packages) > maxRecordDimensions {
-		return unsafeField("modules")
+		return unsafeField(errInvalidCoverageRecord, "modules")
 	}
 	for _, module := range record.Modules {
 		if module.Path == "" || !plainRecordText(module.Path, maxRecordNameBytes) {
-			return unsafeField("modules.path")
+			return unsafeField(errInvalidCoverageRecord, "modules.path")
 		}
 	}
 	for name := range record.Packages {
 		if name == "" || !plainRecordText(name, maxRecordNameBytes) {
-			return unsafeField("packages")
+			return unsafeField(errInvalidCoverageRecord, "packages")
 		}
 	}
 	return nil

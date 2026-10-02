@@ -127,7 +127,7 @@ func TestAMetricWithAValueOutsideItsFieldsFormIsRefusedAndNotStored(t *testing.T
 			}
 			// The store refuses it too, whoever calls it, and names the field, never the value.
 			err := store.SaveMetric(ctx, metric)
-			if !errors.Is(err, errUnsafeRecord) || strings.Contains(err.Error(), value) {
+			if !errors.Is(err, errInvalidMetricRecord) || strings.Contains(err.Error(), value) {
 				t.Errorf("%s = %q: SaveMetric = %v, want the refusal with no value in it", field, value, err)
 			}
 		}
@@ -162,7 +162,7 @@ func TestAMetricWithAValueOutsideItsFieldsFormIsRefusedAndNotStored(t *testing.T
 	} {
 		metric := validMetric()
 		change(&metric)
-		if err := validateMetricRecord(metric); !errors.Is(err, errUnsafeRecord) {
+		if err := validateMetricRecord(metric); !errors.Is(err, errInvalidMetricRecord) {
 			t.Errorf("%s: validation = %v, want a refusal", name, err)
 		}
 	}
@@ -186,7 +186,7 @@ func TestACoverageReportWithAValueOutsideItsFieldsFormIsRefusedAndNotStored(t *t
 				t.Errorf("%s = %q: POST = %d %s, want 400 invalid_coverage_record and nothing else", field, value, recorder.Code, recorder.Body.String())
 			}
 			err := store.SaveCoverage(ctx, record)
-			if !errors.Is(err, errUnsafeRecord) || strings.Contains(err.Error(), value) {
+			if !errors.Is(err, errInvalidCoverageRecord) || strings.Contains(err.Error(), value) {
 				t.Errorf("%s = %q: SaveCoverage = %v, want the refusal with no value in it", field, value, err)
 			}
 		}
@@ -212,7 +212,7 @@ func TestACoverageReportWithAValueOutsideItsFieldsFormIsRefusedAndNotStored(t *t
 	} {
 		record := validCoverage()
 		change(&record)
-		if err := validateCoverageRecord(record); !errors.Is(err, errUnsafeRecord) {
+		if err := validateCoverageRecord(record); !errors.Is(err, errInvalidCoverageRecord) {
 			t.Errorf("%s: validation = %v, want a refusal", name, err)
 		}
 	}

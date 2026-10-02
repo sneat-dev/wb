@@ -89,12 +89,6 @@ func (h apiHandler) saveMetric(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_metric_payload")
 		return
 	}
-	// A record with a value outside the form of its field is refused with a
-	// closed code that names nothing of the record (see record_validation.go).
-	if validateMetricRecord(record) != nil {
-		writeError(w, http.StatusBadRequest, "invalid_metric_record")
-		return
-	}
 	if err := h.options.Metrics.SaveMetric(r.Context(), record); err != nil {
 		// As for coverage: a closed code, never the store's own text.
 		if errors.Is(err, errInvalidMetricRecord) {

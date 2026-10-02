@@ -704,11 +704,6 @@ func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_coverage_payload")
 		return
 	}
-	// As for a metric: a closed code, and nothing of the record.
-	if validateCoverageRecord(record) != nil {
-		writeError(w, http.StatusBadRequest, "invalid_coverage_record")
-		return
-	}
 	if err := h.options.Coverage.SaveCoverage(r.Context(), record); err != nil {
 		// The store's error names the repository and may wrap the engine's own
 		// message, a path included: the caller gets a closed code instead.
