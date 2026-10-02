@@ -119,6 +119,18 @@ describe('AgentsPage', () => {
     expect(plain.root.querySelector('.note[role=note]')).toBeNull()
   })
 
+  // cockpit-views#ac:agents-truncated-says-at-least
+  it('reads the count "at least" when any machine capped its agents, and plainly when none did', async () => {
+    const plain = await openPage('/agents', AgentsPage, agentsDocument())
+    expect(text(plain.root.querySelector('.count'))).toMatch(/^\d+ of \d+$/)
+    const own = agentsDocument()
+    own.agents_truncated = true
+    expect(text((await openPage('/agents', AgentsPage, own)).root.querySelector('.count'))).toMatch(/^at least \d+ of \d+$/)
+    const other = agentsDocument()
+    other.machines = other.machines.map((machine) => (machine.route === 'local' ? machine : { ...machine, agents_truncated: true }))
+    expect(text((await openPage('/agents', AgentsPage, other)).root.querySelector('.count'))).toMatch(/^at least /)
+  })
+
   it('shows Kind only when both kinds are listed, and Machine only when the fleet has several machines or an agent is remote', async () => {
     const { root } = await openPage('/agents', AgentsPage, agentsDocument())
     expect(headersOf(root)).toEqual(['Agent', 'State', 'Time', 'Machine', 'Kind'])

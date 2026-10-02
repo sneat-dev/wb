@@ -5,7 +5,7 @@
 import { type FleetModel, parseVersion } from './fleet-model'
 import { Agent, Machine, Worktree } from './fleet.types'
 import { MatchEnv, StepCounter, Subject, idleOver30Days, matchesTerms } from './match'
-import { parseQuery } from './matcher'
+import { Term, parseQuery } from './matcher'
 import { MergedRepository } from './repository-identity'
 import { TaskView, MachineView } from './view-types'
 import { VOCABULARY, defaultDirection } from './filter-vocabulary'
@@ -33,6 +33,11 @@ export interface ListRow<T> {
   machineIds: readonly string[]
   /** The chips that hold for the row, except `idle30`, which depends on the clock. */
   chips: ReadonlySet<string>
+  /**
+   * A task at risk whose last activity is outside the Needs you window: the list leaves it out unless the `older`
+   * chip is on or the filter asks for `state:at-risk`, as Home leaves it to Cleanup (`includesOlder`).
+   */
+  windowed?: boolean
   sortKeys: Readonly<Record<string, SortKey>>
 }
 
@@ -42,7 +47,7 @@ function activity(time: number | undefined): { activityAt?: number } {
   return time === undefined ? {} : { activityAt: time }
 }
 
-export function taskRows(tasks: readonly TaskView[], needsYouTasks: ReadonlySet<string>): ListRow<TaskView>[] {
+export function taskRows(tasks: readonly TaskView[], needsYouTasks: ReadonlySet<string>, olderAtRisk: ReadonlySet<string> = new Set()): ListRow<TaskView>[] {
   return tasks.map((task) => {
     const chips = new Set<string>()
     if (needsYouTasks.has(task.name)) chips.add('needs-you')
@@ -62,6 +67,7 @@ export function taskRows(tasks: readonly TaskView[], needsYouTasks: ReadonlySet<
       },
       machineIds: task.machines.map((machine) => machine.id),
       chips,
+      ...(olderAtRisk.has(task.name) ? { windowed: true } : {}),
       sortKeys: {
         task: task.name.toLowerCase(),
         state: task.stateInfo.rank,
@@ -213,6 +219,14 @@ function compare(a: SortKey, b: SortKey): number {
   return a < b ? -1 : 1
 }
 
+/** Newest first, and a row with no activity time last. */
+function newestFirst(a: SortKey, b: SortKey): number {
+  if (a === b) return 0
+  if (a === undefined) return 1
+  if (b === undefined) return -1
+  return a < b ? 1 : -1
+}
+
 export interface ListResult<T> {
   rows: ListRow<T>[]
   /** The number of rows before filtering: the "of 438". */
@@ -224,12 +238,19 @@ export interface ListResult<T> {
  * then sorts them: by the query's sort, or the page's default. A row with no
  * value for the sort comes last in both directions; ties keep the row order.
  */
+/** Whether a query lists the rows its page leaves out of the window: the `older` chip, or a `state:at-risk` term of its own. */
+export function includesOlder(query: ListQuery, terms: readonly Term[]): boolean {
+  return query.chips.includes('older') || terms.some((term) => !term.negate && term.field === 'state' && term.value === 'at-risk')
+}
+
 export function applyListQuery<T>(page: ListPageId, rows: readonly ListRow<T>[], query: ListQuery, now: number, counter?: StepCounter): ListResult<T> {
   const terms = parseQuery(query.q)
   const env: MatchEnv = { declared: declaredFields(page), exact: EXACT_FIELDS, now, counter }
   const machines = new Set(query.machines)
-  const chips = query.chips
+  const chips = query.chips.filter((chip) => chip !== 'older')
+  const older = includesOlder(query, terms)
   const matching = rows.filter((row) => {
+    if (row.windowed === true && !older) return false
     if (machines.size > 0 && !row.machineIds.some((id) => machines.has(id))) return false
     for (const chip of chips) {
       if (chip === 'idle30' ? !idleOver30Days(row.subject.activityAt, now) : !row.chips.has(chip)) return false
@@ -248,7 +269,9 @@ export function applyListQuery<T>(page: ListPageId, rows: readonly ListRow<T>[],
       const y = b.row.sortKeys[sort]
       // A missing value is last whichever way the column runs.
       const order = x === undefined || y === undefined ? compare(x, y) : sign * compare(x, y)
-      return order || a.index - b.index
+      // Tasks of one state are newest first (the default order of the Tasks list).
+      const tie = page === 'tasks' && sort === 'state' ? newestFirst(a.row.sortKeys['activity'], b.row.sortKeys['activity']) : 0
+      return order || tie || a.index - b.index
     })
     .map((entry) => entry.row)
   return { rows: sorted, total: rows.length }
@@ -258,7 +281,13 @@ export function applyListQuery<T>(page: ListPageId, rows: readonly ListRow<T>[],
 
 /** The Tasks rows of the model; the `needs-you` chip holds for exactly the tasks Home lists. */
 export function buildTaskRows(model: FleetModel): ListRow<TaskView>[] {
-  return model.memo('rows:tasks', [], () => taskRows(model.tasks, new Set(model.needsYou.items.map((item) => item.task))))
+  return model.memo('rows:tasks', [], () =>
+    taskRows(
+      model.tasks,
+      new Set(model.needsYou.items.map((item) => item.task)),
+      new Set(model.tasks.filter((task) => task.state === 'at-risk' && !model.isRecent(task)).map((task) => task.name)),
+    ),
+  )
 }
 
 export function buildRepositoryRows(model: FleetModel): ListRow<MergedRepository>[] {

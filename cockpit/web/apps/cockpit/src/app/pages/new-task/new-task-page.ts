@@ -5,6 +5,7 @@ import { FleetStore, machineLoad, taskDetailLink } from '@cockpit/fleet-data'
 import { buildRepositories } from '@cockpit/fleet-data/list'
 import { CopyCommandList, StateBadge } from '@cockpit/ui/control'
 import { MetricsPoller, watchMetrics } from '../../metrics/metrics-poller'
+import { sampleWords } from '../machines/machine-text'
 import { EMPTY_STATE, NewTaskState, commandsOf, defaultBranchOf, machineChoices, modelsOffered, nameProblem, queryOf, stateOf } from './new-task-form'
 import { RepositoryPicker } from './repository-picker'
 
@@ -68,8 +69,11 @@ export class NewTaskPage {
     })
   }
 
-  protected loadOf(metricsId: string | undefined): ReturnType<typeof machineLoad>['state'] {
-    return machineLoad(metricsId === undefined ? undefined : this.poller.metricsOf(metricsId)).state
+  /** The load verdict of a machine's latest sample, and for a sample that is not current the words that say how old it is. */
+  protected loadOf(metricsId: string | undefined): { state: ReturnType<typeof machineLoad>['state']; stale: string | undefined } {
+    const now = this.store.now()
+    const load = machineLoad(metricsId === undefined ? undefined : this.poller.metricsOf(metricsId), now)
+    return { state: load.state, stale: load.stale ? sampleWords(load, now) : undefined }
   }
 
   /** One field changed. A text field replaces the current history entry; choosing a repository or a machine is a step back can undo. */

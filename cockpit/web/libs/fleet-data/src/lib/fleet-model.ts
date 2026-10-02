@@ -3,7 +3,7 @@
 // and kept for the document's identity, so a poll that returns 304 or an
 // identical document recomputes nothing and a render reads the same arrays.
 
-import { Agent, FleetDocument, Machine, MachineMetrics, MachineRoute, PullRequest, Repository, Worktree, isRunning } from './fleet.types'
+import { Agent, FleetDocument, Machine, MachineMetrics, MachineRoute, PullRequest, Repository, Worktree, anyAgentsTruncated, isRunning } from './fleet.types'
 import { CommandTarget, CopyCommand, SshRoute, commandTarget, pullRequestLand, sshRouteOf } from './command-core'
 import { agentTitle } from './fleet-view'
 import { isStale, repositorySlug } from './repository-identity'
@@ -101,6 +101,16 @@ export function badgeLabel(count: number): string {
   return count > BADGE_CAP ? `${BADGE_CAP}+` : String(count)
 }
 
+/** A badge count that is a least ("5+"): some of what it counts may have been left out. */
+export function badgeLabelAtLeast(count: number): string {
+  return count > BADGE_CAP ? `${BADGE_CAP}+` : `${count}+`
+}
+
+/** A count in words: "5", or "at least 5" when some of what it counts may have been left out. */
+export function countWords(count: number, atLeast: boolean): string {
+  return atLeast ? `at least ${count}` : String(count)
+}
+
 const MERGE_ATTENTION = new Set(['dirty', 'behind', 'blocked'])
 
 /** Orders newest first, a missing time last; 0 for two missing times, so the next key decides. */
@@ -152,8 +162,15 @@ export function compareVersions(a: number[], b: number[]): number {
   return 0
 }
 
-/** The latest sample's verdict: free below 70 percent CPU and 80 percent memory, busy otherwise. */
-export function machineLoad(metrics: MachineMetrics | undefined): MachineLoad {
+/** How old a sample may be and still say how loaded a machine is now: older is "load unknown", never "free". */
+export const CURRENT_SAMPLE_MS = 5 * 60_000
+
+/**
+ * The latest sample's verdict: free below 70 percent CPU and 80 percent memory, busy otherwise. A sample that is not
+ * current at `now` (older than `CURRENT_SAMPLE_MS`, or with no time) says nothing about the machine now, so it is
+ * `not-reported` (shown "load unknown") and marked `stale`, with the time it was taken for its age to be said.
+ */
+export function machineLoad(metrics: MachineMetrics | undefined, now: number): MachineLoad {
   const sample = metrics?.samples[metrics.samples.length - 1]
   const reported = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
   // `unknown`, never `free` (and not a guess of `busy`), without the CPU or the memory of the sample: the first sample
@@ -161,11 +178,13 @@ export function machineLoad(metrics: MachineMetrics | undefined): MachineLoad {
   if (metrics === undefined || sample === undefined || !reported(sample.cpu_percent) || !reported(sample.memory_used_bytes) || !reported(sample.memory_total_bytes) || sample.memory_total_bytes <= 0) {
     return { state: 'not-reported', route: metrics?.route ?? 'none' }
   }
+  const sampledAt = toTime(sample.sampled_at)
+  if (sampledAt === undefined || now - sampledAt > CURRENT_SAMPLE_MS) return { state: 'not-reported', route: metrics.route, stale: true, sampledAt }
   const memoryPercent = (sample.memory_used_bytes / sample.memory_total_bytes) * 100
   return {
     state: sample.cpu_percent < 70 && memoryPercent < 80 ? 'free' : 'busy',
     route: metrics.route,
-    sampledAt: toTime(sample.sampled_at),
+    sampledAt,
     cpuPercent: sample.cpu_percent,
     memoryPercent,
   }
@@ -384,6 +403,11 @@ export class FleetModel {
   /** The task's last activity is within `NEEDS_YOU_WINDOW_DAYS`; no recorded activity is not recent. */
   isRecent(task: TaskView): boolean {
     return task.lastActivityAt !== undefined && this.now - task.lastActivityAt <= NEEDS_YOU_WINDOW_MS
+  }
+
+  /** Whether any machine's agents were cut: the counts of agents are then "at least" (`countWords`). */
+  get agentsCut(): boolean {
+    return anyAgentsTruncated(this.document)
   }
 
   /** The Agents tab badge: the running agents on every machine. */

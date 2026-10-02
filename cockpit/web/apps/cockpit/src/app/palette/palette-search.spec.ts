@@ -101,6 +101,25 @@ describe('searchPalette', () => {
     expect(searchPalette(model(doc), 'same', NOW).find((group) => group.kind === 'task')?.results.map((result) => result.label)).toEqual(['same-2', 'same-1', 'same-3'])
   })
 
+  // cockpit-views#ac:default-sorts
+  it('leaves out a task at risk for over 14 days, as Home does, unless the search asks for state:at-risk', () => {
+    const days = (count: number): string => new Date(Date.now() - count * 86_400_000).toISOString()
+    const risky = { owner_state: 'orphaned' as const, ahead: 1 }
+    const doc = fleetDocument({
+      worktrees: [
+        { ...worktree('w1', 'r1', 'alpha'), task: 'risk-new', last_activity_at: days(2), ...risky },
+        { ...worktree('w2', 'r1', 'alpha'), task: 'risk-old', last_activity_at: days(20), ...risky },
+        { ...worktree('w3', 'r1', 'alpha'), task: 'risk-idle', last_activity_at: days(20), owner_state: 'idle' as const },
+      ],
+    })
+    const tasks = (text: string) => searchPalette(model(doc), text, NOW).find((group) => group.kind === 'task')?.results.map((result) => result.label)
+    expect(tasks('risk')).toEqual(['risk-new', 'risk-idle'])
+    expect(tasks('state:at-risk')).toEqual(['risk-new', 'risk-old'])
+    expect(tasks('risk-old')).toBeUndefined()
+    // A remembered result still resolves: the window is for searching.
+    expect(resolveResult(model(doc), 'task:risk-old')?.label).toBe('risk-old')
+  })
+
   it('uses the matcher: a glob, an exclusion, a field and an unknown field as plain text', () => {
     const doc = goFleet()
     expect(searchPalette(model(doc), '*go-*', NOW).find((group) => group.kind === 'repository')?.results).toHaveLength(8)

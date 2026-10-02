@@ -25,6 +25,8 @@ export class ListToolbar {
   readonly fields = input.required<string>()
   readonly shown = input.required<number>()
   readonly total = input.required<number>()
+  /** Some of what is counted may have been left out (an agent list that a machine cut): the count then reads "at least". */
+  readonly atLeast = input(false)
   readonly chips = input.required<readonly ListChip[]>()
   readonly activeChips = input.required<readonly string[]>()
   readonly machines = input.required<readonly MachineOption[]>()

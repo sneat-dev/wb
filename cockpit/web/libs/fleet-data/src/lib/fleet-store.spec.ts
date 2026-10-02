@@ -2,7 +2,8 @@ import { buildRepositories } from './model-repositories'
 import { buildWorktreePanel } from './entity-views'
 import { buildCleanup } from './home-details'
 import { TestBed } from '@angular/core/testing'
-import { FleetClient, FleetRead, FleetSchemaError } from './fleet-client'
+import { DOCUMENT } from '@angular/common'
+import { FleetClient, FleetRead, FleetRequestError, FleetSchemaError } from './fleet-client'
 import { EXPECTED_SCHEMA, FleetStore, MODEL_OPTIONS, POLL_INTERVALS } from './fleet-store'
 import { Session } from './fleet.types'
 import { fleetDocument, worktree } from './test-data'
@@ -87,6 +88,111 @@ describe('FleetStore', () => {
     expect(readFleet).toHaveBeenLastCalledWith('"b"', 2)
     expect(store.document().warming_up).toBe(false)
     store.stop()
+  })
+
+  // cockpit-views#ac:polling-follows-visibility
+  describe('while the page is hidden', () => {
+    function hideable() {
+      let visibility: DocumentVisibilityState = 'visible'
+      const listeners = new Set<() => void>()
+      const doc = {
+        get visibilityState() {
+          return visibility
+        },
+        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
+      }
+      return { doc, listeners, set: (next: DocumentVisibilityState) => { visibility = next; for (const listener of [...listeners]) listener() } }
+    }
+
+    function storeAndPage(client: Partial<FleetClient>) {
+      const page = hideable()
+      TestBed.configureTestingModule({
+        providers: [
+          { provide: FleetClient, useValue: client },
+          { provide: DOCUMENT, useValue: page.doc },
+          { provide: POLL_INTERVALS, useValue: { warmingUp: 10, steady: 100 } },
+        ],
+      })
+      return { store: TestBed.inject(FleetStore), page }
+    }
+
+    it('reads nothing, reads at once when the page is visible again, and reads the session again then', async () => {
+      const readFleet = vi.fn<(etag?: string, expected?: number) => Promise<FleetRead>>().mockResolvedValueOnce(changed(false, '"a"')).mockResolvedValue({ kind: 'unchanged' })
+      const readSession = vi.fn<() => Promise<Session>>().mockResolvedValue(session)
+      const { store, page } = storeAndPage({ readFleet, readSession })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(readFleet).toHaveBeenCalledTimes(1)
+      expect(readSession).toHaveBeenCalledTimes(1)
+      page.set('hidden')
+      // Many intervals pass and nothing is read.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(readFleet).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+      page.set('visible')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(readFleet).toHaveBeenCalledTimes(2)
+      expect(readSession).toHaveBeenCalledTimes(2)
+      // And it carries on at its pace.
+      await vi.advanceTimersByTimeAsync(100)
+      expect(readFleet).toHaveBeenCalledTimes(3)
+      // A new owner session read on return replaces the old one.
+      readSession.mockResolvedValue({ ...session, principal: 'owner' })
+      page.set('hidden')
+      page.set('visible')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.session()?.principal).toBe('owner')
+      store.stop()
+      expect(page.listeners.size).toBe(0)
+    })
+
+    it('does not start a second read when the page returns while one is out, and ends the loop for a read that finishes hidden', async () => {
+      let finish: (read: FleetRead) => void = () => undefined
+      const readFleet = vi.fn<(etag?: string, expected?: number) => Promise<FleetRead>>(() => new Promise((resolve) => (finish = resolve)))
+      const { store, page } = storeAndPage({ readFleet, readSession: async () => session })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      page.set('hidden')
+      page.set('visible')
+      expect(readFleet).toHaveBeenCalledTimes(1)
+      finish({ kind: 'unchanged' })
+      await vi.advanceTimersByTimeAsync(0)
+      // Hidden again before the read answers: the answer schedules nothing.
+      readFleet.mockImplementation(() => new Promise((resolve) => (finish = resolve)))
+      await vi.advanceTimersByTimeAsync(100)
+      expect(readFleet).toHaveBeenCalledTimes(2)
+      page.set('hidden')
+      finish({ kind: 'unchanged' })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(readFleet).toHaveBeenCalledTimes(2)
+      // Visibility changes of a stopped store are ignored.
+      store.stop()
+      page.set('visible')
+      expect(readFleet).toHaveBeenCalledTimes(2)
+    })
+
+    it('reads the session again when a read is answered 401, and keeps the old one when that read fails', async () => {
+      const readFleet = vi.fn<(etag?: string, expected?: number) => Promise<FleetRead>>().mockResolvedValueOnce(changed(false, '"a"')).mockRejectedValue(new FleetRequestError(401))
+      const readSession = vi.fn<() => Promise<Session>>().mockResolvedValue({ ...session, principal: 'owner' })
+      const { store } = storeAndPage({ readFleet, readSession })
+      store.start()
+      await vi.advanceTimersByTimeAsync(0)
+      // The session is read once, with the first poll; the owner session expires meanwhile.
+      expect(readSession).toHaveBeenCalledTimes(1)
+      expect(store.session()?.principal).toBe('owner')
+      readSession.mockResolvedValue({ ...session, principal: 'anonymous-local' })
+      // The next read is answered 401: the session is read again, and is no longer the owner's.
+      await vi.advanceTimersByTimeAsync(100)
+      expect(readSession).toHaveBeenCalledTimes(2)
+      expect(store.session()?.principal).toBe('anonymous-local')
+      readSession.mockRejectedValue(new Error('offline'))
+      await vi.advanceTimersByTimeAsync(100)
+      expect(store.session()?.principal).toBe('anonymous-local')
+      expect(store.sessionStatus()).toBe('ready')
+      // Other statuses do not.
+      store.stop()
+    })
   })
 
   it('keeps the last document and shows the error when a read fails, then recovers', async () => {

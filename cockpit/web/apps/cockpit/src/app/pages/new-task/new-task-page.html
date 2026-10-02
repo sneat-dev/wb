@@ -54,7 +54,11 @@
     @for (candidate of choices(); track candidate.id ?? '') {
       <label class="machine">
         <input type="radio" name="new-task-machine" [value]="candidate.id ?? ''" [checked]="candidate === choice()" (change)="edit({ machine: candidate.id }, true)" />
-        <span class="machine-name">{{ candidate.name }}</span>&ngsp;<app-state-badge kind="load" size="small" [value]="loadOf(candidate.metricsId)" hint="Whether this machine can take another agent, from its latest sample" />
+        <span class="machine-name">{{ candidate.name }}</span>&ngsp;@let load = loadOf(candidate.metricsId);
+        <app-state-badge kind="load" size="small" [value]="load.state" hint="Whether this machine can take another agent, from its latest sample" />
+        @if (load.stale; as why) {
+          &ngsp;<span class="quiet">{{ why }}</span>
+        }
       </label>
     }
     @if (choices().length === 1) {

@@ -133,6 +133,8 @@ export class ListView<T = unknown> {
   protected readonly down = GLYPH_ARROW_DOWN
 
   protected readonly noun = computed(() => PAGE_NOUN[this.page()])
+  /** An agents list counts agents some machine may have cut: "at least". */
+  protected readonly agentsCut = computed(() => this.page() === 'agents' && this.store.model().agentsCut)
   protected readonly items = computed(() => (this.rows() ?? rowsOf(this.store.model(), this.page())) as readonly ListRow<T>[])
   protected readonly chips = computed(() => [...chipsOf(this.page()), ...this.extraChips()])
 
@@ -242,7 +244,7 @@ export class ListView<T = unknown> {
       const total = this.result().total
       if (!this.announceCount) return
       this.announceCount = false
-      untracked(() => this.announcer.say(`${count} of ${total} ${this.noun()}`))
+      untracked(() => this.announcer.say(`${this.agentsCut() ? 'at least ' : ''}${count} of ${total} ${this.noun()}`))
     })
     // A selection that is there is where the keyboard goes next, and a deep link or back from a page shows it.
     effect(() => {

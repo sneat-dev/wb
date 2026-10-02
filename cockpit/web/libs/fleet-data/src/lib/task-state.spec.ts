@@ -52,6 +52,8 @@ describe('task state: row 1, at risk', () => {
     // An active owner is not at risk, and an owner that is not reported is never guessed at.
     expect(state({ worktrees: [wt({ owner_state: 'active', ahead: 3 })] })).not.toBe('at-risk')
     expect(state({ worktrees: [wt({ ahead: 3 })] })).not.toBe('at-risk')
+    // An owner state outside the vocabulary is not reported, not "not active".
+    expect(state({ worktrees: [wt({ owner_state: 'zombie' as never, ahead: 3 })] })).not.toBe('at-risk')
     // Only this machine: an entry cached from another machine is never at risk, whatever it says.
     expect(state({ worktrees: [wt({ route: 'cached', owner_state: 'orphaned', ahead: 2 })] })).not.toBe('at-risk')
     expect(state({ worktrees: [wt({ route: 'live-remote', owner_state: 'orphaned', ahead: 2 })] })).not.toBe('at-risk')

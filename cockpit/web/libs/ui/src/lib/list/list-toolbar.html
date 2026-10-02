@@ -18,7 +18,7 @@
     }
     <button type="button" class="icon" aria-label="How the filter works" [attr.aria-expanded]="hintOpen()" (click)="hintOpen.set(!hintOpen())"><app-glyph [paths]="help" /></button>
   </div>
-  <span class="count tnum">{{ shown() }} of {{ total() }}</span>
+  <span class="count tnum">@if (atLeast()) {at least }{{ shown() }} of {{ total() }}</span>
 </div>
 @if (hintOpen()) {
   <p class="hint" role="note" [id]="id() + '-hint'">

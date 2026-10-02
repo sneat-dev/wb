@@ -83,14 +83,17 @@ export function openObserved(pullRequests: readonly PullRequest[]): PullRequest[
 /**
  * The interim at-risk worktrees of row 1, until the work-loss-risk read model
  * replaces the rule: on this machine (a local entry), an `owner_state` that is
- * reported and not `active`, and commits ahead or no upstream.
+ * reported and not `active`, and commits ahead or no upstream. A value this page does
+ * not know is "not reported", never "not active" (it must not put a task at risk).
  */
+/** The owner states that say nobody is working in the worktree. */
+const NOT_ACTIVE: readonly string[] = ['idle', 'orphaned', 'unknown']
+
 export function interimAtRiskWorktrees(worktrees: readonly Worktree[]): Worktree[] {
   return worktrees.filter(
     (worktree) =>
       worktree.route === 'local' &&
-      worktree.owner_state !== undefined &&
-      worktree.owner_state !== 'active' &&
+      NOT_ACTIVE.includes(worktree.owner_state as string) &&
       hasUnpushedWork(worktree),
   )
 }

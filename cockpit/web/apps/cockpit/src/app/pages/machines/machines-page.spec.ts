@@ -111,8 +111,11 @@ describe('MachinesPage', () => {
     expect(meters(0)).toEqual(['88%', '88%'])
     expect(text(cell(root, 3, 'Load'))).toContain('free')
     expect(meters(3)).toEqual(['10%', '25%'])
-    expect(meters(2)).toEqual(['35%', '38%'])
-    expect(cell(root, 2, 'CPU').querySelector('.meter')?.getAttribute('title')).toMatch(/^Latest sample: cached, /)
+    // A cached sample 30 minutes old says nothing about the machine now: not "free", no bars, and its age is said.
+    expect(text(cell(root, 2, 'Load'))).toContain('load unknown')
+    expect(text(cell(root, 2, 'Load'))).not.toContain('free')
+    expect(cell(root, 2, 'Load').querySelector('app-state-badge')?.getAttribute('title')).toBe('Latest sample: cached, 30 min ago: too old to say')
+    expect(meters(2)).toEqual(['', ''])
     // No source: the load is unknown and there are no bars, and never a zero.
     expect(text(cell(root, 1, 'Load'))).toContain('load unknown')
     expect(meters(1)).toEqual(['', ''])

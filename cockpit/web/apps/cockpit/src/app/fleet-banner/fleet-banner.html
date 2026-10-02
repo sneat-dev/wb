@@ -11,8 +11,8 @@
     <app-icon name="alert" />{{ document().diagnostics }} pull request{{ document().diagnostics === 1 ? '' : 's' }} could not be matched to a single repository.
   </p>
 }
-@if (document().agents_truncated) {
-  <p class="notice" role="status"><app-icon name="alert" />The agents list is capped; not every agent is shown.</p>
+@if (agentsCut()) {
+  <p class="notice" role="status"><app-icon name="alert" />The agents list is capped; not every agent is shown, so the counts of agents are at least those numbers.</p>
 }
 @if (store.droppedEntries() > 0) {
   <p class="notice" role="status">

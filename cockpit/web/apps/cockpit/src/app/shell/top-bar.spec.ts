@@ -51,6 +51,19 @@ describe('TopBar', () => {
     return { fixture, root, store, tab: (name: string) => slot(name) }
   }
 
+  // cockpit-views#ac:agents-truncated-says-at-least
+  it('reads "1+" with "at least" in its name on the Agents badge when some machine cut its agents, whichever machine it was, and not on the Home badge', async () => {
+    const { tab } = await render((store) => store.document.update((document) => ({ ...document, agents_truncated: true })))
+    const badge = tab('Agents').querySelector('a.badge') as HTMLElement
+    expect(text(badge)).toBe('1+')
+    expect(badge.getAttribute('aria-label')).toBe('at least 1 agents running: open them')
+    expect(badge.getAttribute('title')).toBe('at least 1')
+    expect(text(tab('Home').querySelector('a.badge'))).toBe('3')
+    expect(tab('Home').querySelector('a.badge')?.getAttribute('aria-label')).toBe('3 tasks need you: open them')
+    const other = await render((store) => store.document.update((document) => ({ ...document, machines: document.machines.map((machine) => (machine.route === 'local' ? machine : { ...machine, agents_truncated: true })) })))
+    expect(text(other.tab('Agents').querySelector('a.badge'))).toBe('1+')
+  })
+
   // cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness
   it('shows the tabs with signal badges only, the search entry, New task, the freshness chip and the session chip', async () => {
     const { root, tab } = await render()

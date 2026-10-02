@@ -41,6 +41,7 @@ const CHIP_TEXT: { [P in ListPageId]: Record<ChipsOf<P>, ChipText> } = {
     pr: ['Has pull request', 'The task has a pull request'],
     multirepo: ['Several repositories', 'The task spans more than one repository'],
     idle30: ['Idle 30 days', 'No activity for more than 30 days'],
+    older: ['Older at-risk', 'Also list the at-risk tasks idle for more than 14 days, which this list leaves out as Home does (their worktrees are Home\'s Cleanup "need a look")'],
   },
   repositories: {
     worktrees: ['Has worktrees', 'At least one worktree'],
@@ -78,7 +79,8 @@ const BARE: Readonly<Record<ListPageId, readonly string[]>> = {
 }
 
 const DEFAULT_SORT: Readonly<Record<ListPageId, PageVocabulary['defaultSort']>> = {
-  tasks: { sort: 'activity', dir: 'desc' },
+  // By state precedence (worst first, REQ:task-state), then last activity newest first.
+  tasks: { sort: 'state', dir: 'asc' },
   repositories: { sort: 'activity', dir: 'desc' },
   worktrees: { sort: 'activity', dir: 'desc' },
   agents: { sort: 'running', dir: 'desc' },

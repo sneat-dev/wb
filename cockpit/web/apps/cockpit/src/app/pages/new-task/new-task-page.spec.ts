@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing'
 import { Router, provideRouter } from '@angular/router'
 import { Session } from '@cockpit/fleet-data'
 import { MetricsPoller } from '../../metrics/metrics-poller'
-import { metricsFetch } from '../machines/machines-fixture'
+import { metricsFetch, sample } from '../machines/machines-fixture'
 import { SESSION, openPage } from '../test-harness'
 import { OWNER, loadAnswers, newTaskDocument } from './new-task-fixture'
 import { NewTaskPage } from './new-task-page'
@@ -274,6 +274,15 @@ describe('NewTaskPage', () => {
       await click(root.querySelectorAll('input[type=radio]')[0])
       expect(query().has('machine')).toBe(false)
       expect(commands()[0].code).toMatch(/^wb worktree create/)
+    })
+
+    // cockpit-views#ac:in-flight-machine-load-indicator
+    it('says load unknown, with the age of the sample, for a machine whose sample is not current, never "free"', async () => {
+      const answers = { ...loadAnswers(), 'mach-beta': { machine: 'mach-beta', route: 'cached' as const, samples: [sample(120, 10)] } }
+      const { root, settle } = await open('/tasks/new', OWNER, metricsFetch(answers))
+      await vi.waitFor(() => expect(TestBed.inject(MetricsPoller).entries().size).toBe(2))
+      await settle()
+      expect([...root.querySelectorAll('.machine')].map(text)).toEqual(['This machine (alpha) Load: busy', 'beta Load: load unknown cached, 2 h ago: too old to say'])
     })
 
     it('says load unknown for a machine that has no metrics answer, and never "free" by default', async () => {

@@ -7,6 +7,7 @@
       [fields]="fields()"
       [shown]="result().rows.length"
       [total]="result().total"
+      [atLeast]="agentsCut()"
       [chips]="chips()"
       [activeChips]="filters().chips"
       [machines]="machines()"

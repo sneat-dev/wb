@@ -91,7 +91,9 @@ describe('MachinePanelView', () => {
     expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('cached: the latest sample of its published snapshot, 30 min ago')
     expect(facts(panel, '.latest')).toEqual({ CPU: '35%', 'Load (1 min)': '1.75', Memory: '6 GB of 16 GB (38%)', 'Disk free': '200 GB free of 500 GB' })
     expect(panel.querySelector('app-viewport-mount, app-machine-charts, app-chart')).toBeNull()
-    expect(text(panel.querySelector('app-panel-state'))).toContain('free')
+    // The sample is 30 minutes old: the load is unknown, not free.
+    expect(text(panel.querySelector('app-panel-state'))).toContain('load unknown')
+    expect(text(panel.querySelector('app-panel-state'))).not.toContain('free')
   })
 
   it('names a live machine by its transport and age, its history, and how many entries its export left out', async () => {

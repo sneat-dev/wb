@@ -67,7 +67,7 @@ export class MachinesPage {
     const counts = this.counts()
     return new Map(
       this.store.model().machines.map((view): [string, MachineRow] => {
-        const load = machineLoad(entries.get(view.machine.id)?.metrics)
+        const load = machineLoad(entries.get(view.machine.id)?.metrics, now)
         const code = view.machine.remote_error
         const publish = view.machine.publish_error
         return [

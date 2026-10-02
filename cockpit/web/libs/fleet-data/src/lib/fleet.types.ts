@@ -115,7 +115,12 @@ export interface Repository extends Entry {
 }
 
 /** The owner vocabulary of every route (REQ:owner-state-vocabulary). */
-export type OwnerState = 'active' | 'idle' | 'orphaned' | 'unknown'
+export const OWNER_STATES = ['active', 'idle', 'orphaned', 'unknown'] as const
+export type OwnerState = (typeof OWNER_STATES)[number]
+
+/** The worktree lifecycles the daemon populates (REQ:field-tables). */
+export const LIFECYCLES = ['working', 'review', 'merged', 'superseded'] as const
+export type Lifecycle = (typeof LIFECYCLES)[number]
 
 export interface Worktree extends Entry {
   repository: string
@@ -154,7 +159,8 @@ export const MERGEABLE_STATES = ['clean', 'blocked', 'dirty', 'behind', 'unstabl
 export type Mergeable = (typeof MERGEABLE_STATES)[number]
 
 /** The pull request states of REQ:pull-request-fields; `draft` is an open draft. */
-export type PullRequestState = 'open' | 'merged' | 'closed' | 'draft'
+export const PULL_REQUEST_STATES = ['open', 'merged', 'closed', 'draft'] as const
+export type PullRequestState = (typeof PULL_REQUEST_STATES)[number]
 
 export interface PullRequest extends Entry {
   repository?: string
@@ -261,6 +267,14 @@ export interface FleetDocument {
  */
 export function agentsTruncated(document: Pick<FleetDocument, 'agents_truncated'>, machine: Pick<Machine, 'route' | 'agents_truncated'>): boolean {
   return (machine.route === 'local' ? document.agents_truncated : machine.agents_truncated) === true
+}
+
+/**
+ * Whether the agents of any machine were cut: a count that includes them is then "at least" that many. The document's
+ * own flag is the local machine's, and each other machine's flag is on its entry.
+ */
+export function anyAgentsTruncated(document: Pick<FleetDocument, 'agents_truncated' | 'machines'>): boolean {
+  return document.agents_truncated === true || document.machines.some((machine) => agentsTruncated(document, machine))
 }
 
 /** The one schema version this page reads (REQ:schema-version-2). */

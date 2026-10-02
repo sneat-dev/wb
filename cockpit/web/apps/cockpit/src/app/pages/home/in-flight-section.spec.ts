@@ -68,6 +68,24 @@ describe('InFlightSection', () => {
     expect(text(rows[1].querySelector('app-state-badge'))).toContain('state not reported')
   })
 
+  // cockpit-views#ac:agents-truncated-says-at-least
+  it('reads the count as "4+" with "at least" in its name when some machine cut its agents, whichever machine', async () => {
+    const own = fleet()
+    own.agents_truncated = true
+    const { root } = await render(own)
+    const count = root.querySelector('h2 a.home-count') as HTMLElement
+    expect(text(count)).toBe('4+')
+    expect(count.getAttribute('aria-label')).toBe('At least 4 running agents')
+    expect(count.getAttribute('title')).toContain('At least 4')
+    const other = fleet()
+    other.machines = other.machines.map((machine) => (machine.route === 'local' ? machine : { ...machine, agents_truncated: true }))
+    expect(text((await render(other)).root.querySelector('h2 a.home-count'))).toBe('4+')
+    // Nothing cut: the plain number, with no name of its own.
+    const plain = (await render()).root.querySelector('h2 a.home-count') as HTMLElement
+    expect(text(plain)).toBe('4')
+    expect(plain.hasAttribute('aria-label')).toBe(false)
+  })
+
   it('shows an agent of another machine with the age of its snapshot, its machine and no action', async () => {
     const { rows } = await render()
     expect(text(rows[2].querySelector('.flight-meta'))).toContain('snapshot 1 d ago')

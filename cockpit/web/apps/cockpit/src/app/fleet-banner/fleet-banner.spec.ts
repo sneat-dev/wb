@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing'
 import { FleetStore } from '@cockpit/fleet-data'
-import { fleetDocument } from '@cockpit/fleet-data/testing'
+import { fleetDocument, machine } from '@cockpit/fleet-data/testing'
 import { FleetBanner } from './fleet-banner'
 
 async function render(setup: (store: FleetStore) => void): Promise<HTMLElement> {
@@ -23,14 +23,24 @@ describe('FleetBanner', () => {
     expect(text(one)).toBe('1 pull request could not be matched to a single repository.')
   })
 
-  it('shows the plural, a truncated agent list and an unreadable repository list', async () => {
+  it('shows the plural, a truncated agent list (the local machine\'s flag or another machine\'s) and an unreadable repository list', async () => {
     const root = await render((store) => {
       store.loaded.set(true)
       store.document.set(fleetDocument({ diagnostics: 2, agents_truncated: true, error: 'repositories_unreadable' }))
     })
     expect(text(root)).toContain('2 pull requests could not be matched')
     expect(text(root)).toContain('The agents list is capped')
+    expect(text(root)).toContain('the counts of agents are at least')
     expect(root.querySelector('[role=alert]')?.textContent).toContain('could not be listed')
+    // Another machine's flag, on its own entry, says it too; a document with neither says nothing.
+    TestBed.resetTestingModule()
+    const remote = await render((store) => {
+      store.loaded.set(true)
+      store.document.set(fleetDocument({ machines: [machine('alpha'), { ...machine('beta', 'cached'), agents_truncated: true }] }))
+    })
+    expect(text(remote)).toContain('The agents list is capped')
+    TestBed.resetTestingModule()
+    expect(text(await render((store) => { store.loaded.set(true); store.document.set(fleetDocument()) }))).not.toContain('capped')
   })
 
   it('explains an old Git, and gives any other document error a generic notice', async () => {

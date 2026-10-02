@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
-import { ERROR_GIT_TOO_OLD, ERROR_REPOSITORIES_UNREADABLE, FleetStore } from '@cockpit/fleet-data'
+import { ERROR_GIT_TOO_OLD, ERROR_REPOSITORIES_UNREADABLE, FleetStore, anyAgentsTruncated } from '@cockpit/fleet-data'
 import { Icon } from '../ui/icon'
 
 /**
@@ -19,6 +19,8 @@ import { Icon } from '../ui/icon'
 export class FleetBanner {
   protected readonly store = inject(FleetStore)
   protected readonly document = this.store.document
+  /** Some machine's agents were cut (this machine's flag is the document's, another machine's is on its entry). */
+  protected readonly agentsCut = computed(() => anyAgentsTruncated(this.document()))
   /** What the document's own error code means for the operator; any code gets a notice. */
   protected readonly documentError = computed(() => {
     const code = this.document().error

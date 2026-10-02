@@ -2,7 +2,14 @@
   <h2 id="home-flight-h" class="home-h">
     In flight
     @if (rows().length > 0) {
-      <a class="home-count" [routerLink]="runningLink.path" [queryParams]="runningLink.query" title="The running agents, on Agents">{{ rows().length }}</a>
+      <a
+        class="home-count"
+        [routerLink]="runningLink.path"
+        [queryParams]="runningLink.query"
+        [attr.title]="cut() ? 'At least ' + rows().length + ': a machine left some agents out. The running agents, on Agents' : 'The running agents, on Agents'"
+        [attr.aria-label]="cut() ? 'At least ' + rows().length + ' running agents' : null"
+        >{{ rows().length }}@if (cut()) {+}</a
+      >
     }
   </h2>
   <div class="flight-layout">

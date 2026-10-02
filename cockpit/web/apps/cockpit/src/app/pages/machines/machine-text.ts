@@ -28,6 +28,7 @@ const ROUTE_WORDS = { local: 'local', 'live-remote': 'live', cached: 'cached', n
 
 /** The words of the sample behind a machine's load: its route and age, or that there is none. */
 export function sampleWords(load: MachineLoad, now: number): string {
+  if (load.stale) return `${ROUTE_WORDS[load.route]}${load.sampledAt === undefined ? ', no time' : `, ${formatAge(new Date(load.sampledAt).toISOString(), now)}`}: too old to say`
   if (load.state === 'not-reported') return 'no usable sample'
   return `${ROUTE_WORDS[load.route]}${load.sampledAt === undefined ? '' : `, ${formatAge(new Date(load.sampledAt).toISOString(), now)}`}`
 }
