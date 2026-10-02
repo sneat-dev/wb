@@ -236,6 +236,8 @@ wb pr create --format json`,
 				return nil
 			case exitUsage:
 				return &exitError{code: exitUsage, message: result.Reason + "; resolve with: " + result.SanctionedCommand}
+			case exitLandedIncomplete:
+				return &exitError{code: exitLandedIncomplete, message: result.Reason + "; resume with: " + result.LandResult.ResumeCommand}
 			default:
 				return &exitError{code: exitFindings, message: result.Reason}
 			}

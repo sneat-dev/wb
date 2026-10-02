@@ -28,6 +28,11 @@ const (
 	exitOK       = 0 // the command ran and reported nothing that needs attention
 	exitFindings = 1 // the command ran and reported failures, drift, or findings
 	exitUsage    = 2 // the invocation was rejected before any work started
+	// exitLandedIncomplete: a landing (pr land, worktree land, pr create
+	// --land) merged and verified its change on the base branch, but a
+	// follow-up step did not finish. The work is landed; the output names the
+	// exact resume command. Never re-land, re-review or revert on this status.
+	exitLandedIncomplete = 3
 )
 
 // invocation carries the mutable state one run()/runWithStdin() call reads
@@ -108,6 +113,9 @@ Exit codes:
   0  success  — the command ran and reported nothing that needs attention
   1  findings — the command ran and reported failures, drift, or policy findings
   2  usage    — the invocation was rejected before any work started
+  3  landed, follow-up incomplete — wb land, wb pr land and wb pr create --land
+     only: the change IS on the base branch, but canonical sync, branch
+     retirement or cleanup did not finish; the output prints the resume command
 
 Terminal-only behaviour, including styled help and live progress reporting,
 activates only when its output stream is a terminal. Pass --non-interactive, or

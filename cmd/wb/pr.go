@@ -248,6 +248,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				return nil
 			case exitUsage:
 				return &exitError{code: exitUsage, message: result.Reason + "; resolve with: " + result.SanctionedCommand}
+			case exitLandedIncomplete:
+				return &exitError{code: exitLandedIncomplete, message: result.Reason + "; resume with: " + result.ResumeCommand}
 			default:
 				return &exitError{code: exitFindings, message: result.Reason}
 			}
@@ -373,6 +375,11 @@ func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequest
 		}
 		if result.SanctionedCommand != "" {
 			if _, err := fmt.Fprintf(out, "resolve with: %s\n", result.SanctionedCommand); err != nil {
+				return err
+			}
+		}
+		if result.ResumeCommand != "" {
+			if _, err := fmt.Fprintf(out, "resume with: %s\n", result.ResumeCommand); err != nil {
 				return err
 			}
 		}

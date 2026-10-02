@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktreecollab"
@@ -1452,13 +1453,15 @@ func refreshManagedHooksBeforeWorktreeCreate(inv *invocation, repositories []str
 
 func newWorktreeGuardCmd(inv *invocation) *cobra.Command {
 	var base, format, admission string
-	var quiet, published bool
+	var quiet, published, prePushStdin bool
 	command := &cobra.Command{
 		Use:   "guard [repository-path]",
 		Short: "Reject unsafe canonical clones and misplaced worktrees",
 		Long: `Validate the checkout policy used by agents and WB Git hooks.
 
-A canonical clone is valid only when it is clean and on the base branch. A
+A canonical clone is valid when it is clean, whatever branch it has checked
+out: a different checked-out branch is a normal state, and no WB verb needs the
+clone on the base branch. Uncommitted work in it is what the guard protects. A
 linked checkout is valid only when it uses a non-base branch and either lives
 in the central store at
 <root>/.worktrees/<task>/<host>/<owner>/<repository> (or the legacy
@@ -1503,6 +1506,11 @@ unverified, never assumed published. Run it after every push.`,
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
+			}
+			if prePushStdin && pushOnlyDeletesRemoteRefs(command.InOrStdin()) {
+				// Nothing is sent from this checkout, so nothing about it can
+				// make the push unsafe (sneat-dev/wb#824).
+				return nil
 			}
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
 				ProjectsRoot:     inv.projectsRoot,
@@ -1578,7 +1586,21 @@ unverified, never assumed published. Run it after every push.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")
 	command.Flags().BoolVar(&published, "published", false, "verify after a push that HEAD is exactly origin/<this worktree's branch>; exit 1 with the remedy otherwise")
+	command.Flags().BoolVar(&prePushStdin, "pre-push-stdin", false, "run as a pre-push guard: read Git's pushed-ref list on stdin and pass without inspecting the checkout when the push only deletes remote refs")
+	_ = command.Flags().MarkHidden("pre-push-stdin")
 	return command
+}
+
+// pushOnlyDeletesRemoteRefs reports whether stdin is Git's pre-push ref list
+// and every line of it deletes a remote ref. A terminal, an unreadable list and
+// a malformed list all answer false, so the guard then inspects the checkout as
+// it always did.
+func pushOnlyDeletesRemoteRefs(stdin io.Reader) bool {
+	if console.IsTerminal(stdin) {
+		return false
+	}
+	only, err := hooks.OnlyRemoteRefDeletions(stdin)
+	return err == nil && only
 }
 
 func formatCanonicalFreshness(freshness *worktrees.CanonicalFreshness) string {

@@ -49,13 +49,16 @@ const (
 )
 
 // CreateOutcome is the envelope outcome, mapped onto WB's exit-code contract
-// by ExitCode: success is 0, findings is 1, refused is 2.
+// by ExitCode: success is 0, findings is 1, refused is 2, landed-incomplete is
+// 3 (--land merged, but its follow-up did not finish).
 type CreateOutcome string
 
 const (
 	CreateSuccess  CreateOutcome = "success"
 	CreateFindings CreateOutcome = "findings"
 	CreateRefused  CreateOutcome = "refused"
+	// CreateLandedIncomplete mirrors LandLandedIncomplete for --land.
+	CreateLandedIncomplete CreateOutcome = "landed-incomplete"
 )
 
 // PullRequestCreateOptions identifies the worktree to open a pull request for.
@@ -207,6 +210,8 @@ func (result PullRequestCreateResult) ExitCode() int {
 		return 0
 	case CreateRefused:
 		return 2
+	case CreateLandedIncomplete:
+		return ExitLandedIncomplete
 	default:
 		return 1
 	}
@@ -455,6 +460,9 @@ func createPullRequestLand(ctx context.Context, options PullRequestCreateOptions
 		result.Outcome = CreateSuccess
 	case LandRefused:
 		result.Outcome = CreateRefused
+		result.RefusalCode = landResult.RefusalCode
+	case LandLandedIncomplete:
+		result.Outcome = CreateLandedIncomplete
 		result.RefusalCode = landResult.RefusalCode
 	default:
 		result.Outcome = CreateFindings

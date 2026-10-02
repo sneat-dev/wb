@@ -14022,7 +14022,7 @@
           "references": [
             {
               "path": "internal/worktrees/worktrees_test.go",
-              "name": "TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone",
+              "name": "TestGuardAcceptsAnyBranchInACanonicalCloneAndRejectsChanges",
               "kind": "integration"
             },
             {

@@ -186,7 +186,8 @@ func TestGuardCanonicalRefusesFailedQueriesAndUnsafeState(t *testing.T) {
 		{"branch query fails", 4, "main", "", false, "guard Git failure", 4},
 		{"detached canonical HEAD", 0, "", "", false, "detached HEAD is not allowed", 4},
 		{"invalid canonical placement", 0, "main", "", true, "canonical clone", 4},
-		{"feature branch in canonical clone", 0, "feature", "", false, "must stay on", 4},
+		{"clean feature branch in canonical clone", 0, "feature", "", false, "", 5},
+		{"dirty feature branch in canonical clone", 0, "feature", " M file", false, "has local changes", 5},
 		{"status query fails", 5, "main", "", false, "guard Git failure", 5},
 		{"dirty canonical clone", 0, "main", " M file", false, "has local changes", 5},
 		{"clean canonical clone", 0, "main", "", false, "", 5},
@@ -216,7 +217,9 @@ func TestGuardCanonicalRefusesFailedQueriesAndUnsafeState(t *testing.T) {
 			}
 			got, err := Guard(withGitRunner(context.Background(), fake), canonical, GuardOptions{ProjectsRoot: projectsRoot, Base: "main"})
 			if tc.want == "" {
-				if err != nil || got.Kind != "canonical" || got.Branch != "main" {
+				// A canonical clone on any named branch is valid while it is
+				// clean (sneat-dev/wb#824): the branch alone never refuses.
+				if err != nil || got.Kind != "canonical" || got.Branch != tc.branch {
 					t.Fatalf("Guard clean canonical clone = (%#v, %v)", got, err)
 				}
 			} else if err == nil || !strings.Contains(err.Error(), tc.want) || got != (GuardResult{}) {

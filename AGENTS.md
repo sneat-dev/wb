@@ -30,8 +30,11 @@ generated_at: "…"
 - **`writable: true` (`kind: worktree`)** — this is an isolated linked
   worktree. Work here. Edit, commit, and push from this path.
 - **`writable: false` (`kind: canonical`)** — this is the shared canonical
-  clone that every worktree in the fleet is cut from. It must stay clean and
-  stay on its base branch. Read it, `git fetch` it, `git merge --ff-only` it —
+  clone that every worktree in the fleet is cut from. It must stay clean; which
+  branch it has checked out is not policed (another agent or a person may
+  have their own branch there, and landing, cleanup and worktree creation do
+  not depend on it, so never switch it back to the base branch just to make
+  one of them work). Read it, `git fetch` it, `git merge --ff-only` it —
   and write nothing. To do work, run the command the file names:
 
   ```sh
