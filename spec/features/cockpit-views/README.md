@@ -1435,13 +1435,17 @@ at most 2 more seconds; on Windows only `ssh.exe` is killed and a `ProxyCommand`
 survive), and the export returns only once the process has been waited for; stdout
 capped at 8 MiB and read only through `fleet.DecodeEnvelope`; and stderr, of which the last
 `remotessh.MaxDiagnosticBytes` are held (so a long banner cannot push the line that says why out
-of it) only to tell a refused login from an unreachable host, and which is then dropped: it is
-never forwarded to any reader and never written to the daemon's log. The log line of a failed
-export is the machine's configured key and the code (with a fixed cause for one case, below),
-written once each time a machine's failure code changes. That is because the daemon's log is not
-private to the owner: the dashboard's `GET /api/v1/log` serves its tail on the daemon's listener
-with no session, so the log is held to the same rule as the fleet document (no host name, no
-remote text). The operator who needs ssh's own words runs the copied command by hand. A daemon that is
+of it) to tell a refused login from an unreachable host and for the daemon's log, and which goes
+nowhere else: it is never forwarded to any reader of the fleet document, the metrics, the branches,
+the session or the export envelope. The log line of a failed export is the machine's configured
+key, the code, and after it what stderr held, rendered by `remotessh.SanitizeDiagnostic` as one
+line of printable characters of at most `remotessh.MaxDiagnosticBytes`, with a leading `...` when
+earlier output was dropped (or a fixed cause for one case, below). It is written once each time a
+machine's failure code changes, however the remote words its stderr each time. That text may name
+a host or a login, which the fleet document may not; the log may hold it because the log is the
+owner's alone: it is a file on the daemon's machine, and the dashboard's `GET /api/v1/log` serves
+its tail to an owner session only
+([cockpit](../cockpit/README.md)#req:daemon-log-is-owner-only). A daemon that is
 stopping while `ssh` runs records and logs nothing of that call. A remote login shell that prints
 to stdout (a profile that echoes, a banner script) puts text before the envelope: the export is
 then `bad_payload`, and the log line says "output before the envelope" (those fixed words, not the output). A failure
@@ -2965,10 +2969,11 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 - A daemon run by launchd or systemd may have no SSH agent socket, so the key used for
   `session_move.targets.<machine>.ssh` must work non-interactively (an unencrypted key or
   a key in a keychain the service can read); a failure shows as `auth_failed`.
-- The dashboard's `GET /api/v1/log` serves the tail of the daemon's log on the daemon's listener to
-  any caller, with no owner session and no `Host` guard of its own. The Cockpit therefore writes
-  nothing to that log that the fleet document may not hold; whether that route should require an
-  owner session is a question for the dashboard, not specified here.
+- The dashboard's `GET /api/v1/log` serves the tail of the daemon's log to an owner session only
+  ([cockpit](../cockpit/README.md)#req:daemon-log-is-owner-only), so the log may hold what the
+  fleet document may not: the sanitised end of a failed `ssh` call's stderr. Every other writer to
+  that log is still expected to keep secrets (tokens, key material) out of it, since the file is
+  readable on the machine by its user.
 - `auth_failed` is told from `ssh_unavailable` by four fixed OpenSSH phrases on stderr, because
   `ssh` exits 255 for every failure of its own. A client that words them differently is shown as
   `ssh_unavailable`; both codes offer the same command to try by hand.

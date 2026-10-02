@@ -234,6 +234,19 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		return response.StatusCode, string(body)
 	}
+	// The daemon's log route asks Cockpit who the owner is
+	// (cockpit#ac:daemon-log-needs-an-owner-session): with
+	// no session it is refused before anything is read, and with the session
+	// the request gets past the gate. The invalid tail keeps this test from
+	// reading the machine's real daemon log, which is where the path points on
+	// macOS.
+	if response, body = get(address, "/api/v1/log?tail=x"); response.StatusCode != http.StatusUnauthorized || !strings.Contains(body, `"error":"owner_session_required"`) || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("/api/v1/log with no session = %s %q, want 401 owner_session_required", response.Status, body)
+	}
+	if status, body := owner("/api/v1/log?tail=x"); status != http.StatusBadRequest || !strings.Contains(body, `"error":"invalid_tail"`) {
+		t.Fatalf("/api/v1/log with the owner session = %d %q, want it past the owner check (400 invalid_tail)", status, body)
+	}
+
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		status, fleetBody := owner("/api/v1/cockpit/fleet")

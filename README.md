@@ -2503,6 +2503,22 @@ machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
 
+`GET /api/v1/log` serves the tail of the daemon's runtime log (`?tail=<bytes>`,
+256 KiB by default, at most 4 MiB) to the owner only. The log is file content,
+so the route requires the owner session `wb cockpit` sets, on a loopback `Host`;
+any other request gets `401 {"error":"owner_session_required"}` and the file is
+not opened. To read the log:
+
+- on the machine itself, read the file: `~/Library/Logs/wb/daemon.log` under
+  launchd, `daemon.log` in the daemon's runtime directory elsewhere;
+- in a browser, run `wb cockpit`, follow the printed login URL, then open
+  `http://127.0.0.1:8766/api/v1/log` in that browser. From another machine, do
+  the same over an SSH port forward (`ssh -L 8766:127.0.0.1:8766 <host>`).
+
+A reverse proxy or script that fetched `/api/v1/log` with no session is now
+refused: there is no unattended credential for the route, and the daemon's owner
+token does not open it. Read the file on disk instead.
+
 ### Running the daemon under a supervisor
 
 `daemon serve` detects whether a process supervisor started it and records

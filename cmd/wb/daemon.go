@@ -2528,8 +2528,9 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		return fmt.Errorf("mount the bench hub: %w", err)
 	}
 	defer func() { _ = mount.Close() }()
-	// Best-effort: an unresolved log path only disables /api/v1/log (503),
-	// it never blocks the daemon from serving everything else.
+	// Best-effort: an unresolved log path only disables /api/v1/log (503, which
+	// only the owner is told), it never blocks the daemon from serving
+	// everything else.
 	// daemonStartLogPath is the cross-platform accessor (daemonLogPath is
 	// !darwin-only; darwin's launchd unit owns a fixed, home-derived path).
 	logPath, _ := daemonStartLogPath(inv.projectsRoot)
@@ -2552,6 +2553,9 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
 		Mounts: cockpitServer.MountsWith(mount.handlers()), Hub: mount.hubHealth(), LogPath: logPath,
+		// The log is file content: only Cockpit's owner session reads it
+		// (cockpit#req:daemon-log-is-owner-only).
+		Owner: cockpitServer.IsOwner,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)

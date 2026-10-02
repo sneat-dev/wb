@@ -189,3 +189,9 @@ Reusing an idempotency key
 with different cwd, argv, environment, or CPU units is rejected. Use the
 dashboard and `/api/v1/*` read models for machine, worktree, and
 governed-command visibility.
+
+`GET /api/v1/log` (the tail of the daemon's runtime log) is file content and is
+served to an owner session only: without the cookie `wb cockpit` sets it answers
+`401 {"error":"owner_session_required"}`. An agent that needs the log reads the
+file on the machine (`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log`
+in the daemon's runtime directory elsewhere); it does not fetch the route.

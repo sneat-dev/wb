@@ -89,3 +89,19 @@ func (server *Server) principal(request *http.Request, from originKind) (Princip
 	}
 	return anonymousLocal(), true
 }
+
+// IsOwner reports whether request acts as the owner principal, for a route the
+// daemon serves on the same listener outside Cockpit's mounts and so outside
+// Guard (cockpit#req:daemon-log-is-owner-only). It applies what the mounts
+// apply to an owner read: the Host header names a loopback host
+// (cockpit#req:host-header-check), the request comes from the Cockpit page or
+// carries no Origin at all, never from the hosted or a foreign origin, and it
+// carries a live owner session (cockpit#req:owner-session). Nothing else makes
+// a request the owner's: there is no anonymous fallback here.
+func (server *Server) IsOwner(request *http.Request) bool {
+	if host, _ := splitHost(request.Host); !loopbackName(host) {
+		return false
+	}
+	from := server.originKindOf(request)
+	return (from == originNone || from == originCanonical) && server.sessionID(request) != ""
+}

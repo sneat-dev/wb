@@ -92,7 +92,8 @@ declaration, as every public WB leaf does.
 The loopback daemon MUST serve the Cockpit application under `/cockpit/` and
 its API under `/api/v1/cockpit/`, whether or not `wb.yaml` has a `hub:`
 section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
-`/workbench/` and `/v0/workbench/` — are unchanged.
+`/workbench/` and `/v0/workbench/` — are unchanged, with one exception:
+`GET /api/v1/log` requires an owner session (cockpit#req:daemon-log-is-owner-only).
 
 #### REQ: embedded-application
 
@@ -284,6 +285,46 @@ canonical origin and a JSON content type. The login exchange is the one
 exception: it is a `GET` protected by its single-use code. A request with no
 session is refused with status 401, a session that lacks the required
 capability with status 403, and neither has any effect.
+
+#### REQ: daemon-log-is-owner-only
+
+The rule for everything the daemon's listener serves is the founder's
+(2026-10-02): anything that changes state or returns the content of a file
+requires authentication; a list of repositories, agents and the like, read on
+the loopback address, does not. The daemon's runtime log is file content, so
+`GET /api/v1/log`, which the dashboard serves outside Cockpit's two subtrees,
+MUST be served to an owner session and to nobody else. It asks Cockpit who the
+owner is and has no second mechanism: the request's `Host` MUST name a loopback
+host (cockpit#req:host-header-check), it MUST come from the canonical origin or
+carry no `Origin` at all, never from the hosted origin or any other, and it MUST
+carry a live session cookie (cockpit#req:owner-session). Neither the daemon's
+owner token nor arriving on the loopback address makes a request the owner's.
+
+Any other request is refused with status 401 and the JSON body
+`{schema_version, error: "owner_session_required", message}`, where `message`
+is a fixed text naming `wb cockpit`. The refusal comes before anything else:
+the log file is not opened, the `tail` parameter is not examined, and the
+answer does not say whether a log path is configured. A daemon built with no
+owner check refuses every request with status 403 and
+`error: "log_owner_check_unavailable"`; it never serves the log without one.
+Every answer of the route, the log itself included, carries
+`Cache-Control: no-store`.
+
+To the owner, a log that cannot be opened, inspected or positioned is status
+503 with `error: "log_unavailable"` and a fixed `message`. The error text of the
+operating system, which names the file's path, MUST NOT be in the body.
+
+The operator reads the log in one of two ways: the file on the machine itself
+(`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's
+runtime directory elsewhere), or, in the browser that holds the session
+`wb cockpit` set, `http://127.0.0.1:<port>/api/v1/log`. From another machine
+that is the same sign-in over an SSH port forward. A reverse proxy or script
+that fetched the route with no session is refused; there is no unattended
+credential for it.
+
+Because the log is the owner's alone, it may hold text the fleet document may
+not, such as the end of a failed `ssh` call's stderr
+([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch).
 
 ### Principals and capabilities
 
@@ -499,7 +540,8 @@ All code this Feature adds MUST reach 100% test coverage (founder,
 
 - Retiring `internal/dashboard` or `hub/web`, or porting their pages — a
   later Feature, after the port is complete.
-- Protecting the existing `/api/v1/*` routes — they keep today's behavior
+- Protecting the existing `/api/v1/*` routes other than `GET /api/v1/log`
+  (cockpit#req:daemon-log-is-owner-only) — they keep today's behavior
   until that Feature. They share an origin with Cockpit and their pages allow
   inline scripts; they render no repository content. A script injected into
   one of those pages would run in the origin that holds the owner session;
@@ -720,6 +762,33 @@ Scenario: With and without a session
 Given a repository whose default branch tip has a committed `README.md`
 When its page is opened with an owner session and then without one
 Then the first renders the README and the second shows that an owner session is needed and names `wb cockpit`
+
+### AC: daemon-log-needs-an-owner-session
+
+**Requirements:** cockpit#req:daemon-log-is-owner-only, cockpit#req:owner-session, cockpit#req:host-header-check
+
+Scenario: The daemon's log holds a marker
+Given a daemon whose runtime log holds a marker line, and a browser that signed in with `wb cockpit`
+When `GET /api/v1/log` is requested with no cookie, with an unknown session cookie, with the session cookie and `Host: attacker.example:8766`, with the session cookie and the hosted or another foreign `Origin`, with the daemon's owner token as a bearer, after the session expired or was logged out, and then with the live session cookie on the canonical origin
+Then every request but the last is refused with status 401, `error: "owner_session_required"` and `Cache-Control: no-store`, none of those responses contains the marker or the log's path, the log file is not opened for them, and the last response is the log's tail with the marker and `Cache-Control: no-store`
+
+### AC: daemon-log-fails-closed-without-an-owner-check
+
+**Requirements:** cockpit#req:daemon-log-is-owner-only
+
+Scenario: A handler built without the owner check
+Given the dashboard handler built with a log path and no owner check
+When `GET /api/v1/log` is requested
+Then the response has status 403 with `error: "log_owner_check_unavailable"`, the log file is not opened, and the response contains nothing of the log
+
+### AC: daemon-log-error-names-no-path
+
+**Requirements:** cockpit#req:daemon-log-is-owner-only
+
+Scenario: A log that cannot be read
+Given an owner session and a log path whose file is missing, cannot be opened, or cannot be inspected
+When `GET /api/v1/log` is requested
+Then the response has status 503 with `error: "log_unavailable"` and a fixed message, and the body contains no part of the file's path
 
 ### AC: hostile-readme-is-inert
 
