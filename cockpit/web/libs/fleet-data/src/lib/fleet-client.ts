@@ -13,11 +13,19 @@ import {
   Session,
   Throughput,
 } from './fleet.types'
+import { SESSION_KEY_HEADER, SessionKeys } from './session-key'
 
-/** The fetch the client uses; tests replace it, so no test needs a network. */
+/**
+ * The fetch the client uses; tests replace it, so no test needs a network. Every request to the page's own
+ * origin carries the session key this origin holds (cockpit#req:session-key): it is added here, once, for
+ * every reader.
+ */
 export const FETCH = new InjectionToken<typeof fetch>('fetch', {
   providedIn: 'root',
-  factory: () => (input, init) => fetch(input, init),
+  factory: () => {
+    const keys = inject(SessionKeys)
+    return (input, init) => fetch(input, keys.sign(input, init))
+  },
 })
 
 /** How long a request may take before it is given up, so a hung one cannot stop polling. */
@@ -296,9 +304,10 @@ export class FleetClient {
   // The three reads that only some pages make (branches, a machine's metrics, a README) are functions of the fetch in
   // `@cockpit/fleet-data/lazy-client`, which a page imports with `import()`, so the first page does not carry them.
 
-  async readSession(): Promise<Session> {
+  /** Reads the session; `key` asks with that session key instead of the one this origin holds, to learn whether it opens an owner session. */
+  async readSession(key?: string): Promise<Session> {
     const response = await this.fetcher(SESSION_PATH, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', ...(key === undefined ? {} : { [SESSION_KEY_HEADER]: key }) },
       credentials: 'same-origin',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })

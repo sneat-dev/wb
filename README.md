@@ -2507,17 +2507,36 @@ execution.
 
 `GET /api/v1/log` serves the tail of the daemon's runtime log (`?tail=<bytes>`,
 256 KiB by default, at most 4 MiB) to the owner only. The log is file content,
-so the route requires the owner session `wb cockpit` sets, on a loopback `Host`;
-any other request gets `401 {"error":"owner_session_required"}` and the file is
-not opened. To read the log:
+so the route requires the owner session `wb cockpit` opens, on a loopback
+`Host`; any other request gets `401 {"error":"owner_session_required"}` and the
+file is not opened.
 
-- on the machine itself, read the file: `~/Library/Logs/wb/daemon.log` under
-  launchd, `daemon.log` in the daemon's runtime directory elsewhere;
-- in a browser, run `wb cockpit`, follow the printed login URL, then open
-  `http://127.0.0.1:8766/api/v1/log` in that browser. From another machine, do
-  the same over an SSH port forward (`ssh -L 8766:127.0.0.1:8766 <host>`).
+An owner session has two halves, and a request must carry both:
 
-A reverse proxy or script that fetched `/api/v1/log` with no session is now
+- the cookie `wb_cockpit_session_<port>`, which the login sets. A browser sends
+  it to every server on `127.0.0.1`, whatever its port, so on its own it proves
+  nothing;
+- the session key, in the request header `X-Wb-Cockpit-Session-Key`. `wb cockpit`
+  prints it in the fragment of the login URL
+  (`/cockpit/session/login?code=...#key=<key>`); the Cockpit page takes it from
+  there, keeps it in the storage of its own origin and adds the header to its
+  own requests. The login URL is a credential: it is printed only when stdout is
+  a terminal, or with `wb cockpit --print-url`.
+
+To read the log, read the file on the machine itself:
+`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's
+runtime directory elsewhere. Opening `http://127.0.0.1:8766/api/v1/log` in the
+address bar no longer works, even in the signed-in browser: an address carries
+the cookie and cannot carry the header, so it is answered 401. A client that is
+not the Cockpit page sends both halves itself:
+
+```sh
+curl -H 'Cookie: wb_cockpit_session_8766=<session id>' \
+     -H 'X-Wb-Cockpit-Session-Key: <key>' \
+     http://127.0.0.1:8766/api/v1/log
+```
+
+A reverse proxy or script that fetched `/api/v1/log` with no session is
 refused: there is no unattended credential for the route, and the daemon's owner
 token does not open it. Read the file on disk instead.
 

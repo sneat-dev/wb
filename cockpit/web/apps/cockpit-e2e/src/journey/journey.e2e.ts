@@ -124,6 +124,83 @@ async function watch(page: Page, expectedStatus?: number) {
   }
 }
 
+/**
+ * The daemon's own dashboard pages, `/` and `/metrics`, in a real browser under the policy the daemon sends
+ * (cockpit#ac:dashboard-pages-create-nothing-from-data): each runs only its script file of the origin, the policy
+ * refuses inline script, nothing violates it, and the page renders. This daemon has no hub, so the metrics
+ * addresses answer with the index page and the metrics page shows its "no hub" state.
+ *
+ * These two pages list no worktree here, and that is what they really show: their overview (`/api/v1/overview`,
+ * `buildOverview` in internal/dashboard) reads only the older layout, `<repository>/.worktrees/<task>`, while
+ * `wb create` puts a worktree under the projects root's own `.worktrees/<task>/…`, which Cockpit's fleet route
+ * reads. Command cost comes from those same worktrees, so it is empty too.
+ */
+async function dashboardPagesRunUnderTheStrictPolicy(page: Page, origin: string): Promise<void> {
+  const failed: string[] = []
+  const scripts: string[] = []
+  // The journey arrives here from a Cockpit page, which may still be fetching one of its own chunks when the browser
+  // leaves it: that answer, or its abort, belongs to the page left behind, not to the dashboard page being checked.
+  const ofTheCockpit = (url: string) => new URL(url).pathname.startsWith('/cockpit/')
+  page.on('requestfailed', (request) => {
+    if (!ofTheCockpit(request.url())) failed.push(`${request.url()} ${request.failure()?.errorText ?? ''}`)
+  })
+  page.on('response', (response) => {
+    if (response.request().resourceType() !== 'script' || ofTheCockpit(response.url())) return
+    scripts.push(new URL(response.url()).pathname)
+    if (response.status() !== 200 || !(response.headers()['content-type'] ?? '').startsWith('text/javascript')) failed.push(`${response.status()} ${response.url()}`)
+  })
+  const violationsOn = () => page.evaluate(() => (window as unknown as { __violations: unknown[] }).__violations)
+
+  for (const [path, script] of [
+    ['/', '/dashboard-assets/index.js'],
+    ['/metrics', '/dashboard-assets/metrics.js'],
+  ] as const) {
+    scripts.length = 0
+    const response = await page.goto(`${origin}${path}`)
+    expect(response?.status(), path).toBe(200)
+    const policy = response?.headers()['content-security-policy'] ?? ''
+    const scriptSource = policy.split(';').map((directive) => directive.trim()).find((directive) => directive.startsWith('script-src'))
+    expect(scriptSource, `${path}: ${policy}`).toBe("script-src 'self'")
+    expect(policy, path).toContain("object-src 'none'")
+    // The page has one script, a file of the origin, and no inline one.
+    expect(await page.evaluate(() => [...document.scripts].map((element) => [element.getAttribute('src'), element.textContent])), path).toEqual([[script, '']])
+
+    if (path === '/') {
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('WB operations')
+      // The script ran: the cards and the two tables are filled from the overview, and there is no error.
+      await expect(page.locator('#worktrees')).toHaveText('0')
+      await expect(page.locator('#operations')).toHaveText('0')
+      await expect(page.locator('#worktreeTable')).toHaveText('No managed worktrees found.')
+      await expect(page.locator('#kindTable')).toHaveText('Run commands through wb run -- … to collect cost.')
+      await expect(page.locator('#updated')).toContainText('Updated')
+    } else {
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('WB Metrics')
+      await expect(page.locator('#updated')).toContainText('Updated at')
+      await expect(page.locator('#summaryView')).toBeVisible()
+      await expect(page.locator('#tabs [data-type]')).toHaveText(['📊 Summary', 'Test Coverage'])
+      // No hub on this daemon: its metrics addresses answer the index page, which the page reads as "no hub", not as an error.
+      await expect(page.locator('#leastCoverageTable')).toHaveText('No hub on this daemon: metrics are recorded by a hub.')
+      await expect(page.locator('#mostActiveTable')).toHaveText('No hub on this daemon: metrics are recorded by a hub.')
+      await expect(page.locator('#worktreesTable')).toHaveText('No managed worktrees found.')
+      await expect(page.locator('#kpiRepos')).toHaveText('0')
+      await expect(page.locator('#kpiActiveWt')).toHaveText('0')
+      await expect(page.locator('#kpiAbandonedWt')).toHaveText('0')
+      // A tab and the filter work: their listeners were attached by the script file, not by inline handlers.
+      await page.locator('#tabs [data-type="test_coverage"]').click()
+      await expect(page.locator('#tableView')).toBeVisible()
+      await expect(page.locator('#tableContainer')).toHaveText('No hub on this daemon: metrics are recorded by a hub.')
+      await page.locator('#tabs [data-type="summary"]').click()
+      await expect(page.locator('#summaryView')).toBeVisible()
+      await page.locator('#filter').fill('journey-two')
+      await expect(page.locator('#worktreesTable')).toHaveText('No managed worktrees found.')
+    }
+    await expect(page.locator('#error')).toBeHidden()
+    expect(scripts, path).toEqual([script])
+    expect(await violationsOn(), path).toEqual([])
+  }
+  expect(failed).toEqual([])
+}
+
 test.describe.configure({ mode: 'serial' })
 
 test.beforeAll(() => {
@@ -160,7 +237,8 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   // No daemon is running for this projects root: wb cockpit starts it.
   expect(existsSync(join(projects, '.wb', 'runtime', 'daemon-state.json'))).toBe(false)
   daemonStarted = true
-  const printed = wbRun('cockpit', '--listen', `127.0.0.1:${port}`)
+  // stdout is a pipe here, so the login URL, which is a credential, is printed only because it is asked for.
+  const printed = wbRun('cockpit', '--print-url', '--listen', `127.0.0.1:${port}`)
   const match = /^cockpit: (http:\/\/127\.0\.0\.1:\d+\/cockpit\/session\/login\?code=\S+)$/m.exec(printed)
   expect(match, printed).not.toBeNull()
   loginUrl = match![1]!
@@ -182,8 +260,20 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   await page.goto(loginUrl)
   await expect(page).toHaveURL(new RegExp(`^${origin.replace(/[.]/g, '\\.')}/cockpit/(dashboard)?$`))
   expect(page.url()).not.toContain('code=')
-  const session = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
+  // The printed URL carried the session key in its fragment (cockpit#req:session-key): the page took it out of the
+  // address and keeps it in the storage of its own origin, and it is what makes the cookie an owner's.
+  expect(new URL(loginUrl).hash).toMatch(/^#key=[A-Za-z0-9_-]{43}$/)
+  expect(page.url()).not.toContain('#')
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('wb-cockpit.session-key'))).toBe(new URL(loginUrl).hash.slice('#key='.length))
+  const sessionKey = { 'X-Wb-Cockpit-Session-Key': new URL(loginUrl).hash.slice('#key='.length) }
+  const session = await (await page.request.get(`${origin}/api/v1/cockpit/session`, { headers: sessionKey })).json()
   expect(session.principal).toBe('owner')
+  // The cookie alone, which any other server on the loopback host is sent, is an anonymous reader's: no error, and nothing of the owner's.
+  const replayed = await page.request.get(`${origin}/api/v1/cockpit/session`)
+  expect(replayed.status()).toBe(200)
+  expect((await replayed.json()).principal).toBe('anonymous-local')
+  expect((await page.request.get(`${origin}/api/v1/log?tail=1`)).status()).toBe(401)
+  expect((await page.request.get(`${origin}/api/v1/log?tail=1`, { headers: sessionKey })).status()).not.toBe(401)
 
   // The fleet document of the real daemon: collections are lists, never null, and the fixture is what it says.
   const fleet = await (await page.request.get(`${origin}/api/v1/cockpit/fleet`)).json()
@@ -229,7 +319,7 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   await expect(page.locator('.readme-content')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText(SECRET)
   const linksId = fleet.repositories.find((repository: { name: string }) => repository.name === 'acme/links').id
-  const linksReadme = await page.request.get(`${origin}/api/v1/cockpit/readme?repository=${linksId}`)
+  const linksReadme = await page.request.get(`${origin}/api/v1/cockpit/readme?repository=${linksId}`, { headers: sessionKey })
   expect(linksReadme.status()).toBeGreaterThanOrEqual(400)
   expect(await linksReadme.text()).not.toContain(SECRET)
 
@@ -257,6 +347,9 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   const anonymousSession = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
   expect(anonymousSession.principal).not.toBe('owner')
   expect(anonymousSession.machine_routes).toBeUndefined()
+
+  // The daemon's own pages on the same origin run only their script files, under a policy with no inline script.
+  await dashboardPagesRunUnderTheStrictPolicy(page, origin)
 
   await expectClean()
   expect(failures).toEqual([])

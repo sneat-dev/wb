@@ -309,6 +309,9 @@ type cockpitServer struct {
 	page   http.Handler
 	// session is the owner session owner() logged in with, kept for the test.
 	session *http.Cookie
+	// keys holds the session key of each session by its cookie value: what the
+	// Cockpit page holds and sends beside the cookie (cockpit#req:session-key).
+	keys sync.Map
 }
 
 // owner returns one owner session cookie for the whole test: a read with it is
@@ -342,6 +345,9 @@ func (c *cockpitServer) get(target string, cookie *http.Cookie, headers ...strin
 	}
 	if cookie != nil {
 		request.AddCookie(cookie)
+		if key, known := c.keys.Load(cookie.Value); known {
+			request.Header.Set(cockpit.SessionKeyHeader, key.(string))
+		}
 	}
 	recorder := httptest.NewRecorder()
 	c.api.ServeHTTP(recorder, request)
@@ -386,6 +392,7 @@ func (c *cockpitServer) login() *http.Cookie {
 	if recorder.Code != http.StatusSeeOther || len(cookies) != 1 {
 		c.t.Fatalf("login = %d with %d cookies", recorder.Code, len(cookies))
 	}
+	c.keys.Store(cookies[0].Value, issued.Key)
 	return cookies[0]
 }
 

@@ -2,6 +2,7 @@ package cockpit
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"strings"
@@ -17,17 +18,39 @@ const sessionLifetime = 12 * time.Hour
 // sessionCookiePrefix is the session cookie's name without the port.
 const sessionCookiePrefix = "wb_cockpit_session_"
 
+// SessionKeyHeader is the request header that carries the session key
+// (cockpit#req:session-key). The cookie is sent by the browser to every server
+// on the loopback host, whatever its port; the key is held by the Cockpit page
+// alone, in the storage of its own origin, and sent only by its own requests.
+const SessionKeyHeader = "X-Wb-Cockpit-Session-Key"
+
+// KeyDigest is the SHA-256 digest of a session key: the only form of the key
+// the daemon keeps once it has handed the key to the owner channel.
+type KeyDigest [sha256.Size]byte
+
+// DigestKey is the digest of key.
+func DigestKey(key string) KeyDigest { return sha256.Sum256([]byte(key)) }
+
 // SessionStore holds owner sessions. The daemon's store is in memory, so
 // every session ends when the daemon restarts; the interface is the seam a
-// test replaces. An identifier is a secret: an implementation never logs it.
+// test replaces. An identifier and a key are secrets: an implementation never
+// logs either, and never holds the key itself.
 type SessionStore interface {
-	// Create starts a session at now and returns its identifier.
-	Create(now time.Time) (string, error)
+	// Create starts a session at now, bound to the session key whose digest
+	// is key, and returns its identifier.
+	Create(now time.Time, key KeyDigest) (string, error)
 	// Valid reports whether id names a session that has not ended or expired
-	// at now.
-	Valid(id string, now time.Time) bool
-	// End ends the session id names, if any.
+	// at now and key is the session key it was created with. The key is
+	// compared in constant time.
+	Valid(id, key string, now time.Time) bool
+	// End ends the session id names, if any, and forgets its key.
 	End(id string)
+}
+
+// memorySession is one live session: when it ends and the digest of its key.
+type memorySession struct {
+	expires time.Time
+	key     KeyDigest
 }
 
 // memorySessions is the in-memory SessionStore. It is keyed by a digest of
@@ -36,41 +59,45 @@ type SessionStore interface {
 type memorySessions struct {
 	random io.Reader
 
-	mu      sync.Mutex
-	expires map[[sha256.Size]byte]time.Time
+	mu   sync.Mutex
+	live map[[sha256.Size]byte]memorySession
 }
 
 func newMemorySessions(random io.Reader) *memorySessions {
-	return &memorySessions{random: random, expires: map[[sha256.Size]byte]time.Time{}}
+	return &memorySessions{random: random, live: map[[sha256.Size]byte]memorySession{}}
 }
 
-func (sessions *memorySessions) Create(now time.Time) (string, error) {
+func (sessions *memorySessions) Create(now time.Time, key KeyDigest) (string, error) {
 	id, err := newSecret(sessions.random)
 	if err != nil {
 		return "", err
 	}
 	sessions.mu.Lock()
 	defer sessions.mu.Unlock()
-	for key, expires := range sessions.expires {
-		if !now.Before(expires) {
-			delete(sessions.expires, key)
+	for digest, session := range sessions.live {
+		if !now.Before(session.expires) {
+			delete(sessions.live, digest)
 		}
 	}
-	sessions.expires[sha256.Sum256([]byte(id))] = now.Add(sessionLifetime)
+	sessions.live[sha256.Sum256([]byte(id))] = memorySession{expires: now.Add(sessionLifetime), key: key}
 	return id, nil
 }
 
-func (sessions *memorySessions) Valid(id string, now time.Time) bool {
+func (sessions *memorySessions) Valid(id, key string, now time.Time) bool {
+	presented := DigestKey(key)
 	sessions.mu.Lock()
 	defer sessions.mu.Unlock()
-	expires, found := sessions.expires[sha256.Sum256([]byte(id))]
-	return found && now.Before(expires)
+	session, found := sessions.live[sha256.Sum256([]byte(id))]
+	// The digests are compared whether or not the session was found, so the
+	// answer's timing does not tell an unknown session from a wrong key.
+	matches := subtle.ConstantTimeCompare(session.key[:], presented[:]) == 1
+	return found && matches && now.Before(session.expires)
 }
 
 func (sessions *memorySessions) End(id string) {
 	sessions.mu.Lock()
 	defer sessions.mu.Unlock()
-	delete(sessions.expires, sha256.Sum256([]byte(id)))
+	delete(sessions.live, sha256.Sum256([]byte(id)))
 }
 
 // sessionCookieName names the session cookie after the port the request
@@ -107,17 +134,25 @@ func sameSiteFetch(request *http.Request) bool {
 }
 
 // sessionID returns the identifier of request's live session, or "" when it
-// has none. Every cookie carrying the session name is tried, so a cookie
-// another loopback server planted under that name with a longer path cannot
-// hide the real one. A request the browser marks as initiated by another
-// site is given no session, whatever cookie it carries.
+// has none. A session takes both halves (cockpit#req:session-key): the cookie,
+// and the session key in SessionKeyHeader, exactly once. The cookie alone is
+// no session, because every other server on the loopback host receives it and
+// could replay it; such a request is simply not the owner's. Every cookie
+// carrying the session name is tried, so a cookie another loopback server
+// planted under that name with a longer path cannot hide the real one. A
+// request the browser marks as initiated by another site is given no session,
+// whatever it carries.
 func (server *Server) sessionID(request *http.Request) string {
 	if !sameSiteFetch(request) {
 		return ""
 	}
+	keys := request.Header.Values(SessionKeyHeader)
+	if len(keys) != 1 || keys[0] == "" {
+		return ""
+	}
 	now := server.now()
 	for _, cookie := range request.CookiesNamed(sessionCookieName(request)) {
-		if cookie.Value != "" && server.sessions.Valid(cookie.Value, now) {
+		if cookie.Value != "" && server.sessions.Valid(cookie.Value, keys[0], now) {
 			return cookie.Value
 		}
 	}

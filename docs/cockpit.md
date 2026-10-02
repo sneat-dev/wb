@@ -52,7 +52,9 @@ wb daemon  --GET /api/v1/cockpit/fleet (ETag, gzip)-->  FleetStore  -->  FleetMo
 
 Anonymous-local readers get only the closed list of metadata in the `cockpit` Feature: no
 file content, paths, environment values, command lines or free-text error output, in any
-response. An owner session (`wb cockpit` mints a single-use login code) adds `repo.content.read`
+response. An owner session (`wb cockpit` mints a single-use login code and a session key: the cookie the code
+is exchanged for, plus the key the page sends in `X-Wb-Cockpit-Session-Key`, because the cookie alone
+reaches every server on the loopback host) adds `repo.content.read`
 and the session response's `machine_routes` (the `host`, `user` and `wb_path` of
 `session_move.targets.<machine>.ssh`, for copied `ssh ...` commands). The application:
 
