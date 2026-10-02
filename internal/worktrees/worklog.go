@@ -1546,6 +1546,15 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 }
 
 func (p recycleSealPorts) sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, evidence worktreeclaims.TerminalEvidence) error {
+	return p.sealWorkLog(home, worktree, finalCommit, func(workLogClaim) (string, worktreeclaims.TerminalEvidence) {
+		return disposition, evidence
+	})
+}
+
+// sealWorkLog seals the claim of worktree with the disposition and evidence
+// choose returns for it. choose runs under the claim fence, after the claim is
+// corroborated with live Git, so it may decide from the immutable claim.
+func (p recycleSealPorts) sealWorkLog(home, worktree, finalCommit string, choose func(workLogClaim) (string, worktreeclaims.TerminalEvidence)) error {
 	projection, err := p.readProjection(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil // legacy pre-work-log checkout
@@ -1562,6 +1571,7 @@ func (p recycleSealPorts) sealWorkLogForRecycleWithEvidence(home, worktree, fina
 	if err := p.corroborate(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
+	disposition, evidence := choose(claim)
 	_, err = p.sealTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
 		Claim: claim, FinalCommit: finalCommit, Disposition: disposition, Evidence: evidence,
 	})
@@ -1572,25 +1582,78 @@ func (p recycleSealPorts) sealWorkLogForRecycleWithEvidence(home, worktree, fina
 	return p.writeProjection(worktree, projection)
 }
 
+// integrationBranchPrefix names the candidate branches `wb worktree merge`
+// creates to batch its sources. A candidate is WB's own machinery: the work it
+// carries is its sources', and each of them is sealed in its own right.
+const integrationBranchPrefix = "wb/integration/"
+
+// cleanupSealChoice is the disposition cleanup seals a claim with. It is
+// `landed`, carrying the proof, only when cleanup proved the head's work is on
+// the target and the claim made that work: the head is not the commit the
+// claim started from (nor, by addsCommits, an ancestor of it) and the branch
+// is not an integration candidate. Everything else cleanup removes (a
+// worktree that never committed, a review checkout, a candidate) is `removed`.
+func cleanupSealChoice(claim workLogClaim, finalCommit string, landed *worktreeclaims.LandedEvidence, addsCommits func(base, head string) bool) (string, worktreeclaims.TerminalEvidence) {
+	if landed == nil || claim.Branch == "" || strings.HasPrefix(claim.Branch, integrationBranchPrefix) ||
+		finalCommit == claim.BaseSHA || !addsCommits(claim.BaseSHA, finalCommit) {
+		return "removed", worktreeclaims.TerminalEvidence{}
+	}
+	return "landed", worktreeclaims.TerminalEvidence{Landed: landed}
+}
+
+// removalSealPorts is what cleanup's first seal of a claim needs: the fenced
+// seal and Git ancestry.
+type removalSealPorts struct {
+	seal       func(string, string, string, func(workLogClaim) (string, worktreeclaims.TerminalEvidence)) error
+	isAncestor func(context.Context, string, string, string) (bool, error)
+}
+
+func defaultRemovalSealPorts() removalSealPorts {
+	return removalSealPorts{seal: defaultRecycleSealPorts().sealWorkLog, isAncestor: isAncestor}
+}
+
+// sealWorkLogForRemoval is cleanup's first seal of a claim that has no
+// terminal yet: `landed` with landed as its proof, or `removed` (see
+// cleanupSealChoice).
+func sealWorkLogForRemoval(home, worktree, finalCommit string, landed *worktreeclaims.LandedEvidence) error {
+	return defaultRemovalSealPorts().sealWorkLogForRemoval(home, worktree, finalCommit, landed)
+}
+
+func (p removalSealPorts) sealWorkLogForRemoval(home, worktree, finalCommit string, landed *worktreeclaims.LandedEvidence) error {
+	return p.seal(home, worktree, finalCommit, func(claim workLogClaim) (string, worktreeclaims.TerminalEvidence) {
+		return cleanupSealChoice(claim, finalCommit, landed, func(base, head string) bool {
+			// A head that is an ancestor of the claim's base (a branch reset
+			// backwards) carries no commit of the claim. Ancestry that cannot
+			// be read proves nothing, so it does not seal a landing.
+			behind, err := p.isAncestor(context.Background(), worktree, head, base)
+			return err == nil && !behind
+		})
+	})
+}
+
 type cleanupSealPorts struct {
 	readProjection func(string, string) (workLogProjection, error)
 	acceptExisting func(string, string, string) error
 	hasTerminal    func(string, workLogProjection) bool
 	acceptAdvanced func(string, string, string, workLogProjection) error
-	sealRecycle    func(string, string, string, string) error
+	sealRemoval    func(string, string, string, *worktreeclaims.LandedEvidence) error
 }
 
 func defaultCleanupSealPorts() cleanupSealPorts {
 	return cleanupSealPorts{readProjection: readWorkLogProjectionForClaim,
 		acceptExisting: acceptExistingCleanupTerminal, hasTerminal: hasExistingWorkLogTerminal,
-		acceptAdvanced: acceptAdvancedCleanupTerminal, sealRecycle: sealWorkLogForRecycle}
+		acceptAdvanced: acceptAdvancedCleanupTerminal, sealRemoval: sealWorkLogForRemoval}
 }
 
-func sealWorkLogForCleanup(home, worktree, finalCommit string) error {
-	return defaultCleanupSealPorts().sealWorkLogForCleanup(home, worktree, finalCommit)
+// sealWorkLogForCleanup seals the claim of a worktree cleanup is about to
+// remove. landed is the proof that the head's work is on the target, nil when
+// cleanup has none; it turns a first seal into `landed` instead of `removed`.
+// A claim that already has a terminal keeps it: a terminal is immutable.
+func sealWorkLogForCleanup(home, worktree, finalCommit string, landed *worktreeclaims.LandedEvidence) error {
+	return defaultCleanupSealPorts().sealWorkLogForCleanup(home, worktree, finalCommit, landed)
 }
 
-func (p cleanupSealPorts) sealWorkLogForCleanup(home, worktree, finalCommit string) error {
+func (p cleanupSealPorts) sealWorkLogForCleanup(home, worktree, finalCommit string, landed *worktreeclaims.LandedEvidence) error {
 	projection, err := p.readProjection(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil
@@ -1621,7 +1684,7 @@ func (p cleanupSealPorts) sealWorkLogForCleanup(home, worktree, finalCommit stri
 		}
 		return acceptErr
 	}
-	return p.sealRecycle(home, worktree, finalCommit, "removed")
+	return p.sealRemoval(home, worktree, finalCommit, landed)
 }
 
 func hasExistingWorkLogTerminal(home string, projection workLogProjection) bool {
@@ -1714,7 +1777,8 @@ func (p existingCleanupPorts) acceptExistingCleanupTerminal(home, worktree, fina
 	expectedEvent := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit,
-		Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
+		Lifecycle: "terminal", Disposition: terminal.Disposition, Landed: terminal.Landed,
+		FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expectedEvent) {
 		return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
 	}

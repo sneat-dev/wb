@@ -17,6 +17,9 @@ cockpit/web/dist/*
 !cockpit/web/dist/.gitkeep
 node_modules/
 .astro/
+# The Angular CLI writes its build cache where it is run from, the repository
+# root included, so it is ignored at any depth.
+.angular/
 test-results/
 *.o
 *.exe
