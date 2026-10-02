@@ -50,8 +50,9 @@ func TestE2EBranchTransitionNativePathAndHomeRefusals(t *testing.T) {
 		cwd := t.TempDir()
 		// A removed cwd can still have a successful native getcwd result on
 		// Darwin. Keep this directory and deny its search permission instead;
-		// clearing PWD prevents Go's same-file environment shortcut.
-		t.Setenv("PWD", "")
+		// An absolute stale PWD retains Go's native stat(".") permission gate
+		// without admitting the environment same-file shortcut.
+		t.Setenv("PWD", original)
 		if err := os.Chdir(cwd); err != nil {
 			t.Fatal(err)
 		}
