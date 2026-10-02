@@ -98,7 +98,7 @@ func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
 		//nolint:paralleltest // Subtests share the fixture's process environment and canonical checkout.
 		t.Run(tc.name, func(t *testing.T) {
 			result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: tc.ref, SHA: tc.sha}, Destination: "retired/test", Outcome: "planned"}
-			applyBranchQuarantine(ctx, fixture.projectsRoot, fixture.canonical, &result)
+			applyBranchQuarantineWithOps(ctx, fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps())
 			if result.Outcome != "failed" || !strings.Contains(result.Error, tc.want) {
 				t.Fatalf("apply result = %#v, want %q", result, tc.want)
 			}
@@ -159,7 +159,7 @@ func TestQuarantinePlanRejectsUnprovableAndOpenPullRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("WB_TEST_GH_BODY", tc.body)
 			t.Setenv("WB_TEST_GH_EXIT", tc.exit)
-			result := planBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, request, now)
+			result := planBranchQuarantineWithOps(context.Background(), fixture.projectsRoot, fixture.canonical, request, now, realBranchQuarantineOps())
 			if result.Outcome != "refused" || !strings.Contains(result.Error, tc.want) {
 				t.Fatalf("pull request safety plan = %#v, want %q", result, tc.want)
 			}
@@ -175,7 +175,7 @@ func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
 	destination := worktreebranches.RetiredBranchDestination(time.Now(), "feature/old", sha)
 	gitTest(t, fixture.canonical, "branch", destination)
 	result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha}, Destination: destination, Outcome: "planned"}
-	applyBranchQuarantine(context.Background(), fixture.projectsRoot, fixture.canonical, &result)
+	applyBranchQuarantineWithOps(context.Background(), fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps())
 	if result.Outcome != "failed" || !strings.Contains(result.Error, "destination appeared") {
 		t.Fatalf("destination collision apply = %#v", result)
 	}

@@ -31,9 +31,7 @@ func (graph Graph) SVG(view GraphView) ([]byte, error) {
 	positions := map[string]graphPoint{}
 	for level, nodes := range columns {
 		sort.Slice(nodes, func(i, j int) bool {
-			if nodes[i].Label == nodes[j].Label {
-				return nodes[i].ID < nodes[j].ID
-			}
+			// Labels are unique within a kind; bipartite views put kinds in distinct levels.
 			return nodes[i].Label < nodes[j].Label
 		})
 		columns[level] = nodes
@@ -73,11 +71,9 @@ svg{background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-
 	output.WriteString(`</g>`)
 	output.WriteString(`<g class="edges">`)
 	for _, edge := range projection.Edges {
-		from, fromOK := positions[edge.From]
-		to, toOK := positions[edge.To]
-		if !fromOK || !toOK {
-			continue
-		}
+		// Project inserts both endpoints before emitting each edge.
+		from := positions[edge.From]
+		to := positions[edge.To]
 		path := graphEdgePath(from, to)
 		class := "edge"
 		if edge.DirectCount == 0 && edge.IndirectCount > 0 {

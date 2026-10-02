@@ -363,29 +363,29 @@ func TestWtLogCovDisposableDestinationReason(t *testing.T) {
 	gitTest(t, root, "clone", remote, destination)
 	expectedHead := gitTestOutput(t, destination, "rev-parse", "HEAD")
 	options := RepositoryRelocateOptions{DestinationRepository: "newco/renamed", DefaultBranch: "main"}
-	if reason := disposableDestinationReason(context.Background(), destination, options, expectedHead); reason != "" {
+	if reason := disposableDestinationReason(context.Background(), destination, options, expectedHead, gitRawOutput); reason != "" {
 		t.Fatalf("clean disposable destination rejected: %q", reason)
 	}
-	if reason := disposableDestinationReason(context.Background(), destination, options, strings.Repeat("a", 40)); reason == "" {
+	if reason := disposableDestinationReason(context.Background(), destination, options, strings.Repeat("a", 40), gitRawOutput); reason == "" {
 		t.Fatal("destination with the wrong HEAD was accepted")
 	}
-	if reason := disposableDestinationReason(context.Background(), filepath.Join(root, "missing"), options, expectedHead); reason == "" {
+	if reason := disposableDestinationReason(context.Background(), filepath.Join(root, "missing"), options, expectedHead, gitRawOutput); reason == "" {
 		t.Fatal("missing destination was accepted")
 	}
 	if err := os.WriteFile(filepath.Join(destination, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if reason := disposableDestinationReason(context.Background(), destination, options, expectedHead); reason == "" {
+	if reason := disposableDestinationReason(context.Background(), destination, options, expectedHead, gitRawOutput); reason == "" {
 		t.Fatal("dirty destination was accepted")
 	}
 	if err := os.Remove(filepath.Join(destination, "dirty.txt")); err != nil {
 		t.Fatal(err)
 	}
 	otherRepo := RepositoryRelocateOptions{DestinationRepository: "newco/other", DefaultBranch: "main"}
-	if reason := disposableDestinationReason(context.Background(), destination, otherRepo, expectedHead); reason == "" {
+	if reason := disposableDestinationReason(context.Background(), destination, otherRepo, expectedHead, gitRawOutput); reason == "" {
 		t.Fatal("destination with a different repository identity was accepted")
 	}
-	if reason := disposableDestinationReason(context.Background(), destination, RepositoryRelocateOptions{DestinationRepository: "newco/renamed", DefaultBranch: "trunk"}, expectedHead); reason == "" {
+	if reason := disposableDestinationReason(context.Background(), destination, RepositoryRelocateOptions{DestinationRepository: "newco/renamed", DefaultBranch: "trunk"}, expectedHead, gitRawOutput); reason == "" {
 		t.Fatal("destination on a different branch was accepted")
 	}
 }

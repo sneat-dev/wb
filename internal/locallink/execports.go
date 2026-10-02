@@ -48,6 +48,10 @@ func (git ExecGit) ContentHash(ctx context.Context, dir string) (string, bool, e
 // test passes its own Injector to reach the temporary index reservation's
 // create/close failure branches deterministically.
 func (git ExecGit) contentHashInjected(ctx context.Context, dir string, inj *filewrite.Injector) (string, bool, error) {
+	return git.contentHashWithIO(ctx, dir, inj, git.run, os.Remove)
+}
+
+func (git ExecGit) contentHashWithIO(ctx context.Context, dir string, inj *filewrite.Injector, run func(context.Context, string, []string, ...string) (string, error), remove func(string) error) (string, bool, error) {
 	indexPath, err := filewrite.CreateScratch("", "wb-locallink-index-*", 0, nil, inj)
 	if err != nil {
 		return "", false, err
@@ -55,27 +59,27 @@ func (git ExecGit) contentHashInjected(ctx context.Context, dir string, inj *fil
 	// git read-tree refuses to populate an index file that already exists as
 	// an empty regular file in some versions; removing it leaves only the
 	// unique name reserved.
-	if err := os.Remove(indexPath); err != nil {
+	if err := remove(indexPath); err != nil {
 		return "", false, err
 	}
 	defer func() { _ = os.Remove(indexPath) }()
 	env := []string{"GIT_INDEX_FILE=" + indexPath}
-	if _, err := git.run(ctx, dir, env, "read-tree", "HEAD"); err != nil {
+	if _, err := run(ctx, dir, env, "read-tree", "HEAD"); err != nil {
 		// A repository with no commit yet has no HEAD to read; an empty index
 		// is the correct starting point rather than a failure.
-		if _, emptyErr := git.run(ctx, dir, env, "read-tree", "--empty"); emptyErr != nil {
+		if _, emptyErr := run(ctx, dir, env, "read-tree", "--empty"); emptyErr != nil {
 			return "", false, fmt.Errorf("prepare a temporary index for %s: %w", dir, emptyErr)
 		}
 	}
-	if _, err := git.run(ctx, dir, env, "add", "-A", "."); err != nil {
+	if _, err := run(ctx, dir, env, "add", "-A", "."); err != nil {
 		return "", false, fmt.Errorf("stage the working tree of %s into a temporary index: %w", dir, err)
 	}
-	tree, err := git.run(ctx, dir, env, "write-tree")
+	tree, err := run(ctx, dir, env, "write-tree")
 	if err != nil {
 		return "", false, fmt.Errorf("write a tree for %s: %w", dir, err)
 	}
 	hash := strings.TrimSpace(tree)
-	status, err := git.run(ctx, dir, nil, "status", "--porcelain")
+	status, err := run(ctx, dir, nil, "status", "--porcelain")
 	if err != nil {
 		return "", false, fmt.Errorf("read status of %s: %w", dir, err)
 	}
@@ -450,7 +454,27 @@ func writeLinkSymlinkBackup(packageName, symlinkBackup, existing string, inj *fi
 // *filewrite.Injector, so production behaviour is unchanged. A test passes
 // its own Injector to reach writeLinkPendingMarker's and
 // writeLinkSymlinkBackup's failure branches deterministically.
-func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName, dist string, inj *filewrite.Injector) (result NodeLinkResult, returnedErr error) {
+func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName, dist string, inj *filewrite.Injector) (NodeLinkResult, error) {
+	return node.linkWithPublication(ctx, consumerDir, packageName, dist, inj, nativeLinkPublicationIO())
+}
+
+type linkPublicationIO struct {
+	inspect  func(string) (os.FileInfo, error)
+	remove   func(string) error
+	rename   func(string, string) error
+	symlink  func(string, string) error
+	relative func(string, string) (string, error)
+}
+
+func nativeLinkPublicationIO() linkPublicationIO {
+	return linkPublicationIO{os.Lstat, os.Remove, renameInstalledPackageForLink, os.Symlink, filepath.Rel}
+}
+
+// renameInstalledPackageForLink moves the installed directory into its recovery backup.
+// Keeping the native rename explicit preserves the move-only publication guard.
+func renameInstalledPackageForLink(from, to string) error { return os.Rename(from, to) }
+
+func (node ExecNode) linkWithPublication(ctx context.Context, consumerDir, packageName, dist string, inj *filewrite.Injector, access linkPublicationIO) (result NodeLinkResult, returnedErr error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return result, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
@@ -461,7 +485,7 @@ func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName,
 			return result, fmt.Errorf("restore the prior local link before refreshing %s: %w", packageName, err)
 		}
 	}
-	info, statErr := os.Lstat(target)
+	info, statErr := access.inspect(target)
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return result, fmt.Errorf("inspect %s: %w", target, statErr)
 	}
@@ -496,7 +520,7 @@ func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName,
 	if err := copyBuiltPackageContentsInjected(dist, stage, inj); err != nil {
 		return result, fmt.Errorf("stage %s in the consumer's installed peer context: %w", packageName, err)
 	}
-	info, err = os.Lstat(target)
+	info, err = access.inspect(target)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
 		// Record where it pointed before replacing it. Without this the
@@ -508,26 +532,26 @@ func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName,
 		if err := writeLinkSymlinkBackup(packageName, symlinkBackup, existing, inj); err != nil {
 			return result, err
 		}
-		if err := os.Remove(target); err != nil {
+		if err := access.remove(target); err != nil {
 			return result, fmt.Errorf("replace the existing link at %s: %w", target, err)
 		}
 		result.Previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkSymlinkBackupSuffix))
 	case err == nil:
-		if err := os.Rename(target, directoryBackup); err != nil {
+		if err := access.rename(target, directoryBackup); err != nil {
 			return result, fmt.Errorf("set aside the installed %s: %w", packageName, err)
 		}
 		result.Previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkBackupSuffix))
 	case !os.IsNotExist(err):
 		return result, fmt.Errorf("inspect %s: %w", target, err)
 	}
-	if err := os.Symlink(stage, target); err != nil {
+	if err := access.symlink(stage, target); err != nil {
 		return result, fmt.Errorf("link %s to staged package %s: %w", target, stage, err)
 	}
 	for _, artifact := range []string{target, marker, stage, target + linkSymlinkBackupSuffix, target + linkBackupSuffix} {
 		if !fileExists(artifact) {
 			continue
 		}
-		relative, err := filepath.Rel(consumerDir, artifact)
+		relative, err := access.relative(consumerDir, artifact)
 		if err != nil {
 			return result, fmt.Errorf("record generated path %s: %w", artifact, err)
 		}
@@ -597,6 +621,10 @@ func copyBuiltPackageContents(source, destination string) error {
 // which restores io.Copy's copy_file_range/splice/sendfile fast path
 // because input is a real *os.File (review-t9-pr6 N3).
 func copyBuiltPackageContentsInjected(source, destination string, inj *filewrite.Injector) error {
+	return copyBuiltPackageContentsWithOpen(source, destination, inj, os.Open)
+}
+
+func copyBuiltPackageContentsWithOpen(source, destination string, inj *filewrite.Injector, open func(string) (*os.File, error)) error {
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -604,10 +632,8 @@ func copyBuiltPackageContentsInjected(source, destination string, inj *filewrite
 		if path == source {
 			return nil
 		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies the root or its lexical descendants on the same volume.
+		relative, _ := filepath.Rel(source, path)
 		target := filepath.Join(destination, relative)
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("built package contains unsupported symlink %s", path)
@@ -622,7 +648,7 @@ func copyBuiltPackageContentsInjected(source, destination string, inj *filewrite
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("built package contains unsupported non-regular file %s", path)
 		}
-		input, err := os.Open(path)
+		input, err := open(path)
 		if err != nil {
 			return err
 		}
@@ -642,11 +668,26 @@ func copyBuiltPackageContentsInjected(source, destination string, inj *filewrite
 }
 
 // Unlink implements Node, restoring whichever shape the link displaced.
+type linkRestoreObservations struct {
+	lstat    func(string) (os.FileInfo, error)
+	stat     func(string) (os.FileInfo, error)
+	readlink func(string) (string, error)
+	readFile func(string) ([]byte, error)
+}
+
+func nativeLinkRestoreObservations() linkRestoreObservations {
+	return linkRestoreObservations{os.Lstat, os.Stat, os.Readlink, os.ReadFile}
+}
+
 func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string) (string, error) {
+	return node.unlinkWithObservations(ctx, consumerDir, packageName, nativeLinkRestoreObservations())
+}
+
+func (node ExecNode) unlinkWithObservations(ctx context.Context, consumerDir, packageName string, observe linkRestoreObservations) (string, error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	marker := linkAppliedMarkerPath(consumerDir, packageName)
 	stage := ""
-	if contents, err := os.ReadFile(marker); err == nil {
+	if contents, err := observe.readFile(marker); err == nil {
 		var validateErr error
 		stage, validateErr = validateStagedLinkPath(consumerDir, target, strings.TrimSpace(string(contents)))
 		if validateErr != nil {
@@ -656,9 +697,9 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		return "", fmt.Errorf("read the applied-link marker for %s: %w", packageName, err)
 	}
 
-	info, err := os.Lstat(target)
+	info, err := observe.lstat(target)
 	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		actual, readErr := os.Readlink(target)
+		actual, readErr := observe.readlink(target)
 		if readErr != nil {
 			return "", fmt.Errorf("read the active link at %s: %w", target, readErr)
 		}
@@ -668,8 +709,8 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		}
 		if stage != "" && filepath.Clean(actualPath) != stage {
 			symlinkBackup := target + linkSymlinkBackupSuffix
-			if original, backupErr := os.ReadFile(symlinkBackup); backupErr == nil && strings.TrimSpace(string(original)) == actual {
-				if _, statErr := os.Stat(target); statErr != nil {
+			if original, backupErr := observe.readFile(symlinkBackup); backupErr == nil && strings.TrimSpace(string(original)) == actual {
+				if _, statErr := observe.stat(target); statErr != nil {
 					return "", fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, actual, statErr)
 				}
 				if err := os.Remove(symlinkBackup); err != nil {
@@ -717,7 +758,7 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 	// A recorded symlink target is restored first: on pnpm this is the normal
 	// case, and it is the one that used to be lost entirely.
 	symlinkBackup := target + linkSymlinkBackupSuffix
-	if contents, readErr := os.ReadFile(symlinkBackup); readErr == nil {
+	if contents, readErr := observe.readFile(symlinkBackup); readErr == nil {
 		original := strings.TrimSpace(string(contents))
 		if original == "" {
 			return "", fmt.Errorf("the recorded link target for %s is empty; restore it by re-installing", packageName)
@@ -725,7 +766,7 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		if err := os.Symlink(original, target); err != nil {
 			return "", fmt.Errorf("restore the original link for %s: %w", packageName, err)
 		}
-		if _, statErr := os.Stat(target); statErr != nil {
+		if _, statErr := observe.stat(target); statErr != nil {
 			return "", fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, original, statErr)
 		}
 		if err := os.Remove(symlinkBackup); err != nil {
@@ -797,7 +838,22 @@ type siblingEdge struct {
 // to the corresponding staged identities. The edges live inside the untracked
 // stage directories, so removing any package stage removes its edges too and
 // leaves the installed pnpm topology available for exact undo.
+type siblingLinkIO struct {
+	lstat    func(string) (os.FileInfo, error)
+	readlink func(string) (string, error)
+	mkdirAll func(string, os.FileMode) error
+	symlink  func(string, string) error
+}
+
+func nativeSiblingLinkIO() siblingLinkIO {
+	return siblingLinkIO{os.Lstat, os.Readlink, os.MkdirAll, os.Symlink}
+}
+
 func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error {
+	return node.linkSiblingsWithIO(ctx, consumerDir, packageNames, nativeSiblingLinkIO())
+}
+
+func (node ExecNode) linkSiblingsWithIO(ctx context.Context, consumerDir string, packageNames []string, access siblingLinkIO) error {
 	stages := make(map[string]siblingStage, len(packageNames))
 	for _, packageName := range packageNames {
 		if _, already := stages[packageName]; already {
@@ -859,11 +915,11 @@ func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packa
 	for _, edge := range edges {
 		from, to := stages[edge.from], stages[edge.to]
 		link := filepath.Join(from.stage, "node_modules", filepath.FromSlash(edge.to))
-		if info, err := os.Lstat(link); err == nil {
+		if info, err := access.lstat(link); err == nil {
 			if info.Mode()&os.ModeSymlink == 0 {
 				return fmt.Errorf("refuse to replace existing staged sibling path %s", link)
 			}
-			actual, readErr := os.Readlink(link)
+			actual, readErr := access.readlink(link)
 			if readErr != nil {
 				return fmt.Errorf("read existing staged sibling path %s: %w", link, readErr)
 			}
@@ -882,16 +938,13 @@ func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packa
 		if fileExists(link) {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		if err := access.mkdirAll(filepath.Dir(link), 0o755); err != nil {
 			removeSiblingEdges(created)
 			return fmt.Errorf("create staged sibling parent for %s: %w", edge.to, err)
 		}
-		relative, err := filepath.Rel(filepath.Dir(link), to.stage)
-		if err != nil {
-			removeSiblingEdges(created)
-			return fmt.Errorf("resolve staged sibling %s from %s: %w", edge.to, edge.from, err)
-		}
-		if err := os.Symlink(relative, link); err != nil {
+		// Both stages were validated inside the same absolute consumer workspace.
+		relative, _ := filepath.Rel(filepath.Dir(link), to.stage)
+		if err := access.symlink(relative, link); err != nil {
 			removeSiblingEdges(created)
 			return fmt.Errorf("link staged sibling %s into %s: %w", edge.to, edge.from, err)
 		}
@@ -924,10 +977,8 @@ type runtimeGraphMismatch struct {
 // published physical package while the application resolves WB's staged one.
 // Bundlers follow that physical edge and emit two token identities.
 func (node ExecNode) verifyRuntimeGraph(ctx context.Context, consumerDir string, packageNames []string) error {
-	linked, err := json.Marshal(dedupe(packageNames))
-	if err != nil {
-		return fmt.Errorf("encode linked npm identities for runtime graph verification: %w", err)
-	}
+	// A slice of strings has no custom encoders or unsupported JSON values.
+	linked, _ := json.Marshal(dedupe(packageNames))
 	if _, err := exec.LookPath("node"); err != nil {
 		return fmt.Errorf("node is required to verify the linked npm runtime graph: %w", err)
 	}
@@ -1117,12 +1168,16 @@ func removeSiblingEdges(paths []string) {
 }
 
 func validateStagedLinkPath(consumerDir, target, stage string) (string, error) {
+	return validateStagedLinkPathWithAbsolute(consumerDir, target, stage, filepath.Abs)
+}
+
+func validateStagedLinkPathWithAbsolute(consumerDir, target, stage string, absolute func(string) (string, error)) (string, error) {
 	stage = filepath.Clean(stage)
 	wantBase := "." + filepath.Base(target) + ".wb-locallink-stage"
 	if !filepath.IsAbs(stage) || filepath.Base(stage) != wantBase {
 		return "", fmt.Errorf("applied-link marker names invalid staged path %q", stage)
 	}
-	absoluteConsumer, err := filepath.Abs(consumerDir)
+	absoluteConsumer, err := absolute(consumerDir)
 	if err != nil {
 		return "", err
 	}

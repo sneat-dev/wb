@@ -96,6 +96,10 @@ type LogInitOptions struct {
 // LogInit ensures the local journal exists, reconstructs a missing manifest,
 // records prompt 0000 when supplied and absent, and appends an init event.
 func LogInit(ctx context.Context, options LogInitOptions) (LogVerbResult, error) {
+	return logInitWithOwner(ctx, options, recordOwner)
+}
+
+func logInitWithOwner(ctx context.Context, options LogInitOptions, recordOwner func(string, string, string, string, int) (OwnerRegistration, error)) (LogVerbResult, error) {
 	root, err := resolveWorktreeRoot(ctx, options.Worktree)
 	if err != nil {
 		return LogVerbResult{}, err
@@ -116,9 +120,11 @@ func LogInit(ctx context.Context, options LogInitOptions) (LogVerbResult, error)
 	if manifest.Provenance == ProvenanceReconstructed {
 		notes = append(notes, fmt.Sprintf("reconstructed manifest for effort %s", manifest.EffortID))
 	}
-	if _, err := openLocalWorkLogDir(root, true); err != nil {
+	directory, err := openLocalWorkLogDir(root, true)
+	if err != nil {
 		return LogVerbResult{}, err
 	}
+	_ = directory.Close()
 
 	promptName := ""
 	source := strings.TrimSpace(options.Source)
@@ -789,6 +795,10 @@ type LogFinalizeOptions struct {
 
 // LogFinalize records a terminal result and optionally seals the Hybrid claim.
 func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult, error) {
+	return logFinalizeWithRepair(ctx, options, repairCurrentLocalProjection)
+}
+
+func logFinalizeWithRepair(ctx context.Context, options LogFinalizeOptions, repairProjection func(string) (LocalWorkLogProjection, error)) (LogVerbResult, error) {
 	root, err := resolveWorktreeRoot(ctx, options.Worktree)
 	if err != nil {
 		return LogVerbResult{}, err
@@ -855,7 +865,7 @@ func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult
 		}
 		applied = true
 		notes = append(notes, "hybrid claim sealed terminal")
-		repaired, repairErr := repairCurrentLocalProjection(root)
+		repaired, repairErr := repairProjection(root)
 		if repairErr != nil {
 			return LogVerbResult{}, fmt.Errorf("repair local work-log projection after finalize: %w", repairErr)
 		}

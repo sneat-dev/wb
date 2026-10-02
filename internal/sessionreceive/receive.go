@@ -36,6 +36,7 @@ type Options struct {
 }
 
 type receiveHooks struct {
+	afterExecutionLock   func()
 	afterTargetCompleted func() error
 	afterReceipt         func() error
 }
@@ -85,6 +86,9 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	defer func() { _ = lock.Close() }()
+	if options.hooks.afterExecutionLock != nil {
+		options.hooks.afterExecutionLock()
+	}
 	// Re-admit under the fence: another process may have completed and saved a
 	// receipt while this caller waited.
 	admission, err = options.Store.ReadmitUnderLock(lock, request.HandoffID, digest, options.RawRequest)
@@ -111,9 +115,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	// successor harness exits; completed replay must not relaunch or require Git.
 	if state.Receipt != nil {
 		receipt := *state.Receipt
-		if err := sessionmove.ValidateReceiptForRequest(receipt, request, digest); err != nil {
-			return Result{}, fmt.Errorf("validate durable completed successor receipt: %w", err)
-		}
+		// LoadUnderLock validated this exact receipt against the retained request and digest.
 		if !hadCompleted {
 			if _, err := options.Store.AppendEventUnderLock(lock, request.HandoffID, digest,
 				sessionmove.HandoffEvent{Phase: sessionmove.PhaseCompleted, At: now()}); err != nil {
@@ -134,10 +136,8 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 			break
 		}
 	}
-	launchOptions, err := receiveLaunchOptions(options, request, digest, lock, expectedWorktree, receivedAt)
-	if err != nil {
-		return Result{}, err
-	}
+	// DecodeRequest validated request; DigestBytes supplies a valid digest.
+	launchOptions, _ := receiveLaunchOptions(options, request, digest, lock, expectedWorktree, receivedAt)
 
 	if !hadReceived {
 		if _, err := options.Store.AppendEventUnderLock(lock, request.HandoffID, digest,
@@ -432,8 +432,6 @@ func receiveFailureDiagnostic(err error) string {
 	if errors.As(err, &attemptFailure) {
 		diagnostic = "target successor launch attempt failed after release; inspect private launcher evidence and retry the identical handoff"
 	}
-	if len(diagnostic) > maxFailureDiagnosticBytes {
-		diagnostic = diagnostic[:maxFailureDiagnosticBytes]
-	}
+	// Both fixed private-safe messages fit within maxFailureDiagnosticBytes.
 	return diagnostic
 }

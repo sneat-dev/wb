@@ -76,7 +76,16 @@ var ExecSiteGitHelperNames = map[string]bool{
 // these functions from elsewhere is unaffected (only their own bodies are
 // exempt). The shared runSecureGitHelper tail has a narrower exception below.
 var execSiteAllowedFunctionNames = map[string]bool{
-	"setHooksPathAt": true, "RunSecureHooksGitHelper": true,
+	// Resolver seams retain the same ExtraFiles protocol as their public
+	// secure-helper wrappers; moving the launch into a seam does not create
+	// an ordinary process site that can use runner or gitcli.
+	"setHooksPathAtResolved":                         true,
+	"runCanonicalGitBytesWithExecutable":             true,
+	"runSecureStageHelperWithExecutable":             true,
+	"runSecureStageCanonicalGitHelperWithExecutable": true,
+	"runSecureRenameGitWithObservation":              true,
+	"runSecureCleanupGitHelperWithExecutables":       true,
+	"setHooksPathAt":                                 true, "RunSecureHooksGitHelper": true,
 	"runCanonicalGitBytes": true, "RunSecureCanonicalGitHelper": true,
 	"RunSecureCanonicalPolicyGitHelper": true,
 	"runSecureStageHelper":              true, "RunSecureStageGitHelper": true, "runSecureStageGitHelperWithOps": true,

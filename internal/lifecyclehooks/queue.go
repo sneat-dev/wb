@@ -74,6 +74,10 @@ func (dispatcher Dispatcher) enqueue(item pending) (int, error) {
 }
 
 func (dispatcher Dispatcher) ensureState() error {
+	return dispatcher.ensureStateInjected(nil)
+}
+
+func (dispatcher Dispatcher) ensureStateInjected(inj *filewrite.Injector) error {
 	for _, directory := range []string{dispatcher.StateDir, dispatcher.pendingDir(), dispatcher.runningDir(), dispatcher.diagnosticsDir(), dispatcher.unseenDir(), dispatcher.quarantineDir()} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return fmt.Errorf("create lifecycle hook state: %w", err)
@@ -81,7 +85,7 @@ func (dispatcher Dispatcher) ensureState() error {
 		if err := validatePrivateDirectory(directory, "lifecycle hook state directory"); err != nil {
 			return fmt.Errorf("protect lifecycle hook state: %w", err)
 		}
-		if err := os.Chmod(directory, 0o700); err != nil {
+		if err := filewrite.ChmodPath(directory, 0o700, inj); err != nil {
 			return fmt.Errorf("protect lifecycle hook state: %w", err)
 		}
 	}
@@ -248,6 +252,10 @@ func (dispatcher Dispatcher) recoverRunning() ([]string, error) {
 }
 
 func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queuedJob, bool, []string, error) {
+	return dispatcher.claimBatchWithUnlock(limit, worker, (*flock.Flock).Unlock)
+}
+
+func (dispatcher Dispatcher) claimBatchWithUnlock(limit int, worker *flock.Flock, unlock func(*flock.Flock) error) ([]queuedJob, bool, []string, error) {
 	queueLock := flock.New(filepath.Join(dispatcher.StateDir, "queue.lock"))
 	if err := queueLock.Lock(); err != nil {
 		return nil, false, nil, err
@@ -291,7 +299,7 @@ func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queue
 	// Release worker ownership while the queue lock still excludes enqueue.
 	// A subsequent enqueue will then start a worker that can acquire ownership,
 	// closing the otherwise tiny empty-queue shutdown race.
-	if err := worker.Unlock(); err != nil {
+	if err := unlock(worker); err != nil {
 		return nil, false, warnings, err
 	}
 	return nil, true, warnings, nil
@@ -395,10 +403,14 @@ func (writer *cappedFile) Write(content []byte) (int, error) {
 }
 
 func openDiagnostics(directory string) (*cappedFile, *cappedFile, error) {
+	return openDiagnosticsInjected(directory, nil)
+}
+
+func openDiagnosticsInjected(directory string, inj *filewrite.Injector) (*cappedFile, *cappedFile, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, nil, err
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
+	if err := filewrite.ChmodPath(directory, 0o700, inj); err != nil {
 		return nil, nil, err
 	}
 	stdout, err := os.OpenFile(filepath.Join(directory, "stdout.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -533,6 +545,10 @@ func (dispatcher Dispatcher) quarantineFileInjected(path, reason string, inj *fi
 }
 
 func appendReceipt(path string, receipt Receipt) error {
+	return appendReceiptInjected(path, receipt, nil, filewrite.OpenAppend)
+}
+
+func appendReceiptInjected(path string, receipt Receipt, inj *filewrite.Injector, open func(string, os.FileMode, *filewrite.Injector) (*os.File, error)) error {
 	if err := validateReceipt(receipt); err != nil {
 		return err
 	}
@@ -554,7 +570,7 @@ func appendReceipt(path string, receipt Receipt) error {
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := open(path, 0o600, inj)
 	if err != nil {
 		return err
 	}
@@ -566,17 +582,17 @@ func appendReceipt(path string, receipt Receipt) error {
 	if existed && !os.SameFile(expected, opened) {
 		return errors.New("lifecycle hook receipt stream changed while opening")
 	}
-	if err := file.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(file, 0o600, path, inj); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(receipt)
 	if err != nil {
 		return err
 	}
-	if _, err := file.Write(append(raw, '\n')); err != nil {
+	if err := filewrite.Write(file, append(raw, '\n'), path, inj); err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := filewrite.Sync(file, path, inj); err != nil {
 		return err
 	}
 	if err := writeJSONAtomic(filepath.Join(receiptIndexDir(path), receipt.ID+".json"), receipt, 0o600); err != nil {
@@ -637,6 +653,10 @@ func findReceipt(path, id string) (Receipt, bool, error) {
 }
 
 func scanReceipts(path string, visit func(Receipt)) ([]string, error) {
+	return scanReceiptsWithOpen(path, visit, os.Open)
+}
+
+func scanReceiptsWithOpen(path string, visit func(Receipt), open func(string) (*os.File, error)) ([]string, error) {
 	if err := ensureTrustedParent(path, "lifecycle hook receipt parent"); err != nil {
 		return nil, err
 	}
@@ -649,7 +669,7 @@ func scanReceipts(path string, visit func(Receipt)) ([]string, error) {
 	if err != nil || !exists {
 		return nil, err
 	}
-	file, err := os.Open(path)
+	file, err := open(path)
 	if err != nil {
 		return nil, err
 	}

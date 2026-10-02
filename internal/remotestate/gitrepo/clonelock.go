@@ -52,6 +52,10 @@ const cloneLockSuffix = ".lock"
 // without a real wait. Neither is a package-level mutable var, so a test
 // cannot leave a shared clock mutated for another test running in parallel.
 func acquireCloneLock(clonePath string, now func() time.Time, sleep func(time.Duration)) (*cloneLock, error) {
+	return acquireCloneLockWithFlock(clonePath, now, sleep, unix.Flock)
+}
+
+func acquireCloneLockWithFlock(clonePath string, now func() time.Time, sleep func(time.Duration), flock func(int, int) error) (*cloneLock, error) {
 	lockPath := clonePath + cloneLockSuffix
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create wb-state lock directory: %w", err)
@@ -62,7 +66,7 @@ func acquireCloneLock(clonePath string, now func() time.Time, sleep func(time.Du
 	}
 	deadline := now().Add(cloneLockTimeout)
 	for {
-		lockErr := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		lockErr := flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if lockErr == nil {
 			return &cloneLock{file: file}, nil
 		}

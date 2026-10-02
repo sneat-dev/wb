@@ -507,17 +507,11 @@ func TestHkCovSanitizeRuntimeSegment(t *testing.T) {
 
 func TestHkCovRandomTokenIsRandomHex(t *testing.T) {
 	t.Parallel()
-	first, err := randomToken(8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := randomToken(8)
 	if len(first) != 16 {
 		t.Fatalf("randomToken(8) = %q, want 16 hex characters", first)
 	}
-	second, err := randomToken(8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := randomToken(8)
 	if first == second {
 		t.Fatalf("randomToken returned the same value twice: %q", first)
 	}

@@ -65,7 +65,8 @@ type AbortOptions struct {
 	// beforeAbortRemoval is a test-only race seam immediately before the
 	// destructive reinspection. A concurrent writer must make abort refuse,
 	// never make its new work disappear.
-	beforeAbortRemoval func(worktree string)
+	beforeReservationRelease func(*cleanupTaskHandle)
+	beforeAbortRemoval       func(worktree string)
 	// afterAbortWorktreeRemoval simulates interruption after the linked
 	// checkout is gone but before its exact local branch is retired.
 	afterAbortWorktreeRemoval func(worktree string) error
@@ -431,6 +432,9 @@ func abortPreApplyRenameReservations(resolution wbhome.Resolution, task string, 
 		}
 	}
 	if cleanup != nil {
+		if options.beforeReservationRelease != nil {
+			options.beforeReservationRelease(cleanup)
+		}
 		if err := cleanup.lock.release(); err != nil {
 			return []AbortResult{result}, true, fmt.Errorf("release pre-apply reservation task lock: %w", err)
 		}
@@ -481,14 +485,24 @@ func acquirePreApplyReservationTask(resolution wbhome.Resolution, task string) (
 }
 
 func preApplyReservationShellOnly(task *cleanupTaskHandle) error {
+	return preApplyReservationShellWithReadObservation(task, nil)
+}
+
+func preApplyReservationShellWithReadObservation(task *cleanupTaskHandle, observe func(string, *os.File)) error {
 	if task == nil || task.task == nil {
 		return fmt.Errorf("pre-apply reservation task shell is unavailable")
 	}
 	if err := task.validate(); err != nil {
 		return err
 	}
+	if observe != nil {
+		observe("seek", task.task)
+	}
 	if _, err := task.task.Seek(0, 0); err != nil {
 		return err
+	}
+	if observe != nil {
+		observe("read", task.task)
 	}
 	entries, err := task.task.ReadDir(-1)
 	if err != nil {

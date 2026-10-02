@@ -167,10 +167,8 @@ func (graph Graph) Project(view GraphView) (GraphProjection, error) {
 		if projection.Nodes[i].Kind != projection.Nodes[j].Kind {
 			return projection.Nodes[i].Kind < projection.Nodes[j].Kind
 		}
-		if projection.Nodes[i].Label != projection.Nodes[j].Label {
-			return projection.Nodes[i].Label < projection.Nodes[j].Label
-		}
-		return projection.Nodes[i].ID < projection.Nodes[j].ID
+		// Equal kind and label identify the same deduplicated node.
+		return projection.Nodes[i].Label < projection.Nodes[j].Label
 	})
 	sort.Slice(projection.Edges, func(i, j int) bool {
 		if projection.Edges[i].From != projection.Edges[j].From {

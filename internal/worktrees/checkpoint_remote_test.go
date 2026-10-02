@@ -93,11 +93,12 @@ func TestPushRemoteCheckpointIsForceUpdatable(t *testing.T) {
 }
 
 func TestPushRemoteCheckpointRejectsAnUnresolvedCommit(t *testing.T) {
-	_, worktree, _ := newSessionCheckpointFixture(t, "checkpoint-bad-sha")
-	if _, err := PushRemoteCheckpoint(context.Background(), PushRemoteCheckpointOptions{
-		Root: worktree, Task: "checkpoint-bad-sha", HeadSHA: "not-a-sha",
-	}); err == nil {
-		t.Fatal("expected an error for a non-object-id HeadSHA")
+	t.Parallel()
+	got, err := PushRemoteCheckpoint(context.Background(), PushRemoteCheckpointOptions{
+		Root: t.TempDir(), Task: "checkpoint-bad-sha", HeadSHA: "not-a-sha",
+	})
+	if got != (RemoteCheckpointResult{}) || err == nil || err.Error() != `a remote checkpoint requires one resolved exact commit, got "not-a-sha"` {
+		t.Fatalf("unresolved commit admission = %+v, %v", got, err)
 	}
 }
 

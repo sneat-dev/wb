@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const EventSchemaVersion = 1
@@ -112,17 +114,21 @@ func AppendEvent(path string, event Event) error {
 }
 
 func AppendEvents(path string, events []Event) error {
+	return appendEventsInjected(path, events, nil)
+}
+
+func appendEventsInjected(path string, events []Event, inj *filewrite.Injector) error {
 	if len(events) == 0 {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create hook metrics directory: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := filewrite.OpenAppend(path, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("open hook metrics %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := filewrite.ChmodPath(path, 0o600, inj); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("protect hook metrics %s: %w", path, err)
 	}
@@ -134,11 +140,11 @@ func AppendEvents(path string, events []Event) error {
 			return err
 		}
 	}
-	if _, err := file.Write(data.Bytes()); err != nil {
+	if err := filewrite.Write(file, data.Bytes(), path, inj); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("append hook metrics: %w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, path, inj); err != nil {
 		return fmt.Errorf("close hook metrics: %w", err)
 	}
 	return nil

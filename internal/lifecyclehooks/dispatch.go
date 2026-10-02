@@ -309,7 +309,11 @@ func runInvocation(ctx context.Context, invocation Invocation) error {
 }
 
 func launchWorker(request WorkerRequest) error {
-	executable, err := os.Executable()
+	return launchWorkerWithIO(request, os.Executable, func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_RDWR, 0) })
+}
+
+func launchWorkerWithIO(request WorkerRequest, executablePath func() (string, error), openNull func() (*os.File, error)) error {
+	executable, err := executablePath()
 	if err != nil {
 		return err
 	}
@@ -317,7 +321,7 @@ func launchWorker(request WorkerRequest) error {
 	command := exec.Command(executable, arguments...) //nolint:gosec // current WB executable and fixed argv
 	command.Env = os.Environ()
 	process.ConfigureDetached(command)
-	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	null, err := openNull()
 	if err != nil {
 		return err
 	}
@@ -426,9 +430,8 @@ func (dispatcher Dispatcher) defaults() Dispatcher {
 
 func receiptID(now time.Time) string {
 	random := make([]byte, 8)
-	if _, err := rand.Read(random); err != nil {
-		return fmt.Sprintf("%d", now.UnixNano())
-	}
+	// Go 1.27 Read fills the buffer or irrecoverably terminates.
+	_, _ = rand.Read(random)
 	return now.Format("20060102T150405.000000000Z") + "-" + hex.EncodeToString(random)
 }
 

@@ -52,11 +52,18 @@ func worktreeRemovalLeftResidue(ctx context.Context, canonical *canonicalReposit
 // worktreeStillRegistered answers the same question for a caller that holds a
 // backlog record rather than an open canonical repository.
 func worktreeStillRegistered(ctx context.Context, canonicalDir, worktreePath string) (bool, error) {
+	return worktreeStillRegisteredObserved(ctx, canonicalDir, worktreePath, nil)
+}
+
+func worktreeStillRegisteredObserved(ctx context.Context, canonicalDir, worktreePath string, afterOpen func(*canonicalRepository)) (bool, error) {
 	canonical, err := openCanonicalRepository(canonicalDir)
 	if err != nil {
 		return false, err
 	}
 	defer canonical.close()
+	if afterOpen != nil {
+		afterOpen(canonical)
+	}
 	if err := canonical.validate(); err != nil {
 		return false, err
 	}
@@ -72,17 +79,49 @@ func worktreeStillRegistered(ctx context.Context, canonicalDir, worktreePath str
 // worktree WB validated rather than to a name that could be replaced under it.
 // The caller must have established that the path still exists and that Git no
 // longer registers it.
+type residueRemovalPhase string
+
+const (
+	residueAfterValidation   residueRemovalPhase = "after_validation"
+	residueBeforeRootRemoval residueRemovalPhase = "before_root_removal"
+)
+
 func removeWorktreeResidue(handle *cleanupWorktreeHandle) error {
+	return removeWorktreeResidueObserved(handle, nil)
+}
+
+func removeWorktreeResidueObserved(handle *cleanupWorktreeHandle, observe func(residueRemovalPhase, *cleanupWorktreeHandle)) error {
 	if handle == nil || handle.parent == nil || handle.worktree == nil {
 		return fmt.Errorf("cleanup worktree descriptor is unavailable")
 	}
 	if err := handle.validate(); err != nil {
 		return err
 	}
+	if observe != nil {
+		observe(residueAfterValidation, handle)
+	}
 	if err := removeDirectoryContentsAt(handle.worktree, handle.worktreePath, 0); err != nil {
 		return err
 	}
 	name := filepath.Base(handle.worktreePath)
+	if observe != nil {
+		observe(residueBeforeRootRemoval, handle)
+	}
+	// Reauthorize the final entry after recursive cleanup: an empty replacement
+	// is not this invocation's owned checkout. This check narrows namespace
+	// drift before unlink; it does not make identity-check plus unlink atomic.
+	if !directoryEntryStillMatches(handle.parent, name, handle.worktree) {
+		// Metadata inspection must not open a substituted FIFO or other device.
+		var entry unix.Stat_t
+		inspectErr := unix.Fstatat(int(handle.parent.Fd()), name, &entry, unix.AT_SYMLINK_NOFOLLOW)
+		if errors.Is(inspectErr, unix.ENOENT) {
+			return nil // Another remover already retired the owned empty entry.
+		}
+		if inspectErr != nil {
+			return fmt.Errorf("remove residual worktree %s: inspect final entry: %w", handle.worktreePath, inspectErr)
+		}
+		return fmt.Errorf("remove residual worktree %s: directory identity changed before retirement", handle.worktreePath)
+	}
 	if err := unix.Unlinkat(int(handle.parent.Fd()), name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("remove residual worktree %s: %w", handle.worktreePath, err)
 	}
@@ -124,17 +163,29 @@ func removeDirectoryContentsAt(directory *os.File, path string, depth int) error
 	return nil
 }
 
+type residueDirectoryOpener func(parent *os.File, name, path string) (*os.File, error)
+
+// openResidueDirectoryAt shares descriptor wrapping and keeps temporary residue
+// handles out of unrelated child processes. A successful Openat returns a valid
+// descriptor, so NewFile cannot return nil here.
+func openResidueDirectoryAt(parent *os.File, name, path string) (*os.File, error) {
+	descriptor, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(descriptor), path), nil
+}
+
 // directoryEntryNames lists through a fresh descriptor rather than the retained
 // one, whose read offset belongs to the caller.
 func directoryEntryNames(directory *os.File, path string) ([]string, error) {
-	descriptor, err := unix.Openat(int(directory.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	return directoryEntryNamesWithOpener(directory, path, openResidueDirectoryAt)
+}
+
+func directoryEntryNamesWithOpener(directory *os.File, path string, open residueDirectoryOpener) ([]string, error) {
+	listing, err := open(directory, ".", path)
 	if err != nil {
 		return nil, fmt.Errorf("list residue directory %s: %w", path, err)
-	}
-	listing := os.NewFile(uintptr(descriptor), path)
-	if listing == nil {
-		_ = unix.Close(descriptor)
-		return nil, fmt.Errorf("wrap residue directory %s", path)
 	}
 	defer func() { _ = listing.Close() }()
 	names, err := listing.Readdirnames(-1)
@@ -174,7 +225,11 @@ func removeResidueEntry(parent *os.File, parentPath, name string, depth int) err
 // descriptor it returns is the inode it just inspected, so a directory swapped
 // in during the walk is surfaced rather than descended into.
 func openResidueDirectory(parent *os.File, path, name string, expected unix.Stat_t) (*os.File, error) {
-	descriptor, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	return openResidueDirectoryWithOpener(parent, path, name, expected, openResidueDirectoryAt)
+}
+
+func openResidueDirectoryWithOpener(parent *os.File, path, name string, expected unix.Stat_t, open residueDirectoryOpener) (*os.File, error) {
+	directory, err := open(parent, name, path)
 	if err != nil {
 		if errors.Is(err, unix.EACCES) {
 			// Granting this would mean a chmod by name, the one step that
@@ -186,13 +241,8 @@ func openResidueDirectory(parent *os.File, path, name string, expected unix.Stat
 		}
 		return nil, fmt.Errorf("open residue directory %s: %w", path, err)
 	}
-	directory := os.NewFile(uintptr(descriptor), path)
-	if directory == nil {
-		_ = unix.Close(descriptor)
-		return nil, fmt.Errorf("wrap residue directory %s", path)
-	}
 	var opened unix.Stat_t
-	if err := unix.Fstat(descriptor, &opened); err != nil {
+	if err := unix.Fstat(int(directory.Fd()), &opened); err != nil {
 		_ = directory.Close()
 		return nil, fmt.Errorf("inspect residue directory %s: %w", path, err)
 	}
@@ -203,34 +253,52 @@ func openResidueDirectory(parent *os.File, path, name string, expected unix.Stat
 	return directory, nil
 }
 
+type residueRemovalIO struct {
+	unlink func(int, string, int) error
+	stat   func(int, *unix.Stat_t) error
+	chmod  func(int, uint32) error
+}
+
+func nativeResidueRemovalIO() residueRemovalIO {
+	return residueRemovalIO{unlink: unix.Unlinkat, stat: unix.Fstat, chmod: unix.Fchmod}
+}
+
 // unlinkResidueEntry removes one entry, granting the containing directory owner
 // write permission when that is what denies the unlink. This is the failure
 // that stranded the task in the first place: the mode that stopped Git is
 // carried by a directory inside WB's own residue, and WB holds it open.
 func unlinkResidueEntry(parent *os.File, parentPath, name string, flags int) error {
+	return unlinkResidueEntryWithIO(parent, parentPath, name, flags, nativeResidueRemovalIO())
+}
+
+func unlinkResidueEntryWithIO(parent *os.File, parentPath, name string, flags int, access residueRemovalIO) error {
 	entryPath := filepath.Join(parentPath, name)
-	err := unix.Unlinkat(int(parent.Fd()), name, flags)
+	err := access.unlink(int(parent.Fd()), name, flags)
 	if err == nil || errors.Is(err, unix.ENOENT) {
 		return nil
 	}
 	if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) {
 		return fmt.Errorf("remove residue %s: %w", entryPath, err)
 	}
-	if grantErr := grantOwnerWriteAt(parent, parentPath); grantErr != nil {
+	if grantErr := grantOwnerWriteWithIO(parent, parentPath, access); grantErr != nil {
 		return fmt.Errorf("remove residue %s: %w", entryPath, errors.Join(err, grantErr))
 	}
-	if retryErr := unix.Unlinkat(int(parent.Fd()), name, flags); retryErr != nil && !errors.Is(retryErr, unix.ENOENT) {
+	if retryErr := access.unlink(int(parent.Fd()), name, flags); retryErr != nil && !errors.Is(retryErr, unix.ENOENT) {
 		return fmt.Errorf("remove residue %s after granting %s owner write permission: %w", entryPath, parentPath, retryErr)
 	}
 	return nil
 }
 
 func grantOwnerWriteAt(directory *os.File, path string) error {
+	return grantOwnerWriteWithIO(directory, path, nativeResidueRemovalIO())
+}
+
+func grantOwnerWriteWithIO(directory *os.File, path string, access residueRemovalIO) error {
 	var status unix.Stat_t
-	if err := unix.Fstat(int(directory.Fd()), &status); err != nil {
+	if err := access.stat(int(directory.Fd()), &status); err != nil {
 		return fmt.Errorf("inspect residue directory %s: %w", path, err)
 	}
-	if err := unix.Fchmod(int(directory.Fd()), uint32(status.Mode&0o7777|0o300)); err != nil {
+	if err := access.chmod(int(directory.Fd()), uint32(status.Mode&0o7777|0o300)); err != nil {
 		return fmt.Errorf("grant owner write permission on residue directory %s: %w", path, err)
 	}
 	return nil

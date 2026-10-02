@@ -126,6 +126,11 @@ func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter,
 // the creator holds it while it works, so the acquisition here fails and the
 // namespace is left alone.
 func retireEmptyTaskNamespaces(artifacts []LifecycleArtifact) {
+	retireEmptyTaskNamespacesObserved(artifacts, nil)
+}
+
+// retireEmptyTaskNamespacesObserved observes only the task authority this call acquired.
+func retireEmptyTaskNamespacesObserved(artifacts []LifecycleArtifact, afterAcquire func(*cleanupTaskHandle)) {
 	for index := range artifacts {
 		artifact := &artifacts[index]
 		if artifact.Kind != lifecycleArtifactKindTaskNamespace || !artifact.Eligible || artifact.Applied {
@@ -141,6 +146,9 @@ func retireEmptyTaskNamespaces(artifacts []LifecycleArtifact) {
 		if err != nil {
 			artifact.Reason = "task namespace is in use: " + err.Error()
 			continue
+		}
+		if afterAcquire != nil {
+			afterAcquire(task)
 		}
 		if releaseErr := task.lock.release(); releaseErr != nil {
 			task.close()

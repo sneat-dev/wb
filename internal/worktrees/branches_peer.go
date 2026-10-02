@@ -57,10 +57,16 @@ func reviewedRemoteForkGuard(ctx context.Context, repositoryPath, repository str
 	if response.Err != nil {
 		return fmt.Errorf("query repository fork status: %w: %s", response.Err, strings.TrimSpace(string(response.Stderr)+string(response.Stdout)))
 	}
+	return admitReviewedRemoteForkMetadata(response.Stdout, repository)
+}
+
+// admitReviewedRemoteForkMetadata admits arbitrary observed response bytes; it
+// never treats a missing fork declaration as proof of upstream ownership.
+func admitReviewedRemoteForkMetadata(raw []byte, repository string) error {
 	var metadata struct {
 		Fork *bool `json:"fork"`
 	}
-	if err := json.Unmarshal(response.Stdout, &metadata); err != nil {
+	if err := json.Unmarshal(raw, &metadata); err != nil {
 		return fmt.Errorf("decode repository fork status: %w", err)
 	}
 	if metadata.Fork == nil {

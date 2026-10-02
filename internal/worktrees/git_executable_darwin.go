@@ -37,6 +37,12 @@ func resolveDarwinGitExecutable() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve developer Git with xcrun: %w", err)
 	}
+	return admitDarwinGitExecutable(output)
+}
+
+// admitDarwinGitExecutable validates the developer tool query before its path is
+// passed to any retained-descriptor Git helper.
+func admitDarwinGitExecutable(output []byte) (string, error) {
 	gitExecutable := strings.TrimSpace(string(output))
 	if !filepath.IsAbs(gitExecutable) {
 		return "", fmt.Errorf("xcrun returned a non-absolute Git path: %q", gitExecutable)

@@ -338,7 +338,7 @@ func TestSlCovValidatePrivatePlanHarnessFailures(t *testing.T) {
 func TestSlCovValidatePrivateParkPlanHarnessExecutable(t *testing.T) {
 	state, plan, _, _ := slCovParkFixture(t)
 	plan.HarnessExecutable = filepath.Join(t.TempDir(), "codex")
-	if _, err := validatePrivateParkPlan(state, plan); err == nil || !strings.Contains(err.Error(), "harness executable") {
+	if _, err := validatePrivateParkPlanWithDirectory(state, plan, os.Getwd, os.Stat); err == nil || !strings.Contains(err.Error(), "harness executable") {
 		t.Fatalf("invalid parked harness executable = %v", err)
 	}
 }

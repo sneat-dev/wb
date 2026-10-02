@@ -83,6 +83,10 @@ func readAdoptedWorktreePointer(path string) (string, bool) {
 // otherwise touching the worktree itself. operationDirectory is the held,
 // locked task directory (see prepareOperationRoot/acquireLockAt).
 func createAdoptionRegistration(operationDirectory *os.File, operationRoot, owner, repository, worktree string, now time.Time) (string, error) {
+	return createAdoptionRegistrationWithObservation(operationDirectory, operationRoot, owner, repository, worktree, now, nil)
+}
+
+func createAdoptionRegistrationWithObservation(operationDirectory *os.File, operationRoot, owner, repository, worktree string, now time.Time, beforeIdentity func(string)) (string, error) {
 	ownerFD, err := openOrCreateNoFollowDirectory(int(operationDirectory.Fd()), owner)
 	if err != nil {
 		return "", err
@@ -100,6 +104,9 @@ func createAdoptionRegistration(operationDirectory *os.File, operationRoot, owne
 	repositoryDirectory := os.NewFile(uintptr(repositoryFD), "wb-adopt-registration")
 	defer func() { _ = repositoryDirectory.Close() }()
 	registrationPath := filepath.Join(ownerPath, repository)
+	if beforeIdentity != nil {
+		beforeIdentity(registrationPath)
+	}
 	if !directoryStillMatches(registrationPath, repositoryDirectory) {
 		return "", fmt.Errorf("adopted worktree registration path changed before writing; refusing redirected registration")
 	}
@@ -168,6 +175,10 @@ type AdoptResult struct {
 
 // Adopt is documented on the package-level comment above.
 func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
+	return adoptWithHomeObservation(ctx, options, nil)
+}
+
+func adoptWithHomeObservation(ctx context.Context, options AdoptOptions, beforeHome func()) ([]AdoptResult, error) {
 	projectsRoot, err := absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
 		return nil, err
@@ -226,6 +237,9 @@ func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
 
+	if beforeHome != nil {
+		beforeHome()
+	}
 	home, err := wbhome.Root(projectsRoot)
 	if err != nil {
 		return nil, err
