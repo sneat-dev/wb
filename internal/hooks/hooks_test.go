@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 	// remotes pushed to over a local transport are also configured
 	// directly with testenv.ConfigureGitAutoMaintenanceOff.
 	testenv.GitAutoMaintenanceOffProcess()
-	os.Exit(m.Run())
+	os.Exit(runWithPrivateUser(m))
 }
 
 func TestLoadPolicyLayersGlobalAndRepositoryTemplates(t *testing.T) {
