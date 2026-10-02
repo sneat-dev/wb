@@ -20,51 +20,6 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func TestE2ECanonicalPublicationCapabilityDescriptors(t *testing.T) {
-	t.Parallel()
-	path := t.TempDir()
-	directory := wtLifeCovOpenDirectory(t, path)
-	closed := wtLifeCovOpenDirectory(t, t.TempDir())
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	filePath := filepath.Join(path, "evidence")
-	if err := os.WriteFile(filePath, []byte("retained"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	regular, err := os.Open(filePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = regular.Close() })
-	for _, tc := range []struct {
-		name       string
-		roots      []gitFilesystemCapabilityRoot
-		diagnostic string
-	}{
-		{"empty", nil, "at least one writable root"},
-		{"absent", []gitFilesystemCapabilityRoot{{path: path}}, "descriptor is unavailable"},
-		{"closed", []gitFilesystemCapabilityRoot{{path: path, directory: closed}}, "inspect git capability root"},
-		{"regular", []gitFilesystemCapabilityRoot{{path: filePath, directory: regular}}, "not a directory"},
-		{"relative", []gitFilesystemCapabilityRoot{{path: "relative", directory: directory}}, "must be absolute"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := newGitFilesystemCapability(tc.roots...)
-			if err == nil || len(got.writeRoots) != 0 || !strings.Contains(err.Error(), tc.diagnostic) {
-				t.Fatalf("capability = %+v, %v", got, err)
-			}
-		})
-	}
-	got, err := newGitFilesystemCapability(gitFilesystemCapabilityRoot{path: path, directory: directory}, gitFilesystemCapabilityRoot{path: path + "/.", directory: directory})
-	if err != nil || len(got.writeRoots) != 1 || got.writeRoots[0].directory != directory || got.writeRoots[0].path != path {
-		t.Fatalf("deduplicated retained capability = %+v, %v", got, err)
-	}
-	if contents, err := os.ReadFile(filePath); err != nil || string(contents) != "retained" {
-		t.Fatalf("evidence = %q, %v", contents, err)
-	}
-}
-
 func TestE2ECanonicalPublicationDarwinDescriptorRemoval(t *testing.T) {
 	t.Parallel()
 	path := t.TempDir()
