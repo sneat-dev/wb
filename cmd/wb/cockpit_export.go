@@ -169,6 +169,10 @@ func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, ro
 	// The method is a constant and the address is built from parts that were
 	// checked, so the request cannot fail to be made.
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, address.String(), nil)
+	// This read is another machine's daemon reading this one, not a person
+	// looking at the Cockpit: it must not count as demand for this daemon's own
+	// reads of other machines.
+	request.Header.Set(cockpitfleet.ExportReaderHeader, "1")
 	response, err := client.Do(request)
 	if err != nil {
 		return errDaemonNotRunning

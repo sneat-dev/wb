@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"sync/atomic"
@@ -21,6 +23,7 @@ import (
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/prwatch"
+	"github.com/sneat-dev/wb/internal/remotessh"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/remotestate/periodic"
@@ -78,8 +81,16 @@ func newLocalSampler(projectsRoot string, logf func(string, ...any), tick func(t
 // statistics of each checkout's index (the snapshotter alone asks it).
 // cockpit.pull_request_limit, when set, bounds the pull requests the
 // snapshotter observes on GitHub in one pass and cockpit.pull_request_hourly_budget
-// the observations in a rolling hour, through a prwatch.Watcher.
+// the observations in a rolling hour, through a prwatch.Watcher. The SSH
+// transport of the other machines runs with the daemon's own seams
+// (daemonCockpitSSH).
 func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error)) cockpitfleet.Options {
+	return cockpitFleetOptionsWith(projectsRoot, home, configPath, config, logs, hostname, daemonCockpitSSH())
+}
+
+// cockpitFleetOptionsWith is cockpitFleetOptions over the given SSH seams, so a
+// test never holds the runner that starts a real ssh.
+func cockpitFleetOptionsWith(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error), ssh cockpitSSH) cockpitfleet.Options {
 	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(logs, "wb: "+format+"\n", args...) }
 	machine, err := hostname()
 	if err != nil || machine == "" {
@@ -109,11 +120,11 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	if config.CodeIndexProvider == wbconfig.CodeIndexProviderCodeGrapher {
 		local.CodeIndexProvider = cockpitfleet.CodeGrapherProvider{IndexerName: config.CodeIndexIndexer}
 	}
-	targets, transports := cockpitRemotes(configPath, config, logf)
+	targets, transports, sshRoutes := cockpitRemotes(configPath, config, logf, ssh)
 	return cockpitfleet.Options{
 		Machine: machine, Version: collectVersion().Version, Hardware: cockpitfleet.LocalHardware(), ProjectsRoot: projectsRoot,
 		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: withHerdrActivity(local.Collectors(remote)), Interval: config.RefreshInterval,
-		Remotes: targets, Transports: transports,
+		Remotes: targets, Transports: transports, SSHRoutes: sshRoutes,
 		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
 		Publisher:    publisher,
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
@@ -121,60 +132,109 @@ func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.
 	}
 }
 
-// cockpitRemotes is the other machines the daemon reads live and the transports
-// it reads them over (cockpit-views#req:remote-http-fetch). Every address and
-// credential comes from wb.yaml alone: a machine is a key of
-// session_move.targets with an http section, whose url is where its
-// daemon-hosted hub answers and whose token_file holds the machine credential
-// for it. A machine whose http section names no token_file is read only when
-// its url is the hub this machine is already enrolled with (remote.provider:
-// hub and the same origin as remote.url), and then with remote.token_file; the
-// remote section itself names no machine, so the target key is what says which
-// machine the hub runs on. With cockpit.remote_http false, no session_move
-// section or no http section, nothing is returned and no request is ever made.
-// A target named as this machine is dropped by the snapshotter.
-func cockpitRemotes(configPath string, config wbconfig.CockpitConfig, logf func(string, ...any)) ([]cockpitfleet.RemoteTarget, []cockpitfleet.RemoteTransport) {
-	if !config.RemoteHTTP {
-		return nil, nil
-	}
+// cockpitRemotes is the other machines the daemon reads live, the transports it
+// reads them over (cockpit-views#req:remote-http-fetch, #req:remote-ssh-fetch)
+// and every configured machine's SSH route. Every address and credential comes
+// from wb.yaml alone: a machine is a key of session_move.targets.
+//
+// HTTP: a machine with an http section, whose url is where its daemon-hosted hub
+// answers and whose token_file holds the machine credential for it. A machine
+// whose http section names no token_file is read only when its url is the hub
+// this machine is already enrolled with (remote.provider: hub and the same
+// origin as remote.url), and then with remote.token_file; the remote section
+// itself names no machine, so the target key is what says which machine the hub
+// runs on. cockpit.remote_http: false turns it off.
+//
+// SSH: a machine with an ssh section (host, user, wb_path, which
+// sessionmove.LoadConfig has validated). cockpit.remote_ssh: false turns it off:
+// no machine then has an SSH route to read and no SSH transport exists, so no
+// ssh process is ever started. HTTP is asked first and SSH after it.
+//
+// The routes returned third are every ssh section, whatever cockpit.remote_ssh
+// says: they are what an owner's "Copy command" entries are built from, and
+// nothing is run with them.
+//
+// With no session_move section nothing is returned, no request is ever made and
+// no process is ever started. A target named as this machine is dropped by the
+// snapshotter.
+func cockpitRemotes(configPath string, config wbconfig.CockpitConfig, logf func(string, ...any), ssh cockpitSSH) ([]cockpitfleet.RemoteTarget, []cockpitfleet.RemoteTransport, map[string]cockpitfleet.SSHRoute) {
 	moves, err := sessionmove.LoadConfig(configPath)
 	if err != nil {
 		var unconfigured *sessionmove.UnconfiguredError
 		if !errors.As(err, &unconfigured) {
 			logf("cockpit fleet: other machines are not read live: %v", err)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	hubURL, hubTokenFile := "", ""
 	if remote, loadErr := remotestate.LoadConfig(configPath); loadErr == nil && remote.Provider == "hub" {
 		hubURL, hubTokenFile = remote.URL, remote.TokenFile
 	}
 	var targets []cockpitfleet.RemoteTarget
-	for machine, target := range moves.Targets {
-		if target.HTTP == nil {
+	routes := map[string]cockpitfleet.SSHRoute{}
+	overHTTP, overSSH := false, false
+	for machine, configured := range moves.Targets {
+		target := cockpitfleet.RemoteTarget{Machine: machine}
+		if configured.HTTP != nil && config.RemoteHTTP {
+			route := cockpitfleet.HTTPRoute{URL: configured.HTTP.URL, TokenFile: configured.HTTP.TokenFile}
+			switch {
+			case route.TokenFile != "":
+				target.HTTP = &route
+			case hubURL != "" && sameOrigin(hubURL, route.URL):
+				route.TokenFile = hubTokenFile
+				target.HTTP = &route
+			default:
+				logf("cockpit fleet: %s is not read over http: its http section names no token_file and its url is not the hub this machine is enrolled with", machine)
+			}
+		}
+		if configured.SSH != nil {
+			route := cockpitfleet.SSHRoute{Host: configured.SSH.Host, User: configured.SSH.User, WBPath: configured.SSH.WBPath}
+			routes[machine] = route
+			if config.RemoteSSH {
+				target.SSH = &route
+			}
+		}
+		if target.HTTP == nil && target.SSH == nil {
 			continue
 		}
-		route := cockpitfleet.HTTPRoute{URL: target.HTTP.URL, TokenFile: target.HTTP.TokenFile}
-		if route.TokenFile == "" {
-			if hubURL == "" || !sameOrigin(hubURL, route.URL) {
-				logf("cockpit fleet: %s is not read over http: its http section names no token_file and its url is not the hub this machine is enrolled with", machine)
-				continue
-			}
-			route.TokenFile = hubTokenFile
-		}
-		targets = append(targets, cockpitfleet.RemoteTarget{Machine: machine, HTTP: &route})
-	}
-	if len(targets) == 0 {
-		return nil, nil
+		overHTTP, overSSH = overHTTP || target.HTTP != nil, overSSH || target.SSH != nil
+		targets = append(targets, target)
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Machine < targets[j].Machine })
-	return targets, []cockpitfleet.RemoteTransport{{Name: cockpitfleet.TransportHTTP, Exporter: cockpitfleet.NewHTTPExporter(nil)}}
+	var transports []cockpitfleet.RemoteTransport
+	if overHTTP {
+		transports = append(transports, cockpitfleet.RemoteTransport{Name: cockpitfleet.TransportHTTP, Exporter: cockpitfleet.NewHTTPExporter(nil)})
+	}
+	if overSSH {
+		transports = append(transports, cockpitfleet.RemoteTransport{Name: cockpitfleet.TransportSSH, Exporter: cockpitfleet.NewSSHExporter(ssh.find, ssh.runner, nil, logf)})
+	}
+	return targets, transports, routes
 }
 
-// withoutOwnAddress is targets less any whose http url is this daemon's own
-// listener: reading it would show this machine a second time under another
-// machine's name. The listener is address, or any loopback name on its port. A
-// dropped target is logged by its configured key, never by its url.
+// cockpitSSH is what the SSH transport runs with: what finds the local ssh
+// executable and the runner of it.
+type cockpitSSH struct {
+	find   func() (string, error)
+	runner remotessh.Runner
+}
+
+// daemonCockpitSSH is the daemon's: the system's own ssh, or the one on the PATH
+// when no other process could have replaced it (remotessh.ResolveTrusted), and
+// the runner that gives ssh an allow-listed environment and kills the whole
+// process group of one that overruns its time.
+func daemonCockpitSSH() cockpitSSH {
+	return cockpitSSH{runner: remotessh.GroupRunner{}, find: func() (string, error) {
+		// A home directory that cannot be named is not checked against.
+		home, _ := os.UserHomeDir()
+		return remotessh.ResolveTrusted(exec.LookPath, remotessh.SystemExecutable, home)
+	}}
+}
+
+// withoutOwnAddress is targets less the http route of any whose http url is this
+// daemon's own listener: reading it would show this machine a second time under
+// another machine's name. The listener is address, or any loopback name on its
+// port. Such a target is kept only when it also has an SSH route. It is logged
+// by its configured key, never by its url.
 func withoutOwnAddress(targets []cockpitfleet.RemoteTarget, address string, logf func(string, ...any)) []cockpitfleet.RemoteTarget {
 	_, ownPort, err := net.SplitHostPort(address)
 	if err != nil {
@@ -185,7 +245,10 @@ func withoutOwnAddress(targets []cockpitfleet.RemoteTarget, address string, logf
 		if target.HTTP != nil {
 			if parsed, parseErr := url.Parse(hubaddress.Origin(target.HTTP.URL)); parseErr == nil && (parsed.Host == address || (hubaddress.IsLoopbackHost(parsed.Hostname()) && parsed.Port() == ownPort)) {
 				logf("cockpit fleet: %s is not read over http: its http url is this daemon's own address", target.Machine)
-				continue
+				if target.SSH == nil {
+					continue
+				}
+				target.HTTP = nil
 			}
 		}
 		kept = append(kept, target)

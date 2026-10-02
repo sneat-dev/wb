@@ -139,9 +139,17 @@ func newLive(t *testing.T, sources *fakeSources, exporter RemoteExporter, change
 	})
 }
 
-// pollAndSettle runs one look of the background loop and waits for the exports
-// it started.
+// pollAndSettle runs one look of the background loop, as it is while a client
+// reads the fleet document, and waits for the exports it started. pollIdle is
+// the same look with no reader.
 func pollAndSettle(t *testing.T, snapshotter *Snapshotter) {
+	t.Helper()
+	snapshotter.fleetAsked.Store(snapshotter.now().UnixNano())
+	snapshotter.pollRemotes(t.Context())
+	snapshotter.side.Wait()
+}
+
+func pollIdle(t *testing.T, snapshotter *Snapshotter) {
 	t.Helper()
 	snapshotter.pollRemotes(t.Context())
 	snapshotter.side.Wait()
@@ -322,24 +330,50 @@ func TestRemoteScheduleSaysWhenAnExportIsDue(t *testing.T) {
 	t.Parallel()
 	start := newClock().Now()
 	at := func(seconds int) time.Time { return start.Add(time.Duration(seconds) * time.Second) }
+	// viewed is a schedule of a machine whose fleet a client is reading.
+	viewed := func(schedule remoteSchedule) remoteSchedule {
+		schedule.viewed, schedule.idleFleet = at(0), schedule.nextFleet.Add(idleKeepalive)
+		return schedule
+	}
 	for name, test := range map[string]struct {
 		schedule           remoteSchedule
 		now                time.Time
 		fetch, metricsOnly bool
 	}{
 		"a new machine is read at once":      {remoteSchedule{}, at(0), true, false},
-		"not before its time":                {remoteSchedule{nextFleet: at(60)}, at(59), false, false},
-		"at its time":                        {remoteSchedule{nextFleet: at(60)}, at(60), true, false},
-		"metrics while asked":                {remoteSchedule{nextFleet: at(60), nextMetrics: at(30), asked: at(20)}, at(30), true, true},
-		"not before thirty seconds":          {remoteSchedule{nextFleet: at(60), nextMetrics: at(30), asked: at(20)}, at(29), false, false},
-		"not when nobody asked":              {remoteSchedule{nextFleet: at(60), nextMetrics: at(30)}, at(45), false, false},
-		"sixty seconds after the last ask":   {remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(20)}, at(80), true, true},
-		"not after the window closes":        {remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(20)}, at(81), false, false},
-		"not while the machine is failing":   {remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(40), failures: 1}, at(45), false, false},
-		"the fleet export comes first":       {remoteSchedule{nextFleet: at(60), nextMetrics: at(30), asked: at(55)}, at(60), true, false},
-		"a failing machine's fleet is still": {remoteSchedule{nextFleet: at(60), failures: 3}, at(60), true, false},
+		"not before its time":                {viewed(remoteSchedule{nextFleet: at(60)}), at(59), false, false},
+		"at its time":                        {viewed(remoteSchedule{nextFleet: at(60)}), at(60), true, false},
+		"metrics while asked":                {viewed(remoteSchedule{nextFleet: at(60), nextMetrics: at(30), asked: at(20)}), at(30), true, true},
+		"not before thirty seconds":          {viewed(remoteSchedule{nextFleet: at(60), nextMetrics: at(30), asked: at(20)}), at(29), false, false},
+		"not when nobody asked":              {viewed(remoteSchedule{nextFleet: at(60), nextMetrics: at(30)}), at(45), false, false},
+		"sixty seconds after the last ask":   {viewed(remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(20)}), at(80), true, true},
+		"not after the window closes":        {viewed(remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(20)}), at(81), false, false},
+		"not while the machine is failing":   {viewed(remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(40), failures: 1}), at(45), false, false},
+		"the fleet export comes first":       {viewed(remoteSchedule{nextFleet: at(60), nextMetrics: at(30), asked: at(55)}), at(60), true, false},
+		"a failing machine's fleet is still": {viewed(remoteSchedule{nextFleet: at(60), failures: 3}), at(60), true, false},
+		// With no reader of the fleet document a machine is read once per keepalive.
+		"nobody ever read: not at its interval":  {remoteSchedule{nextFleet: at(60), idleFleet: at(900)}, at(60), false, false},
+		"nobody ever read: at its keepalive":     {remoteSchedule{nextFleet: at(60), idleFleet: at(900)}, at(900), true, false},
+		"nobody ever read: not before it":        {remoteSchedule{nextFleet: at(60), idleFleet: at(900)}, at(899), false, false},
+		"a reader five minutes ago still counts": {remoteSchedule{nextFleet: at(60), idleFleet: at(900), viewed: at(100)}, at(400), true, false},
+		"a reader longer ago does not":           {remoteSchedule{nextFleet: at(60), idleFleet: at(900), viewed: at(100)}, at(401), false, false},
+		"the first reader after a quiet time":    {remoteSchedule{nextFleet: at(60), idleFleet: at(900), viewed: at(700)}, at(700), true, false},
+		"a reader does not hurry the interval":   {remoteSchedule{nextFleet: at(760), idleFleet: at(1600), viewed: at(730)}, at(759), false, false},
+		"metrics are asked for with no reader":   {remoteSchedule{nextFleet: at(60), idleFleet: at(900), nextMetrics: at(30), asked: at(20)}, at(30), true, true},
+		"a failing machine with no reader waits": {remoteSchedule{nextFleet: at(120), idleFleet: at(900), failures: 1}, at(120), false, false},
+		// Every export is a login: none of either kind starts within 30 seconds of
+		// the last one's start.
+		"a fleet export too soon after a login": {viewed(remoteSchedule{nextFleet: at(70), earliest: at(90)}), at(70), false, false},
+		"a fleet export once the floor passed":  {viewed(remoteSchedule{nextFleet: at(70), earliest: at(90)}), at(90), true, false},
+		"metrics too soon after a login":        {viewed(remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(40), earliest: at(75)}), at(60), false, false},
+		"metrics once the floor passed":         {viewed(remoteSchedule{nextFleet: at(600), nextMetrics: at(30), asked: at(40), earliest: at(75)}), at(75), true, true},
+		"a keepalive too soon after a login":    {remoteSchedule{idleFleet: at(900), earliest: at(920)}, at(900), false, false},
+		// A refused SSH login bars SSH: a machine with no other transport waits.
+		"ssh alone and barred":                     {viewed(remoteSchedule{nextFleet: at(120), authUntil: at(240)}), at(120), false, false},
+		"ssh alone, the bar over":                  {viewed(remoteSchedule{nextFleet: at(120), authUntil: at(240)}), at(240), true, false},
+		"another transport is not held by the bar": {viewed(remoteSchedule{nextFleet: at(120), authUntil: at(240)}), at(120), true, false},
 	} {
-		if fetch, metricsOnly := test.schedule.due(test.now); fetch != test.fetch || metricsOnly != test.metricsOnly {
+		if fetch, metricsOnly := test.schedule.due(test.now, strings.HasPrefix(name, "ssh alone")); fetch != test.fetch || metricsOnly != test.metricsOnly {
 			t.Errorf("%s: due = %v %v, want %v %v", name, fetch, metricsOnly, test.fetch, test.metricsOnly)
 		}
 	}
@@ -354,40 +388,75 @@ func TestRemoteScheduleBacksOffByDoublingUpToFiveMinutes(t *testing.T) {
 	for name, test := range map[string]struct {
 		interval time.Duration
 		failures int
+		limit    time.Duration
 		want     time.Duration
 	}{
-		"no failure":            {time.Minute, 0, time.Minute},
-		"one":                   {time.Minute, 1, 2 * time.Minute},
-		"two":                   {time.Minute, 2, 4 * time.Minute},
-		"three is capped":       {time.Minute, 3, 5 * time.Minute},
-		"many stay capped":      {time.Minute, 60, 5 * time.Minute},
-		"a short interval":      {10 * time.Second, 4, 160 * time.Second},
-		"a short one is capped": {10 * time.Second, 5, 5 * time.Minute},
-		"a long interval":       {10 * time.Minute, 4, 10 * time.Minute},
+		"no failure":                {time.Minute, 0, maxRemoteBackoff, time.Minute},
+		"one":                       {time.Minute, 1, maxRemoteBackoff, 2 * time.Minute},
+		"two":                       {time.Minute, 2, maxRemoteBackoff, 4 * time.Minute},
+		"three is capped":           {time.Minute, 3, maxRemoteBackoff, 5 * time.Minute},
+		"many stay capped":          {time.Minute, 60, maxRemoteBackoff, 5 * time.Minute},
+		"a short interval":          {10 * time.Second, 4, maxRemoteBackoff, 160 * time.Second},
+		"a short one is capped":     {10 * time.Second, 5, maxRemoteBackoff, 5 * time.Minute},
+		"a long interval":           {10 * time.Minute, 4, maxRemoteBackoff, 10 * time.Minute},
+		"a refused login, five":     {time.Minute, 5, maxAuthBackoff, 32 * time.Minute},
+		"a refused login is capped": {time.Minute, 6, maxAuthBackoff, time.Hour},
+		"a refused login stays":     {time.Minute, 600, maxAuthBackoff, time.Hour},
+		"an interval over that cap": {2 * time.Hour, 3, maxAuthBackoff, 2 * time.Hour},
 	} {
-		if got := remoteBackoff(test.interval, test.failures); got != test.want {
+		if got := remoteBackoff(test.interval, test.failures, test.limit); got != test.want {
 			t.Errorf("%s: backoff = %v, want %v", name, got, test.want)
 		}
 	}
+	if keepalive(time.Minute) != 15*time.Minute || keepalive(30*time.Minute) != 30*time.Minute {
+		t.Error("the keepalive is 15 minutes, or the interval when that is longer")
+	}
 	start := newClock().Now()
-	schedule := remoteSchedule{asked: start}.after(start, false, true, time.Minute)
-	if schedule.failures != 0 || !schedule.nextFleet.Equal(start.Add(time.Minute)) || !schedule.nextMetrics.Equal(start.Add(30*time.Second)) {
+	fleet, only := exported{ok: true}, exported{ok: true, metricsOnly: true}
+	schedule := remoteSchedule{asked: start}.after(start, fleet, time.Minute)
+	if schedule.failures != 0 || !schedule.nextFleet.Equal(start.Add(time.Minute)) || !schedule.idleFleet.Equal(start.Add(15*time.Minute)) || !schedule.nextMetrics.Equal(start.Add(30*time.Second)) || !schedule.earliest.Equal(start.Add(30*time.Second)) {
 		t.Errorf("after a fleet success = %+v", schedule)
 	}
-	only := schedule.after(start.Add(30*time.Second), true, true, time.Minute)
-	if !only.nextFleet.Equal(schedule.nextFleet) || !only.nextMetrics.Equal(start.Add(60*time.Second)) {
-		t.Errorf("after a metrics-only success = %+v", only)
+	onlyDone := schedule.after(start.Add(30*time.Second), only, time.Minute)
+	if !onlyDone.nextFleet.Equal(schedule.nextFleet) || !onlyDone.idleFleet.Equal(schedule.idleFleet) || !onlyDone.nextMetrics.Equal(start.Add(60*time.Second)) || !onlyDone.earliest.Equal(start.Add(60*time.Second)) {
+		t.Errorf("after a metrics-only success = %+v", onlyDone)
 	}
-	failedOnly := schedule.after(start.Add(30*time.Second), true, false, time.Minute)
-	if failedOnly.failures != 1 || !failedOnly.nextFleet.Equal(schedule.nextFleet) {
+	// A metrics-only export that fails still holds the next login of either kind
+	// back, and leaves the fleet export's time alone.
+	failedOnly := schedule.after(start.Add(30*time.Second), exported{metricsOnly: true}, time.Minute)
+	if failedOnly.failures != 1 || !failedOnly.nextFleet.Equal(schedule.nextFleet) || !failedOnly.idleFleet.Equal(schedule.idleFleet) || !failedOnly.earliest.Equal(start.Add(60*time.Second)) {
 		t.Errorf("after a metrics-only failure = %+v", failedOnly)
 	}
-	failed := schedule.after(start.Add(time.Minute), false, false, time.Minute).after(start.Add(3*time.Minute), false, false, time.Minute)
-	if failed.failures != 2 || !failed.nextFleet.Equal(start.Add(7*time.Minute)) {
+	if fetch, _ := failedOnly.due(start.Add(59*time.Second), true); fetch {
+		t.Error("an export is due within 30 seconds of a failed metrics-only one")
+	}
+	failed := schedule.after(start.Add(time.Minute), exported{}, time.Minute).after(start.Add(3*time.Minute), exported{}, time.Minute)
+	if failed.failures != 2 || !failed.nextFleet.Equal(start.Add(7*time.Minute)) || !failed.idleFleet.Equal(start.Add(18*time.Minute)) || failed.authFailures != 0 || !failed.authUntil.IsZero() {
 		t.Errorf("after two fleet failures = %+v", failed)
 	}
-	if cleared := failed.after(start.Add(7*time.Minute), false, true, time.Minute); cleared.failures != 0 || !cleared.nextFleet.Equal(start.Add(8*time.Minute)) {
+	if cleared := failed.after(start.Add(7*time.Minute), fleet, time.Minute); cleared.failures != 0 || !cleared.nextFleet.Equal(start.Add(8*time.Minute)) {
 		t.Errorf("a success after failures = %+v", cleared)
+	}
+	// A refused SSH login bars SSH for a delay that doubles to an hour, whichever
+	// kind of export met it, while the fleet export keeps its five-minute cap for
+	// the machine's other transport.
+	refused := remoteSchedule{failures: 6, authFailures: 6}.after(start, exported{refused: true}, time.Minute)
+	if !refused.authUntil.Equal(start.Add(time.Hour)) || !refused.nextFleet.Equal(start.Add(5*time.Minute)) || refused.authFailures != 7 || !refused.sshBarred(start.Add(59*time.Minute)) || refused.sshBarred(start.Add(time.Hour)) {
+		t.Errorf("after a seventh refused login = %+v", refused)
+	}
+	refusedOnly := schedule.after(start.Add(time.Minute), exported{metricsOnly: true, refused: true}, time.Minute)
+	if !refusedOnly.authUntil.Equal(start.Add(3*time.Minute)) || !refusedOnly.nextFleet.Equal(schedule.nextFleet) {
+		t.Errorf("after a metrics-only export met a refused login = %+v", refusedOnly)
+	}
+	if fetch, _ := refusedOnly.due(start.Add(2*time.Minute), true); fetch {
+		t.Error("a fleet export over ssh is due while ssh is barred by a refused metrics-only login")
+	}
+	// An answer over HTTP leaves the bar; an answer over SSH lifts it.
+	if overHTTP := refused.after(start.Add(time.Minute), fleet, time.Minute); !overHTTP.authUntil.Equal(refused.authUntil) || overHTTP.authFailures != 7 {
+		t.Errorf("an http answer lifted ssh's bar: %+v", overHTTP)
+	}
+	if overSSH := refused.after(start.Add(time.Hour), exported{ok: true, ssh: true}, time.Minute); !overSSH.authUntil.IsZero() || overSSH.authFailures != 0 {
+		t.Errorf("an ssh answer left its bar: %+v", overSSH)
 	}
 }
 
@@ -704,6 +773,8 @@ func TestStartRunsTheBackgroundReadsUntilItIsStopped(t *testing.T) {
 		t.Fatalf("exports after the start = %d, want 1", exporter.count())
 	}
 	clock.advance(DefaultInterval)
+	// A client is reading the fleet document: the machine is read every interval.
+	snapshotter.fleetAsked.Store(clock.Now().UnixNano())
 	ticks <- clock.Now()
 	ticks <- clock.Now()
 	snapshotter.side.Wait()

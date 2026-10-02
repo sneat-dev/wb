@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 )
 
@@ -76,11 +78,29 @@ const (
 	// whose metrics a client asked for within metricsDemandWindow.
 	metricsOnlyInterval = 30 * time.Second
 	metricsDemandWindow = 60 * time.Second
-	// maxRemoteBackoff caps the delay between attempts on a machine that fails.
+	// maxRemoteBackoff caps the delay between attempts on a machine that fails,
+	// and maxAuthBackoff the delay before SSH is tried again after a refused
+	// login (auth_failed): a login that is refused stays refused until a person
+	// repairs it, and each attempt is an entry in the remote's authentication
+	// log. It is SSH's alone: an HTTP route of the same machine keeps the other.
 	maxRemoteBackoff = 5 * time.Minute
+	maxAuthBackoff   = time.Hour
+	// fleetDemandWindow is how long after a read of the fleet document the other
+	// machines are still read once per refresh interval; with no reader they are
+	// read once per idleKeepalive (or per interval, when that is longer).
+	fleetDemandWindow = 5 * time.Minute
+	idleKeepalive     = 15 * time.Minute
+	// minRemoteInterval is the least time between the starts of two exports of a
+	// machine, of either kind and whatever came of the first, and so also the
+	// least refresh interval a machine is read at, whatever
+	// cockpit.refresh_interval says.
+	minRemoteInterval = 30 * time.Second
 	// remoteExportTimeout bounds one machine's export over all its transports,
 	// whatever a transport's own timeout is.
 	remoteExportTimeout = 30 * time.Second
+	// fallbackCoolDown is how long a machine is read over SSH alone after its
+	// preferred transport failed and SSH answered.
+	fallbackCoolDown = 5 * time.Minute
 	// liveIntervals is how many refresh intervals an export stays fresh for.
 	liveIntervals = 2
 	// The most entries of one remote machine that are kept; what is over is cut
@@ -96,10 +116,11 @@ const (
 
 // RemoteTarget is one other machine the local configuration names. Machine is
 // its key in session_move.targets, and the only thing that places its entries.
-// HTTP is its HTTP route, nil when it has none.
+// HTTP is its HTTP route and SSH its SSH route, each nil when it has none.
 type RemoteTarget struct {
 	Machine string
 	HTTP    *HTTPRoute
+	SSH     *SSHRoute
 }
 
 // RemoteExporter reads one machine's export envelope over one transport. It is
@@ -210,27 +231,123 @@ func exportFrom(ctx context.Context, transports []RemoteTransport, target Remote
 	return exportResult{failure: last}
 }
 
+// fallback is one machine's cool-down on the SSH transport
+// (cockpit-views#req:remote-exporter-transports): until is when the preferred
+// transport is tried again and failure the code it failed with, which the
+// machine entry carries while SSH supplies its entries. It is a value, so the
+// rule is a pure function of it, the time and an export's outcome.
+type fallback struct {
+	until   time.Time
+	failure string
+}
+
+// active reports whether the machine is read over SSH alone at now.
+func (f fallback) active(now time.Time) bool {
+	return f.failure != "" && now.Before(f.until)
+}
+
+// after is the cool-down once an export started at started has ended as result:
+//
+//   - the preferred transport failed and SSH answered: the cool-down starts, for
+//     fallbackCoolDown from started, with the preferred transport's failure;
+//   - SSH answered within a cool-down (the preferred transport was not asked):
+//     the cool-down goes on, unchanged;
+//   - a remote that is warming up says nothing of either: unchanged;
+//   - anything else ends it: a failed export (so the next attempt asks the
+//     preferred transport again), an answer of the preferred transport, or SSH
+//     answering a machine that has no other route.
+func (f fallback) after(started time.Time, result exportResult) fallback {
+	switch {
+	case result.warming:
+		return f
+	case !result.ok || result.transport != TransportSSH:
+		return fallback{}
+	case result.failure != "":
+		return fallback{until: started.Add(fallbackCoolDown), failure: result.failure}
+	case f.active(started):
+		return f
+	}
+	return fallback{}
+}
+
+// routed is the transports an export may use: all of them, in order; SSH alone
+// within a cool-down; and every one but SSH while SSH is barred after a refused
+// login, which comes first.
+func routed(transports []RemoteTransport, cooling, sshBarred bool) []RemoteTransport {
+	if !cooling && !sshBarred {
+		return transports
+	}
+	var kept []RemoteTransport
+	for _, transport := range transports {
+		if (transport.Name == TransportSSH) != sshBarred {
+			kept = append(kept, transport)
+		}
+	}
+	return kept
+}
+
 // remoteSchedule is when one machine is next read. It is a value so that the
-// rule is a pure function of it and the time.
+// rule is a pure function of it and the time. The rule is the same for every
+// transport: it is the scheduler's, not an exporter's.
 type remoteSchedule struct {
-	// nextFleet is when the next fleet export is due; the zero time is at once.
+	// nextFleet is when the next fleet export is due while a client reads the
+	// fleet document, and idleFleet when it is due with no reader; the zero time
+	// is at once.
 	nextFleet time.Time
+	idleFleet time.Time
 	// nextMetrics is the earliest time of the next metrics-only export.
 	nextMetrics time.Time
-	// asked is when a client last asked for this machine's metrics.
-	asked time.Time
+	// viewed is when a client last read the fleet document, and asked when one
+	// last asked for this machine's metrics.
+	viewed time.Time
+	asked  time.Time
 	// failures counts the attempts that failed since the last success.
 	failures int
+	// earliest is the soonest any export of the machine, of either kind, may
+	// start: every export is a login to it.
+	earliest time.Time
+	// authFailures counts the SSH logins that were refused since the last export
+	// SSH answered, and authUntil is until when SSH is not tried again.
+	authFailures int
+	authUntil    time.Time
+}
+
+// exported is how one export ended, as far as the schedule cares: which kind it
+// was, whether it brought an envelope, whether SSH supplied it, and whether it
+// failed with a refused SSH login (auth_failed).
+type exported struct {
+	metricsOnly, ok, ssh, refused bool
+}
+
+// sshBarred reports whether SSH is not to be tried at now, after a refused
+// login. The bar is on that transport alone: a machine that also has an HTTP
+// route is still read over it, on the ordinary backoff.
+func (r remoteSchedule) sshBarred(now time.Time) bool {
+	return now.Before(r.authUntil)
 }
 
 // due reports whether an export is due at now, and whether it is the
-// metrics-only one: a fleet export when its time has come; else a metrics-only
-// export while a client asked for the machine's metrics within
-// metricsDemandWindow, at most every metricsOnlyInterval, and only while the
-// machine is not failing (a failing machine is retried by its fleet export's
-// backoff alone).
-func (r remoteSchedule) due(now time.Time) (fetch, metricsOnly bool) {
-	if !now.Before(r.nextFleet) {
+// metrics-only one. sshAlone says SSH is the machine's only transport.
+//
+// Nothing is due before earliest (minRemoteInterval after the last export of
+// either kind started, whatever came of it), nor, for a machine read over SSH
+// alone, while SSH is barred after a refused login.
+//
+// A fleet export is due when a client read the fleet document
+// within fleetDemandWindow and the machine's interval has passed (nextFleet), or,
+// with no such reader, when its keepalive has (idleFleet); a machine never read
+// is due at once. So the first reader after a quiet time finds the export due
+// and is served fresh entries one request later, while nobody's fleet is read
+// every interval for nobody. Else a metrics-only export is due while a client
+// asked for the machine's metrics within metricsDemandWindow, at most every
+// metricsOnlyInterval, and only while the machine is not failing (a failing
+// machine is retried by its fleet export's backoff alone).
+func (r remoteSchedule) due(now time.Time, sshAlone bool) (fetch, metricsOnly bool) {
+	if now.Before(r.earliest) || (sshAlone && r.sshBarred(now)) {
+		return false, false
+	}
+	viewed := !r.viewed.IsZero() && now.Sub(r.viewed) <= fleetDemandWindow
+	if (viewed && !now.Before(r.nextFleet)) || !now.Before(r.idleFleet) {
 		return true, false
 	}
 	if r.failures == 0 && !r.asked.IsZero() && now.Sub(r.asked) <= metricsDemandWindow && !now.Before(r.nextMetrics) {
@@ -239,34 +356,55 @@ func (r remoteSchedule) due(now time.Time) (fetch, metricsOnly bool) {
 	return false, false
 }
 
-// after is the schedule once an export started at started has ended. A success
-// clears the failures and sets the next fleet export one interval on (for a
-// fleet export) and the next metrics-only export metricsOnlyInterval on (every
-// export carries the metrics). A failed fleet export is tried again after a
-// delay that doubles with each failure up to maxRemoteBackoff, and never sooner
-// than the interval; a failed metrics-only export leaves the fleet export's time
-// alone and stops the metrics-only exports until a success.
-func (r remoteSchedule) after(started time.Time, metricsOnly, ok bool, interval time.Duration) remoteSchedule {
-	if ok {
+// after is the schedule once an export started at started has ended as outcome.
+// Whatever came of it, and whichever kind it was, the next export of either kind
+// is at least minRemoteInterval on. A success
+// clears the failures, sets the next fleet export one interval on for a reader
+// and one keepalive on without one (for a fleet export), and the next
+// metrics-only export metricsOnlyInterval on (every export carries the
+// metrics). A failed fleet export is tried again after a delay that doubles
+// with each failure up to maxRemoteBackoff, never sooner than the interval and,
+// with no reader, never sooner than the keepalive; a failed metrics-only export
+// leaves the fleet export's time alone and stops the metrics-only exports until
+// a success. A refused SSH login, in an export of either kind, bars SSH for a
+// delay that doubles with each refusal up to maxAuthBackoff, for both kinds; an
+// export SSH answers lifts the bar.
+func (r remoteSchedule) after(started time.Time, outcome exported, interval time.Duration) remoteSchedule {
+	r.earliest = started.Add(minRemoteInterval)
+	switch {
+	case outcome.ok && outcome.ssh:
+		r.authFailures, r.authUntil = 0, time.Time{}
+	case !outcome.ok && outcome.refused:
+		r.authFailures++
+		r.authUntil = started.Add(remoteBackoff(interval, r.authFailures, maxAuthBackoff))
+	}
+	if outcome.ok {
 		r.failures = 0
 		r.nextMetrics = started.Add(metricsOnlyInterval)
-		if !metricsOnly {
-			r.nextFleet = started.Add(interval)
+		if !outcome.metricsOnly {
+			r.nextFleet, r.idleFleet = started.Add(interval), started.Add(keepalive(interval))
 		}
 		return r
 	}
 	r.failures++
-	if !metricsOnly {
-		r.nextFleet = started.Add(remoteBackoff(interval, r.failures))
+	if !outcome.metricsOnly {
+		delay := remoteBackoff(interval, r.failures, maxRemoteBackoff)
+		r.nextFleet, r.idleFleet = started.Add(delay), started.Add(max(delay, keepalive(interval)))
 	}
 	return r
 }
 
+// keepalive is the time between two fleet exports of a machine nobody is
+// looking at.
+func keepalive(interval time.Duration) time.Duration {
+	return max(idleKeepalive, interval)
+}
+
 // remoteBackoff is the delay before the attempt that follows failures failed
-// ones: the interval doubled for each, at most maxRemoteBackoff and never less
-// than the interval.
-func remoteBackoff(interval time.Duration, failures int) time.Duration {
-	limit := max(maxRemoteBackoff, interval)
+// ones: the interval doubled for each, at most limit and never less than the
+// interval.
+func remoteBackoff(interval time.Duration, failures int, limit time.Duration) time.Duration {
+	limit = max(limit, interval)
 	delay := interval
 	for range failures {
 		if delay >= limit {
@@ -292,7 +430,12 @@ type liveView struct {
 type liveMachine struct {
 	target   RemoteTarget
 	schedule remoteSchedule
-	busy     bool
+	// unansweredAt is when the last export that brought nothing was started: one
+	// that failed, or that found the remote warming up.
+	unansweredAt time.Time
+	// cooling is the machine's cool-down on SSH.
+	cooling fallback
+	busy    bool
 	// asked is when a client last asked for this machine's metrics, in
 	// nanoseconds since the epoch, and zero for never. It is set on a request
 	// path, so it is atomic and needs no exclusive lock.
@@ -327,9 +470,18 @@ type liveMachine struct {
 }
 
 // fresh reports whether the machine's last export is young enough to replace its
-// cached entries: received less than liveIntervals refresh intervals ago.
+// cached entries. It is, for liveIntervals refresh intervals from its receipt:
+// the bound a machine is held to while it is read every interval. A machine
+// nobody is looking at is read once per keepalive, so while no export of it
+// went unanswered since that receipt (none failed, none found it warming) its
+// entries, which carry their age, stay for a keepalive longer, until that read
+// is overdue.
 func (m *liveMachine) fresh(now time.Time, interval time.Duration) bool {
-	return m.fleet != nil && now.Sub(m.receivedAt) < liveIntervals*interval
+	bound := liveIntervals * interval
+	if !m.unansweredAt.After(m.receivedAt) {
+		bound += keepalive(interval)
+	}
+	return m.fleet != nil && now.Sub(m.receivedAt) < bound
 }
 
 // observedTime is the time a live-remote entry was observed at: the remote
@@ -616,7 +768,7 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time, withLive bo
 		for _, published := range cached {
 			s.liveIDs[published] = key
 		}
-		fresh, failure := machine.fresh(now, s.interval), machine.remoteError
+		fresh, failure := machine.fresh(now, s.remoteInterval()), machine.remoteError
 		if fresh && !withLive {
 			// Left out for the document's size: shown by its published entries, or
 			// a bare entry, with the reason.
@@ -731,7 +883,42 @@ func (s *Snapshotter) runRemotes(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticks:
+		case <-s.kick:
 		}
+	}
+}
+
+// sshAlone reports whether SSH is the only transport the machine can be read
+// over: it has no HTTP route, or the daemon has no HTTP transport.
+func (s *Snapshotter) sshAlone(machine *liveMachine) bool {
+	return machine.target.HTTP == nil || !slices.ContainsFunc(s.transports, func(transport RemoteTransport) bool { return transport.Name == TransportHTTP })
+}
+
+// remoteInterval is the time between two fleet exports of a machine a client is
+// reading: the refresh interval, and never less than minRemoteInterval.
+func (s *Snapshotter) remoteInterval() time.Duration {
+	return max(s.interval, minRemoteInterval)
+}
+
+// ExportReaderHeader is the request header by which the export verb says its
+// read of the fleet document is another machine's daemon reading this one, not
+// a person looking: such a read is not demand. Without it two machines that
+// read each other would each keep the other's fleet in demand for ever.
+const ExportReaderHeader = "X-Wb-Cockpit-Export"
+
+// fleetRead records that a client read the fleet document, which is what makes
+// the background loop read the other machines once per interval, and wakes the
+// loop when the last read was a while ago, so that an export that became due
+// with this read starts now and not at the loop's next step. It never reads
+// anything itself and takes no lock: the request is answered from what is held.
+func (s *Snapshotter) fleetRead() {
+	now := s.now().UnixNano()
+	if previous := s.fleetAsked.Swap(now); len(s.liveKeys) == 0 || now-previous < int64(remoteStep) {
+		return
+	}
+	select {
+	case s.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -754,7 +941,10 @@ func (s *Snapshotter) pollRemotes(ctx context.Context) {
 		if asked := machine.asked.Load(); asked != 0 {
 			schedule.asked = time.Unix(0, asked)
 		}
-		fetch, metricsOnly := schedule.due(now)
+		if viewed := s.fleetAsked.Load(); viewed != 0 {
+			schedule.viewed = time.Unix(0, viewed)
+		}
+		fetch, metricsOnly := schedule.due(now, s.sshAlone(machine))
 		if !fetch {
 			continue
 		}
@@ -765,6 +955,30 @@ func (s *Snapshotter) pollRemotes(ctx context.Context) {
 			s.exportRemote(ctx, machine, metricsOnly, now)
 		}()
 	}
+}
+
+// MachineRoutes is the SSH routes of the configured machines, by the ids their
+// machine entries have in the document: the id of each published entry of the
+// machine and, for one that is read live, its live id. It is what an owner
+// session's "Copy command" entries are built from
+// (cockpit-views#req:copy-the-command), and it is never part of the document,
+// of an export or of anything an anonymous reader is sent.
+func (s *Snapshotter) MachineRoutes() []cockpit.MachineRoute {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var routes []cockpit.MachineRoute
+	for _, key := range s.sshKeys {
+		route := s.sshRoutes[key]
+		ids := s.cachedMachinesOf(key)
+		if live := s.liveMachineID(key, ids); s.live[key] != nil && !slices.Contains(ids, live) {
+			ids = append(ids, live)
+		}
+		for _, id := range ids {
+			routes = append(routes, cockpit.MachineRoute{MachineID: id, SSH: cockpit.SSHRoute{Host: route.Host, User: route.User, WBPath: route.command()}})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].MachineID < routes[j].MachineID })
+	return routes
 }
 
 // exportRemote reads one machine's export and merges it. A full export replaces
@@ -780,7 +994,10 @@ func (s *Snapshotter) exportRemote(parent context.Context, machine *liveMachine,
 	ctx, cancel := context.WithTimeout(parent, remoteExportTimeout)
 	defer cancel()
 	key := machine.target.Machine
-	result := exportFrom(ctx, s.transports, machine.target, metricsOnly, s.now)
+	s.mu.RLock()
+	cooling, barred := machine.cooling.active(started), machine.schedule.sshBarred(started)
+	s.mu.RUnlock()
+	result := exportFrom(ctx, routed(s.transports, cooling, barred), machine.target, metricsOnly, s.now)
 	received := s.now()
 	var view liveView
 	var digest [sha256.Size]byte
@@ -828,7 +1045,10 @@ func (s *Snapshotter) ownExport(envelope Envelope) bool {
 // and a configured machine with no published entry stays visible.
 //
 // A metrics-only export never clears the failure: only a full export on the
-// preferred transport does.
+// preferred transport does. An export that SSH answered after the preferred
+// transport failed starts the machine's cool-down (fallback.after), within
+// which SSH alone is asked and the entry keeps the preferred transport's
+// failure.
 func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine, result exportResult, metricsOnly bool, started, received time.Time, view liveView, digest [sha256.Size]byte, size int, id string) (publish bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -836,14 +1056,27 @@ func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine,
 	if parent.Err() != nil {
 		return false
 	}
+	interval := s.remoteInterval()
+	if !result.ok {
+		machine.unansweredAt = started
+	}
+	held := machine.cooling
+	machine.cooling = held.after(started, result)
+	if result.ok && result.failure == "" && result.transport == TransportSSH && held.active(started) {
+		// SSH was asked alone: the entry still carries what the preferred transport
+		// failed with.
+		result.failure = held.failure
+	}
 	if result.warming {
-		if machine.fresh(received, s.interval) {
-			machine.schedule = machine.schedule.after(started, metricsOnly, true, s.interval)
+		if machine.fresh(received, interval) {
+			machine.schedule = machine.schedule.after(started, exported{metricsOnly: metricsOnly, ok: true}, interval)
 			return false
 		}
 		result = exportResult{failure: RemoteErrorWarmingUp}
 	}
-	machine.schedule = machine.schedule.after(started, metricsOnly, result.ok, s.interval)
+	machine.schedule = machine.schedule.after(started, exported{
+		metricsOnly: metricsOnly, ok: result.ok, ssh: result.transport == TransportSSH, refused: result.failure == RemoteErrorAuthFailed,
+	}, interval)
 	if !result.ok {
 		publish = machine.remoteError != result.failure
 		machine.remoteError = result.failure
@@ -864,7 +1097,7 @@ func (s *Snapshotter) recordExport(parent context.Context, machine *liveMachine,
 	machine.remoteError = result.failure
 	// An export whose entries are the ones already shown, by the same transport,
 	// publishes nothing: only the time it was received at moves on.
-	unchanged := machine.fresh(received, s.interval) && machine.mappedFor == id && machine.digest == digest && machine.transport == result.transport
+	unchanged := machine.fresh(received, interval) && machine.mappedFor == id && machine.digest == digest && machine.transport == result.transport
 	machine.fleet, machine.dropped, machine.observedAt, machine.receivedAt, machine.transport = result.envelope.Fleet, result.envelope.Dropped, observedTime(result.envelope, received), received, result.transport
 	machine.view, machine.mappedFor, machine.digest, machine.viewBytes = view, id, digest, size
 	if !unchanged {
@@ -890,7 +1123,7 @@ func (l liveMetrics) MachineMetrics(id string) (MetricsAnswer, bool) {
 		return MetricsAnswer{}, false
 	}
 	machine.asked.Store(now.UnixNano())
-	if machine.samples == nil || now.Sub(machine.metricsAt) >= liveIntervals*s.interval {
+	if machine.samples == nil || now.Sub(machine.metricsAt) >= liveIntervals*s.remoteInterval() {
 		return MetricsAnswer{}, false
 	}
 	fetched := machine.metricsAt

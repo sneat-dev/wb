@@ -500,20 +500,13 @@ func TestACredentialThatCannotBeUsedSendsNoRequest(t *testing.T) {
 	}
 }
 
-// TestHostilePayloadIsRefused proves cockpit-views#ac:hostile-payload-is-refused
-// over the HTTP transport, through the whole daemon path: a 9 MiB body, an
-// unknown top-level field, a 10,000-byte task name, a worktree carrying a path,
-// a negative count, a NaN, a sample 5 minutes in the future and 361 samples are
-// each refused as bad_payload; nothing of them is rendered (the machine's
-// published entries stay, with the code); and the fallback transport is not
-// tried, because a refused payload is not a transport failure.
-func TestHostilePayloadIsRefused(t *testing.T) {
-	t.Parallel()
-	full := exportOf(t, vmOwnName, vmSources(), 360, false)
-	valid := marshalled(t, full)
-	// The daemon's clock is a minute past the export's, so a 361st sample is
-	// refused for the cap and not for being in the future.
-	later := newClock().Now().Add(time.Minute)
+// hostilePayloads is the refused bodies of
+// cockpit-views#ac:hostile-payload-is-refused, each made from the valid
+// envelope: 9 MiB, an unknown top-level field, a 10,000-byte task name, a
+// worktree carrying a path, a negative count, a NaN, a sample 5 minutes after
+// later and 361 samples.
+func hostilePayloads(t *testing.T, valid []byte, later time.Time) map[string][]byte {
+	t.Helper()
 	edited := func(change func(root map[string]any)) []byte {
 		var root map[string]any
 		if err := json.Unmarshal(valid, &root); err != nil {
@@ -548,6 +541,24 @@ func TestHostilePayloadIsRefused(t *testing.T) {
 	if bytes.Equal(cases["a NaN"], valid) {
 		t.Fatal("the NaN case changed nothing")
 	}
+	return cases
+}
+
+// TestHostilePayloadIsRefused proves cockpit-views#ac:hostile-payload-is-refused
+// over the HTTP transport, through the whole daemon path: a 9 MiB body, an
+// unknown top-level field, a 10,000-byte task name, a worktree carrying a path,
+// a negative count, a NaN, a sample 5 minutes in the future and 361 samples are
+// each refused as bad_payload; nothing of them is rendered (the machine's
+// published entries stay, with the code); and the fallback transport is not
+// tried, because a refused payload is not a transport failure.
+func TestHostilePayloadIsRefused(t *testing.T) {
+	t.Parallel()
+	full := exportOf(t, vmOwnName, vmSources(), 360, false)
+	valid := marshalled(t, full)
+	// The daemon's clock is a minute past the export's, so a 361st sample is
+	// refused for the cap and not for being in the future.
+	later := newClock().Now().Add(time.Minute)
+	cases := hostilePayloads(t, valid, later)
 	for name, body := range cases {
 		hub := newFakeHub(t, serving(body, nil))
 		fallback := &fakeExporter{answer: answering(full, full)}
