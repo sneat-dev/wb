@@ -1,7 +1,10 @@
+import { signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
 import { provideRouter } from '@angular/router'
 import { FleetDocument, FleetStore, RegistryAction } from '@cockpit/fleet-data'
 import { agent, pullRequest, registryAction, worktree } from '@cockpit/fleet-data/testing'
+import { UiClock } from '@cockpit/ui/control'
+import { NOW } from '../test-harness'
 import { tasksDocument } from './tasks-fixture'
 import { TaskPanelView } from './task-panel'
 
@@ -9,10 +12,10 @@ const text = (element: Element | null) => (element?.textContent ?? '').replace(/
 
 async function render(name: string, document: FleetDocument = tasksDocument(), page = false, registry?: ReadonlyMap<string, readonly RegistryAction[]>): Promise<HTMLElement> {
   TestBed.resetTestingModule()
-  TestBed.configureTestingModule({ providers: [provideRouter([])] })
+  TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: UiClock, useValue: { now: signal(NOW) } }] })
   const store = TestBed.inject(FleetStore)
   store.document.set(document)
-  store.now.set(Date.parse('2026-10-01T10:05:00Z'))
+  store.now.set(NOW)
   const fixture = TestBed.createComponent(TaskPanelView)
   fixture.componentRef.setInput('name', name)
   fixture.componentRef.setInput('page', page)
