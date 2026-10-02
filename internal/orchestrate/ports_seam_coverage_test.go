@@ -175,7 +175,7 @@ func TestSyncLocalWorktreeAfterUpdateBranchUsesTheInjectedGitForTheFastForward(t
 // TestFastForwardWorktreeToUpdatedHeadNotesUncommittedChanges covers
 // fastForwardWorktreeToUpdatedHead's dirty-worktree branch
 // (pr_land_local_sync.go): this exact statement was covered on main by
-// TestLandLeavesADirtyWorktreeUntouched before that test moved to the e2e
+// TestE2ELandLeavesADirtyWorktreeUntouched before that test moved to the e2e
 // tier (fastForwardWorktreeToUpdatedHead now resolves its Git port through
 // orchestrateGit), so it regressed to uncovered in the unit tier even
 // though the statement itself is unchanged. Reached the same way as the
