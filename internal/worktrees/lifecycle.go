@@ -43,6 +43,10 @@ type ListOptions struct {
 	// fallback, so one task may safely contain worktrees stacked on different
 	// targets. An omitted Base resolves to main.
 	Base string
+	// ExplicitBase says the operator named Base on the command line. It then
+	// is the target every candidate's head is judged against, and the recorded
+	// base is only reported. See CleanupOptions.ExplicitBase.
+	ExplicitBase bool
 	// Filter narrows the inventory to candidates whose owner/repository slug
 	// (or, for a candidate that cannot be identified that cleanly, whatever
 	// raw path-derived identity is available) contains this substring — the
@@ -271,6 +275,19 @@ type ListResult struct {
 	// RecordedBase preserves the immutable manifest/claim target in a cleanup
 	// receipt when exact landing evidence authorizes another target.
 	RecordedBase string `json:"recorded_base,omitempty"`
+	// RecordedBaseState says why Base is not RecordedBase when WB itself judged
+	// the repository default branch in its place: "absent" when origin no
+	// longer has the recorded base, "integrated" when the recorded base is
+	// still on origin and its own tip is contained in the default branch.
+	RecordedBaseState string `json:"recorded_base_state,omitempty"`
+	// IntegrationProof names the target that proved integration whenever that
+	// is not the recorded base, for example "contained in origin/main at
+	// 0123456789ab, via recorded base cockpit-ux (absent)".
+	IntegrationProof string `json:"integration_proof,omitempty"`
+	// TargetRejection explains why a recorded base origin no longer has could
+	// not be replaced by a receipt. It is a refusal of this candidate, never a
+	// malformed worktree: the task stays visible to every lifecycle verb.
+	TargetRejection string `json:"target_rejection,omitempty"`
 	// SupersededAtOrigin records an explicitly reviewed split-branch
 	// terminalization. It deliberately does not set IntegratedAtOrigin: the
 	// original head did not land as a whole.
@@ -454,6 +471,14 @@ type CleanupOptions struct {
 	// manifest/Work Log target. Recorded targets are resolved per candidate;
 	// cleanup never applies one global base to a heterogeneous task.
 	Base string
+	// ExplicitBase says the operator named Base themselves (`--base <branch>`
+	// on the command line) instead of inheriting the default. An explicit base
+	// is the exact origin target the head is judged against, and nothing else:
+	// the recorded base is kept in the result as RecordedBase, no other target
+	// is substituted, and a base origin does not have is an error. It can only
+	// narrow what is eligible, never widen it past plain containment in the
+	// branch the operator named.
+	ExplicitBase bool
 	// ExactRepository limits a named-task cleanup transaction to one exact
 	// owner/repository slug. It is intended for repository-scoped orchestrators
 	// such as worktree merge, where another repository may share the same task.
@@ -1124,6 +1149,7 @@ func newListInventoryOp(ctx context.Context, options ListOptions) (*listInventor
 		activity:           lw.options.Activity,
 		now:                lw.options.Now,
 		mergeReceiptProofs: lw.options.MergeReceiptProofs,
+		explicitBase:       lw.options.ExplicitBase,
 	}
 	return lw, nil
 }
@@ -2018,6 +2044,7 @@ func cleanupInspectPolicy(options CleanupOptions) inspectPolicy {
 		activity:           options.Activity,
 		now:                options.Now,
 		mergeReceiptProofs: options.MergeReceiptProofs,
+		explicitBase:       options.ExplicitBase,
 	}
 }
 
@@ -2620,6 +2647,7 @@ func (run *cleanupRun) gatherInventory() error {
 		ProjectsRoot:       run.normalized.ProjectsRoot,
 		Tasks:              run.normalized.Tasks,
 		Base:               run.normalized.Base,
+		ExplicitBase:       run.normalized.ExplicitBase,
 		Filter:             run.inventoryFilter,
 		AbsorbedBy:         run.normalized.AbsorbedBy,
 		MergeReceiptProofs: run.normalized.MergeReceiptProofs,
@@ -2791,6 +2819,7 @@ func (run *cleanupRun) buildResults() error {
 	blockArtifactTasks(results, run.listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, run.recognizedWorktreesRoots)
+	holdBasesOfIneligibleDependants(results)
 	run.outcome = CleanupOutcome{Results: results, Diagnostics: run.listed.Diagnostics, Artifacts: run.listed.Artifacts,
 		Purged: run.listed.Purged, Quarantined: run.backlogQuarantine, Recovery: run.recovery,
 		ResolvedTasks: append([]string(nil), run.normalized.Tasks...)}
@@ -3566,6 +3595,9 @@ type inspectPolicy struct {
 	residueDepth       int
 	now                func() time.Time
 	mergeReceiptProofs []MergeReceiptCleanupProof
+	// explicitBase makes the caller's base the judged target instead of the
+	// fallback for a candidate without a recorded one.
+	explicitBase bool
 }
 
 func (policy inspectPolicy) clock() time.Time {
@@ -3623,6 +3655,13 @@ type lifecycleInspection struct {
 	external     bool
 	policy       inspectPolicy
 
+	// callerBase is the base the caller supplied, before the recorded base
+	// replaced it. recordedBase is the manifest/claim base whenever the judged
+	// base is a different one, with recordedBaseState saying why.
+	callerBase        string
+	recordedBase      string
+	recordedBaseState string
+
 	slug      string
 	canonical string
 	branch    string
@@ -3637,10 +3676,21 @@ type lifecycleInspection struct {
 // the expected path, and identifies its task/owner/repository, verifying that
 // identity against the common .git directory it actually points at.
 func (i *lifecycleInspection) locate() error {
-	var err error
-	i.base, err = resolveRecordedWorktreeBase(i.ctx, i.home, i.worktree, i.base)
+	i.callerBase = strings.TrimSpace(i.base)
+	recorded, err := resolveRecordedWorktreeBase(i.ctx, i.home, i.worktree, i.base)
 	if err != nil {
 		return err
+	}
+	if i.policy.explicitBase {
+		// The operator named the target. The recorded base is still read, so a
+		// corrupt record refuses as it always did, and still reported; it does
+		// not replace what was asked for.
+		i.base = i.callerBase
+		if recorded != i.base {
+			i.recordedBase = recorded
+		}
+	} else {
+		i.base = recorded
 	}
 	root, err := git(i.ctx, i.worktree, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -3716,6 +3766,16 @@ func (i *lifecycleInspection) inspectState() error {
 	// inspection has no PR evidence to widen the target, so it remains strict.
 	locallyMerged := false
 	if !i.withGitHub {
+		// A recorded base whose remote-tracking ref was pruned (the integration
+		// branch landed and origin deleted it) has nothing to compare against,
+		// and Git answers a missing ref with a fatal error. That is a fact about
+		// the base, not a malformed worktree: offline, report the candidate
+		// against the caller's base instead of hiding the task from list, end
+		// and abort. Nothing is authorized here; cleanup re-proves it online.
+		if !i.policy.explicitBase && i.callerBase != "" && i.callerBase != i.base && !hasRemoteTrackingBranch(i.ctx, i.canonical, i.base) {
+			i.recordedBase, i.recordedBaseState = i.base, worktreelanding.RecordedBaseAbsent
+			i.base = i.callerBase
+		}
 		locallyMerged, err = isAncestor(i.ctx, i.canonical, i.head, "origin/"+i.base)
 		if err != nil {
 			return err
@@ -3745,6 +3805,9 @@ func (i *lifecycleInspection) inspectState() error {
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
 		External: i.external, Local: i.layout.Local, Detached: i.detached,
 		Placement: listResultPlacement(i.layout, i.external),
+	}
+	if i.recordedBase != "" {
+		i.result.RecordedBase, i.result.RecordedBaseState = i.recordedBase, i.recordedBaseState
 	}
 	if target := mergeReceiptCleanupTargetOverride(i.ctx, i.policy.mergeReceiptProofs, i.result); target != "" && target != i.result.Base {
 		i.result.RecordedBase = i.result.Base
@@ -3807,7 +3870,10 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 			// recorded target was deleted. Keep it diagnostic and fail closed;
 			// only Git's explicit missing-ref response may widen the target from
 			// an immutable merged-PR receipt.
-			if !isMissingRemoteTargetError(err) {
+			//
+			// An explicitly named target is never replaced: if origin does not
+			// have the branch the operator asked for, that is the answer.
+			if !isMissingRemoteTargetError(err) || i.policy.explicitBase {
 				return err
 			}
 			defaultBase, defaultErr := remoteDefaultBranch(i.ctx, i.canonical)
@@ -3819,47 +3885,63 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 			if err != nil {
 				return err
 			}
+			if i.result.RecordedBase == "" {
+				i.result.RecordedBase = i.base
+			}
+			i.result.Base = integrationBase
+			i.result.RecordedBaseState = worktreelanding.RecordedBaseAbsent
 			candidateProof, proofErr := findRetiredPrepareCandidateAcknowledgement(i.ctx, i.home, i.canonical, i.result.Task, i.worktree, i.branch, i.head, defaultBase, i.result.RemoteTargetSHA)
 			if proofErr != nil {
 				return proofErr
 			}
 			if candidateProof != nil {
-				if i.result.RecordedBase == "" {
-					i.result.RecordedBase = i.base
-				}
-				i.result.Base = integrationBase
 				i.result.HeadUnknownToRemote = false
 				i.result.RetiredPrepareCandidateAcknowledgementPath = candidateProof.AcknowledgementPath
 				recoveredByRetiredPrepareCandidate = true
 			} else {
-				// A deleted recorded target is otherwise recoverable only through a
-				// GitHub receipt for that target branch itself. The commit-to-PR
-				// index is intentionally insufficient here: after a squash merge it
-				// associates the source head with its PR into the deleted stream,
-				// not with the stream PR that landed it on the default branch.
+				// A deleted recorded target is recoverable through a GitHub
+				// receipt for that target branch itself. The commit-to-PR index
+				// is intentionally insufficient for a receipt: after a squash
+				// merge it associates the source head with its PR into the
+				// deleted stream, not with the stream PR that landed it on the
+				// default branch.
 				receipt, receiptErr := exactDeletedTargetDefaultBranchReceipt(i.ctx, i.worktree, i.slug, i.base, defaultBase, i.head)
 				if receiptErr != nil {
 					return receiptErr
 				}
 				if receipt == nil {
-					return fmt.Errorf("recorded target origin/%s is absent and GitHub has no exact merged receipt into default branch %s for head %s", i.base, defaultBase, i.head)
+					i.result.TargetRejection = fmt.Sprintf("recorded target origin/%s is absent and GitHub has no exact merged receipt into default branch %s for head %s", i.base, defaultBase, i.head)
+				} else {
+					mergeInTarget, mergeErr := isAncestor(i.ctx, i.canonical, receipt.MergeSHA, i.result.RemoteTargetSHA)
+					if mergeErr != nil {
+						return fmt.Errorf("verify merged receipt #%d against fetched origin/%s: %w", receipt.Number, integrationBase, mergeErr)
+					}
+					if mergeInTarget {
+						i.result.HeadUnknownToRemote = false
+						i.result.MergedPullRequest = receipt
+						i.result.AbsorbedAtOrigin = true
+						i.result.AbsorbedBySHA = receipt.MergeSHA
+						recoveredByDefaultReceipt = true
+					} else {
+						i.result.TargetRejection = fmt.Sprintf("merged receipt #%d commit %s is not contained in freshly fetched origin/%s", receipt.Number, receipt.MergeSHA, integrationBase)
+					}
 				}
-				mergeInTarget, mergeErr := isAncestor(i.ctx, i.canonical, receipt.MergeSHA, i.result.RemoteTargetSHA)
-				if mergeErr != nil {
-					return fmt.Errorf("verify merged receipt #%d against fetched origin/%s: %w", receipt.Number, integrationBase, mergeErr)
+				if !recoveredByDefaultReceipt {
+					// No receipt stands in for the absent base, so the candidate
+					// is judged against the default branch exactly as a task
+					// recorded against it would be: plain ancestry below, and
+					// the same commit-index evidence every other candidate gets.
+					// An absent base used to be an error here, which made the
+					// task a "malformed candidate" that list, end, abort and gc
+					// could no longer see at all.
+					var pullRequestErr error
+					pullRequests, known, pullRequestErr = githubPullRequestsForCommit(i.ctx, i.worktree, i.slug, i.head)
+					if pullRequestErr != nil {
+						return pullRequestErr
+					}
+					i.result.HeadUnknownToRemote = !known
+					i.result.OpenPullRequest, i.result.MergedPullRequest = matchingPullRequests(pullRequests, i.slug, integrationBase, i.branch, i.head)
 				}
-				if !mergeInTarget {
-					return fmt.Errorf("merged receipt #%d commit %s is not contained in freshly fetched origin/%s", receipt.Number, receipt.MergeSHA, integrationBase)
-				}
-				if i.result.RecordedBase == "" {
-					i.result.RecordedBase = i.base
-				}
-				i.result.Base = integrationBase
-				i.result.HeadUnknownToRemote = false
-				i.result.MergedPullRequest = receipt
-				i.result.AbsorbedAtOrigin = true
-				i.result.AbsorbedBySHA = receipt.MergeSHA
-				recoveredByDefaultReceipt = true
 			}
 		} else {
 			var pullRequestErr error
@@ -3880,7 +3962,10 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 			// head. The freshly fetched replacement still passes every ordinary
 			// containment and tree check below; unrelated or ambiguous PRs grant
 			// no cleanup authority.
-			if !integratedIntoRecordedTarget && i.result.MergedPullRequest == nil && i.result.RecordedBase == "" {
+			//
+			// A base the operator named is the target and nothing else, so no
+			// pull request may substitute another one for it.
+			if !integratedIntoRecordedTarget && i.result.MergedPullRequest == nil && i.result.RecordedBase == "" && !i.policy.explicitBase {
 				if recoveredBase, ok := mergedPullRequestTarget(i.ctx, pullRequests, i.head, i.base); ok {
 					i.result.RemoteTargetSHA, err = fetchRemoteTargetHead(i.ctx, i.canonical, recoveredBase)
 					if err != nil {
@@ -3894,7 +3979,7 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 		}
 		i.base = integrationBase
 		i.result.Base = i.base
-		containedAtOrigin, containedErr := isAncestor(i.ctx, i.canonical, i.head, i.result.RemoteTargetSHA)
+		containedAtOrigin, containedErr := i.judgeContainment(i.defaultTargetPorts())
 		if containedErr != nil {
 			return containedErr
 		}
@@ -3973,8 +4058,75 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 				i.result.MergedPullRequest = i.result.Landing.PullRequest
 			}
 		}
+		if i.result.IntegratedAtOrigin {
+			i.result.TargetRejection = ""
+		}
 	}
 	return nil
+}
+
+// judgeContainment answers whether the head is a plain Git ancestor of the
+// target being judged, and is the one place another target may take the
+// recorded base's place on ancestry alone.
+//
+// A task stacked on another task's branch, or on an integration branch that is
+// still on origin: once that base has itself landed in the default branch, the
+// default branch is where the work is, and the head is proved only if the
+// default branch contains it. An explicit base is never replaced. Whenever the
+// target that proved the head is not simply the recorded base, the result says
+// which target it was.
+func (i *lifecycleInspection) judgeContainment(ports worktreelanding.DefaultTargetPorts) (bool, error) {
+	// Containment is a statement about one exact commit. An empty or
+	// unresolved head, or a target that was never fetched, has nothing to be
+	// contained in or by: asking Git anyway would let a revision name, or a
+	// lenient answer, stand in for a proof. Fail closed before asking.
+	if !worktreeproof.IsGitObjectID(i.head) || !worktreeproof.IsGitObjectID(i.result.RemoteTargetSHA) {
+		return false, fmt.Errorf("cannot judge containment of head %q in target %q: both must be exact commit ids", i.head, i.result.RemoteTargetSHA)
+	}
+	contained, err := ports.IsAncestor(i.ctx, i.head, i.result.RemoteTargetSHA)
+	if err != nil {
+		return false, err
+	}
+	if !contained && i.result.RecordedBase == "" && !i.policy.explicitBase {
+		if target := worktreelanding.ProvenDefaultTarget(i.ctx, ports, i.head, i.base, i.result.RemoteTargetSHA); target != nil {
+			contained = true
+			i.result.RecordedBase, i.result.RecordedBaseState = i.base, target.RecordedBaseState
+			i.base, i.result.Base, i.result.RemoteTargetSHA = target.Target, target.Target, target.TargetSHA
+		}
+	}
+	switch {
+	case !contained:
+	case i.policy.explicitBase:
+		i.result.IntegrationProof = worktreelanding.ExplicitTargetProof(i.base, i.result.RemoteTargetSHA, i.result.RecordedBase)
+	case i.result.RecordedBaseState != "":
+		i.result.IntegrationProof = worktreelanding.DefaultTarget{
+			Target: i.base, TargetSHA: i.result.RemoteTargetSHA,
+			RecordedBase: i.result.RecordedBase, RecordedBaseState: i.result.RecordedBaseState,
+		}.Proof()
+	}
+	return contained, nil
+}
+
+// defaultTargetPorts binds the default-branch proof to this candidate's
+// canonical clone. Every observation is the same exact, freshly fetched one
+// the recorded target gets.
+func (i *lifecycleInspection) defaultTargetPorts() worktreelanding.DefaultTargetPorts {
+	return worktreelanding.DefaultTargetPorts{
+		DefaultBranch: func(ctx context.Context) (string, error) { return remoteDefaultBranch(ctx, i.canonical) },
+		FetchTargetHead: func(ctx context.Context, branch string) (string, error) {
+			return fetchRemoteTargetHead(ctx, i.canonical, branch)
+		},
+		IsAncestor: func(ctx context.Context, ancestor, descendant string) (bool, error) {
+			return isAncestor(ctx, i.canonical, ancestor, descendant)
+		},
+	}
+}
+
+// hasRemoteTrackingBranch reports whether the canonical clone still has a
+// remote-tracking ref for an origin branch. It contacts nothing.
+func hasRemoteTrackingBranch(ctx context.Context, repository, branch string) bool {
+	_, err := git(ctx, repository, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch+"^{commit}")
+	return err == nil
 }
 
 func inspectLifecycleWorktree(
@@ -4230,20 +4382,45 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 		return true, ""
 	case !entry.IntegratedAtOrigin && entry.landedWithResidue():
 		return false, entry.residueReason()
-	case !entry.IntegratedAtOrigin && entry.AbsorbedByRejection != "":
-		return false, "current branch head is not integrated into the exact origin target (awaiting push): " +
-			entry.AbsorbedByRejection
 	case !entry.IntegratedAtOrigin:
-		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
+		return false, notIntegratedReason(entry)
 	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA &&
 		(entry.mergeReceiptCandidateSHA == "" || entry.RemoteHeadSHA != entry.mergeReceiptCandidateSHA) &&
 		!entry.RemoteHeadAncestorOfHead:
-		return false, "remote branch advanced after the merged pull request"
+		return false, "remote branch advanced after the merged pull request: origin/" + entry.Branch + " is at " +
+			shortSHA(entry.RemoteHeadSHA) + ", not the local head " + shortSHA(entry.HeadSHA)
 	case entry.MergedPullRequest != nil && olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
 		return false, "merged pull request is newer than the cleanup safety window"
 	default:
 		return true, ""
 	}
+}
+
+// notIntegratedReason is the refusal for a head the judged target does not
+// contain: the exact ref and SHA it was compared against, whether the source
+// branch is pushed, the recorded base when another target was judged in its
+// place, and whichever receipt verification refused.
+func notIntegratedReason(entry ListResult) string {
+	return worktreelanding.NotIntegratedReason(entry.HeadSHA, entry.Base, entry.RemoteTargetSHA, entry.Branch, entry.RemoteHeadSHA) +
+		targetRefusalDetail(entry)
+}
+
+// targetRefusalDetail is the part of a not-integrated refusal that says which
+// recorded base was not the one judged, and which receipt verification refused.
+func targetRefusalDetail(entry ListResult) string {
+	reason := ""
+	if entry.RecordedBase != "" && entry.RecordedBase != entry.Base {
+		reason += "; recorded base " + entry.RecordedBase
+		if entry.RecordedBaseState != "" {
+			reason += " is " + entry.RecordedBaseState
+		}
+	}
+	for _, rejection := range []string{entry.TargetRejection, entry.AbsorbedByRejection} {
+		if rejection != "" {
+			reason += ": " + rejection
+		}
+	}
+	return reason
 }
 
 // applyMergeReceiptCleanupProof grants no general absorption shortcut. It only
@@ -4429,6 +4606,40 @@ func blockUnsafeTasks(results []CleanupResult) {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by " + reasonByTask[results[index].Task]
 		}
+	}
+}
+
+// holdBasesOfIneligibleDependants keeps a task whose branch is the recorded
+// base of a listed candidate that is not eligible. Retiring it would delete
+// that branch, locally and on origin, while work recorded against it has not
+// landed, and GitHub closes a pull request whose base branch is deleted. The
+// base is held for this run and the refusal names the dependant. A held base
+// is itself not eligible, so the hold climbs a stack, and the usual rule that
+// one ineligible repository holds its whole coordinated task still applies.
+func holdBasesOfIneligibleDependants(results []CleanupResult) {
+	for held := true; held; {
+		held = false
+		for _, dependant := range results {
+			if dependant.Eligible || dependant.BacklogID != "" {
+				continue
+			}
+			base := dependant.RecordedBase
+			if base == "" {
+				base = dependant.Base
+			}
+			for index := range results {
+				candidate := &results[index]
+				if !candidate.Eligible || candidate.BacklogID != "" ||
+					cleanupBranchKey(candidate.CanonicalDir, candidate.Branch) != cleanupBranchKey(dependant.CanonicalDir, base) {
+					continue
+				}
+				candidate.Eligible = false
+				candidate.Reason = "held: branch " + candidate.Branch + " is the recorded base of " + dependant.Task +
+					" (" + dependant.Repository + "), which is not eligible: " + dependant.Reason
+				held = true
+			}
+		}
+		blockUnsafeTasks(results)
 	}
 }
 

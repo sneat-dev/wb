@@ -231,6 +231,23 @@ const exitNonZeroOnReleaseLeak = false
 // JSON shape matches "disabled" exactly: no `remote:` config and an
 // explicit --no-claim both mean "print the plain worktree results, nothing
 // else."
+// releaseRemoteClaim and claimRemoteTask are the two writes a worktree command
+// makes to the fleet's shared claim store around its own work: the release
+// after a task is retired (cleanup, abort, end, retire) and the claim when one
+// is created. Every command reaches the store through these variables and
+// nothing else, so a test that stubs a command's engine replaces them in the
+// same breath and cannot release or take a real claim. A release that ran
+// against the operator's real store from a stubbed cleanup, on 2026-10-02, is
+// why they exist.
+var (
+	releaseRemoteClaim = func(projectsRoot, task string, out io.Writer) autoReleaseResult {
+		return tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, out)
+	}
+	claimRemoteTask = func(noClaim bool, projectsRoot, task string, out io.Writer) autoClaimResult {
+		return worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, projectsRoot, task, out)
+	}
+)
+
 func worktreeCreateAutoClaim(deps remoteDeps, noClaim bool, projectsRoot, task string, out io.Writer) autoClaimResult {
 	if noClaim {
 		return autoClaimResult{Outcome: "disabled"}

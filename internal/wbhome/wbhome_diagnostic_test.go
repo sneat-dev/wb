@@ -109,3 +109,29 @@ func TestResolveNeverAdoptsWBHomeAsAHome(t *testing.T) {
 		}
 	}
 }
+
+// TestIgnoredHomeEnvDiagnosticIsSilentWhenWBHomeNamesTheStateDirectoryInUse
+// keeps the warning for values that differ: a WB_HOME that spells the
+// directory WB uses anyway (even unclean) changes nothing and says nothing.
+//
+//nolint:paralleltest // sets HOME and WB_HOME on the shared process environment
+func TestIgnoredHomeEnvDiagnosticIsSilentWhenWBHomeNamesTheStateDirectoryInUse(t *testing.T) {
+	t.Setenv("HOME", resolvedTempDir(t))
+	t.Setenv(EnvOverride, "")
+	root := resolvedTempDir(t)
+
+	for name, value := range map[string]string{
+		"exact":   filepath.Join(root, ".wb"),
+		"unclean": filepath.Join(root, "sub", "..", ".wb") + string(filepath.Separator),
+	} {
+		t.Setenv("WB_HOME", value)
+		if diagnostic, err := IgnoredHomeEnvDiagnostic(root); err != nil || diagnostic != "" {
+			t.Fatalf("%s WB_HOME naming the state directory: diagnostic = (%q, %v), want (\"\", nil)", name, diagnostic, err)
+		}
+	}
+
+	t.Setenv("WB_HOME", filepath.Join(root, ".wb-other"))
+	if diagnostic, err := IgnoredHomeEnvDiagnostic(root); err != nil || diagnostic == "" {
+		t.Fatalf("a different WB_HOME must still be reported, got (%q, %v)", diagnostic, err)
+	}
+}

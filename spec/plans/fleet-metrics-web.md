@@ -252,6 +252,7 @@ The web interface is served directly by the Go server at `/metrics` (with `/cove
 - fleet-quality#ac:complete-conventional-verification — verified by existing verification test suite
 - fleet-quality#ac:exact-graduation-receipt — verified by existing graduation receipt test suite
 - fleet-quality#ac:instant-remote-ci-coverage — verified by existing remote CI coverage test suite
+- fleet-quality#ac:deadcode-same-verdict-on-every-host — verified by TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform
 
 ---
 *This document follows the https://specscore.md/plan-specification*

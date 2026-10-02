@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/repopath"
@@ -303,7 +304,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	if len(dirtyPaths) > 0 {
 		return mergeCreateRefusal(result, createRefusal{
 			code:    CreateRefusalDirtyWorktree,
-			reason:  "worktree has uncommitted changes: " + strings.Join(dirtyPaths, ", "),
+			reason:  "worktree has uncommitted changes: " + strings.Join(describeStatusEntries(dirtyPaths), ", "),
 			command: "commit or discard the listed paths, then retry",
 		}), nil
 	}
@@ -749,14 +750,93 @@ func resolvePullRequestCreateWorktree(ctx context.Context, projectsRoot, argumen
 	return entries[0].WorktreeDir, nil
 }
 
-// pullRequestCreateDirtyPaths lists every uncommitted path in worktree, or
+// worktreeStatusEntry is one entry of `git status --porcelain=v1 -z`: the
+// index and worktree status columns, kept exactly as Git wrote them (a blank
+// column is a space), and the path with no quoting. A rename or copy carries
+// its new path here; its old path is dropped.
+type worktreeStatusEntry struct {
+	index    byte
+	worktree byte
+	path     string
+}
+
+// String renders the entry for a human, "<status> <path>", without the blank
+// column padding.
+func (entry worktreeStatusEntry) String() string {
+	return strings.TrimSpace(string([]byte{entry.index, entry.worktree})) + " " + entry.path
+}
+
+// parsePorcelainStatusZ reads `git status --porcelain=v1 -z` output by its
+// fixed columns: two status bytes, one space, then the path up to the next NUL.
+// A rename or copy ("R"/"C" in either column) is followed by one more NUL
+// field holding the original path, which is skipped. Nothing is trimmed: the
+// first status column is blank for an unstaged change, and a path may begin
+// with a dot or a space.
+//
+// It fails closed: any non-empty field that is not "XY path", or a rename with
+// no original path, is an error, never a skipped entry. A status the caller
+// cannot fully read must refuse the operation rather than look like a clean
+// tree. An unrecognised XY code is still an entry, so it counts as dirty.
+func parsePorcelainStatusZ(output string) ([]worktreeStatusEntry, error) {
+	var entries []worktreeStatusEntry
+	fields := strings.Split(output, "\x00")
+	for position := 0; position < len(fields); position++ {
+		field := fields[position]
+		if field == "" {
+			continue
+		}
+		if len(field) < 4 || field[2] != ' ' {
+			return nil, fmt.Errorf("unparseable git status entry %q", field)
+		}
+		entry := worktreeStatusEntry{index: field[0], worktree: field[1], path: field[3:]}
+		if strings.ContainsRune("RC", rune(entry.index)) || strings.ContainsRune("RC", rune(entry.worktree)) {
+			position++ // the original path of a rename or copy
+			if position >= len(fields) || fields[position] == "" {
+				return nil, fmt.Errorf("git status rename entry %q has no original path", field)
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// readPorcelainStatus runs `git status --porcelain=v1 -z` and parses stdout
+// alone. Stderr is kept apart so a git warning cannot fuse with the first
+// entry, and anything on it, even with exit 0, is an error: a status git only
+// partly read (an unreadable directory) must not pass as clean.
+func readPorcelainStatus(ctx context.Context, run runner.Runner, timeout time.Duration, worktree string) ([]worktreeStatusEntry, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	result, err := run.RunOpts(ctx, worktree, runner.RunOptions{Env: console.Env()}, "git", "status", "--porcelain=v1", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("git status in %s: %w: %s", worktree, err, strings.TrimSpace(result.Stderr))
+	}
+	if diagnostic := strings.TrimSpace(result.Stderr); diagnostic != "" {
+		return nil, fmt.Errorf("git status in %s reported: %s", worktree, diagnostic)
+	}
+	return parsePorcelainStatusZ(result.Stdout)
+}
+
+// pullRequestCreateDirtyPaths lists every uncommitted entry in worktree, or
 // nil for a clean one.
-func pullRequestCreateDirtyPaths(ctx context.Context, worktree string) ([]string, error) {
-	output, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "status", "--porcelain")
+func pullRequestCreateDirtyPaths(ctx context.Context, worktree string) ([]worktreeStatusEntry, error) {
+	entries, err := readPorcelainStatus(ctx, defaultRunner, 0, worktree)
 	if err != nil {
 		return nil, fmt.Errorf("read worktree status: %w", err)
 	}
-	return splitNonEmptyLines(output), nil
+	return entries, nil
+}
+
+// describeStatusEntries renders entries for a refusal message.
+func describeStatusEntries(entries []worktreeStatusEntry) []string {
+	described := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		described = append(described, entry.String())
+	}
+	return described
 }
 
 func splitNonEmptyLines(value string) []string {
@@ -1045,28 +1125,14 @@ func isNothingToCommit(err error) bool {
 	return strings.Contains(message, "nothing to commit") || strings.Contains(message, "no changes added to commit")
 }
 
-// porcelainPath extracts the path from one `git status --porcelain` line,
-// following a rename's " -> " to the new path.
-func porcelainPath(line string) string {
-	trimmed := strings.TrimRight(line, "\r")
-	path := trimmed
-	if len(trimmed) > 3 {
-		path = strings.TrimSpace(trimmed[3:])
-	}
-	if arrow := strings.Index(path, " -> "); arrow >= 0 {
-		path = path[arrow+len(" -> "):]
-	}
-	return path
-}
-
-// leftoverAfterStagedCommit names every porcelain line that a plain commit of
-// the index would still leave dirty: an unstaged modification (worktree
-// status column is not blank) or an untracked file ("??").
-func leftoverAfterStagedCommit(lines []string) []string {
+// leftoverAfterStagedCommit names every entry that a plain commit of the
+// index would still leave dirty: an unstaged modification (worktree status
+// column is not blank) or an untracked file ("??").
+func leftoverAfterStagedCommit(entries []worktreeStatusEntry) []string {
 	var leftover []string
-	for _, line := range lines {
-		if len(line) >= 2 && line[1] != ' ' {
-			leftover = append(leftover, porcelainPath(line))
+	for _, entry := range entries {
+		if entry.worktree != ' ' {
+			leftover = append(leftover, entry.path)
 		}
 	}
 	return leftover
@@ -1124,21 +1190,30 @@ func resolveAddPaths(ctx context.Context, run runner.Runner, worktree string, ra
 	return resolved, nil
 }
 
-// leftoverBeyondAddedPaths names every porcelain-status path that is not one
-// of --add's own paths: with --land, any such change — staged, unstaged, or
-// untracked — would be left behind when the worktree is retired.
-func leftoverBeyondAddedPaths(statusLines []string, paths []string) []string {
-	added := make(map[string]bool, len(paths))
-	for _, path := range paths {
-		added[path] = true
-	}
+// leftoverBeyondAddedPaths names every status path that --add does not cover:
+// with --land, any such change — staged, unstaged, or untracked — would be
+// left behind when the worktree is retired. An --add path covers itself and,
+// when it names a directory, everything beneath it (Git reports an untracked
+// directory as "dir/" and a modified tracked one file by file).
+func leftoverBeyondAddedPaths(entries []worktreeStatusEntry, paths []string) []string {
 	var leftover []string
-	for _, line := range statusLines {
-		if path := porcelainPath(line); !added[path] {
-			leftover = append(leftover, path)
+	for _, entry := range entries {
+		if !addedPathCovers(paths, entry.path) {
+			leftover = append(leftover, entry.path)
 		}
 	}
 	return leftover
+}
+
+func addedPathCovers(added []string, statusPath string) bool {
+	statusPath = strings.TrimSuffix(statusPath, "/")
+	for _, path := range added {
+		path = strings.TrimSuffix(path, "/")
+		if statusPath == path || strings.HasPrefix(statusPath, path+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // stagedFileList lists every path currently staged (the diff between HEAD and

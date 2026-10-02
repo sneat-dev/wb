@@ -54,7 +54,6 @@ test('Home: every count it enumerates opens the list it counted', async ({ page 
   expect((await hrefOf(health.getByRole('link', { name: /older WB/ }))).search).toBe('?chips=outdated')
 
   // The throughput numbers are declared non-linking: no link in the charts, and the reason in the title of each.
-  await page.getByRole('heading', { level: 2, name: 'Throughput' }).scrollIntoViewIfNeeded()
   const charts = page.getByRole('region', { name: /^Throughput/ })
   await expect(charts.locator('.chart-card')).toHaveCount(2)
   await expect(charts.locator('a')).toHaveCount(0)
