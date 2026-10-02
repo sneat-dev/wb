@@ -169,3 +169,96 @@ func TestTerminalEvidenceEqualityPreservesOptionalFields(t *testing.T) {
 		t.Fatal("external handoff evidence equality")
 	}
 }
+
+func landedTestEvidence() *LandedEvidence {
+	return &LandedEvidence{Target: "main", LandedSHA: strings.Repeat("d", 40), Proof: LandedProofMergedPullRequest, PullRequest: 17}
+}
+
+func TestLandedSealRecordsItsTargetAndCommitInTheTerminalAndTheOutbox(t *testing.T) {
+	t.Parallel()
+	home, run, request := terminalTestRun(t)
+	ports := terminalTestPorts()
+	request.Evidence.Landed = landedTestEvidence()
+	first, err := ports.SealTerminal(home, run, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal TerminalRecord
+	readTerminalTestJSON(t, filepath.Join(home, "worklogs", "task", "runs", "run", "terminals", request.Claim.ClaimID+".json"), &terminal)
+	if terminal.Disposition != "landed" || !SameLandedEvidence(terminal.Landed, landedTestEvidence()) {
+		t.Fatalf("terminal = %q with %#v, want landed with its proof", terminal.Disposition, terminal.Landed)
+	}
+	var event PublicEvent
+	readTerminalTestJSON(t, filepath.Join(home, "worklogs", "task", "outbox", "run-"+request.Claim.ClaimID+"-sealed.json"), &event)
+	if event.Disposition != "landed" || !SameLandedEvidence(event.Landed, landedTestEvidence()) {
+		t.Fatalf("outbox = %q with %#v, want landed with its proof", event.Disposition, event.Landed)
+	}
+	again, err := ports.SealTerminal(home, run, request)
+	if err != nil || !again.Equal(first) {
+		t.Fatalf("retry seal = %s, %v; want %s", again, err, first)
+	}
+	moved := request
+	moved.Evidence.Landed = landedTestEvidence()
+	moved.Evidence.Landed.Target = "release"
+	if _, err := ports.SealTerminal(home, run, moved); !errors.Is(err, ErrImmutableTerminalConflict) {
+		t.Fatalf("a different landing over a sealed one: %v", err)
+	}
+}
+
+func TestLandedEvidenceIsRefusedOnAnotherDispositionOrWhenIncomplete(t *testing.T) {
+	t.Parallel()
+	edits := map[string]func(*TerminalSealRequest){
+		"removed disposition": func(request *TerminalSealRequest) { request.Disposition = "removed" },
+		"no target":           func(request *TerminalSealRequest) { request.Evidence.Landed.Target = "" },
+		"short commit":        func(request *TerminalSealRequest) { request.Evidence.Landed.LandedSHA = "abc" },
+		"unknown proof":       func(request *TerminalSealRequest) { request.Evidence.Landed.Proof = "guessed" },
+		"negative number":     func(request *TerminalSealRequest) { request.Evidence.Landed.PullRequest = -1 },
+	}
+	for name, edit := range edits {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			home, run, request := terminalTestRun(t)
+			request.Evidence.Landed = landedTestEvidence()
+			edit(&request)
+			ports := terminalTestPorts()
+			ports.OpenPrivateChild = func(*os.File, string, bool) (*os.File, error) {
+				t.Fatal("an invalid landing reached storage")
+				return nil, nil
+			}
+			if _, err := ports.SealTerminal(home, run, request); err == nil {
+				t.Fatal("seal accepted an invalid landing")
+			}
+		})
+	}
+}
+
+func TestLandedEvidenceValidityAndEquality(t *testing.T) {
+	t.Parallel()
+	for _, proof := range []string{LandedProofContained, LandedProofMergedPullRequest, LandedProofRebaseMerged, LandedProofAbsorbed} {
+		evidence := landedTestEvidence()
+		evidence.Proof = proof
+		if !ValidLandedEvidence(evidence) {
+			t.Fatalf("proof %q is not valid", proof)
+		}
+	}
+	if ValidLandedEvidence(nil) {
+		t.Fatal("no evidence is valid")
+	}
+	other := landedTestEvidence()
+	other.PullRequest = 18
+	if !SameLandedEvidence(nil, nil) || SameLandedEvidence(landedTestEvidence(), nil) || SameLandedEvidence(nil, landedTestEvidence()) ||
+		!SameLandedEvidence(landedTestEvidence(), landedTestEvidence()) || SameLandedEvidence(landedTestEvidence(), other) {
+		t.Fatal("landed evidence equality")
+	}
+}
+
+func readTerminalTestJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, value); err != nil {
+		t.Fatal(err)
+	}
+}

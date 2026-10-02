@@ -1209,8 +1209,8 @@ unchanged in the terminal). The Work Log retirement archives themselves
 
 | `worktree_disposition` | Counts as | Why |
 |---|---|---|
-| `landed` | finished, and `landed` | sealed by `wb worktree log finalize --apply` |
-| `removed` | finished | cleanup of finished work |
+| `landed` | finished, and `landed` | cleanup proved the work is on its target, or `wb worktree log finalize --apply` declared it (work-log#req:terminal-disposition-vocabulary) |
+| `removed` | finished | cleanup removed a worktree with no landing to record; before cleanup sealed landings, most merged work |
 | `retired` | finished | retired after archiving |
 | `recycled` | finished | the worktree was reused after the work |
 | `discarded` | dropped | work thrown away |
@@ -1228,8 +1228,10 @@ The rules of the block:
 - A task counts once on each day it was sealed, in the better category: `finished` wins
   over `dropped`, so a task sealed `removed` and `discarded` on one day is one finished
   task. `landed` is how many of that day's finished tasks were sealed `landed` (a subset
-  of `finished`), absent when none, so a client can show it once `wb` seals landings with
-  evidence. A task finished in several repositories counts once a day, appears once among
+  of `finished`), absent when none. Cleanup seals a proved landing as `landed`
+  (work-log#req:terminal-disposition-vocabulary), so the count is the landings of each day
+  from the release that does so; records sealed before it are not rewritten and count as
+  finished only. A task finished in several repositories counts once a day, appears once among
   the slowest and in the percentiles, with its longest finished duration.
 - `slowest`, `median_seconds` and `p90_seconds` use finished tasks only, in the window.
 - A record is usable only when its disposition is in the table (not `handoff`), it has a
@@ -3112,10 +3114,11 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
   it reads the one its own environment reaches (the default server for a launchd or systemd
   daemon); agents in another herdr server, or another named session, show no activity. Naming a
   socket or session in configuration is not specified here.
-- `wb worktree land` and cleanup seal most merged work as `removed` (3,410 of 3,679 terminal
-  records on the founder's machine, against 62 `landed`), so the Cockpit can report finished
-  work but not true landings. Sealing `landed` with merge evidence would let it show them: a
-  follow-up for the worktree-lifecycle Feature, not specified here.
+- The throughput charts draw `finished` and `dropped`. `per_day[].landed` is now the day's
+  proved landings (work-log#req:terminal-disposition-vocabulary; before it, cleanup sealed
+  merged work as `removed`: 3,411 of 3,680 terminal records on the founder's machine against
+  62 `landed`). Should the charts draw `landed`, and should `removed` (now a worktree that
+  never committed, a review checkout or a merge candidate) still count as finished?
 - On Windows the owner-process liveness read for `owner_state` cannot tell a gone process from a
   live one (`Signal(0)` is unsupported there), so a Windows machine's local worktrees read as
   `unknown` and its `boot_time` from `GetTickCount64` is not checked for 32-bit truncation.
