@@ -13,7 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
-func TestRemoteCheckpointNextRefusesNativePushWithoutCheckout(t *testing.T) {
+func TestE2ERemoteCheckpointNextRefusesNativePushWithoutCheckout(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "missing-checkout")
@@ -27,7 +27,7 @@ func TestRemoteCheckpointNextRefusesNativePushWithoutCheckout(t *testing.T) {
 }
 
 //nolint:paralleltest // The existing fixture sets process-wide Git/WB environment.
-func TestRemoteCheckpointNextRefusesRefRemovedAfterNativeFetch(t *testing.T) {
+func TestE2ERemoteCheckpointNextRefusesRefRemovedAfterNativeFetch(t *testing.T) {
 	fixture, worktree, _ := newSessionCheckpointFixture(t, "checkpoint-next-removed")
 	before := gitTestOutput(t, worktree, "rev-parse", "HEAD")
 	pushed, err := PushRemoteCheckpoint(context.Background(), PushRemoteCheckpointOptions{Root: worktree, Task: "checkpoint-next-removed", HeadSHA: before})
@@ -75,4 +75,40 @@ func (r *checkpointNextRemoveFetchedRef) RunOpts(ctx context.Context, dir string
 		}
 	}
 	return result, err
+}
+
+//nolint:paralleltest // The native repository fixture and Git tracing mutate process-wide environment.
+func TestE2ERemoteCheckpointRefusesInvalidNativeVerificationOutput(t *testing.T) {
+	fixture, worktree, _ := newSessionCheckpointFixture(t, "checkpoint-traced-verification")
+	before := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	pushed, err := PushRemoteCheckpoint(context.Background(), PushRemoteCheckpointOptions{Root: worktree, Task: "checkpoint-traced-verification", HeadSHA: before})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := FetchRemoteCheckpoint(context.Background(), FetchRemoteCheckpointOptions{Root: worktree, Task: "checkpoint-traced-verification"})
+	if err != nil || initial.SHA != before {
+		t.Fatalf("initial native checkpoint retrieval = %+v, %v", initial, err)
+	}
+	t.Setenv("GIT_TRACE", "1")
+	// The real Git command succeeds, but its stderr trace accompanies its stdout
+	// SHA in the existing combined-output observation. No query output is forged.
+	output, err := git(context.Background(), worktree, "rev-parse", "--verify", pushed.Ref+"^{commit}")
+	if err != nil || isGitObjectID(output) || !strings.Contains(output, before) || !strings.Contains(output, "trace:") {
+		t.Fatalf("native traced verification prerequisite = %q, %v", output, err)
+	}
+	fetched, err := FetchRemoteCheckpoint(context.Background(), FetchRemoteCheckpointOptions{Root: worktree, Task: "checkpoint-traced-verification"})
+	if fetched != (RemoteCheckpointFetchResult{}) || err == nil || !strings.Contains(err.Error(), "resolve fetched checkpoint "+pushed.Ref+": Git returned an invalid commit object ID") || strings.Contains(err.Error(), "%!") {
+		t.Fatalf("invalid native verification output admission = %+v, %v", fetched, err)
+	}
+	t.Setenv("GIT_TRACE", "")
+	if head := gitTestOutput(t, worktree, "rev-parse", "HEAD"); head != before {
+		t.Fatalf("verification refusal changed HEAD: %s -> %s", before, head)
+	}
+	if local := gitTestOutput(t, worktree, "rev-parse", "--verify", pushed.Ref+"^{commit}"); local != before {
+		t.Fatalf("verification refusal changed local checkpoint: %s", local)
+	}
+	remote := strings.Fields(gitTestOutput(t, worktree, "ls-remote", "--", fixture.remote, pushed.Ref))
+	if len(remote) != 2 || remote[0] != before || remote[1] != pushed.Ref {
+		t.Fatalf("verification refusal changed remote checkpoint: %v", remote)
+	}
 }
