@@ -310,7 +310,7 @@ func fixtureDqCovRunShardedCoverageOptionsRejectsBadPlans(t *testing.T) {
 		module := t.TempDir()
 		dqCovFakeGo(t, module)
 		dqCovSetGoEnv(t, env)
-		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), packages, 2, "", "", 0, 0, 0, nil)
+		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), packages, 2, "", "", 0, 0, 0, nil)
 		return err
 	}
 
@@ -383,7 +383,7 @@ func fixtureDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable(t *te
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_LIST_MAIN": "./serial", "DQCOV_GO_LIST_OTHER": "./serial"})
 	t.Setenv("TMPDIR", filepath.Join(module, "missing"))
-	_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil)
+	_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil)
 	if err == nil {
 		t.Fatal("an unusable temporary root was accepted")
 	}
@@ -415,7 +415,7 @@ func fixtureDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t 
 	})
 	merged := filepath.Join(module, "merged.out")
 	var progress []Progress
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, merged, []string{"./serial"}, 2, "", "", 0, 0, 0, func(event Progress) {
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, merged, []string{"./serial"}, 2, "", "", 0, 0, 0, func(event Progress) {
 		progress = append(progress, event)
 	})
 	if err != nil {
@@ -475,7 +475,7 @@ func fixtureDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing
 			"DQCOV_GO_TEST_OUT":       "ok",
 			"DQCOV_GO_PROFILE_SHARD2": "mode: count\npkg/a.go:1.1,2.2 2 1",
 		})
-		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil)
+		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil)
 		if err == nil || !strings.Contains(err.Error(), "mode mismatch") {
 			t.Fatalf("merge error = %v, want the profile mode mismatch", err)
 		}
@@ -493,7 +493,7 @@ func fixtureDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing
 		})
 		blocker := filepath.Join(module, "not-a-directory")
 		writeQualityFile(t, blocker, "x")
-		output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, filepath.Join(blocker, "reports"), "example/repo", 0, 0, 0, nil)
+		output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, filepath.Join(blocker, "reports"), "example/repo", 0, 0, 0, nil)
 		if err == nil || !strings.Contains(err.Error(), "write coverage diagnostics") {
 			t.Fatalf("diagnostics error = %v, want the write failure surfaced", err)
 		}
