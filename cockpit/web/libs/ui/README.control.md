@@ -2,13 +2,12 @@
 
 The components that make state, commands and actions look the same everywhere. They are standalone, take plain
 inputs, hold no data of their own, and execute nothing: an action is an emitted event, a command is text the
-library built. Import them from their own entry points, never from the barrel (`@cockpit/ui`), which also exports
-the PrimeNG-based list components:
+library built. Import them from their own entry points, never from the barrel (`@cockpit/ui`):
 
 - `@cockpit/ui/control`: everything below except the charts.
 - `@cockpit/ui/chart`: the chart component and presets (Chart.js is its own lazy chunk behind it).
 
-Nothing here uses PrimeNG. Colour comes from `apps/cockpit/src/styles/tokens.css` only (state roles `--ok`,
+Colour comes from `apps/cockpit/src/styles/tokens.css` only (state roles `--ok`,
 `--warn`, `--bad`, `--idle` with `-soft` and `-border`, the one accent, `--chart-*`), so light and dark follow
 the browser. Contract: `spec/features/cockpit-views/README.md` (REQ:action-slots, REQ:copy-the-command,
 REQ:owner-gating-is-visible, REQ:intent-to-done-budgets, REQ:look-*, REQ:strict-csp-unchanged).
@@ -55,7 +54,7 @@ shows it in a card (`shell/owner-popover.ts`, in the lazy overlays chunk) opened
 ## Charts
 
 `app-chart [spec] [height] (bucketSelected)`; specs from `@cockpit/ui/chart`: `TimeSeriesSpec` (use
-`machineMetricSpecs(samples, now)` for CPU, load, memory and disk over the last hour, with a gap wherever samples are
+`machineMetricSpecs(samples, now)` for CPU, load, memory used and free disk over the last hour, with a gap wherever samples are
 absent), `BarsSpec` (bars by day), `HorizontalBarsSpec` (buckets; a bar with a `link` is clickable and emits it).
 Chart.js 4.5.1 is pinned exactly; `chart-engine.ts` is the only module that imports it and registers only bar and
 line controllers and elements, the category and linear scales, the filler and the tooltip. It is reached by a dynamic

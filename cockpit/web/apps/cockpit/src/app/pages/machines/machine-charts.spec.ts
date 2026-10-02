@@ -1,25 +1,19 @@
 import { TestBed } from '@angular/core/testing'
 import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { NOW } from '../test-harness'
-import { diskFreeSpec, MachineCharts, machineChartSpecs } from './machine-charts'
+import { MachineCharts } from './machine-charts'
 import { sample } from './machines-fixture'
 
-const MINUTE = 60_000
-
-describe('diskFreeSpec', () => {
-  it('is the free disk in gigabytes over the last hour, with a gap where samples are missing or the disk is not reported', () => {
-    const spec = diskFreeSpec([sample(50, 5), sample(49, 5), sample(48, 5), sample(47, 5), sample(10, 5), sample(9, 5, 8, { disk_total_bytes: 0 }), sample(8, 5, 8, { sampled_at: 'garbage' }), sample(120, 5)], NOW)
-    expect(spec).toMatchObject({ kind: 'time-series', title: 'Disk free', unit: ' GB', from: NOW - 60 * MINUTE, to: NOW })
-    expect(spec.points.map((point) => point.value)).toEqual([200, 200, 200, 200, null, 200])
-    expect(spec.points[0].at).toBe(NOW - 50 * MINUTE)
-  })
-})
-
-describe('machineChartSpecs', () => {
-  it('is CPU, load, memory used and disk free, in that order, over the same hour', () => {
-    const specs = machineChartSpecs([sample(5, 40, 8)], NOW)
+describe('MachineCharts specs', () => {
+  it('draws the library presets: CPU, load, memory used and disk free in gigabytes, over the same hour', async () => {
+    TestBed.configureTestingModule({ providers: [{ provide: CHART_ENGINE, useValue: async () => ({ create: vi.fn(() => ({ update: vi.fn(), destroy: vi.fn() })) }) }] })
+    const fixture = TestBed.createComponent(MachineCharts)
+    fixture.componentRef.setInput('samples', [sample(5, 40, 8)])
+    fixture.componentRef.setInput('now', NOW)
+    await fixture.whenStable()
+    const specs = (fixture.componentInstance as unknown as { specs: () => { title: string; from: number; points: { value: number | null }[] }[] }).specs()
     expect(specs.map((spec) => spec.title)).toEqual(['CPU', 'Load (1 minute)', 'Memory used', 'Disk free'])
-    expect(specs.map((spec) => spec.points.map((point) => point.value))).toEqual([[40], [2], [50], [200]])
+    expect(specs[3].points[0].value).toBe(200)
     expect(new Set(specs.map((spec) => spec.from)).size).toBe(1)
   })
 })

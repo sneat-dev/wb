@@ -18,7 +18,7 @@ const DAY = 24 * 60 * 60 * 1000
 const ago = (days: number) => new Date(NOW - days * DAY).toISOString()
 
 const COLUMNS: ListColumn<Worktree>[] = [
-  { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 100, value: (w) => w.task },
+  { id: 'worktree', header: 'Worktree', title: true, sort: 'worktree', width: 'fill', grow: 3, min: 100, value: (w) => w.task },
   { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, priority: 1, hint: 'The branch' },
   { id: 'machine', header: 'Machine', sort: 'machine', width: 90, priority: 2, align: 'end', value: (w) => w.machine },
   { id: 'activity', header: 'Last activity', sort: 'activity', width: 100 },
@@ -228,6 +228,8 @@ describe('ListView', () => {
     expect(columns.map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
     expect(columns[1].getAttribute('title')).toBe('The branch')
     expect(columns[2].classList.contains('end')).toBe(true)
+    // A `title` header is the page's visible title; the others are not.
+    expect(columns.map((header) => header.classList.contains('title'))).toEqual([true, false, false, false])
     // The tracks: a fill column is minmax(min, grow fr), a fixed one takes up to its width, and the open-page cell is reserved.
     const grid = (page.root.querySelector('.viewport') as HTMLElement).style.getPropertyValue('--cols')
     expect(grid).toBe('minmax(100px, 3fr) minmax(0px, 1fr) minmax(90px, 90px) minmax(100px, 100px) 32px')

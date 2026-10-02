@@ -61,7 +61,7 @@ async function render(key: string, options: { document?: FleetDocument; session?
   return { fixture, root: fixture.nativeElement as HTMLElement, store }
 }
 
-const facts = (root: HTMLElement) => Object.fromEntries([...root.querySelectorAll('article.content > dl.facts > dt')].map((term) => [text(term), term.nextElementSibling as HTMLElement]))
+const facts = (root: HTMLElement) => Object.fromEntries([...root.querySelectorAll('article.content > .aside > dl.facts > dt')].map((term) => [text(term), term.nextElementSibling as HTMLElement]))
 
 describe('RepositoryPanelView', () => {
   it('renders nothing for a repository the document does not list', async () => {

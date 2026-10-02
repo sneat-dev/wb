@@ -55,6 +55,8 @@ export interface ListColumn<T> {
   /** The least pixels the column needs to be worth showing (default: its `width`); below the sum of these the lowest-priority column is hidden. */
   min?: number
   align?: 'end'
+  /** The header is the page's visible title: the section-title type size, for a page with no separate heading above its list. */
+  title?: boolean
   /**
    * A trailing cell of controls (icon links), not a column: it is not counted toward the 7, its header
    * (`header`, still the name assistive technology reads) is visually hidden, and it hides by `priority`

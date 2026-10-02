@@ -1,69 +1,68 @@
 <app-list page="machines" [columns]="columns" [panelLabel]="panelLabel">
   <ng-template appCell="machine" let-m>
-    <a class="name" tabindex="-1" [routerLink]="detail(m).path" [attr.title]="'Open the page of ' + m.machine.machine">{{ m.machine.machine }}</a>
+    <a class="name" tabindex="-1" [routerLink]="target(detail(m))" [attr.title]="'Open the page of ' + m.machine.machine">{{ m.machine.machine }}</a>
   </ng-template>
   <ng-template appCell="state" let-m>
     @let r = row(m);
     <span class="state">
       <span class="reach">{{ r.reach }}</span>
       @if (r.stale) {
-        <span class="mark stale" title="Older than the freshness window">stale</span>
-      }
-      @if (r.warning; as text) {
-        <span class="warning" [attr.title]="m.machine.machine + ': ' + text">warning: {{ text }}</span>
+      <span class="mark stale" title="Older than the freshness window">stale</span>
+      } @if (r.warning; as text) {
+      <span class="warning" [attr.title]="m.machine.machine + ': ' + text">warning: {{ text }}</span>
       }
     </span>
   </ng-template>
   <ng-template appCell="version" let-m>
     @if (m.machine.wb_version; as version) {
-      <span class="version">
-        <span class="tnum">{{ version }}</span>
-        @if (m.outdated) {
-          &ngsp;
-          <span class="mark older" title="Older than the newest WB in the fleet">older</span>
-        }
-      </span>
+    <span class="version">
+      <span class="tnum">{{ version }}</span>
+      @if (m.outdated) { &ngsp;
+      <span class="mark older" title="Older than the newest WB in the fleet">older</span>
+      }
+    </span>
     } @else {
-      <span class="quiet" title="Not reported">—</span>
+    <span class="quiet" title="Not reported">—</span>
     }
   </ng-template>
   <ng-template appCell="repositories" let-m>
-    @let c = row(m).counts;
-    @if (c.repositories === 0) {
-      <span class="quiet tnum" title="No repositories">0</span>
+    @let c = row(m).counts; @if (c.repositories === 0) {
+    <span class="quiet tnum" title="No repositories">0</span>
     } @else {
-      <app-count-link [value]="c.repositories" [link]="links(m).repositories" />
+    <app-count-link [value]="c.repositories" [link]="links(m).repositories" />
     }
   </ng-template>
   <ng-template appCell="worktrees" let-m>
-    @let c = row(m).counts;
-    @if (c.worktrees === 0) {
-      <span class="quiet tnum" title="No worktrees">0</span>
+    @let c = row(m).counts; @if (c.worktrees === 0) {
+    <span class="quiet tnum" title="No worktrees">0</span>
     } @else {
-      <app-count-link [value]="c.worktrees" [link]="links(m).worktrees" />
+    <app-count-link [value]="c.worktrees" [link]="links(m).worktrees" />
     }
   </ng-template>
   <ng-template appCell="agents" let-m>
-    @let c = row(m).counts;
-    @if (c.agents === 0) {
-      <span class="quiet tnum" title="No agents">0</span>
+    @let c = row(m).counts; @if (c.agents === 0) {
+    <span class="quiet tnum" title="No agents">0</span>
     } @else {
-      <app-count-link [value]="c.agents" [link]="links(m).agents" />
+    <app-count-link [value]="c.agents" [link]="links(m).agents" />
     }
   </ng-template>
   <ng-template appCell="load" let-m>
     @let r = row(m);
-    <span class="load" [attr.title]="'Latest sample: ' + r.sample">
-      <app-state-badge kind="load" size="small" [value]="r.load.state" />
-      @if (r.bars; as bars) {
-        <span class="meter">
-          <span class="label">CPU</span>&ngsp;<span class="bar" role="img" [attr.aria-label]="'CPU ' + bars.cpu + ' percent'"><span class="fill" [style.width.%]="bars.cpu"></span></span>&ngsp;<span class="value tnum">{{ bars.cpu }}%</span>
-        </span>
-        <span class="meter">
-          <span class="label">Mem</span>&ngsp;<span class="bar" role="img" [attr.aria-label]="'Memory ' + bars.memory + ' percent'"><span class="fill" [style.width.%]="bars.memory"></span></span>&ngsp;<span class="value tnum">{{ bars.memory }}%</span>
-        </span>
-      }
-    </span>
+    <app-state-badge kind="load" size="small" [value]="r.load.state" [attr.title]="'Latest sample: ' + r.sample" />
+  </ng-template>
+  <ng-template appCell="cpu" let-m>
+    @let r = row(m); @if (r.bars; as bars) {
+    <span class="meter" [attr.title]="'Latest sample: ' + r.sample"
+      ><span class="bar" role="img" [attr.aria-label]="'CPU ' + bars.cpu + ' percent'"><span class="fill" [style.width.%]="bars.cpu"></span></span>&ngsp;<span class="value tnum">{{ bars.cpu }}%</span></span
+    >
+    }
+  </ng-template>
+  <ng-template appCell="memory" let-m>
+    @let r = row(m); @if (r.bars; as bars) {
+    <span class="meter" [attr.title]="'Latest sample: ' + r.sample"
+      ><span class="bar" role="img" [attr.aria-label]="'Memory ' + bars.memory + ' percent'"><span class="fill" [style.width.%]="bars.memory"></span></span>&ngsp;<span class="value tnum">{{ bars.memory }}%</span></span
+    >
+    }
   </ng-template>
   <ng-template appListPanel let-m><app-machine-panel [id]="m.machine.id" /></ng-template>
 </app-list>

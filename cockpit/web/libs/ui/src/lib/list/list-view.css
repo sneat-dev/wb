@@ -73,6 +73,13 @@
   text-align: end;
 }
 
+.title,
+.title .sort {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+}
+
 .sort {
   display: inline-flex;
   gap: var(--space-1);

@@ -1,7 +1,7 @@
 # ui
 
 Components the Cockpit pages share. Import each from its own entry point, never from the
-`@cockpit/ui` barrel, which also exports the PrimeNG components of the legacy pages:
+`@cockpit/ui` barrel, which holds only the code-index label and panel:
 
 | Entry point | What it holds |
 |---|---|
@@ -9,9 +9,11 @@ Components the Cockpit pages share. Import each from its own entry point, never 
 | `@cockpit/ui/list-host` | `LIST_SHORTCUTS`, which the application provides once (`{ provide: LIST_SHORTCUTS, useExisting: Shortcuts }` in app.config) |
 | `@cockpit/ui/panel` | `SidePanel`, `PanelContent` with `PanelFact`, `PanelRelated`, and `PanelState` (the state header of a panel) |
 | `@cockpit/ui/control` | the control surface: state badge, sync badges, PR chip, machine chip, relative time and `UiClock`, copy-command list, action slot, and every `GLYPH_*` (`glyphs.ts`) |
-| `@cockpit/ui/code-index-label`, `/code-index-panel`, `/route-label`, `/count` | the single components of those names |
+| `@cockpit/ui/code-index-label`, `/code-index-panel` | the single components of those names |
+| `@cockpit/ui/viewport-mount` | `ViewportMount` (`<app-viewport-mount [load] [inputs]>`): creates a lazily imported component when its place scrolls near the viewport; the place's height is the CSS property `--viewport-slot-height` of its container |
+| `@cockpit/ui/chart` | `ChartView`, the chart specs and `machineMetricSpecs` (CPU, load, memory used, disk free) |
 
-None of `list`, `panel` and `control` uses PrimeNG. Tokens come from `apps/cockpit/src/styles/tokens.css`.
+Tokens come from `apps/cockpit/src/styles/tokens.css`.
 
 ## A list page in about 25 lines
 
@@ -61,7 +63,8 @@ export class WorktreesPage {
   (10) columns are never hidden and share the width instead. A trailing cell of controls is `chrome: true`: it is
   not counted toward the 7, its `header` is visually hidden (still its accessible name) and it hides by `priority`
   like the rest. The list measures itself, so a panel opening hides columns at once; what is hidden is still in
-  the panel. The open-page cell is reserved at the row end.
+  the panel. The open-page cell is reserved at the row end. `title: true` makes a header the page's visible title (the
+  section-title type size), for a page with no heading of its own above the list (Machines).
 * Cells: `app-identity-cell` (strong name and, right after it in one row, the muted secondary text, which gives way
   first, then the copy icon; the name optionally a link; `app-repo-name` does the same for `owner/name`: the owner
   gives way first, the name is cut only when it alone is wider than the cell),
@@ -88,7 +91,8 @@ export class WorktreesPage {
 content, the action area and the "Copy command" entries, and the collapsed "Raw data" block (rendered, as
 the read model sent it, only once opened). The side panel (`<app-side-panel>`, which `<app-list>` hosts) and
 the detail route are two hosts of one component: `worktree-panel.ts` is the pattern, and `worktree-page.ts`
-renders it with `[page]="true"`.
+renders it with `[page]="true"`; with `[split]="true"` as well, a page at least 60rem wide puts the summary (header, facts, related)
+and what it projects in two columns (the machine page), while the panel and a narrow page stay one.
 
 * The panel renders the control surface's copy-command list from the `commands` input, and its action slot goes
   into the `[panelActions]` projection (a region that takes no space while empty).

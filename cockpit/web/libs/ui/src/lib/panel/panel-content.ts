@@ -58,6 +58,7 @@ export interface PanelRelated {
   providers: [ListAnnouncer],
   templateUrl: './panel-content.html',
   styleUrl: './panel-content.css',
+  host: { '[class.split]': 'split()' },
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PanelContent {
@@ -72,6 +73,12 @@ export class PanelContent {
   readonly raw = input<readonly unknown[]>([])
   /** The detail page, not the side panel: it has no border and its own width. */
   readonly page = input(false)
+  /**
+   * On a wide page, two columns: the summary (state, facts, related entities) on one side and what the page projects
+   * (the default slot) beside it; the heading, actions, commands and raw data span both. Narrower than 60rem, or
+   * without this, it is the one column. Meant for the detail page, not the side panel.
+   */
+  readonly split = input(false)
 
   protected readonly announcer = inject(ListAnnouncer)
   protected readonly open = GLYPH_OPEN

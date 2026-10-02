@@ -13,7 +13,7 @@ const open = async (id: string, options: Parameters<typeof openMachines>[2] = {}
   const page = await openMachines(`/machines/${id}`, MachineDetailPage, options)
   return { ...page, panel: page.root.querySelector('app-machine-panel') as HTMLElement }
 }
-const facts = (panel: HTMLElement, selector = 'article > dl.facts') => Object.fromEntries([...panel.querySelectorAll(`${selector} > dt`)].map((term) => [text(term), text(term.nextElementSibling)]))
+const facts = (panel: HTMLElement, selector = '.aside > dl.facts') => Object.fromEntries([...panel.querySelectorAll(`${selector} > dt`)].map((term) => [text(term), text(term.nextElementSibling)]))
 const section = (panel: HTMLElement, label: string) => panel.querySelector(`[aria-label="${label}"]`) as HTMLElement
 
 describe('MachinePanelView', () => {
@@ -29,8 +29,8 @@ describe('MachinePanelView', () => {
   it('shows the summary of the local machine: OS, architecture, CPUs, WB version, how it is reached and the uptime from boot_time', async () => {
     const { panel } = await open('mach-macbook')
     expect(text(panel.querySelector('h2'))).toBe('macbook')
-    expect(text(panel.querySelector('.state'))).toContain('local')
-    expect(text(panel.querySelector('.state'))).not.toContain('stale')
+    expect(text(panel.querySelector('app-panel-state'))).toContain('local')
+    expect(text(panel.querySelector('app-panel-state'))).not.toContain('stale')
     expect(facts(panel)).toMatchObject({ OS: 'darwin', Architecture: 'arm64', CPUs: '10', 'WB version': '1.2.0', Uptime: '3 d', 'Reached by': 'this machine' })
   })
 
@@ -49,16 +49,21 @@ describe('MachinePanelView', () => {
 
   it('names the counts with links to the filtered lists, the running agents and the most recent worktrees', async () => {
     const { panel } = await open('mach-macbook')
-    expect(facts(panel, '[aria-label="Counts"] dl')).toEqual({ Repositories: '1', Worktrees: '2', Agents: '2 1 running' })
-    const hrefs = [...section(panel, 'Counts').querySelectorAll('a')].map((link) => link.getAttribute('href'))
-    expect(hrefs).toEqual(['/repositories?machine=mach-macbook', '/worktrees?machine=mach-macbook', '/agents?machine=mach-macbook'])
-    expect([...section(panel, 'Running agents').querySelectorAll('li')].map(text)).toEqual(['claude sonnet-5-5Agent state: running'])
-    expect(section(panel, 'Running agents').querySelector('a')?.getAttribute('href')).toBe('/agents/run-1')
-    const worktrees = [...section(panel, 'Recent worktrees').querySelectorAll('li')]
-    expect(worktrees.map((item) => text(item.querySelector('a')))).toEqual(['fix-ci', 'add-search'])
-    expect(worktrees[0].querySelector('a')?.getAttribute('href')).toBe('/worktrees?sel=w1')
-    expect(text(worktrees[0])).toContain('acme/r1')
-    expect(text(worktrees[0])).toContain('1 h ago')
+    const links = (label: string) => [...section(panel, label).querySelectorAll('a')]
+    expect(links('On this machine').map(text)).toEqual(['1 repository', '2 worktrees', '2 agents, 1 running'])
+    expect(links('On this machine').map((link) => link.getAttribute('href'))).toEqual(['/repositories?machine=mach-macbook', '/worktrees?machine=mach-macbook', '/agents?machine=mach-macbook'])
+    expect(links('Running agents').map(text)).toEqual(['claude sonnet-5-5'])
+    expect(links('Running agents')[0].getAttribute('href')).toBe('/agents/run-1')
+    expect(section(panel, 'Running agents').querySelector('li')?.getAttribute('title')).toBe('Agent state: running')
+    expect(links('Recent worktrees').map(text)).toEqual(['fix-ci in acme/r1', 'add-search in acme/r1'])
+    expect(links('Recent worktrees')[0].getAttribute('href')).toBe('/worktrees?sel=w1')
+  })
+
+  it('shows a count of nothing as plain text, not a link', async () => {
+    const { panel } = await open('mach-nas')
+    expect([...section(panel, 'On this machine').querySelectorAll('li')].map(text)).toEqual(['0 repositories', '0 worktrees', '0 agents, 0 running'])
+    expect(section(panel, 'On this machine').querySelector('a')).toBeNull()
+    expect(text(section(panel, 'Running agents'))).toContain('None')
   })
 
   it('ends with the collapsed Raw data block', async () => {
@@ -75,7 +80,7 @@ describe('MachinePanelView', () => {
     expect(text(section(panel, 'Metrics'))).toContain('this daemon does not sample')
     expect(panel.querySelector('.latest')).toBeNull()
     expect(panel.querySelector('app-viewport-mount, app-machine-charts, app-chart')).toBeNull()
-    expect(text(panel.querySelector('.state'))).toContain('load unknown')
+    expect(text(panel.querySelector('app-panel-state'))).toContain('load unknown')
     expect(text(section(panel, 'Metrics'))).not.toMatch(/\b0\b/)
     expect(facts(panel)).toMatchObject({ OS: 'not reported', Architecture: 'not reported', CPUs: 'not reported', 'WB version': 'not reported', Uptime: 'not reported' })
   })
@@ -86,14 +91,14 @@ describe('MachinePanelView', () => {
     expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('cached: the latest sample of its published snapshot, 30 min ago')
     expect(facts(panel, '.latest')).toEqual({ CPU: '35%', 'Load (1 min)': '1.75', Memory: '6 GB of 16 GB (38%)', 'Disk free': '200 GB free of 500 GB' })
     expect(panel.querySelector('app-viewport-mount, app-machine-charts, app-chart')).toBeNull()
-    expect(text(panel.querySelector('.state'))).toContain('free')
+    expect(text(panel.querySelector('app-panel-state'))).toContain('free')
   })
 
   it('names a live machine by its transport and age, its history, and how many entries its export left out', async () => {
     const { panel } = await open('mach-vm')
-    expect(text(panel.querySelector('.reach'))).toBe('live over http, just now')
+    expect(text(panel.querySelector('app-panel-state .why'))).toBe('live over http, just now')
     expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('live-remote: 30 samples, fetched just now')
-    expect(facts(panel)).toMatchObject({ 'Reached by': 'http just now', 'Left out': '3 entries of its export' })
+    expect(facts(panel)).toMatchObject({ 'Reached by': 'http', Observed: 'just now', 'Left out': '3 entries of its export' })
     await vi.waitFor(() => expect(panel.querySelectorAll('app-machine-charts app-chart')).toHaveLength(4))
   })
 

@@ -153,6 +153,19 @@ describe('PanelContent', () => {
     expect(root.querySelector('[aria-label="Copy command"]')).toBeNull()
   })
 
+  it('keeps the summary in one block and what the page projects in another, and splits them into two columns only on a wide detail page', async () => {
+    const one = await render({ facts: [{ label: 'OS', text: 'darwin' }], related: [{ title: 'Agents', items: [] }] })
+    expect(one.root.querySelector('.content')?.classList.contains('split')).toBe(false)
+    expect(one.root.classList.contains('split')).toBe(false)
+    const panel = await render({ facts: [{ label: 'OS', text: 'darwin' }], split: true })
+    expect(panel.root.querySelector('.content')?.classList.contains('split')).toBe(false)
+    const wide = await render({ facts: [{ label: 'OS', text: 'darwin' }], page: true, split: true })
+    expect(wide.root.classList.contains('split')).toBe(true)
+    expect(wide.root.querySelector('.content')?.classList.contains('split')).toBe(true)
+    expect(wide.root.querySelector('.content > .aside > dl.facts')).not.toBeNull()
+    expect(wide.root.querySelector('.content > .main')).not.toBeNull()
+  })
+
   // The state and why, above the facts: the task panel and the agent panel both put their header here.
   it('projects a header above the facts, in the one state header (badges, one line of words and a note), and takes no room for one that is absent', async () => {
     const fixture = TestBed.createComponent(HeaderHost)
@@ -163,7 +176,7 @@ describe('PanelContent', () => {
     expect(text(header.querySelector('.badge'))).toBe('ready')
     expect(text(header.querySelector('.note'))).toBe('As reported by vm')
     expect(header.nextElementSibling?.tagName).toBe('DL')
-    expect(header.previousElementSibling?.tagName).toBe('HEADER')
+    expect(header.parentElement?.previousElementSibling?.tagName).toBe('HEADER')
     const plain = await render({})
     expect(plain.root.querySelector('.header-slot')?.children).toHaveLength(0)
   })

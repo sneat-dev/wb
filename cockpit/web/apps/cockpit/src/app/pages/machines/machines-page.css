@@ -2,14 +2,6 @@
   display: block;
 }
 
-/* The first column header is the page's title: the section-title size, with no separate heading above it. */
-:host ::ng-deep .head [role='columnheader']:first-child,
-:host ::ng-deep .head [role='columnheader']:first-child .sort {
-  color: var(--text);
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-semibold);
-}
-
 .name {
   min-width: 0;
   overflow: hidden;
@@ -20,7 +12,6 @@
 
 .state,
 .version,
-.load,
 .meter {
   display: flex;
   flex-wrap: nowrap;
@@ -64,14 +55,6 @@
 
 .quiet {
   color: var(--text-3);
-}
-
-.load {
-  overflow: hidden;
-}
-
-.load app-state-badge {
-  flex: none;
 }
 
 .meter {

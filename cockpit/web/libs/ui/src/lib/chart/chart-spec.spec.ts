@@ -25,15 +25,15 @@ describe('chart specs', () => {
   })
 
   describe('machineMetricSpecs', () => {
-    it('makes the four charts of the last hour: CPU, load, memory used and disk used', () => {
+    it('makes the four charts of the last hour: CPU, load, memory used and free disk', () => {
       const specs = machineMetricSpecs([sample(30), sample(20), sample(10)], NOW)
       expect(specs.map((spec) => [spec.title, spec.unit, spec.max])).toEqual([
         ['CPU', '%', 100],
         ['Load (1 minute)', '', undefined],
         ['Memory used', '%', 100],
-        ['Disk used', '%', 100],
+        ['Disk free', ' GB', undefined],
       ])
-      expect(specs.map((spec) => spec.points.map((point) => point.value))).toEqual([[40, 40, 40], [1.25, 1.25, 1.25], [50, 50, 50], [75, 75, 75]])
+      expect(specs.map((spec) => spec.points.map((point) => point.value))).toEqual([[40, 40, 40], [1.25, 1.25, 1.25], [50, 50, 50], [25 / 2 ** 30, 25 / 2 ** 30, 25 / 2 ** 30]])
       expect(specs[0]).toMatchObject({ kind: 'time-series', from: NOW - 60 * MIN, to: NOW, valueLabel: 'CPU %' })
     })
 
@@ -41,7 +41,7 @@ describe('chart specs', () => {
       const specs = machineMetricSpecs([sample(90), sample(30), sample(5, { sampled_at: 'garbage' }), sample(10, { memory_total_bytes: 0, disk_total_bytes: 0 })], NOW)
       expect(specs[0].points).toHaveLength(2)
       expect(specs[2].points.map((point) => point.value)).toEqual([50])
-      expect(specs[3].points.map((point) => point.value)).toEqual([75])
+      expect(specs[3].points.map((point) => point.value)).toEqual([25 / 2 ** 30])
     })
 
     it('breaks the line where samples are absent', () => {

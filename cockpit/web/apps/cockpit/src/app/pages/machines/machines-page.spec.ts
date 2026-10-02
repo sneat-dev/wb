@@ -45,7 +45,7 @@ describe('MachinesPage', () => {
   // cockpit-views#ac:machines-table-title-and-links
   it('has "Machines" as its first column header and no separate heading, and each name links to its page', async () => {
     const { root } = await open()
-    expect(headersOf(root)).toEqual(['Machines', 'State', 'WB version', 'Repositories', 'Worktrees', 'Agents', 'Load'])
+    expect(headersOf(root)).toEqual(['Machines', 'State', 'WB version', 'Repositories', 'Worktrees', 'Agents', 'Load', 'CPU', 'Memory'])
     expect(root.querySelectorAll('h1, h2, h3, .page-title')).toHaveLength(0)
     expect(rowsOf(root).map((row) => row.querySelector('a.name')?.getAttribute('href'))).toEqual(['/machines/mach-macbook', '/machines/mach-nas', '/machines/mach-oldmac', '/machines/mach-vm'])
   })
@@ -88,18 +88,18 @@ describe('MachinesPage', () => {
   // cockpit-views#ac:machines-table-title-and-links
   it('shows the CPU and memory of the latest sample, a free or busy verdict, and nothing for a machine with no metrics', async () => {
     const { root } = await open()
-    const meters = (row: number) => [...cell(root, row, 'Load').querySelectorAll('.meter')].map(text)
+    const meters = (row: number) => [text(cell(root, row, 'CPU')), text(cell(root, row, 'Memory'))]
     expect(text(cell(root, 0, 'Load'))).toContain('busy')
-    expect(meters(0)).toEqual(['CPU 88%', 'Mem 88%'])
+    expect(meters(0)).toEqual(['88%', '88%'])
     expect(text(cell(root, 3, 'Load'))).toContain('free')
-    expect(meters(3)).toEqual(['CPU 10%', 'Mem 25%'])
-    expect(meters(2)).toEqual(['CPU 35%', 'Mem 38%'])
-    expect(cell(root, 2, 'Load').querySelector('.load')?.getAttribute('title')).toMatch(/^Latest sample: cached, /)
+    expect(meters(3)).toEqual(['10%', '25%'])
+    expect(meters(2)).toEqual(['35%', '38%'])
+    expect(cell(root, 2, 'CPU').querySelector('.meter')?.getAttribute('title')).toMatch(/^Latest sample: cached, /)
     // No source: the load is unknown and there are no bars, and never a zero.
     expect(text(cell(root, 1, 'Load'))).toContain('load unknown')
-    expect(meters(1)).toEqual([])
-    expect(text(cell(root, 1, 'Load'))).not.toContain('0%')
-    expect(cell(root, 1, 'Load').querySelector('.load')?.getAttribute('title')).toBe('Latest sample: no usable sample')
+    expect(meters(1)).toEqual(['', ''])
+    expect(cell(root, 1, 'CPU').querySelector('.bar')).toBeNull()
+    expect(cell(root, 1, 'Load').querySelector('app-state-badge')?.getAttribute('title')).toBe('Latest sample: no usable sample')
   })
 
   it('says load unknown for a machine the daemon has no metrics answer for', async () => {

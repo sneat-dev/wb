@@ -33,7 +33,7 @@
     >
       <div class="head" role="row" aria-rowindex="1">
         @for (column of shown(); track column.id) {
-          <div class="cell" role="columnheader" [class.end]="column.align === 'end'" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
+          <div class="cell" role="columnheader" [class.end]="column.align === 'end'" [class.title]="column.title" [attr.aria-sort]="ariaSort(column)" [attr.title]="column.hint ?? null">
             @if (column.sort; as sortId) {
               <button type="button" class="sort" (click)="sortBy(sortId)">
                 {{ column.header }}

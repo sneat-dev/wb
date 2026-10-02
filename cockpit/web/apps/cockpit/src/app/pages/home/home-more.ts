@@ -4,7 +4,7 @@ import { buildCleanup, buildHealth, buildThroughput } from '@cockpit/fleet-data/
 import { CleanupSection } from './cleanup-section'
 import { HealthSection } from './health-section'
 import { healthRows } from './health-rows'
-import { ViewportMount } from './viewport-mount'
+import { ViewportMount } from '@cockpit/ui/viewport-mount'
 
 /** The charts (and Chart.js with them) load only when their section scrolls near the viewport. */
 const loadCharts = () => import('./home-charts').then((module) => module.HomeCharts)
