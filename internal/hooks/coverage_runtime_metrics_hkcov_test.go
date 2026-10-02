@@ -592,3 +592,29 @@ func TestHkCovMeasureEdgeCases(t *testing.T) {
 		t.Fatalf("Unmeasured = %v, want an over-budget stream push warning", delta.Unmeasured)
 	}
 }
+
+func TestHkCovAppendEventsRejectsEmptyAndBadPaths(t *testing.T) {
+	t.Parallel()
+	if err := AppendEvents(filepath.Join(t.TempDir(), "events.jsonl"), nil); err != nil {
+		t.Fatalf("AppendEvents(nil) = %v, want nil", err)
+	}
+	directory := t.TempDir()
+	if err := AppendEvent(directory, hkCovEvent(t)); err == nil || !strings.Contains(err.Error(), "open hook metrics") {
+		t.Fatalf("AppendEvent(directory) error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	if err := AppendEvents(path, []Event{hkCovEvent(t), hkCovEvent(t)}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("metrics file mode = %v, want 0600", info.Mode().Perm())
+	}
+	events, err := ReadEvents(path)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("ReadEvents = %#v, %v; want two events", events, err)
+	}
+}

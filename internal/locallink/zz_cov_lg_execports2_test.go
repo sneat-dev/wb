@@ -348,3 +348,61 @@ func TestLgCovRunBoundedSuccessTimeoutAndFailure(t *testing.T) {
 		}
 	})
 }
+
+func TestLgCovCopyBuiltPackageFailurePaths(t *testing.T) {
+	t.Parallel()
+	t.Run("the destination must not already exist", func(t *testing.T) {
+		t.Parallel()
+		source := t.TempDir()
+		lgCovWriteFile(t, filepath.Join(source, "package.json"), `{"name":"@acme/core"}`)
+		destination := t.TempDir()
+		err := copyBuiltPackage(source, destination)
+		if err == nil || !strings.Contains(err.Error(), "file exists") {
+			t.Fatalf("error = %v, want the exclusive-destination failure", err)
+		}
+	})
+
+	t.Run("a source that does not exist is reported", func(t *testing.T) {
+		t.Parallel()
+		err := validateBuiltPackageSource(filepath.Join(t.TempDir(), "missing"))
+		if err == nil || !strings.Contains(err.Error(), "no such file") {
+			t.Fatalf("error = %v, want the missing-source report", err)
+		}
+	})
+
+	t.Run("a nonexistent walk root is reported", func(t *testing.T) {
+		t.Parallel()
+		err := copyBuiltPackageContents(filepath.Join(t.TempDir(), "missing"), t.TempDir())
+		if err == nil {
+			t.Fatal("walking a nonexistent source reported success")
+		}
+	})
+
+	t.Run("a directory that collides with an existing file is reported", func(t *testing.T) {
+		t.Parallel()
+		source := t.TempDir()
+		lgCovWriteFile(t, filepath.Join(source, "sub", "file.txt"), "source\n")
+		destination := t.TempDir()
+		lgCovWriteFile(t, filepath.Join(destination, "sub"), "already a file\n")
+		err := copyBuiltPackageContents(source, destination)
+		if err == nil || !strings.Contains(err.Error(), "file exists") {
+			t.Fatalf("error = %v, want the colliding-directory failure", err)
+		}
+	})
+
+	t.Run("a file that collides with an existing entry is reported", func(t *testing.T) {
+		t.Parallel()
+		source := t.TempDir()
+		lgCovWriteFile(t, filepath.Join(source, "file.txt"), "source\n")
+		destination := t.TempDir()
+		lgCovWriteFile(t, filepath.Join(destination, "file.txt"), "already here\n")
+		err := copyBuiltPackageContents(source, destination)
+		if err == nil || !strings.Contains(err.Error(), "file exists") {
+			t.Fatalf("error = %v, want the colliding-file failure", err)
+		}
+		contents, readErr := os.ReadFile(filepath.Join(destination, "file.txt"))
+		if readErr != nil || string(contents) != "already here\n" {
+			t.Fatalf("the existing file was overwritten: %q (err %v)", contents, readErr)
+		}
+	})
+}
