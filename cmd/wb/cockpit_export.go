@@ -18,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 )
 
 // cockpitExportDependencies is everything `wb cockpit export` touches. It
@@ -168,14 +169,14 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 }
 
 // cockpitLoopbackBase is the Cockpit API address of a daemon recorded as
-// listening on host:port, dialled exactly as recorded: only `127.0.0.1`, `::1`
-// and `localhost` are accepted (the three names the Cockpit Host guard serves),
-// so a record naming any other address, 127.0.0.2 included, is refused rather
-// than rewritten to the canonical one. The port must be a port number: a record
+// listening on host:port, dialled exactly as recorded: only a host that
+// loopbackhost.Named accepts (the rule the daemon's --listen check and the
+// Cockpit Host guard share), so a record naming any other address is refused
+// rather than rewritten to the canonical one. The port must be a port number: a record
 // with any other text there names no address.
 func cockpitLoopbackBase(listen string) (url.URL, bool) {
 	host, port, err := net.SplitHostPort(listen)
-	if err != nil || (host != "127.0.0.1" && host != "::1" && host != "localhost") {
+	if err != nil || !loopbackhost.Named(host) {
 		return url.URL{}, false
 	}
 	if number, err := strconv.ParseUint(port, 10, 16); err != nil || number == 0 {

@@ -33,9 +33,9 @@ describe('machineChips', () => {
     expect(gamma.title).toBe('gamma: cached, 2 d ago; older than the freshness window')
   })
 
-  it('leaves out the age of a snapshot whose time cannot be read', () => {
+  it('leaves out the age of a snapshot whose time cannot be read, and shows it as stale (an unknown time is never fresh)', () => {
     const { row, views } = rowOf([machine('alpha'), machine('beta', 'cached')], [repository('r2', 'beta', { name: 'acme/x', route: 'cached', observed_at: 'never' })])
-    expect(machineChips(row.checkouts, views, NOW)[0]).toMatchObject({ detail: '', stale: false })
+    expect(machineChips(row.checkouts, views, NOW)[0]).toMatchObject({ detail: 'stale', stale: true })
   })
 
   it('says a live remote is read live, with its transport when the machine has one', () => {

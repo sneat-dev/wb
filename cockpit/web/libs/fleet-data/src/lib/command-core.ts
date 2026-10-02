@@ -180,7 +180,8 @@ export function command(target: CommandTarget, parts: readonly Part[]): CopyComm
 /**
  * The one place that keeps a command which changes something on this machine's own entries. A target with a machine
  * (another machine, with or without an SSH route) gets a refusal instead of a command, so no page can offer to push,
- * land, stop or send from here to a machine it only reads. Reading commands never go through this.
+ * land, stop or send from here to a machine it only reads. Reading commands never go through this. Every builder that
+ * goes through it takes the target as a required parameter, so a caller cannot leave it out and skip the guard.
  */
 export function onThisMachine(target: CommandTarget, build: () => CopyCommand): CopyCommand {
   if (target.machine === undefined && target.ssh === undefined) return build()
@@ -192,7 +193,7 @@ export const wb = (...words: string[]): Part[] => ['wb', ...words].map((word) =>
 // ---- the templates the first page needs: Home's ready-to-land and fleet-health lines ----
 
 /** `wb pr land`: only for a pull request of this machine (a refusal for another machine's). */
-export function pullRequestLand(repository: string, number: number, target: CommandTarget = {}): CopyCommand {
+export function pullRequestLand(repository: string, number: number, target: CommandTarget): CopyCommand {
   return onThisMachine(target, () => command(target, [...wb('pr', 'land'), { value: `${repository}#${number}` }]))
 }
 
