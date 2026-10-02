@@ -954,7 +954,7 @@ required-check policy), `failed_check` (the name of the first failing check, at 
 characters, with control and bidirectional characters removed, and rendered only as text) and
 `checked_at`. `url` is emitted only when it is `https` with a host of ASCII letters, digits, dots
 and hyphens, no port and no user information. They come from the daemon's snapshotter, which runs
-the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) on its own ticker for
+the existing watcher (`internal/prwatch`, over `internal/prsnapshot.Observe`) beside each refresh for
 the pull requests that `worktrees.ListRegisteredPullRequestBindings` returns, with the credentials
 WB already uses. Each pull request has its own cadence: one never observed is observed on the next pass (those of a
 worktree this machine has before the others); one whose checks are pending, or which has no check
@@ -963,7 +963,11 @@ that the pending ones use at most 70% of the budget and the settled ones keep th
 mergeability is `unknown` likewise, until it has been unknown 5 observations in a row, after which it
 is settled; one whose verdict is known (green, failed, blocked on a missing required check, draft)
 after 10 minutes; one whose read failed after a backoff doubling from 2 to 30 minutes; one closed
-without merging after 60 minutes, in case it is reopened. A pass starts on a refresh, once the
+without merging after 60 minutes, in case it is reopened. These cadences are the least time between
+two observations, not a timer of their own: a pull request is observed by the first refresh at or
+after the time it is due, so each cadence is rounded up to the next refresh
+(`cockpit.refresh_interval`): with a refresh every 30 seconds a pending pull request is observed
+every 90 seconds, and with one every 60 seconds every 120. A pass starts on a refresh, once the
 worktrees are known, and observes the pull requests that are due, at most `cockpit.pull_request_limit`
 of them (default 10, 1 to 200), the longest due first; each observation is bounded to 30 seconds, at
 most 4 run at once, a pass whose context ends records nothing for what it did not observe and gives

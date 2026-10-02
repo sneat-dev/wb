@@ -1057,6 +1057,12 @@ func (s *Snapshotter) scanOne(ctx context.Context, id string) error {
 // operation without waiting for the interval. A repository that could not be
 // read is recorded with an error code, shown in the republished document, and
 // its failure is returned.
+//
+// It is the read a pass makes of each repository whose fingerprint moved
+// (scanOne), and the on-request refresh that
+// cockpit#req:snapshot-refresh requires the daemon to be able to make. No
+// operation of the daemon completes inside it yet (the mutating routes are a
+// later task), so outside a pass nothing but that capability's tests calls it.
 func (s *Snapshotter) RefreshRepository(ctx context.Context, id string) error {
 	err := s.scanRepository(ctx, id, true)
 	if errors.Is(err, ErrUnknownRepository) {
