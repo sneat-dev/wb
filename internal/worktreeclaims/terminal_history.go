@@ -186,7 +186,7 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		expectedClaim := claim
 		expectedClaim.Lifecycle = "terminal"
 		if !reflect.DeepEqual(terminal.Claim, expectedClaim) || terminal.FinalCommit != expectation.FinalCommit ||
-			terminal.Disposition != "removed" || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
+			!cleanupSealedDisposition(terminal) || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
 			terminal.SuccessorAgentID != "" || terminal.ExternalHandoff != nil || terminal.Orphaned != nil ||
 			terminal.DirtyCapture != nil || terminal.Supersession != nil {
 			return "", fmt.Errorf("removed terminal Work Log does not exactly corroborate task %s", expectation.Task)
@@ -259,9 +259,21 @@ func (p HistoryPorts) validateRemovedTerminalOutbox(home string, claim Claim, te
 	expected := PublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
-		Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
+		Lifecycle: "terminal", Disposition: terminal.Disposition, Landed: terminal.Landed,
+		FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expected) {
 		return errors.New("immutable terminal outbox does not corroborate cleanup authority")
 	}
 	return nil
+}
+
+// cleanupSealedDisposition reports whether cleanup itself sealed terminal:
+// `removed`, or `landed` with the landing proof only cleanup records. A
+// `landed` terminal without that proof was sealed by finalize, before the
+// worktree was removed, so it does not prove the removal.
+func cleanupSealedDisposition(terminal TerminalRecord) bool {
+	if terminal.Disposition == "landed" {
+		return ValidLandedEvidence(terminal.Landed)
+	}
+	return terminal.Disposition == "removed" && terminal.Landed == nil
 }
