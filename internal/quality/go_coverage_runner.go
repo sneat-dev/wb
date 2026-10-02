@@ -83,7 +83,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 	if options.GoTestShards <= 1 && len(options.GoShardPackages) == 0 {
 		arguments := goCoverageArguments(profilePath, packagePatterns...)
 		arguments = appendCoverageInstrumentation(arguments, options.coverPackages)
-		return runWithOptions(ctx, options, module, "go", arguments...)
+		return runGoCoverageCommand(ctx, options, module, profilePath, arguments)
 	}
 	if options.GoTestShards < 2 {
 		return "", 0, fmt.Errorf("go test sharding requires at least 2 shards")
@@ -106,7 +106,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 	if discoveryTimeout <= 0 {
 		discoveryTimeout = shardAttemptTimeout
 	}
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, packagePatterns, options.coverPackages)
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, options.redBase, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, packagePatterns, options.coverPackages)
 	if errors.Is(context.Cause(checkCtx), errLogicalCheckTimeout) {
 		return output, attempts, fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
@@ -159,7 +159,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	arguments = append(arguments, packages...)
 	nativeOptions := options
 	nativeOptions.Retry = 0 // Native journeys run once, independently of unit retry policy.
-	nativeOutput, _, err := runWithOptions(ctx, nativeOptions, module, "go", arguments...)
+	nativeOutput, _, err := runGoCoverageCommand(ctx, nativeOptions, module, nativeProfile, arguments)
 	output += "\n[native E2E and contract tests]\n" + nativeOutput
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return output, attempts, ctxErr
@@ -168,6 +168,17 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 		return output, attempts, err
 	}
 	return output, attempts, mergeCoverageProfiles([]string{unitProfile, nativeProfile}, profilePath)
+}
+
+// runGoCoverageCommand runs one unsharded `go test -coverprofile` command.
+// A failure is final unless options carries a redBaseRecorder that accepts
+// it, which only a merge-base measurement ever does.
+func runGoCoverageCommand(ctx context.Context, options RunOptions, module, profilePath string, arguments []string) (string, int, error) {
+	output, attempts, err := runWithOptions(ctx, options, module, "go", arguments...)
+	if err != nil && options.redBase.accept(goTestExitCode(err), output, profilePath) {
+		err = nil
+	}
+	return output, attempts, err
 }
 
 func appendCoverageInstrumentation(arguments, packages []string) []string {
@@ -199,7 +210,9 @@ func ValidateGoCoveragePackagePatterns(patterns []string) error {
 	return nil
 }
 
-func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), selectedPackagePatterns ...[]string) (string, int, error) {
+// redBase is nil for every measurement except the merge base of a per-change
+// ratchet: see redBaseRecorder for the only failures it lets a job survive.
+func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, redBase *redBaseRecorder, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), selectedPackagePatterns ...[]string) (string, int, error) {
 	packagePatterns := []string{"./..."}
 	if len(selectedPackagePatterns) > 0 {
 		packagePatterns = selectedPackagePatterns[0]
@@ -319,7 +332,7 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, m
 		if result.diagnosticErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("write coverage diagnostics: %w", result.diagnosticErr))
 		}
-		if result.err != nil {
+		if result.err != nil && !redBase.accept(goTestExitCode(result.err), result.output, jobs[index].profilePath) {
 			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", jobs[index].label, result.err))
 		} else {
 			if strings.TrimSpace(result.output) != "" {
