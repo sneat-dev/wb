@@ -105,10 +105,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, methodErr)
 	}
 
-	slice := options.Timeout
-	if slice <= 0 || slice > 8*time.Minute {
-		slice = 8 * time.Minute
-	}
+	slice := options.checkWaitSlice()
 	landOptions := PullRequestLandOptions{
 		Repository:          receipt.Repository,
 		PullRequest:         number,

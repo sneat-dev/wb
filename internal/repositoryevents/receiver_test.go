@@ -149,9 +149,11 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		t.Fatalf("third start = %q", id)
 	}
 	processor.mu.Lock()
-	t.Cleanup(func() { processor.mu.Unlock() })
-	if processor.maxByRepo[first.Repository] != 1 || processor.maxActiveTotal < 2 {
-		t.Fatalf("max same repo=%d total=%d", processor.maxByRepo[first.Repository], processor.maxActiveTotal)
+	maxSameRepository := processor.maxByRepo[first.Repository]
+	maxActiveTotal := processor.maxActiveTotal
+	processor.mu.Unlock()
+	if maxSameRepository != 1 || maxActiveTotal < 2 {
+		t.Fatalf("max same repo=%d total=%d", maxSameRepository, maxActiveTotal)
 	}
 	cancel()
 	<-runDone
