@@ -170,7 +170,7 @@ is this closed set of fields:
   machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
   `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
   `export_refused`, `http_unavailable`, `http_auth_failed`, `bad_payload`,
-  `remote_warming_up`, `export_too_large` or `self_export`), never the
+  `remote_warming_up`, `export_too_large`, `self_export` or `clock_skew`), never the
   remote's error text, the transport that supplied a machine's live entries
   (`transport`: `http` or `ssh`), the number of another machine's entries that were
   left out of its export or cut at this daemon's caps (`export_dropped`) and whether

@@ -690,7 +690,7 @@ func TestADaemonThatStopsIsNotATimedOutMachine(t *testing.T) {
 
 // TestHostilePayloadIsRefusedOverSSH proves the SSH half of
 // cockpit-views#ac:hostile-payload-is-refused through the whole daemon path:
-// each hostile stdout is bad_payload, nothing of it is rendered or served as
+// each hostile stdout is bad_payload (clock_skew for the sample in the future), nothing of it is rendered or served as
 // metrics, at most 8 MiB of it is held, and the unchanged envelope is accepted.
 func TestHostilePayloadIsRefusedOverSSH(t *testing.T) {
 	t.Parallel()
@@ -707,8 +707,8 @@ func TestHostilePayloadIsRefusedOverSSH(t *testing.T) {
 		pollAndSettle(t, snapshotter)
 		document := snapshotter.Document()
 		vm, found := machineNamed(document, vmKey)
-		if !found || vm.Route != RouteCached || vm.RemoteError != RemoteErrorBadPayload || vm.Transport != "" {
-			t.Errorf("%s: the machine = %+v, want its published entry with bad_payload", name, vm)
+		if !found || vm.Route != RouteCached || vm.RemoteError != hostileCode(name) || vm.Transport != "" {
+			t.Errorf("%s: the machine = %+v, want its published entry with %s", name, vm, hostileCode(name))
 		}
 		rendered := marshalled(t, document)
 		for _, absent := range []string{"vm-task", "agt-vm", "rm -rf", "/home/ai", RouteLiveRemote} {

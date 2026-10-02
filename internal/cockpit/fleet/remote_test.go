@@ -270,8 +270,56 @@ func TestRemoteFailureNamesTheCodeAndWhetherToFallBack(t *testing.T) {
 	if text := (&RemoteError{Code: RemoteErrorTimeout}).Error(); text != "remote export failed: timeout" {
 		t.Errorf("error text = %q", text)
 	}
-	if len(remoteErrorCodes) != 13 {
-		t.Errorf("the vocabulary has %d codes, want the thirteen of the requirement", len(remoteErrorCodes))
+	if remoteFailure(TransportSSH, &BadEnvelopeError{ClockSkew: true}).Fallback {
+		t.Error("a clock that is ahead is the same on every transport: it is not a reason to try the next")
+	}
+	if len(remoteErrorCodes) != 14 {
+		t.Errorf("the vocabulary has %d codes, want the fourteen of the requirement", len(remoteErrorCodes))
+	}
+}
+
+// TestAMachineWhoseClockIsAheadIsReadWithinAMinuteAndNamedBeyondIt: the clocks
+// of two machines differ. An export whose times are up to a minute ahead of
+// this daemon's clock is read as any other; one further ahead is refused under
+// its own code, clock_skew, on either transport, and never as bad_payload,
+// which would name a fault the export does not have.
+func TestAMachineWhoseClockIsAheadIsReadWithinAMinuteAndNamedBeyondIt(t *testing.T) {
+	t.Parallel()
+	exportAhead := func(by time.Duration) Envelope {
+		remote, clock := newSnapshotter(vmSources().collectors(), func(options *Options) { options.Machine = vmOwnName })
+		clock.advance(by)
+		refreshAndSettle(t, remote)
+		return remote.Export(false)
+	}
+	for name, test := range map[string]struct {
+		ahead time.Duration
+		want  string
+	}{
+		"half a minute ahead":       {30 * time.Second, ""},
+		"exactly the allowance":     {maxSkew, ""},
+		"a second over":             {maxSkew + time.Second, RemoteErrorClockSkew},
+		"an hour ahead (a bad RTC)": {time.Hour, RemoteErrorClockSkew},
+	} {
+		for _, transport := range []string{TransportHTTP, TransportSSH} {
+			envelope := exportAhead(test.ahead)
+			logs := &logRecorder{}
+			snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: answering(envelope, envelope)}, func(options *Options) {
+				options.Logf = logs.logf
+				options.Transports = []RemoteTransport{{Name: transport, Exporter: options.Transports[0].Exporter}}
+			})
+			refreshAndSettle(t, snapshotter)
+			pollAndSettle(t, snapshotter)
+			vm, found := machineNamed(snapshotter.Document(), vmKey)
+			if !found || vm.RemoteError != test.want || (vm.WorktreeCount > 0) != (test.want == "") {
+				t.Errorf("%s over %s: the machine is %+v (found %v), want remote_error %q", name, transport, vm, found, test.want)
+			}
+		}
+	}
+	// Only a time ahead of the clock is skew: a time before 2000 is a bad payload.
+	old := exportAhead(0)
+	old.ExportedAt = time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := remoteFailure(TransportHTTP, old.Validate(false, old.Fleet.SnapshotAt)); got != (RemoteError{Code: RemoteErrorBadPayload}) {
+		t.Errorf("an export dated before 2000 is %+v, want bad_payload", got)
 	}
 }
 

@@ -69,10 +69,12 @@ type MetricsSource interface {
 	MachineMetrics(machineID string) (MetricsAnswer, bool)
 }
 
-// maxSkew is how far ahead of the daemon's clock a sample or fetch time may be
-// before it is taken as wrong; it allows for ordinary clock differences between
-// machines.
-const maxSkew = 5 * time.Second
+// maxSkew is how far ahead of the daemon's clock a time another machine reports
+// may be before it is taken as wrong. It allows for the ordinary difference
+// between the clocks of two machines that are not synchronised to the second: a
+// machine further ahead than this is refused with the code clock_skew, which
+// says what to fix, and not as a bad payload.
+const maxSkew = 60 * time.Second
 
 // marshalMetrics marshals a response; a test replaces it.
 var marshalMetrics = json.Marshal

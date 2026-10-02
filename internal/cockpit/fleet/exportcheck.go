@@ -67,7 +67,14 @@ var collectionLimits = map[string]int{
 // field's path, from fixed text and the document's own field names: it never
 // holds the remote's text, so it is safe to log and never to be shown as the
 // remote's words.
-type BadEnvelopeError struct{ Reason string }
+//
+// ClockSkew says the envelope was refused for a time ahead of this daemon's
+// clock by more than maxSkew: the two machines' clocks disagree, which is not a
+// fault of the payload and is shown under its own code.
+type BadEnvelopeError struct {
+	Reason    string
+	ClockSkew bool
+}
 
 func (e *BadEnvelopeError) Error() string { return "export envelope refused: " + e.Reason }
 
@@ -354,10 +361,14 @@ var (
 	textUnmarshaler = reflect.TypeFor[interface{ UnmarshalText([]byte) error }]()
 )
 
+// aheadOfClock reports whether when is further ahead of now than the clocks of
+// two machines may ordinarily differ.
+func aheadOfClock(when, now time.Time) bool { return when.After(now.Add(maxSkew)) }
+
 // plausibleTime reports whether when is unset, or after the earliest time a
 // machine may report (the boot-time rule) and not in the future.
 func plausibleTime(when, now time.Time) bool {
-	return when.IsZero() || (!when.Before(earliestBootTime) && !when.After(now.Add(maxSkew)))
+	return when.IsZero() || (!when.Before(earliestBootTime) && !aheadOfClock(when, now))
 }
 
 // checkValue holds value, reached by path and named name in JSON as a field of
@@ -421,8 +432,8 @@ func checkSlice(value reflect.Value, path, owner, name string, now time.Time) er
 // other struct, an embedded one as part of its parent.
 func checkStruct(value reflect.Value, path string, now time.Time) error {
 	if value.Type() == timeType {
-		if !plausibleTime(value.Interface().(time.Time), now) {
-			return refuse("%s is before 2000 or in the future", path)
+		if when := value.Interface().(time.Time); !plausibleTime(when, now) {
+			return &BadEnvelopeError{Reason: path + " is before 2000 or in the future", ClockSkew: aheadOfClock(when, now)}
 		}
 		return nil
 	}

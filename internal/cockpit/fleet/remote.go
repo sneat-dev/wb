@@ -40,8 +40,8 @@ const (
 
 // The codes a machine entry's remote_error can hold
 // (cockpit-views#req:remote-error-is-visible). The http_* codes name the HTTP
-// transport and the others the SSH transport, except bad_payload, which either
-// can produce.
+// transport and the others the SSH transport, except bad_payload and
+// clock_skew, which either can produce.
 const (
 	RemoteErrorHTTPUnavailable  = "http_unavailable"
 	RemoteErrorHTTPAuthFailed   = "http_auth_failed"
@@ -63,6 +63,11 @@ const (
 	// RemoteErrorSelfExport says the export read from the configured address is
 	// this machine's own.
 	RemoteErrorSelfExport = "self_export"
+	// RemoteErrorClockSkew says the export carries a time further ahead of this
+	// daemon's clock than two machines' clocks may ordinarily differ (maxSkew):
+	// one of the two clocks is wrong. It is not bad_payload, which would send the
+	// owner looking for a fault in the export.
+	RemoteErrorClockSkew = "clock_skew"
 )
 
 // remoteErrorCodes is the closed vocabulary of remote_error: a code outside it
@@ -70,7 +75,7 @@ const (
 var remoteErrorCodes = []string{
 	RemoteErrorHTTPUnavailable, RemoteErrorHTTPAuthFailed, RemoteErrorSSHUnavailable, RemoteErrorAuthFailed, RemoteErrorTimeout,
 	RemoteErrorWBMissing, RemoteErrorWBTooOld, RemoteErrorDaemonNotRunning, RemoteErrorExportRefused, RemoteErrorBadPayload,
-	RemoteErrorWarmingUp, RemoteErrorExportTooLarge, RemoteErrorSelfExport,
+	RemoteErrorWarmingUp, RemoteErrorExportTooLarge, RemoteErrorSelfExport, RemoteErrorClockSkew,
 }
 
 const (
@@ -170,6 +175,8 @@ func remoteFailure(transport string, err error) RemoteError {
 	var refused *BadEnvelopeError
 	var typed *RemoteError
 	switch {
+	case errors.As(err, &refused) && refused.ClockSkew:
+		return RemoteError{Code: RemoteErrorClockSkew}
 	case errors.As(err, &refused):
 		return RemoteError{Code: RemoteErrorBadPayload}
 	case errors.As(err, &typed) && slices.Contains(remoteErrorCodes, typed.Code):

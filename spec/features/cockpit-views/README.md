@@ -1182,7 +1182,7 @@ The rules of the block:
   `sealed_at` and a `recorded_at` both after 1999, a `sealed_at` not before its
   `recorded_at`, a duration of at most ten years, and a task name (else its effort id) that
   is not empty after control and bidirectional characters are removed (the name is cut at
-  200 characters). A sealing later than five seconds ahead of the clock is not counted.
+  200 characters). A sealing later than 60 seconds ahead of the clock is not counted.
 - When no terminal record is usable the block is omitted and the charts of
   REQ:home-charts are not shown; no value is invented. A usable record outside the
   window keeps the block, with empty lists.
@@ -1671,12 +1671,15 @@ login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit exp
 view is held), `export_too_large` (this daemon left the machine's entries, live or published, out of a document
 that would be over its size bound: the live entries first, each such machine then shown by its
 published entries, and the published entries too when the document is still over the bound, each
-published machine then shown by its machine entry alone; it is set while that holds and is not a failed attempt) or
-`self_export` (the export read is this machine's own); it is cleared by the next successful full
+published machine then shown by its machine entry alone; it is set while that holds and is not a failed attempt),
+`self_export` (the export read is this machine's own) or `clock_skew` (the export carries a time
+more than 60 seconds ahead of this daemon's clock: the clocks of two machines differ, a difference
+of up to 60 seconds is accepted, and a larger one is named as what it is and never as
+`bad_payload`; it is fixed by setting the clock that is wrong, and has no command to copy); it is cleared by the next successful full
 export on the preferred transport, never by a metrics-only one. A remote export that prints
 `export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`
 codes name the HTTP transport and the others the SSH transport, except `export_refused`,
-`bad_payload`, `remote_warming_up` and `self_export`, which either transport reports, and
+`bad_payload`, `remote_warming_up`, `self_export` and `clock_skew`, which either transport reports, and
 `export_too_large`, which names none (REQ:remote-exporter-transports), so Fleet health shows which
 failed. Home "Fleet health" shows the code with the fixing command to copy, labelled "run on
 <machine>": for `http_auth_failed` or a missing HTTP credential, `wb remote enroll --url
@@ -2868,7 +2871,7 @@ Then no HTTP request is made during the first 5 minutes, one is made after them,
 Scenario: Oversized, unknown field, long string, filesystem path, bad numbers, future time, too many samples
 Given exports, over HTTP and over SSH, of 9 MiB, one with an unknown top-level field, one with a 10,000-byte task name, one whose worktree entry carries a `path`, one with a negative count, a `NaN` percentage and a sample 5 minutes in the future, and one with 361 samples
 When each is decoded
-Then each is refused with `remote_error` `bad_payload`, nothing from it is rendered, and the stdout or body buffer never held more than the cap
+Then each is refused with `remote_error` `bad_payload` (the one whose fault is the sample in the future with `clock_skew`), nothing from it is rendered, and the stdout or body buffer never held more than the cap
 
 ### AC: metrics-only-export-is-demand-driven
 
