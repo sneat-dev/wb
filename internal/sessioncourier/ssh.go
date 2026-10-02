@@ -90,15 +90,6 @@ func newSSHDeliverer(config sessionmove.SSHConfig, lookPath func(string) (string
 	return &sshDeliverer{config: config, executable: executable, runner: runner}, nil
 }
 
-// DeliverSSH is the simple production entry point for one SSH delivery.
-func DeliverSSH(ctx context.Context, config sessionmove.SSHConfig, raw []byte) (sessionreceive.Result, error) {
-	deliverer, err := NewSSHDeliverer(config)
-	if err != nil {
-		return sessionreceive.Result{}, err
-	}
-	return deliverer.Deliver(ctx, raw)
-}
-
 func (d *sshDeliverer) Deliver(ctx context.Context, raw []byte) (sessionreceive.Result, error) {
 	var result sessionreceive.Result
 	request, err := validateReceiverRequest(raw, maxSSHRequestBytes)
