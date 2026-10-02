@@ -46,7 +46,9 @@ describe('HomePage', () => {
     TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: FETCH, useValue: async () => new Response('{}', { status: 404 }) }] })
     const fixture = TestBed.createComponent(HomePage)
     await fixture.whenStable()
-    expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('Needs you')
+    expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('Throughput')
+    expect(fixture.nativeElement.querySelector('.throughput-slot.pending')).not.toBeNull()
+    expect(fixture.nativeElement.querySelector('app-needs-you h2')?.textContent).toContain('Needs you')
     expect(fixture.nativeElement.querySelector('app-lazy-mount')).not.toBeNull()
   })
 
