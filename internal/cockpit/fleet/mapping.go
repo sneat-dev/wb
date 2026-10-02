@@ -556,6 +556,10 @@ type remoteView struct {
 	machinesCut  int
 	bytes        int
 	machineBytes int
+	// ownLogin is the login of this machine's own publication, when the login
+	// was not known and exactly one login published under this machine's name
+	// and projects root; else "".
+	ownLogin string
 }
 
 // publishedMachine is a published-store machine entry's id and the login it was
@@ -589,6 +593,7 @@ type publishedMachine struct {
 func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, now time.Time) remoteView {
 	var view remoteView
 	var usable []remotestate.Snapshot
+	var owners []string
 	for _, entry := range entries {
 		snapshot := entry.Snapshot
 		// With no login to compare, the machine's name alone could be another
@@ -600,6 +605,13 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 		if !own && !unusable {
 			usable = append(usable, snapshot)
 		}
+		if own && login == "" && entry.Error == "" && snapshot.Login != "" && !slices.Contains(owners, snapshot.Login) {
+			owners = append(owners, snapshot.Login)
+		}
+	}
+	// Two logins that both claim to be this machine say nothing about which is.
+	if len(owners) == 1 {
+		view.ownLogin = owners[0]
 	}
 	if len(usable) > maxCachedMachines {
 		sort.SliceStable(usable, func(i, j int) bool {

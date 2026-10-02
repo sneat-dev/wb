@@ -1575,7 +1575,14 @@ that a remote's clock cannot keep stale data live, they replace that machine's c
 age shown as every entry's is, as long as no export of it failed or found it warming since they
 were received: an idle machine's live view may be up to the keepalive and two intervals old, and
 the first export that brings nothing puts it back on the two-interval bound. That machine's cached entries are the published snapshots under the
-configured machine name (and under this machine's login when it is known). The machine entry is
+configured machine name by this machine's own login, and by no other: a machine another login
+published under the same name is a machine of its own, is never hidden behind the configured
+machine's live entries, never lends it its id and is never given its SSH route. The daemon knows
+its login from its periodic publisher, which resolves it for its first publish, or from this
+machine's own publication in the store (the one snapshot under this machine's name and projects
+root; two logins that both claim to be this machine tell it nothing). While the login is not known
+no published entry is taken for a configured machine's, so that machine may be shown twice, live and
+published, until it is. The machine entry is
 named by the configured key and keeps one id: the id of its published entry when exactly one
 exists, otherwise an id derived from the login and the key; every other id is derived from the
 configured key and never used as received. An agent's `activity`, `task`, `started_at`,

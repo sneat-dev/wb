@@ -767,12 +767,18 @@ func locallyLinked(repositories []Repository, localHosts map[string]bool) []Repo
 }
 
 // cachedMachinesOf is the ids of the published-store machine entries that are
-// the machine configured as key: the ones published under that machine name,
-// and, when this machine's login is known, under that login.
+// the machine configured as key: the ones published under that machine name by
+// this machine's own login. While that login is not known it is none of them: a
+// machine name alone could be another login's machine, whose snapshot would then
+// be hidden behind the configured machine's live entries, or lend it its id and
+// with it the owner's SSH route. The caller holds s.mu.
 func (s *Snapshotter) cachedMachinesOf(key string) []string {
+	if s.login == "" {
+		return nil
+	}
 	var ids []string
 	for _, published := range s.remote.named[key] {
-		if s.login == "" || published.login == s.login {
+		if published.login == s.login {
 			ids = append(ids, published.id)
 		}
 	}

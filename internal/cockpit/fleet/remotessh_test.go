@@ -161,6 +161,7 @@ func newSSHLive(t *testing.T, sources *fakeSources, runner *fakeSSH, timeout tim
 	logs := &logRecorder{}
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{sshTarget()}
 		options.Transports = []RemoteTransport{{Name: TransportSSH, Exporter: newSSHExporter(foundSSH(t, nil), runner, timeout, func() time.Time { return clock.Now() }, logs.logf)}}
 		options.Logf = logs.logf
@@ -808,6 +809,7 @@ func bothRoutes(t *testing.T, address string, runner *fakeSSH, httpTimeout time.
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
 		now := func() time.Time { return clock.Now() }
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{{Machine: vmKey, HTTP: &HTTPRoute{URL: address, TokenFile: tokenFile(t, vmBearer)}, SSH: &vmRoute}}
 		options.Transports = []RemoteTransport{
 			{Name: TransportHTTP, Exporter: newHTTPExporter(httpTimeout, httpTimeout, now, nil)},
@@ -1024,6 +1026,7 @@ func TestMachineRoutesReachOnlyAnOwnerSessionAndNeverTheDocumentOrAnExport(t *te
 	logs := &logRecorder{}
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{{Machine: vmKey, SSH: &route}, {Machine: "fresh", SSH: &route}}
 		options.Transports = []RemoteTransport{{Name: TransportSSH, Exporter: NewSSHExporter(foundSSH(t, nil), runner, func() time.Time { return clock.Now() }, logs.logf)}}
 		// "bare" has an ssh section and is not read (cockpit.remote_ssh: false, say);
@@ -1090,11 +1093,15 @@ func TestMachineRoutesReachOnlyAnOwnerSessionAndNeverTheDocumentOrAnExport(t *te
 			}
 		}
 	}
-	// A published entry of the machine under another login is another id of it.
-	twice := cachedVM("someone")
-	sources.remote = append(sources.remote, twice)
+	// A machine another login published under the same name is not the configured
+	// machine: it is shown as a machine of its own and is given no route.
+	sources.change(func(f *fakeSources) { f.remote = append(f.remote, cachedVM("someone")) })
 	refreshAndSettle(t, snapshotter)
-	if routes := snapshotter.MachineRoutes(); len(routes) != 5 {
-		t.Errorf("with two published entries of vm the routes = %+v", routes)
+	routes := snapshotter.MachineRoutes()
+	if len(routes) != 3 || slices.ContainsFunc(routes, func(route cockpit.MachineRoute) bool { return route.MachineID == entryID(kindMachine, "someone/vm") }) {
+		t.Errorf("with another login's machine of the same name the routes = %+v", routes)
+	}
+	if !slices.ContainsFunc(snapshotter.Document().Machines, func(machine Machine) bool { return machine.ID == entryID(kindMachine, "someone/vm") }) {
+		t.Error("another login's machine of the same name is not shown (the test would be vacuous)")
 	}
 }

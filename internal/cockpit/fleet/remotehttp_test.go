@@ -121,6 +121,7 @@ func TestConfiguredTargetAppearsLiveRemote(t *testing.T) {
 	sources.remote = append(sources.remote, cachedVM("alex"))
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{httpTarget(hub, tokenFile(t, vmBearer+"\n"))}
 		options.Transports = []RemoteTransport{
 			{Name: TransportHTTP, Exporter: NewHTTPExporter(func() time.Time { return clock.Now() })},
@@ -566,6 +567,7 @@ func TestHostilePayloadIsRefused(t *testing.T) {
 		sources.remote = append(sources.remote, cachedVM("alex"))
 		var clock *manualClock
 		snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+			options.Login = testLogin
 			options.Remotes = []RemoteTarget{httpTarget(hub, tokenFile(t, vmBearer))}
 			options.Transports = []RemoteTransport{
 				{Name: TransportHTTP, Exporter: NewHTTPExporter(func() time.Time { return clock.Now() })},

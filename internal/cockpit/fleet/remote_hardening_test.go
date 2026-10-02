@@ -501,6 +501,7 @@ func TestAPanicWhileMappingARemoteIsBadPayloadAndNeverTheDaemons(t *testing.T) {
 	logs := &logRecorder{}
 	sources := &fakeSources{remote: []remotestate.Entry{cachedVM("alex")}}
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{{Machine: vmKey}, {Machine: "other"}}
 		options.Transports = []RemoteTransport{{Name: TransportHTTP, Exporter: &fakeExporter{answer: answering(full, full)}}}
 		options.Logf = logs.logf
@@ -528,14 +529,18 @@ func TestAPanicWhileMappingARemoteIsBadPayloadAndNeverTheDaemons(t *testing.T) {
 		t.Errorf("log = %q, want the failure once and no panic text", lines)
 	}
 
-	// The mapper works, the machine goes live; then its id changes (its published
-	// entry is gone) while the mapper panics: the publication survives.
+	// The mapper works, the machine goes live; then its entries must be mapped
+	// again at a publication (as when its id changes because the login was
+	// learned), while the mapper panics: the publication survives.
 	panics.Store(false)
 	pollAndSettle(t, snapshotter)
 	if vm, _ = machineNamed(snapshotter.Document(), vmKey); vm.Route != RouteLiveRemote || vm.RemoteError != "" {
 		t.Fatalf("with a working mapper = %+v", vm)
 	}
 	panics.Store(true)
+	snapshotter.mu.Lock()
+	snapshotter.live[vmKey].mappedFor = ""
+	snapshotter.mu.Unlock()
 	sources.change(func(f *fakeSources) { f.remote = nil })
 	refreshAndSettle(t, snapshotter)
 	document = snapshotter.Document()
@@ -892,6 +897,7 @@ func TestHostileTextInEveryFreeTextFieldArrivesOnlyAsText(t *testing.T) {
 		hub := newFakeHub(t, serving(marshalled(t, envelope), nil))
 		var clock *manualClock
 		snapshotter, clock := newSnapshotter(oneRepoSources("/repos/widgets").collectors(), func(options *Options) {
+			options.Login = testLogin
 			options.Remotes = []RemoteTarget{httpTarget(hub, tokenFile(t, vmBearer))}
 			options.Transports = []RemoteTransport{{Name: TransportHTTP, Exporter: NewHTTPExporter(func() time.Time { return clock.Now() })}}
 		})

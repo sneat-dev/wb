@@ -24,8 +24,11 @@ import (
 )
 
 const (
-	testHost      = "127.0.0.1:8766"
-	hostedOrigin  = "https://hosted.example"
+	testHost     = "127.0.0.1:8766"
+	hostedOrigin = "https://hosted.example"
+	// testLogin is the login the live fixtures run as, which the published
+	// snapshots of their configured machine carry (cachedVM).
+	testLogin     = "alex"
 	testMachine   = "laptop"
 	sentinel      = "SENTINEL-"
 	testVersion   = "v1.2.3"

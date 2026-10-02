@@ -101,6 +101,11 @@ func TestCockpitFleetOptionsPublishOnlyWhenTheOwnerOptedIn(t *testing.T) {
 	if none := cockpitFleetOptions(t.TempDir(), t.TempDir(), t.TempDir()+"/absent.yaml", wbconfig.DefaultCockpitConfig(), io.Discard, host); none.Publisher != nil {
 		t.Error("a machine with no wb.yaml has a publisher")
 	}
+	// The snapshotter is always told where the login will be known from, and it is
+	// not known before anything resolved it.
+	if wired := cockpitFleetOptions(t.TempDir(), t.TempDir(), t.TempDir()+"/absent.yaml", wbconfig.DefaultCockpitConfig(), io.Discard, host); wired.LoginSource == nil || wired.LoginSource() != "" || wired.Login != "" {
+		t.Error("the fleet options name no login source, or one that knows a login already")
+	}
 }
 
 func TestPeriodicPublisherUsesTheCLIsIdentityScanAndProvider(t *testing.T) {
@@ -110,11 +115,20 @@ func TestPeriodicPublisherUsesTheCLIsIdentityScanAndProvider(t *testing.T) {
 	deps := publishDeps(provider, func() (string, error) { logins++; return "alice", nil }, &opened)
 	cfg := publishConfig(remotestate.PublishConfig{Interval: time.Minute, Agents: true, Metrics: true, Unpushed: remotestate.RedactUnpushed})
 	var logs bytes.Buffer
-	publisher := newPeriodicPublisher(deps, cfg, t.TempDir(), func(format string, args ...any) { logs.WriteString(format) })
+	learned := &learnedLogin{}
+	if learned.known() != "" {
+		t.Fatal("a login is known before anything resolved it")
+	}
+	publisher := newPeriodicPublisher(deps, cfg, t.TempDir(), func(format string, args ...any) { logs.WriteString(format) }, learned.learn)
 	extras := fixedSource{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}, Metrics: &remotestate.MetricsSample{SampledAt: deps.now()}}}
 	publisher.Publish(t.Context(), extras)
 	if len(provider.seen) != 1 || opened != 1 || logins != 1 {
 		t.Fatalf("published %d, opened %d, logins %d (logs %q)", len(provider.seen), opened, logins, logs.String())
+	}
+	// The login the publisher resolved is what the fleet snapshotter tells this
+	// machine's own publications by.
+	if learned.known() != "alice" {
+		t.Fatalf("the daemon learned the login %q, want alice", learned.known())
 	}
 	got := provider.seen[0]
 	if got.Login != "alice" || got.Machine != "mac" || got.RemoteStore != "git:acme/wb-state" || got.WBVersion == "" || !got.PublishedAt.Equal(deps.now()) {
@@ -137,7 +151,7 @@ func TestPeriodicPublisherWithoutTheFlagsPublishesNeitherAgentsNorMetrics(t *tes
 	provider := &capturingProvider{}
 	opened := 0
 	cfg := publishConfig(remotestate.PublishConfig{Interval: 10 * time.Minute})
-	publisher := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "alice", nil }, &opened), cfg, t.TempDir(), nil)
+	publisher := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "alice", nil }, &opened), cfg, t.TempDir(), nil, nil)
 	publisher.Publish(t.Context(), fixedSource{extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", State: "running"}}, Metrics: &remotestate.MetricsSample{}}})
 	if len(provider.seen) != 1 || provider.seen[0].Agents != nil || provider.seen[0].Metrics != nil {
 		t.Fatalf("seen = %+v", provider.seen)
@@ -152,19 +166,19 @@ func TestPeriodicPublisherFailsTypedWhenTheLoginOrTheStoreIsUnavailable(t *testi
 	t.Parallel()
 	opened := 0
 	provider := &capturingProvider{}
-	noLogin := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "", errors.New("gh: not logged in") }, &opened), publishConfig(remotestate.PublishConfig{Interval: time.Hour}), t.TempDir(), nil)
+	noLogin := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "", errors.New("gh: not logged in") }, &opened), publishConfig(remotestate.PublishConfig{Interval: time.Hour}), t.TempDir(), nil, nil)
 	noLogin.Publish(t.Context(), nil)
 	if status := noLogin.Status(); status.Diagnostic != periodic.DiagnosticCollectFailed || opened != 0 || len(provider.seen) != 0 {
 		t.Fatalf("status = %+v, opened %d", status, opened)
 	}
-	blank := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "", nil }, &opened), publishConfig(remotestate.PublishConfig{Interval: time.Hour}), t.TempDir(), nil)
+	blank := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "", nil }, &opened), publishConfig(remotestate.PublishConfig{Interval: time.Hour}), t.TempDir(), nil, nil)
 	blank.Publish(t.Context(), nil)
 	if status := blank.Status(); status.Diagnostic != periodic.DiagnosticCollectFailed {
 		t.Fatalf("a blank login = %+v", status)
 	}
 	closed, cancel := context.WithCancel(t.Context())
 	cancel()
-	cancelled := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "alice", nil }, &opened), publishConfig(remotestate.PublishConfig{Interval: time.Hour}), t.TempDir(), nil)
+	cancelled := newPeriodicPublisher(publishDeps(provider, func() (string, error) { return "alice", nil }, &opened), publishConfig(remotestate.PublishConfig{Interval: time.Hour}), t.TempDir(), nil, nil)
 	cancelled.Publish(closed, nil)
 	if status := cancelled.Status(); status.Diagnostic != periodic.DiagnosticCollectFailed || len(provider.seen) != 0 {
 		t.Fatalf("a cancelled scan = %+v", status)

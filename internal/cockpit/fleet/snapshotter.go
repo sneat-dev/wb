@@ -92,12 +92,20 @@ const ErrorGitTooOld = "git_too_old"
 // Options configures a Snapshotter.
 type Options struct {
 	// Machine is this machine's name and Version its WB version. Login is the
-	// login this machine publishes its own snapshot under, when known: the
-	// machine's own publication is skipped by login and name together, and by
-	// name alone while Login is empty.
+	// login this machine publishes its own snapshot under, when known at the
+	// start: the machine's own publication is skipped by login and name
+	// together, and by name and projects root while the login is not known.
 	Machine string
 	Version string
 	Login   string
+	// LoginSource says the login once something has learned it (the daemon's
+	// periodic publisher resolves it for its first publish), and "" until then;
+	// nil means nothing will. It is read from memory on each read of the other
+	// machines and must not run anything. The snapshotter also learns the login
+	// from this machine's own publication in the store. Until the login is
+	// known, no published entry is taken for a configured machine's
+	// (cachedMachinesOf): a name alone could be another login's machine.
+	LoginSource func() string
 	// ProjectsRoot is this machine's projects root, which is compared (never
 	// emitted) with a snapshot's to recognise this machine's own publication
 	// when Login is not known.
@@ -227,9 +235,12 @@ type repoState struct {
 // collector, so it never waits for Git (cockpit#req:no-fleet-scan-on-the-
 // request-path).
 type Snapshotter struct {
-	machine           string
-	version           string
+	machine string
+	version string
+	// login is this machine's login, "" until it is known; it is guarded by mu
+	// and, once set, never changes. loginSource is Options.LoginSource.
 	login             string
+	loginSource       func() string
 	projectsRoot      string
 	hardware          Hardware
 	compress          func([]byte) []byte
@@ -355,7 +366,7 @@ type Snapshotter struct {
 // warming-up document until the first repository completes.
 func New(options Options) *Snapshotter {
 	snapshotter := &Snapshotter{
-		machine: options.Machine, version: options.Version, login: options.Login, projectsRoot: options.ProjectsRoot, hardware: options.Hardware, compress: options.Compress, collectors: options.Collectors,
+		machine: options.Machine, version: options.Version, login: options.Login, loginSource: options.LoginSource, projectsRoot: options.ProjectsRoot, hardware: options.Hardware, compress: options.Compress, collectors: options.Collectors,
 		interval: options.Interval, workers: options.Workers, repositoryTimeout: options.RepositoryTimeout,
 		stopWait: options.StopWait, activityTimeout: options.ActivityTimeout, providerTimeout: options.ProviderTimeout, providerBudget: options.ProviderBudget, now: options.Now, tick: options.Tick,
 		fingerprint: options.Fingerprint, logf: options.Logf,
@@ -1127,15 +1138,34 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 			s.logf("cockpit fleet: read other machines: %v", err)
 			return
 		}
-		view := mapRemote(s.machine, s.login, s.projectsRoot, entries, s.now())
+		login := s.knownLogin()
+		view := mapRemote(s.machine, login, s.projectsRoot, entries, s.now())
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.login == "" {
+			// Learned now, from the source or from this machine's own publication:
+			// the configured machines' published entries are found by it from this
+			// publication on.
+			s.login = firstNonEmpty(login, view.ownLogin)
+		}
 		if !maps.EqualFunc(s.remote.samples, view.samples, sameSample) {
 			s.remoteSampleVersion++
 		}
 		s.remote, s.remoteBranches = view, nil
 		s.publishMaybeLocked()
 	}()
+}
+
+// knownLogin is this machine's login as far as it is known now: the one it was
+// given or has learned, else what the source says, else "".
+func (s *Snapshotter) knownLogin() string {
+	s.mu.RLock()
+	login := s.login
+	s.mu.RUnlock()
+	if login == "" && s.loginSource != nil {
+		login = s.loginSource()
+	}
+	return login
 }
 
 // startPublish hands the end of a successful pass to the periodic remote
