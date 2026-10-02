@@ -217,6 +217,9 @@ type PackageBaseline struct {
 	IncludeE2E      bool                        `json:"include_e2e,omitempty"`
 	Packages        map[string]int              `json:"packages"`
 	UncoveredBlocks map[string][]UncoveredBlock `json:"uncovered_blocks,omitempty"`
+	// RedBase is set when ComputeBaselineAtRef measured a ref whose own
+	// tests were failing; see RedBaseline for what that does to the counts.
+	RedBase *RedBaseline `json:"red_base,omitempty"`
 }
 
 // BaselineFromProfile builds a PackageBaseline from a measured coverage
@@ -834,6 +837,16 @@ func uncoveredBlockKey(file string, startLine, startCol, endLine, endCol int) st
 // worktree so the merge base is measured through the identical
 // .wb/quality.yaml-aware sharded, retried CoverWithOptions runner the head
 // measurement uses (review item 5/non-blocking #1), not a bare `go test`.
+//
+// A ref whose tests fail is still measured, because a base that is red can
+// only be repaired through a pull request this ratchet has to judge: the
+// profile every failing test binary still wrote is used, and the returned
+// baseline names the failed tests in RedBase. Everything else stays fail
+// closed with the same errors as before: a build or setup failure, a test
+// binary that died before writing coverage, a timeout and a missing or
+// unreadable profile. No package is ever given a baseline it was not measured
+// for, so a package absent from the profile is judged by EvaluateRatchet's
+// existing strictest rule (a changed package counts from 0).
 func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout time.Duration, options RunOptions) (PackageBaseline, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -893,6 +906,8 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 		repoOptions = SelectedCoverageOptions(repoOptions, selected)
 	}
 
+	redBase := &redBaseRecorder{}
+	repoOptions.redBase = redBase
 	report := CoverWithOptions(ctx, "merge-base", worktreeDir, repoOptions)
 	if report.Status == StatusFailed {
 		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("measure coverage at merge base %s: %s", sha, report.Error))
@@ -904,6 +919,7 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	}
 	baseline := BaselineFromProfile(blocks, modulePath, sha)
 	baseline.IncludeE2E = options.IncludeE2E
+	baseline.RedBase = redBase.baseline(sha)
 	return baseline, nil
 }
 
