@@ -93,6 +93,10 @@ new work so the next reader finds the rest of the family.
 Note which is which: `wb wait checks` is the authoritative exact-head receipt
 used as merge evidence. `wb wait pr` reports and is **not** merge evidence.
 
+**Trigger.**
+
+- about to pipe a `wb` verb through `tail`/`grep`/`head` (or `2>&1 | …`) → the pipe hides its exit status, so a refusal exits 0 and the `&&` chain runs on (the agent hook refuses it); use `--quiet` (`wb pr create --quiet`), not a pipe
+
 ## Fast path
 
 Land with one call:

@@ -22,6 +22,18 @@ import (
 // that TTY detection alone would report a human) set it to opt out.
 const EnvDisable = "WB_NON_INTERACTIVE"
 
+// EnvQuiet names the environment variable that asks the lifecycle verbs for
+// outcome-only output: the environment spelling of the root --quiet flag. It
+// differs from EnvDisable. Non-interactive mode removes terminal-only UI and a
+// non-terminal agent still receives newline-delimited progress; quiet removes
+// the progress too.
+const EnvQuiet = "WB_QUIET"
+
+// QuietRequested reports whether the environment asks for outcome-only output.
+// It reads the value the way Disabled does: anything except an explicit false
+// ("0", "false") counts as set.
+func QuietRequested() bool { return disabled(os.Getenv(EnvQuiet)) }
+
 // IsTerminal reports whether stream is an open terminal device.
 //
 // It accepts any value so that callers holding an io.Reader or io.Writer can

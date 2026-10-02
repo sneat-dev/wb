@@ -166,6 +166,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 		},
 	}
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
+	markQuietVerb(command)
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(inv), newWorktreeMergeLandCmd(inv, "land"), newWorktreeMergeLandCmd(inv, "resume"), newWorktreeMergeRevertCmd(inv))
@@ -314,6 +315,7 @@ sources deliberately.`,
 		},
 	}
 	setDiscoveryTerms(command, "finish work land deliver ship integrate complete cleanup agent worktree branch pull request merge main multi repo repository")
+	markQuietVerb(command)
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, true)
 	return command
@@ -504,6 +506,7 @@ func newWorktreeMergePrepareCmd(inv *invocation) *cobra.Command {
 			return err
 		},
 	}
+	markQuietVerb(command)
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, false, false)
 	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable unlanded prepared or exact published receipt to replace with an additive source-set rebatch")
@@ -551,6 +554,7 @@ func newWorktreeMergeLandCmd(inv *invocation, name string) *cobra.Command {
 			return err
 		},
 	}
+	markQuietVerb(command)
 	markLandingGuard(command, landingGuardByReceipt)
 	bindWorktreeMergeFlags(command, &flags, false, true, false)
 	if name == "resume" {
@@ -598,6 +602,7 @@ func newWorktreeMergeRevertCmd(inv *invocation) *cobra.Command {
 			return err
 		},
 	}
+	markQuietVerb(command)
 	bindWorktreeMergeFlags(command, &flags, false, true, false)
 	return command
 }
@@ -1422,7 +1427,9 @@ func hostLoadCheckSkippable(receipt orchestrate.WorktreeMergeReceipt, validateLo
 func newWorktreeMergeProgress(inv *invocation, command *cobra.Command, flags worktreeMergeFlags) *campaignProgress {
 	interactive := console.Interactive(command.ErrOrStderr(), inv.nonInteractive)
 	out := progressOutput(command.ErrOrStderr(), interactive)
-	return newCampaignProgressWithHeartbeat(out, true, "worktree merge", universalProgressHeartbeat)
+	// --quiet wins over --progress: a caller who asked for the outcome alone
+	// gets it, and the persisted resume command still carries --progress.
+	return newCampaignProgressWithHeartbeat(out, !inv.quiet, "worktree merge", universalProgressHeartbeat)
 }
 
 func finishWorktreeMergeProgress(campaign *campaignProgress, receipt orchestrate.WorktreeMergeReceipt, err error) {

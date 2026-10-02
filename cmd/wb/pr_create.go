@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -168,14 +167,13 @@ wb pr create --format json`,
 			// #615: never add issue numbers to the body silently — print
 			// whatever the task's own original prompt names as a suggestion,
 			// leaving --closes as the only thing that acts on it.
-			if suggested := suggestedClosesFromWorktreePrompt(inv, command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
+			if suggested := suggestedClosesToPrint(inv, command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "suggestion: this task's prompt names %s; pass --closes to link them\n",
 					formatSuggestedIssues(suggested))
 			}
 			var landOptions *orchestrate.PullRequestLandOptions
 			if land {
-				interactive := console.Interactive(command.ErrOrStderr(), false)
-				progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
+				progress := newLandingProgress(inv, command, false)
 				landOptions = &orchestrate.PullRequestLandOptions{
 					ProjectsRoot:      inv.projectsRoot,
 					Keep:              keep,
@@ -262,6 +260,7 @@ wb pr create --format json`,
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "with --auto-merge/--land: merge (default), squash, or rebase")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	setDiscoveryTerms(command, "open create pull request pr push branch worktree adopt draft auto merge cheap fast no build no test commit land")
+	markQuietVerb(command)
 	return command
 }
 

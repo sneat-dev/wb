@@ -31,6 +31,10 @@ with check-waiting, a remote receipt, and cleanup, and ask whether to use it
 instead. Proceed manually only if the user confirms after that offer, and
 record the confirmation. Never challenge the same instruction twice.
 
+## Triggers
+
+- about to pipe a `wb` verb through `tail`/`grep`/`head` (or `2>&1 | …`) → the pipe hides its exit status, so a refusal exits 0 and the `&&` chain runs on (the agent hook refuses it); use `--quiet` (`wb pr create --quiet`), not a pipe
+
 ## Route by situation
 
 - Creating, resuming, listing, renaming, or cleaning up isolated worktrees, or

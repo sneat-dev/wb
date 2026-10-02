@@ -57,6 +57,11 @@ type invocation struct {
 	// nonInteractive holds --non-interactive: never use a terminal UI or
 	// wait for input, even on a terminal.
 	nonInteractive bool
+	// quiet holds --quiet, or WB_QUIET on a verb that consumes it: print only
+	// the outcome and any refusal, with no progress or heartbeat lines. It is
+	// true only for a verb in persistentFlagSupport["quiet"], so a helper
+	// shared with a verb that ignores the flag never reads a stray value.
+	quiet bool
 	// filterFlag holds --filter: only repos whose org/name contains this
 	// substring.
 	filterFlag string
@@ -157,6 +162,12 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 			warnIgnoredWBHome(inv, cmd)
 			inv.commandStarted = true
 			id := persistentCommandID(cmd)
+			// WB_QUIET is the environment spelling of --quiet. Unlike the flag
+			// it is not rejected where it cannot apply, because a caller may
+			// export it for a whole shell; it simply has no effect there.
+			if console.QuietRequested() && persistentFlagSupport["quiet"][id] {
+				inv.quiet = true
+			}
 			// `wb version` (including --json) MUST stay side-effect-free
 			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
 			// install/upgrade status probe execs it from inside the caller's own
@@ -190,6 +201,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 	root.PersistentFlags().StringVar(&inv.filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&inv.extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&inv.nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
+	root.PersistentFlags().BoolVar(&inv.quiet, "quiet", false, "print only the outcome and any refusal, with no progress lines, so the verb's output never needs a pipe (also WB_QUIET=1)")
 
 	// --version is what people and agents reach for first; `wb version` carries
 	// the same information and adds --json for programmatic use.
@@ -315,6 +327,14 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"archive clean": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true, "fleet default-branch": true},
+	// --quiet is consumed by the lifecycle verbs whose progress lines made a
+	// caller pipe their output through tail, which hid a refusal's exit status.
+	// wb run and worktree guard keep their own local --quiet.
+	"quiet": {
+		"create": true, "worktree create": true, "land": true, "worktree land": true,
+		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true,
+		"pr create": true, "pr land": true, "worktree cleanup": true,
+	},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it
 	// would make scripts need command-specific conditionals for no benefit.

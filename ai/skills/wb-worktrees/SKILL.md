@@ -50,6 +50,10 @@ instead. Proceed manually only if the user confirms after that offer, and
 record the confirmation. Never challenge the same instruction twice. See rule
 `land-with-wb-verb` (`sneat-co/backstage`).
 
+**Trigger.**
+
+- about to pipe a `wb` verb through `tail`/`grep`/`head` (or `2>&1 | …`) → the pipe hides its exit status, so a refusal exits 0 and the `&&` chain runs on (the agent hook refuses it); use `--quiet` (`wb pr create --quiet`), not a pipe
+
 Keep canonical clones clean and available for synchronization when possible;
 prefer `main`, but never mutate a dirty or off-base canonical checkout to make
 it eligible. WB creation leaves its current branch, index, and working tree

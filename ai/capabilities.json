@@ -9102,6 +9102,178 @@
       "notes": "The executable matrix also covers --projects-root, --org, and --non-interactive."
     },
     {
+      "id": "wb.root.quiet",
+      "feature_refs": [
+        "spec/features/quiet-verbs-and-masked-status-guard/README.md",
+        "docs/cli-flag-matrix.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+        {
+          "path": "wb create",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the created worktree line only; the remote-claim success note is dropped."
+          ]
+        },
+        {
+          "path": "wb land",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; no landing progress or heartbeat lines."
+          ]
+        },
+        {
+          "path": "wb pr create",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the created/adopted line and any refusal only; no CI-wait progress under --land and no --closes suggestion."
+          ]
+        },
+        {
+          "path": "wb pr land",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the landing outcome and any refusal block only; no CI-wait heartbeats and no savings footer."
+          ]
+        },
+        {
+          "path": "wb worktree cleanup",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the plan or outcome lines and warnings only; no inspection progress, info lines, or claim-release success note."
+          ]
+        },
+        {
+          "path": "wb worktree create",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the created worktree line only; the remote-claim success note is dropped."
+          ]
+        },
+        {
+          "path": "wb worktree land",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; no landing progress or heartbeat lines."
+          ]
+        },
+        {
+          "path": "wb worktree merge",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; --quiet wins over --progress."
+          ]
+        },
+        {
+          "path": "wb worktree merge land",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; --quiet wins over --progress."
+          ]
+        },
+        {
+          "path": "wb worktree merge prepare",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; --quiet wins over --progress."
+          ]
+        },
+        {
+          "path": "wb worktree merge resume",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; --quiet wins over --progress."
+          ]
+        },
+        {
+          "path": "wb worktree merge revert",
+          "flags": [
+            "--quiet"
+          ],
+          "modes": [
+            "Prints the receipt and refusal lines only; --quiet wins over --progress."
+          ]
+        }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb --help",
+              "contains": [
+                "--quiet",
+                "print only the outcome and any refusal"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb/SKILL.md",
+              "marker": "## Triggers",
+              "examples": [
+                "wb pr create --quiet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/quiet_test.go",
+              "name": "TestQuietIsConsumedByExactlyTheLifecycleVerbs",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/main_test.go",
+              "name": "TestPersistentFlagMatrix",
+              "kind": "conformance"
+            },
+            {
+              "path": "internal/agentguard/pipeline_test.go",
+              "name": "TestBashRefusesAPipedStateChangingWBVerb",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "WB_QUIET=1 is the environment spelling and affects only these verbs. wb run and wb worktree guard keep their own local --quiet. The agent pre-tool-use hook refuses a pipe after a state-changing wb verb."
+    },
+    {
       "id": "wb.run",
       "feature_refs": [],
       "since": "existing",
