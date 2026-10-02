@@ -1,10 +1,11 @@
-import { ChangeDetectionStrategy, Component, ComponentRef, DestroyRef, Type, ViewContainerRef, effect, inject, input, signal, untracked } from '@angular/core'
+import { ChangeDetectionStrategy, Component, ComponentRef, DestroyRef, Type, ViewContainerRef, effect, inject, input, output, signal, untracked } from '@angular/core'
 
 /**
  * Creates a component whose code is a lazy chunk, next to this element, as soon as this element is
  * created, and keeps its inputs current. Home's first page carries only what it must (the budget of
  * REQ:initial-script-size): the rest is requested when Home is created and appended below what is
- * already shown, so nothing on screen moves. A chunk that cannot be fetched leaves nothing behind.
+ * already shown, so nothing on screen moves. A chunk that cannot be fetched leaves nothing behind, and says so
+ * (`loadFailed`), so a host that must show something can; to try again the host creates a new mount.
  * No `@defer`: its runtime would be part of the first page.
  */
 @Component({
@@ -18,6 +19,8 @@ export class LazyMount {
   readonly load = input.required<() => Promise<Type<unknown>>>()
   /** The inputs of the created component, by name. */
   readonly inputs = input<Readonly<Record<string, unknown>>>({})
+  /** The chunk could not be fetched. */
+  readonly loadFailed = output<void>()
 
   private readonly container = inject(ViewContainerRef)
   private readonly created = signal<ComponentRef<unknown> | undefined>(undefined)
@@ -46,7 +49,9 @@ export class LazyMount {
         this.apply(created, untracked(this.inputs))
         this.created.set(created)
       },
-      () => undefined,
+      () => {
+        if (this.alive) this.loadFailed.emit()
+      },
     )
   }
 

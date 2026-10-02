@@ -117,11 +117,26 @@ func appendSecureHookExecutionCapabilityRoots(repoPath, projectsRoot string, roo
 	return roots, handles, nil
 }
 
-// ambientGoCacheRoots resolves the Go build and module caches the hook will
-// actually use, honoring the environment exactly as the Go toolchain does and
-// falling back to the toolchain's own defaults. Returned paths are absolute
-// and deduplicated; unresolvable entries are omitted rather than guessed.
+// ambientGoCacheRoots resolves cache roots from the process environment and
+// native user-directory defaults. It does not read the Go toolchain's GOENV file.
 func ambientGoCacheRoots() []string {
+	userCache, _ := os.UserCacheDir()
+	home, _ := os.UserHomeDir()
+	return resolveGoCacheRoots(goCacheRootInputs{
+		buildCache: os.Getenv("GOCACHE"), moduleCache: os.Getenv("GOMODCACHE"),
+		goPath: os.Getenv("GOPATH"), userCache: userCache, home: home,
+	})
+}
+
+type goCacheRootInputs struct {
+	buildCache, moduleCache, goPath string
+	userCache, home                 string
+}
+
+// resolveGoCacheRoots keeps only absolute cache authority, deduplicated in
+// build-cache/module-cache order. As in cmd/go, the default module cache uses
+// only the first GOPATH entry; a leading empty entry does not admit later ones.
+func resolveGoCacheRoots(inputs goCacheRootInputs) []string {
 	var roots []string
 	add := func(path string) {
 		if path == "" || !filepath.IsAbs(path) {
@@ -134,27 +149,23 @@ func ambientGoCacheRoots() []string {
 		}
 		roots = append(roots, path)
 	}
-
-	goCache := os.Getenv("GOCACHE")
-	if goCache == "" {
-		if userCache, err := os.UserCacheDir(); err == nil {
-			goCache = filepath.Join(userCache, "go-build")
-		}
+	goCache := inputs.buildCache
+	if goCache == "" && inputs.userCache != "" {
+		goCache = filepath.Join(inputs.userCache, "go-build")
 	}
 	add(goCache)
-
-	goPath := os.Getenv("GOPATH")
-	if goPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			goPath = filepath.Join(home, "go")
+	goPath := inputs.goPath
+	if goPath == "" && inputs.home != "" {
+		goPath = filepath.Join(inputs.home, "go")
+	}
+	goModCache := inputs.moduleCache
+	if goModCache == "" {
+		paths := filepath.SplitList(goPath)
+		if len(paths) > 0 && paths[0] != "" {
+			goModCache = filepath.Join(paths[0], "pkg", "mod")
 		}
 	}
-	goModCache := os.Getenv("GOMODCACHE")
-	if goModCache == "" && goPath != "" {
-		goModCache = filepath.Join(goPath, "pkg", "mod")
-	}
 	add(goModCache)
-
 	return roots
 }
 
