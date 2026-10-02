@@ -304,6 +304,18 @@ type cockpitServer struct {
 	server *cockpit.Server
 	api    http.Handler
 	page   http.Handler
+	// session is the owner session owner() logged in with, kept for the test.
+	session *http.Cookie
+}
+
+// owner returns one owner session cookie for the whole test: a read with it is
+// an owner's, the only reader that is demand for the SSH transport.
+func (c *cockpitServer) owner() *http.Cookie {
+	c.t.Helper()
+	if c.session == nil {
+		c.session = c.login()
+	}
+	return c.session
 }
 
 func newCockpitServer(t *testing.T, snapshotter *Snapshotter) *cockpitServer {

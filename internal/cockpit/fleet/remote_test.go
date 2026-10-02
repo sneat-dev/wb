@@ -139,12 +139,13 @@ func newLive(t *testing.T, sources *fakeSources, exporter RemoteExporter, change
 	})
 }
 
-// pollAndSettle runs one look of the background loop, as it is while a client
-// reads the fleet document, and waits for the exports it started. pollIdle is
-// the same look with no reader.
+// pollAndSettle runs one look of the background loop, as it is while an owner
+// session reads the fleet document (the reader that is demand for every
+// transport), and waits for the exports it started. pollIdle is the same look
+// with no reader.
 func pollAndSettle(t *testing.T, snapshotter *Snapshotter) {
 	t.Helper()
-	snapshotter.fleetAsked.Store(snapshotter.now().UnixNano())
+	snapshotter.fleetRead(demandOwner)
 	snapshotter.pollRemotes(t.Context())
 	snapshotter.side.Wait()
 }
@@ -1055,7 +1056,7 @@ func TestResponseMachineNameIsIgnoredForPlacement(t *testing.T) {
 			t.Errorf("%s: log = %q", name, logs.all())
 		}
 		machine := snapshotter.live[vmKey]
-		if snapshotter.recordExport(t.Context(), machine, exportResult{}, true, newClock().Now(), newClock().Now(), liveView{}, [32]byte{}, 0, ""); machine.samples != nil {
+		if snapshotter.recordExport(t.Context(), machine, exportResult{}, true, newClock().Now(), newClock().Now(), liveView{}, [32]byte{}, 0, "", false); machine.samples != nil {
 			t.Errorf("%s: metrics of this machine were kept", name)
 		}
 	}

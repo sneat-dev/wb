@@ -314,13 +314,15 @@ type Snapshotter struct {
 	// order; both are fixed once built.
 	sshRoutes map[string]SSHRoute
 	sshKeys   []string
-	// fleetAsked is when a client last read the fleet document, in nanoseconds
-	// since the epoch and zero for never; kick wakes the background loop.
-	fleetAsked atomic.Int64
-	kick       chan struct{}
-	liveIDs    map[string]string
-	transports []RemoteTransport
-	remoteTick func(time.Duration) (<-chan time.Time, func())
+	// fleetAsked is when a reader on this machine last read the fleet document,
+	// and fleetOwnerAsked when an owner session did, in nanoseconds since the
+	// epoch and zero for never; kick wakes the background loop.
+	fleetAsked      atomic.Int64
+	fleetOwnerAsked atomic.Int64
+	kick            chan struct{}
+	liveIDs         map[string]string
+	transports      []RemoteTransport
+	remoteTick      func(time.Duration) (<-chan time.Time, func())
 	// mapper maps an accepted fleet to a machine's entries (mapLive; a test
 	// replaces it). generation counts the documents assembled, so that one
 	// prepared outside the lock is stored only if none was assembled after it.

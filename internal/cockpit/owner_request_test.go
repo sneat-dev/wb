@@ -115,3 +115,36 @@ func TestDaemonLogIsServedToTheOwnerSessionAndToNobodyElse(t *testing.T) {
 		t.Errorf("an anonymous local reader is now %q", principal.Name)
 	}
 }
+
+// TestALocalReaderIsOnALoopbackHostWithTheCanonicalOriginOrNone is the one
+// classification of a reader on this machine, which the fleet routes use to
+// tell such a reader from the hosted page (which reads the same metadata
+// routes): a session plays no part in it, and neither does a forwarding header.
+func TestALocalReaderIsOnALoopbackHostWithTheCanonicalOriginOrNone(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, nil)
+	for name, test := range map[string]struct {
+		host    string
+		headers []string
+		want    bool
+	}{
+		"no origin":                {testHost, nil, true},
+		"the Cockpit page":         {testHost, []string{"Origin", testOrigin}, true},
+		"another loopback name":    {"localhost:8766", nil, true},
+		"the hosted page":          {testHost, []string{"Origin", hostedOrigin}, false},
+		"a foreign origin":         {testHost, []string{"Origin", "https://attacker.example"}, false},
+		"the null origin":          {testHost, []string{"Origin", "null"}, false},
+		"two origins":              {testHost, []string{"Origin", testOrigin, "Origin", testOrigin}, false},
+		"a foreign host":           {"attacker.example:8766", nil, false},
+		"another loopback address": {"127.0.0.2:8766", nil, false},
+	} {
+		request := httptest.NewRequest(http.MethodGet, APIPrefix+"session", nil)
+		request.Host = test.host
+		for i := 0; i < len(test.headers); i += 2 {
+			request.Header.Add(test.headers[i], test.headers[i+1])
+		}
+		if got := f.server.LocalReader(request); got != test.want {
+			t.Errorf("%s: a local reader = %v, want %v", name, got, test.want)
+		}
+	}
+}

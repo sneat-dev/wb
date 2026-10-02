@@ -134,7 +134,7 @@ func TestAMetricsOnlyExportNeverClearsAFailure(t *testing.T) {
 	refreshAndSettle(t, snapshotter)
 	pollAndSettle(t, snapshotter)
 	machine := snapshotter.live[vmKey]
-	if publish := snapshotter.recordExport(t.Context(), machine, exportResult{envelope: only, transport: TransportHTTP, ok: true}, true, clock.Now(), clock.Now(), liveView{}, [32]byte{}, 0, ""); publish {
+	if publish := snapshotter.recordExport(t.Context(), machine, exportResult{envelope: only, transport: TransportHTTP, ok: true}, true, clock.Now(), clock.Now(), liveView{}, [32]byte{}, 0, "", false); publish {
 		t.Error("a metrics-only export asked for a publication")
 	}
 	snapshotter.mu.RLock()

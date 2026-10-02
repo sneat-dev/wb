@@ -20,9 +20,13 @@ const (
 // Register adds the fleet, branches and machine-metrics metadata routes and the owner-only README route to
 // server, and gives it the machines' SSH routes for an owner's session response. Call it before the server's mounts are taken.
 func Register(server *cockpit.Server, snapshotter *Snapshotter) {
-	server.HandleMetadata(FleetRoute, cockpit.CapabilityFleetRead, snapshotter.serveFleet)
+	server.HandleMetadata(FleetRoute, cockpit.CapabilityFleetRead, func(writer http.ResponseWriter, request *http.Request, principal cockpit.Principal) {
+		snapshotter.serveFleet(writer, request, demandOf(server, request, principal))
+	})
 	server.HandleMetadata(BranchesRoute, cockpit.CapabilityBranchRead, snapshotter.serveBranches)
-	server.HandleMetadata(MetricsRoute, cockpit.CapabilityMachineRead, snapshotter.serveMetrics)
+	server.HandleMetadata(MetricsRoute, cockpit.CapabilityMachineRead, func(writer http.ResponseWriter, request *http.Request, principal cockpit.Principal) {
+		snapshotter.serveMetrics(writer, request, demandOf(server, request, principal))
+	})
 	server.SetMachineRoutes(snapshotter.MachineRoutes)
 	server.HandleOwner(http.MethodGet, ReadmePath, cockpit.CapabilityRepoContentRead, snapshotter.serveReadme)
 }
@@ -30,12 +34,11 @@ func Register(server *cockpit.Server, snapshotter *Snapshotter) {
 // serveFleet answers the fleet read model from the last snapshot's prepared
 // bytes: gzip or identity with each encoding's strong ETag and If-None-Match
 // support. It reads memory only: no collector runs on a request and no
-// compressor either. A read by a client (not by the export verb) is recorded as
-// demand for the other machines' entries; nothing is fetched on the request.
-func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, _ cockpit.Principal) {
-	if request.Header.Get(ExportReaderHeader) == "" {
-		s.fleetRead()
-	}
+// compressor either. A read by a reader on this machine (not by the export verb,
+// and not by the hosted page) is recorded as demand for the other machines'
+// entries; nothing is fetched on the request.
+func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, from demand) {
+	s.fleetRead(from)
 	cockpit.ServePayload(writer, request, s.Payload())
 }
 

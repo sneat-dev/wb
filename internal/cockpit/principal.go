@@ -90,6 +90,22 @@ func (server *Server) principal(request *http.Request, from originKind) (Princip
 	return anonymousLocal(), true
 }
 
+// LocalReader reports whether request was made on this machine by the Cockpit
+// page itself or by a client that names no origin: the Host header names a
+// loopback host (cockpit#req:host-header-check) and the Origin is the canonical
+// one or absent, never the hosted origin and never a foreign one. It is the one
+// classification of "a reader on this machine", for a caller that must tell
+// such a reader from the hosted page, which reads the same metadata routes
+// (cockpit-views#req:remote-exporter-transports counts only the former as
+// demand).
+func (server *Server) LocalReader(request *http.Request) bool {
+	if host, _ := splitHost(request.Host); !loopbackName(host) {
+		return false
+	}
+	from := server.originKindOf(request)
+	return from == originNone || from == originCanonical
+}
+
 // IsOwner reports whether request acts as the owner principal, for a route the
 // daemon serves on the same listener outside Cockpit's mounts and so outside
 // Guard (cockpit#req:daemon-log-is-owner-only). It applies what the mounts
@@ -99,9 +115,5 @@ func (server *Server) principal(request *http.Request, from originKind) (Princip
 // carries a live owner session (cockpit#req:owner-session). Nothing else makes
 // a request the owner's: there is no anonymous fallback here.
 func (server *Server) IsOwner(request *http.Request) bool {
-	if host, _ := splitHost(request.Host); !loopbackName(host) {
-		return false
-	}
-	from := server.originKindOf(request)
-	return (from == originNone || from == originCanonical) && server.sessionID(request) != ""
+	return server.LocalReader(request) && server.sessionID(request) != ""
 }

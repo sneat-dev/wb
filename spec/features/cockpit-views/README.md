@@ -1285,9 +1285,34 @@ that is not fallback-class (`bad_payload`, `export_refused`) does not try SSH: t
 reached and answered, and what it answered would be the same over SSH, where the export is built by
 the same function.
 
-The cadence is the scheduler's, the same for both transports, and follows demand, so that a daemon
-nobody is looking at does not open a connection to every machine every minute. A read of the fleet
-document by a client is recorded (it fetches nothing itself and takes no lock). While a client read
+The cadence is the scheduler's and follows demand, so that a daemon
+nobody is looking at does not open a connection to every machine every minute. Who is demand is
+decided once, by Cockpit's own classification of a request (its Host check, its Origin
+classification and its session), and for both demands below, the fleet read and the metrics request:
+
+| Reader | Demand for HTTP | Demand for SSH |
+|---|---|---|
+| nobody | no (keepalive) | no (keepalive) |
+| the export verb's marked read (`X-Wb-Cockpit-Export`), whatever session it carries | no | no |
+| the hosted page, a foreign origin, any request not on a loopback `Host` | no | no |
+| an anonymous reader on this machine (loopback `Host`, canonical or no `Origin`) | yes | no (keepalive) |
+| an owner session (the same, with a live session) | yes | yes |
+
+A reader on this machine is a request on a loopback `Host` whose `Origin` is the canonical one or
+absent; the hosted page reads the same metadata routes and is never demand, and neither is a
+request through a proxy, which has no anonymous reading at all. An SSH export is a login with the
+user's own key, which an agent that asks for approval of each use turns into a prompt, or a silent
+signature, per login: so only an owner session's read is demand for SSH, and an anonymous reader,
+which any page or process on the machine can be, raises the HTTP transport alone. For such a
+reader a machine that has no HTTP route, or whose HTTP route is failing, stays on SSH's idle
+keepalive, max(15 minutes, the refresh interval), exactly as with nobody looking; its live entries stay
+for that keepalive, with their age and, where HTTP failed, with the HTTP failure as `remote_error`,
+and HTTP is retried on its own backoff, a request and never a login. A cool-down on SSH (below)
+holds only for an export SSH is open to. A metrics-only export uses SSH only while an owner
+requested that machine's metrics within the last 60 seconds: it is never a keepalive.
+
+A read of the fleet
+document by a reader on this machine is recorded (it fetches nothing itself and takes no lock). While such a reader read
 the fleet document within the last 5 minutes, a machine's fleet export runs once per snapshot
 refresh interval, and never more often than every 30 seconds whatever `cockpit.refresh_interval`
 says. With no such reader it runs as an idle keepalive every 15 minutes (or every refresh interval,
@@ -1296,7 +1321,7 @@ the background loop, which starts that one export at once, without blocking the 
 is served what is held and gets the fresh entries one request later. The read the export verb makes
 (REQ:cockpit-export-verb) is another machine's daemon, not a person, and is not demand: it carries
 the request header `X-Wb-Cockpit-Export`, without which two machines that read each other would
-keep each other in demand for ever. While any client has requested
+keep each other in demand for ever. While a reader on this machine has requested
 that machine's metrics within the last 60 seconds, a metrics-only export runs every 30 seconds.
 Every export, of either kind, is a login to the machine, so no two exports of a machine start within
 30 seconds of each other, whichever kind each is and whatever came of the first: a wake-up by a
@@ -1308,9 +1333,20 @@ included) stays refused until a person repairs it, and every attempt is a line i
 authentication log: it bars SSH for that machine, for both kinds of export, for a delay that doubles
 up to 1 hour, and an export that SSH answers lifts the bar. The bar is SSH's alone: a machine that
 also has an HTTP route is still asked over HTTP on the 5 minute backoff, and SSH is tried again at
-the first attempt after its bar has passed. At the default 60 second interval that is 4 connections an hour to a machine
-nobody looks at, 60 while a client reads the fleet document, 120 while a Machines page also polls
-its metrics, and 1 to a machine whose login is refused. A slow or failing remote
+the first attempt after its bar has passed. At the default 60 second interval the connections an
+hour to one machine are, by reader:
+
+| Reader | HTTP requests an hour (machine with an HTTP route that answers) | SSH logins an hour (machine read over SSH) |
+|---|---|---|
+| nobody, the hosted page, the export verb | 4 | 4 |
+| an anonymous reader on this machine reading the fleet document | 60 | 4 |
+| the same, with a Machines page polling the metrics | 120 | 4 |
+| an owner session reading the fleet document | 60 | 60 |
+| the same, with a Machines page polling the metrics | 120 | 120 |
+| any reader, a machine whose SSH login is refused | (its HTTP route is asked every 5 minutes) | 1 |
+
+A machine with both routes is read over HTTP while that answers and has no SSH login at all,
+whoever reads. A slow or failing remote
 never delays the local snapshot. Both transports yield the same strictly validated envelope
 and the same merge. With neither transport configured for a machine, no request is made and
 no process is started. `cockpit.remote_http: false` and `cockpit.remote_ssh: false` turn the
@@ -1464,14 +1500,17 @@ the total timeout is `timeout`; any other status or reason is `bad_payload`. `ss
 remote command's status on, so a remote command that itself exits 255, 127, 126 or 2 picks the
 code: the remote login already has that machine's full authority, and the choice is among the codes
 of one closed set. How often `ssh` runs is the scheduler's rule
-(REQ:remote-exporter-transports), the same for both transports.
+(REQ:remote-exporter-transports): `ssh` is started on demand only for an owner session's read, and
+otherwise once per idle keepalive, max(15 minutes, the refresh interval), so that no page and no
+process on this machine that is not the owner can raise the rate of logins.
 
 What the user's SSH configuration can still do. The options above neutralise the directives that
 would change what the call is, not the ones that decide how the host is reached, which stay the
 user's: `ProxyCommand`, `ProxyJump`, `Match exec` and `KnownHostsCommand` run local commands, as
 they do for the user's own `ssh`, here with the reduced environment and no terminal. An
 `IdentityAgent`, or an agent that asks for approval of each use, may show its own prompt on every
-unattended login, the 15 minute keepalive included, and a FIDO key that wants a touch blocks until
+unattended login, the 15 minute keepalive included (4 an hour with no owner looking, and one per
+refresh interval only while an owner session reads), and a FIDO key that wants a touch blocks until
 the 15 second timeout, which is then shown as `timeout`. A connection-sharing master that already
 exists at the configured `ControlPath` is reused, so an export may travel over the owner's open
 session. A host for which any of this is unwanted is given no `ssh` section, or
@@ -2775,10 +2814,10 @@ Then fleet exports run once per refresh interval throughout, metrics-only export
 
 **Requirements:** cockpit-views#req:remote-exporter-transports, cockpit-views#req:remote-entries-replace-cached
 
-Scenario: Idle, viewed, Machines page, refused login
+Scenario: Idle, viewed, Machines page, refused login, by reader
 Given a configured target read over SSH on a fake runner, the default 60 second refresh interval and a fake clock
-When nobody reads the fleet document for hours, then a client reads it once a minute, then a client also requests the machine's metrics every 10 seconds, and, on another daemon, the machine's SSH login is refused
-Then the machine is read 4 times an hour with nobody looking and its entries stay live with their age, the first read of the fleet document after the quiet time is answered from what is held and starts one export at once, a read by the export verb starts none, the machine is read 60 times an hour while the document is read and 120 times an hour with the metrics requested, with refresh intervals of 10, 45 and 70 seconds and both demands no two exports of either kind start within 30 seconds of each other, a refused login met by a metrics-only export holds the fleet export back too, the refused login is retried after 2, 4, 8, 16, 32 and then every 60 minutes, and a machine that also has an HTTP route is still asked over HTTP every 5 minutes meanwhile
+When nobody reads the fleet document for hours, then an owner session reads it once a minute, then the owner also requests the machine's metrics every 10 seconds, and, on other daemons, the same reads are made by an anonymous reader on this machine, by the hosted page and by the export verb, a machine with both routes is read by each of them with its HTTP route answering and failing, and the machine's SSH login is refused
+Then the machine is read 4 times an hour with nobody looking and its entries stay live with their age, the first read of the fleet document by an owner after the quiet time is answered from what is held and starts one export at once, a read by the export verb or by the hosted page starts none and records nothing, the machine is read 60 times an hour while an owner reads the document and 120 times an hour with the metrics requested, an anonymous reader, the hosted page and the export verb leave the SSH logins at 4 an hour over the simulated hour whatever they read, an anonymous reader has a machine with an HTTP route read over HTTP 60 and 120 times an hour with no SSH login while HTTP answers and with 4 SSH logins an hour while it fails, the hosted page raises neither transport, with refresh intervals of 10, 45 and 70 seconds and both demands no two exports of either kind start within 30 seconds of each other, a refused login met by a metrics-only export holds the fleet export back too, the refused login is retried after 2, 4, 8, 16, 32 and then every 60 minutes, and a machine that also has an HTTP route is still asked over HTTP every 5 minutes meanwhile
 
 ### AC: ssh-argument-vector-contains-only-configured-values
 

@@ -236,11 +236,15 @@ func (s *Snapshotter) MachineMetrics(id string) (payload cockpit.Payload, found 
 
 // serveMetrics answers the machine named by the "machine" query parameter from
 // the sources' memory (never a fetch), with the shared writer's gzip and ETag.
-func (s *Snapshotter) serveMetrics(writer http.ResponseWriter, request *http.Request, _ cockpit.Principal) {
-	payload, found := s.MachineMetrics(request.URL.Query().Get(metricsQuery))
+// A read by a reader on this machine is recorded as demand for that machine's
+// metrics.
+func (s *Snapshotter) serveMetrics(writer http.ResponseWriter, request *http.Request, from demand) {
+	id := request.URL.Query().Get(metricsQuery)
+	payload, found := s.MachineMetrics(id)
 	if !found {
 		writeError(writer, http.StatusNotFound, "unknown_machine")
 		return
 	}
+	s.metricsRead(id, from)
 	cockpit.ServePayload(writer, request, payload)
 }

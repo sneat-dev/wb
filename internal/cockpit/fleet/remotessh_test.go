@@ -200,7 +200,7 @@ func TestSSHArgumentVectorContainsOnlyConfiguredValues(t *testing.T) {
 	}
 	before := runner.count()
 	for _, id := range []string{vm.ID, "vm; touch x", "$(reboot)", "-oProxyCommand=evil", "vm.example\nevil"} {
-		server.get(metricsURL+url.QueryEscape(id), nil)
+		server.get(metricsURL+url.QueryEscape(id), server.owner())
 	}
 	if runner.count() != before {
 		t.Fatal("a request started a process")
@@ -428,7 +428,7 @@ func TestAFailingSSHMachineIsRetriedWithADelayThatDoublesToFiveMinutes(t *testin
 	for range 17 * 60 / 5 {
 		pollAndSettle(t, snapshotter)
 		if vm, found := machineNamed(snapshotter.Document(), vmKey); found {
-			server.get(metricsURL+vm.ID, nil)
+			server.get(metricsURL+vm.ID, server.owner())
 		}
 		clock.advance(remoteStep)
 	}
@@ -930,7 +930,7 @@ func TestFallbackCoolDownIsHonoured(t *testing.T) {
 		vm := onSSH(second)
 		healthy.Store(true)
 		if second%10 == 0 {
-			server.get(metricsURL+vm.ID, nil)
+			server.get(metricsURL+vm.ID, server.owner())
 		}
 		clock.advance(remoteStep)
 	}
