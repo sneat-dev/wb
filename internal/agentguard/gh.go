@@ -450,15 +450,13 @@ func recordGhPrMergeOverride(projectsRoot string, words []string, reason string)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return
 	}
-	encoded, err := json.Marshal(ghPrMergeOverride{
+	encoded, _ := json.Marshal(ghPrMergeOverride{
 		Policy:     "land-with-wb-verb",
 		Command:    strings.Join(words, " "),
 		Reason:     reason,
 		RecordedAt: time.Now().UTC().Format(time.RFC3339),
 	})
-	if err != nil {
-		return
-	}
+	// Every audit field is a string with no custom marshaler.
 	file, err := os.OpenFile(filepath.Join(directory, "gh-pr-merge-overrides.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

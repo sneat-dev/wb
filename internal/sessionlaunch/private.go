@@ -22,6 +22,8 @@ import (
 )
 
 type privateLauncherDependencies struct {
+	readReady    func(*launchAttempt, int) (launcherReady, sessionmove.Digest, error)
+	readRelease  func(*launchAttempt) (launcherRelease, sessionmove.Digest, error)
 	pid          func() int
 	register     func(string, session.Record) (session.Record, error)
 	sleep        func(time.Duration)
@@ -42,13 +44,15 @@ func defaultPrivateLauncherDependencies() privateLauncherDependencies {
 // own PID, publishes readiness, waits for the receiver's immutable release,
 // and then replaces itself with the fixed harness executable.
 func RunPrivateLauncher(args []string) int {
-	if err := runPrivateLauncher(args, defaultPrivateLauncherDependencies()); err != nil {
-		return launcherError(err)
-	}
-	return 0
+	// Native Exec replaces this process on success; every returning path is an error.
+	return launcherError(runPrivateLauncher(args, defaultPrivateLauncherDependencies()))
 }
 
 func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
+	return runPrivateLauncherWithDirectory(args, deps, os.Getwd, os.Stat)
+}
+
+func runPrivateLauncherWithDirectory(args []string, deps privateLauncherDependencies, getwd func() (string, error), stat func(string) (os.FileInfo, error)) error {
 	if len(args) != 4 || args[0] == "" || args[1] == "" || args[2] == "" || args[3] == "" {
 		return fmt.Errorf("invalid arguments")
 	}
@@ -85,14 +89,14 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 		if err := validatePrivatePlan(state, plan); err != nil {
 			return err
 		}
-		if err := verifyLauncherWorktree(plan, state.Request, store); err != nil {
+		if err := verifyLauncherWorktreeWithDirectory(plan, state.Request, store, getwd, stat); err != nil {
 			return err
 		}
 		if state.Request.HandoverContent != "" {
 			privateContinuation = plan.HandoverPath
 		}
 	} else {
-		privateContinuation, err = validatePrivateParkPlan(launchState, plan)
+		privateContinuation, err = validatePrivateParkPlanWithDirectory(launchState, plan, getwd, stat)
 		if err != nil {
 			return err
 		}
@@ -165,12 +169,20 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 	if err != nil {
 		return err
 	}
-	_, readyDigest, err := attempt.loadReady(record.PID)
+	readReady := attempt.loadReady
+	if deps.readReady != nil {
+		readReady = func(pid int) (launcherReady, sessionmove.Digest, error) { return deps.readReady(attempt, pid) }
+	}
+	_, readyDigest, err := readReady(record.PID)
 	if err != nil {
 		return err
 	}
+	readRelease := attempt.loadRelease
+	if deps.readRelease != nil {
+		readRelease = func() (launcherRelease, sessionmove.Digest, error) { return deps.readRelease(attempt) }
+	}
 	for {
-		release, _, releaseErr := attempt.loadRelease()
+		release, _, releaseErr := readRelease()
 		if releaseErr == nil {
 			if release.PID != record.PID || release.RequestDigest != plan.RequestDigest || release.PlanDigest != planDigest ||
 				release.ReadyDigest != readyDigest || ready.PlanDigest != planDigest {
@@ -183,7 +195,7 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 		}
 		deps.sleep(25 * time.Millisecond)
 	}
-	_, releaseDigest, err := attempt.loadRelease()
+	_, releaseDigest, err := readRelease()
 	if err != nil {
 		return err
 	}
@@ -267,19 +279,27 @@ func validatePrivatePlan(state sessionmove.State, plan launchPlan) error {
 // directory (never the worktree); a pre-cutover (ContinuationTracked)
 // request reads the legacy path inside the pinned worktree, exactly as
 // before the ContinuationPrivate cutover.
-func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request, store sessionmove.Store) error {
-	cwd, err := os.Getwd()
+func verifyPinnedDirectory(want string, getwd func() (string, error), stat func(string) (os.FileInfo, error)) error {
+	cwd, err := getwd()
 	if err != nil {
 		return err
 	}
-	wantInfo, err := os.Stat(plan.WorktreeDir)
+	wantInfo, err := stat(want)
 	if err != nil {
 		return err
 	}
-	gotInfo, err := os.Stat(cwd)
+	gotInfo, err := stat(cwd)
 	if err != nil || !os.SameFile(wantInfo, gotInfo) {
 		return fmt.Errorf("private launcher is not rooted in the pinned target worktree")
 	}
+	return nil
+}
+
+func verifyLauncherWorktreeWithDirectory(plan launchPlan, request sessionmove.Request, store sessionmove.Store, getwd func() (string, error), stat func(string) (os.FileInfo, error)) error {
+	if err := verifyPinnedDirectory(plan.WorktreeDir, getwd, stat); err != nil {
+		return err
+	}
+	var err error
 	var handover []byte
 	if request.HandoverContent != "" {
 		handover, err = store.ReadHandover(request.HandoffID)
@@ -303,7 +323,7 @@ func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request, store 
 // sessionpark envelope through a descriptor retained by launchState, derives
 // the expected launch authority from that envelope, and then compares every
 // plan field before the private continuation path can enter the environment.
-func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error) {
+func validatePrivateParkPlanWithDirectory(state *launchState, plan launchPlan, getwd func() (string, error), stat func(string) (os.FileInfo, error)) (string, error) {
 	if sessionauthority.ContinuationKind(plan.ContinuationKind) != sessionauthority.ContinuationPrivate {
 		return "", fmt.Errorf("parked launcher plan does not name the fixed private authority artifacts")
 	}
@@ -384,25 +404,14 @@ func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error
 	if _, err := cleanAbsoluteExecutable(plan.HarnessExecutable); err != nil {
 		return "", fmt.Errorf("validate fixed harness executable: %w", err)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
+	if err := verifyPinnedDirectory(plan.WorktreeDir, getwd, stat); err != nil {
 		return "", err
-	}
-	wantInfo, err := os.Stat(plan.WorktreeDir)
-	if err != nil {
-		return "", err
-	}
-	gotInfo, err := os.Stat(cwd)
-	if err != nil || !os.SameFile(wantInfo, gotInfo) {
-		return "", fmt.Errorf("private launcher is not rooted in the pinned target worktree")
 	}
 	if !plan.ContinuationDigest.Matches(continuation) || !bytes.HasPrefix(continuation, continuationPrefix) {
 		return "", fmt.Errorf("private parked continuation conflicts with admitted envelope")
 	}
 	if localBundle != nil {
-		if !bytes.HasPrefix(continuation, []byte(localBundle.Continuation)) {
-			return "", fmt.Errorf("private parked continuation conflicts with admitted bundle")
-		}
+		// The common continuationPrefix guard above already authenticates this bundle prefix.
 		if err := verifyPrivateLocalRoot(state, *localBundle, plan); err != nil {
 			return "", err
 		}
@@ -411,6 +420,10 @@ func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error
 }
 
 func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan launchPlan) error {
+	return verifyPrivateLocalRootWithObservations(state, bundle, plan, exec.LookPath, os.Open, launchGitOutput)
+}
+
+func verifyPrivateLocalRootWithObservations(state *launchState, bundle sessionpark.Bundle, plan launchPlan, lookPath func(string) (string, error), openDirectory func(string) (*os.File, error), output func(context.Context, string, ...string) ([]byte, error)) error {
 	mode := sessionauthority.LaunchRootMode(plan.RootMode)
 	if len(bundle.Worktrees) == 0 {
 		want := filepath.Join(plan.StoreRoot, bundle.ParkedSessionID, sessionpark.LocalNeutralDirName)
@@ -418,13 +431,10 @@ func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan 
 		if err != nil {
 			return fmt.Errorf("retain private launcher neutral root: %w", err)
 		}
-		neutral, err := fileForFD(fd, "wb-parked-local-neutral-root")
-		if err != nil {
-			return err
-		}
+		neutral := os.NewFile(uintptr(fd), "wb-parked-local-neutral-root")
 		defer func() { _ = neutral.Close() }()
 		neutralInfo, neutralErr := neutral.Stat()
-		cwd, cwdErr := os.Open(".")
+		cwd, cwdErr := openDirectory(".")
 		if cwdErr != nil {
 			return cwdErr
 		}
@@ -439,7 +449,7 @@ func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan 
 	if mode != sessionauthority.LaunchRootParkedLocal || plan.WorktreeDir != bundle.Worktrees[0].WorktreeDir {
 		return fmt.Errorf("private launcher local root does not match the exact first parked member")
 	}
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := lookPath("git")
 	if err != nil {
 		return fmt.Errorf("fixed git executable is unavailable for parked-local launch verification: %w", err)
 	}
@@ -448,8 +458,8 @@ func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan 
 		return err
 	}
 	for _, member := range bundle.Worktrees {
-		branch, branchErr := exec.Command(gitPath, "-C", member.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
-		head, headErr := exec.Command(gitPath, "-C", member.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}").Output()
+		branch, branchErr := output(context.Background(), gitPath, "-C", member.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD")
+		head, headErr := output(context.Background(), gitPath, "-C", member.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}")
 		if branchErr != nil || headErr != nil || string(bytes.TrimSpace(branch)) != member.Branch ||
 			string(bytes.TrimSpace(head)) != member.Head {
 			return fmt.Errorf("parked-local member branch or HEAD changed immediately before harness exec")
@@ -459,6 +469,10 @@ func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan 
 }
 
 func readPrivateArtifactAt(directory *os.File, name string, maximum int) ([]byte, error) {
+	return readPrivateArtifactAtWithRead(directory, name, maximum, (*os.File).Read)
+}
+
+func readPrivateArtifactAtWithRead(directory *os.File, name string, maximum int, readFile func(*os.File, []byte) (int, error)) ([]byte, error) {
 	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
@@ -471,7 +485,7 @@ func readPrivateArtifactAt(directory *os.File, name string, maximum int) ([]byte
 		return nil, fmt.Errorf("private session artifact is not one bounded 0600 regular file")
 	}
 	raw := make([]byte, int(stat.Size))
-	read, err := file.Read(raw)
+	read, err := readFile(file, raw)
 	if err != nil || read != len(raw) {
 		return nil, fmt.Errorf("private session artifact changed while being read")
 	}

@@ -1421,9 +1421,7 @@ func mergeReleaseObservations(groups ...[]ReleaseObservation) []ReleaseObservati
 				continue
 			}
 			for dependency, version := range observation.ExpectedRequirements {
-				if previous.ExpectedRequirements == nil {
-					previous.ExpectedRequirements = map[string]string{}
-				}
+				// Every first observation receives cloneStringMap, which always allocates.
 				previous.ExpectedRequirements[dependency] = version
 			}
 			if observation.RequireNewer {

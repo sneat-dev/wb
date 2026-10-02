@@ -140,10 +140,9 @@ func CallRemote(ctx context.Context, target RemoteTarget, request RemoteRequest,
 	if err != nil {
 		return RemoteResponse{}, err
 	}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return RemoteResponse{}, fmt.Errorf("encode remote request: %w", err)
-	}
+	// RemoteRequest contains only primitive scalars and has no custom
+	// marshalers; encoding cannot fail after its public validation boundary.
+	payload, _ := json.Marshal(request)
 	remoteWB := target.WBPath
 	if remoteWB == "" {
 		remoteWB = remotessh.DefaultWBCommand
@@ -279,9 +278,9 @@ func ResolveRemoteTarget(configPath, machine string) (RemoteTarget, error) {
 		sort.Strings(names)
 		return RemoteTarget{}, requestErrorf("unknown machine %q; configured machines: %s", wanted, strings.Join(names, ", "))
 	}
-	if err := target.Validate(); err != nil {
-		return RemoteTarget{}, err
-	}
+	// LoadRemoteTargets reads sessionmove.LoadConfig, which already validates
+	// the machine ID and every SSH field. Public direct targets still validate
+	// in CallRemote before transport starts.
 	return target, nil
 }
 

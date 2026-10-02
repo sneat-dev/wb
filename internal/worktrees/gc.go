@@ -183,6 +183,10 @@ type GCPartialTask struct {
 // durable receipt — with this pass supplying only the classification and the
 // per-repository scope.
 func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
+	return gcObserved(ctx, options, nil)
+}
+
+func gcObserved(ctx context.Context, options GCOptions, observe func(string)) (GCOutcome, error) {
 	if strings.TrimSpace(options.Base) == "" {
 		options.Base = "main"
 	}
@@ -279,10 +283,16 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	// otherwise accumulate one directory per sweep, including the sweeps gc's
 	// own advice produces. It is reported in a dry run for the same reason
 	// everything else is: a plan that omits work the apply will do is not a plan.
+	if observe != nil {
+		observe("sweep")
+	}
 	if err := sweepTaskShells(ctx, options, &outcome); err != nil {
 		return outcome, err
 	}
 	if options.Apply {
+		if observe != nil {
+			observe("apply")
+		}
 		if err := applyGC(ctx, options, &outcome); err != nil {
 			return outcome, err
 		}

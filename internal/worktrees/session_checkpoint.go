@@ -404,7 +404,23 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 	return preflight, nil
 }
 
+// sessionWorkLogReads retains the independent native rereads after private
+// claim corroboration. Each invocation owns its readers; no shared hooks exist.
+type sessionWorkLogReads struct {
+	openRun    func(string, string, string, bool) (*os.File, string, error)
+	readClaim  func(*os.File, string) (workLogClaim, error)
+	readEvents func(string) ([]LocalWorkLogEvent, error)
+}
+
+func nativeSessionWorkLogReads() sessionWorkLogReads {
+	return sessionWorkLogReads{openRun: openWorkLogRun, readClaim: readWorkLogClaimAt, readEvents: readLocalEvents}
+}
+
 func inspectSessionMoveWorkLog(projectsRoot, worktree string, source session.Record) (workLogClaim, string, error) {
+	return inspectSessionMoveWorkLogWithReads(projectsRoot, worktree, source, nativeSessionWorkLogReads())
+}
+
+func inspectSessionMoveWorkLogWithReads(projectsRoot, worktree string, source session.Record, reads sessionWorkLogReads) (workLogClaim, string, error) {
 	home, err := wbhome.Root(projectsRoot)
 	if err != nil {
 		return workLogClaim{}, "", err
@@ -422,12 +438,12 @@ func inspectSessionMoveWorkLog(projectsRoot, worktree string, source session.Rec
 	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
 		return workLogClaim{}, "", fmt.Errorf("corroborate managed Work Log: %w", err)
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	runDir, _, err := reads.openRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
 		return workLogClaim{}, "", err
 	}
 	defer func() { _ = runDir.Close() }()
-	claim, err := readWorkLogClaimAt(runDir, projection.ClaimID)
+	claim, err := reads.readClaim(runDir, projection.ClaimID)
 	if err != nil {
 		return workLogClaim{}, "", err
 	}
@@ -462,11 +478,15 @@ func ParkedSessionWorkLogReference(projectsRoot, worktree string, source session
 // resume later compares the event ID while holding every member journal lock,
 // so a sequential newer session cannot be silently overwritten.
 func ParkedSessionWorkLogSnapshot(projectsRoot, worktree string, source session.Record) (string, string, error) {
-	_, reference, err := inspectSessionMoveWorkLog(projectsRoot, worktree, source)
+	return parkedSessionWorkLogSnapshotWithReads(projectsRoot, worktree, source, nativeSessionWorkLogReads())
+}
+
+func parkedSessionWorkLogSnapshotWithReads(projectsRoot, worktree string, source session.Record, reads sessionWorkLogReads) (string, string, error) {
+	_, reference, err := inspectSessionMoveWorkLogWithReads(projectsRoot, worktree, source, reads)
 	if err != nil {
 		return "", "", err
 	}
-	events, err := readLocalEvents(worktree)
+	events, err := reads.readEvents(worktree)
 	if err != nil {
 		return "", "", fmt.Errorf("inspect exact parked owner event: %w", err)
 	}
@@ -487,21 +507,25 @@ func ParkedSessionWorkLogSnapshot(projectsRoot, worktree string, source session.
 }
 
 func verifySessionCheckpointUnchanged(ctx context.Context, preflight *sessionCheckpointPreflight) error {
+	return verifySessionCheckpointUnchangedWithGit(ctx, preflight, git)
+}
+
+func verifySessionCheckpointUnchangedWithGit(ctx context.Context, preflight *sessionCheckpointPreflight, query func(context.Context, string, ...string) (string, error)) error {
 	if err := preflight.canonical.validate(); err != nil {
 		return fmt.Errorf("canonical repository changed during source preflight: %w", err)
 	}
 	if err := preflight.worktree.validate(); err != nil {
 		return fmt.Errorf("source worktree changed during preflight: %w", err)
 	}
-	branch, err := git(ctx, preflight.root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch, err := query(ctx, preflight.root, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil || strings.TrimSpace(branch) != preflight.branch {
 		return fmt.Errorf("source named branch changed during preflight")
 	}
-	head, err := git(ctx, preflight.root, "rev-parse", "--verify", "HEAD^{commit}")
+	head, err := query(ctx, preflight.root, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil || head != preflight.sourceCommit {
 		return fmt.Errorf("source HEAD changed during preflight")
 	}
-	status, err := git(ctx, preflight.root, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := query(ctx, preflight.root, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil || status != "" {
 		return fmt.Errorf("source worktree changed during preflight")
 	}
@@ -530,6 +554,12 @@ func readCanonicalOriginRemote(ctx context.Context, canonical *canonicalReposito
 	if err != nil {
 		return "", err
 	}
+	return parseCanonicalOriginRemoteOutput(raw)
+}
+
+// parseCanonicalOriginRemoteOutput admits arbitrary bytes at the remote-output
+// boundary. It does not infer that native Git emits malformed successful output.
+func parseCanonicalOriginRemoteOutput(raw []byte) (string, error) {
 	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
 		return "", fmt.Errorf("origin remote output was not one terminated value")
 	}

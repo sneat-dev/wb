@@ -744,6 +744,31 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 	return correctionPorts().CorrectExecutionIdentity(home, options)
 }
 
+type workLogProjectionBoundary string
+
+const (
+	workLogExtensionValidated         workLogProjectionBoundary = "extension validated"
+	workLogReservationEffortsRead     workLogProjectionBoundary = "reservation efforts read"
+	workLogReservationRunsRead        workLogProjectionBoundary = "reservation runs read"
+	workLogEvidenceDirectoryRead      workLogProjectionBoundary = "evidence directory read"
+	workLogMigrationClaimsRead        workLogProjectionBoundary = "migration claims read"
+	workLogProjectionDirectoryOpened  workLogProjectionBoundary = "projection directory opened"
+	workLogProjectionBeforeRemove     workLogProjectionBoundary = "projection before remove"
+	workLogProjectionBeforeSync       workLogProjectionBoundary = "projection before sync"
+	workLogProjectionBeforeRootReopen workLogProjectionBoundary = "projection before root reopen"
+	workLogPromptNamesRead            workLogProjectionBoundary = "prompt names read"
+	workLogPromptNamesRewind          workLogProjectionBoundary = "prompt names rewind"
+	workLogPromptRecordRead           workLogProjectionBoundary = "prompt record read"
+	workLogProjectionCorroborated     workLogProjectionBoundary = "projection corroborated"
+	workLogClaimRelocationResolved    workLogProjectionBoundary = "claim relocation resolved"
+	workLogLegacyOriginCorroborated   workLogProjectionBoundary = "legacy origin corroborated"
+	workLogLegacyIntentBeforeAppend   workLogProjectionBoundary = "legacy intent before append"
+)
+
+// workLogProjectionObservation observes an owned native boundary for one call.
+// The callback may inspect or change that call's files; it never supplies an error.
+type workLogProjectionObservation func(workLogProjectionBoundary, *os.File)
+
 func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim workLogClaim) error {
 	identity, err := currentExecutionIdentity(home, claim)
 	if err != nil {
@@ -793,8 +818,15 @@ func currentExecutionIdentity(home string, claim workLogClaim) (ExecutionIdentit
 // resume invocation adds a legacy or previously absent repository. It never
 // invents new provenance: an explicitly different caller must use handoff.
 func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, claim workLogClaim) (WorkLogOptions, error) {
+	return workLogOptionsForClaimExtensionObserved(home, requested, claim, nil)
+}
+
+func workLogOptionsForClaimExtensionObserved(home string, requested WorkLogOptions, claim workLogClaim, observe workLogProjectionObservation) (WorkLogOptions, error) {
 	if err := validateResumeWorkLogRequest(home, requested, claim); err != nil {
 		return WorkLogOptions{}, err
+	}
+	if observe != nil {
+		observe(workLogExtensionValidated, nil)
 	}
 	requested.EffortID, requested.RunID = claim.EffortID, claim.RunID
 	requested.Initiator, requested.AgentID = claim.Initiator, claim.AgentID
@@ -833,20 +865,32 @@ func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, clai
 // same bytes and rejects a conflicting writer through immutable no-replace
 // publication.
 func reserveOriginalPromptArchive(home, task string, options WorkLogOptions) error {
+	runDir, _, _, err := openReservedPromptRun(home, task, options)
+	if runDir != nil {
+		_ = runDir.Close()
+	}
+	return err
+}
+
+// openReservedPromptRun keeps the normalized run and its immutable archive
+// together. Callers own the returned directory; failures release it here.
+func openReservedPromptRun(home, task string, options WorkLogOptions) (*os.File, string, string, error) {
 	if len(options.snapshot.Contents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
-		return nil
+		return nil, "", "", nil
 	}
 	effort, run, err := normalizeWorkLogOptions(task, options, time.Now().UTC())
 	if err != nil {
-		return err
+		return nil, "", "", err
 	}
 	runDir, _, err := openWorkLogRun(home, effort, run, true)
 	if err != nil {
-		return err
+		return nil, "", "", err
 	}
-	defer func() { _ = runDir.Close() }()
-	_, _, err = ensureOriginalPromptArchive(runDir, options, time.Now().UTC())
-	return err
+	if _, _, err := ensureOriginalPromptArchive(runDir, options, time.Now().UTC()); err != nil {
+		_ = runDir.Close()
+		return nil, "", "", err
+	}
+	return runDir, effort, run, nil
 }
 
 const preApplyRenameReservationName = "pre-apply-rename.json"
@@ -886,19 +930,12 @@ type preApplyRenameReservationCandidate struct {
 // recoverable without deleting its immutable prompt archive. The normal claim
 // publication remains later in applyRename, once a real checkout exists.
 func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLogOptions) error {
-	if len(options.snapshot.Contents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
+	runDir, effort, run, err := openReservedPromptRun(home, newTask, options)
+	if err != nil {
+		return err
+	}
+	if runDir == nil {
 		return nil
-	}
-	if err := reserveOriginalPromptArchive(home, newTask, options); err != nil {
-		return err
-	}
-	effort, run, err := normalizeWorkLogOptions(newTask, options, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	runDir, _, err := openWorkLogRun(home, effort, run, false)
-	if err != nil {
-		return err
 	}
 	defer func() { _ = runDir.Close() }()
 	reservation := preApplyRenameReservation{
@@ -927,6 +964,10 @@ func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLog
 // wrote just the immutable prompt archive, so the narrowly validated legacy
 // form remains recoverable too.
 func findPreApplyRenameReservations(home, task string) ([]preApplyRenameReservationCandidate, error) {
+	return findPreApplyRenameReservationsObserved(home, task, nil)
+}
+
+func findPreApplyRenameReservationsObserved(home, task string, observe workLogProjectionObservation) ([]preApplyRenameReservationCandidate, error) {
 	worklogs, err := openAbsoluteDirectoryNoFollow(filepath.Join(home, "worklogs"), false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -935,6 +976,9 @@ func findPreApplyRenameReservations(home, task string) ([]preApplyRenameReservat
 		return nil, err
 	}
 	defer func() { _ = worklogs.Close() }()
+	if observe != nil {
+		observe(workLogReservationEffortsRead, worklogs)
+	}
 	efforts, err := worklogs.Readdirnames(-1)
 	if err != nil {
 		return nil, err
@@ -956,6 +1000,9 @@ func findPreApplyRenameReservations(home, task string) ([]preApplyRenameReservat
 		}
 		if err != nil {
 			return nil, err
+		}
+		if observe != nil {
+			observe(workLogReservationRunsRead, runs)
 		}
 		runNames, err := runs.Readdirnames(-1)
 		if err != nil {
@@ -1043,6 +1090,10 @@ func validateReservationPrompt(runDir *os.File, wantDigest string) error {
 }
 
 func hasWorkLogClaimsOrTerminals(runDir *os.File) bool {
+	return hasWorkLogClaimsOrTerminalsObserved(runDir, nil)
+}
+
+func hasWorkLogClaimsOrTerminalsObserved(runDir *os.File, observe workLogProjectionObservation) bool {
 	for _, name := range []string{"claims", "terminals"} {
 		directory, err := openPrivateChild(runDir, name, false)
 		if errors.Is(err, os.ErrNotExist) {
@@ -1050,6 +1101,9 @@ func hasWorkLogClaimsOrTerminals(runDir *os.File) bool {
 		}
 		if err != nil {
 			return true
+		}
+		if observe != nil {
+			observe(workLogEvidenceDirectoryRead, directory)
 		}
 		names, readErr := directory.Readdirnames(1)
 		_ = directory.Close()
@@ -1100,6 +1154,10 @@ func terminalizePreApplyRenameReservation(home string, candidate preApplyRenameR
 }
 
 func ensureOriginalPromptArchive(runDir *os.File, options WorkLogOptions, now time.Time) (archive, digest string, err error) {
+	return ensureOriginalPromptArchiveBeforeRename(runDir, options, now, writeBytesImmutableAtBeforeRename)
+}
+
+func ensureOriginalPromptArchiveBeforeRename(runDir *os.File, options WorkLogOptions, now time.Time, beforeRename func(*os.File, string)) (archive, digest string, err error) {
 	if len(options.snapshot.Contents) == 0 {
 		if err := snapshotOriginalPrompt(&options); err != nil {
 			return "", "", err
@@ -1124,7 +1182,7 @@ func ensureOriginalPromptArchive(runDir *os.File, options WorkLogOptions, now ti
 	}
 	metadata := workLogPromptMetadata{Version: 1, SHA256: digest,
 		SourceReference: options.OriginalPrompt, CapturedAt: now}
-	if err := writeJSONImmutableAt(runDir, "original-prompt.json", metadata, true); err != nil {
+	if err := filewrite.WriteJSONImmutableAt(runDir, "original-prompt.json", metadata, true, beforeRename); err != nil {
 		// Concurrent same-run writers may race to publish metadata after both
 		// observed the same immutable prompt bytes. Accept the winner only when
 		// its digest corroborates those exact bytes.
@@ -1160,6 +1218,10 @@ func ensureWorkLogRunIndex(runDir *os.File, effort, run string) error {
 // singleton had overwritten sibling repositories. The legacy bytes remain in
 // place as evidence; migration is immutable and idempotent.
 func migrateLegacySingletonClaim(runDir *os.File, runPath, home, effort, run string) error {
+	return migrateLegacySingletonClaimObserved(runDir, runPath, home, effort, run, nil)
+}
+
+func migrateLegacySingletonClaimObserved(runDir *os.File, runPath, home, effort, run string, observe workLogProjectionObservation) error {
 	var legacy legacyWorkLogClaim
 	if err := readJSONAt(runDir, "claim.json", &legacy); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -1204,6 +1266,9 @@ func migrateLegacySingletonClaim(runDir *os.File, runPath, home, effort, run str
 		_ = claims.Close()
 		return err
 	}
+	if observe != nil {
+		observe(workLogMigrationClaimsRead, claims)
+	}
 	claimEntries, err := claims.Readdirnames(-1)
 	_ = claims.Close()
 	if err != nil {
@@ -1245,9 +1310,6 @@ func countLegacyWorkLogProjections(root, effort, run string) (int, error) {
 		}
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
 	return count, err
 }
 
@@ -1328,6 +1390,10 @@ func writeManagedWorktreeInstructions(worktree string) error {
 }
 
 func openWorkLogProjectionDirectory(worktree string, create bool) (*os.File, error) {
+	return openWorkLogProjectionDirectoryObserved(worktree, create, nil)
+}
+
+func openWorkLogProjectionDirectoryObserved(worktree string, create bool, observe workLogProjectionObservation) (*os.File, error) {
 	root, err := openAbsoluteDirectoryNoFollow(worktree, false)
 	if err != nil {
 		return nil, err
@@ -1345,20 +1411,19 @@ func openWorkLogProjectionDirectory(worktree string, create bool) (*os.File, err
 	if err != nil {
 		return nil, fmt.Errorf("open work-log projection directory: %w", err)
 	}
+	directory := os.NewFile(uintptr(fd), "wb-worklog-projection")
+	if observe != nil {
+		observe(workLogProjectionDirectoryOpened, directory)
+	}
 	// Harden the mode only on the creating path. fchmod is a metadata write,
 	// and the read path opened this descriptor O_RDONLY: under a sandbox that
 	// denies writes outside the workspace it fails with EPERM, which reports a
 	// read as a denied write. Reading must never require write permission.
 	if create {
-		if err := unix.Fchmod(fd, 0o700); err != nil {
-			_ = unix.Close(fd)
+		if err := unix.Fchmod(int(directory.Fd()), 0o700); err != nil {
+			_ = directory.Close()
 			return nil, err
 		}
-	}
-	directory := os.NewFile(uintptr(fd), "wb-worklog-projection")
-	if directory == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap work-log projection directory")
 	}
 	path := filepath.Join(worktree, workLogProjectionDirectory)
 	if !directoryStillMatches(path, directory) {
@@ -2202,6 +2267,10 @@ func recordLegacyRepositoryRelocationForCleanup(ctx context.Context, home, proje
 // cleanup already proved contained. Generic path mismatches, live pull
 // requests, and interrupted ordinary relocations still fail closed.
 func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult, record bool, beforeReceipt func() error) (bool, error) {
+	return legacyRepositoryRelocationForCleanupObserved(ctx, home, projectsRoot, entry, record, beforeReceipt, nil)
+}
+
+func legacyRepositoryRelocationForCleanupObserved(ctx context.Context, home, projectsRoot string, entry ListResult, record bool, beforeReceipt func() error, observe workLogProjectionObservation) (bool, error) {
 	if entry.OpenPullRequest != nil {
 		return false, fmt.Errorf("cannot recover legacy repository relocation while the branch has an open pull request: %s", entry.OpenPullRequest.URL)
 	}
@@ -2265,6 +2334,9 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 	if err := corroborateRepositoryRelocation(ctx, entry.WorktreeDir, entry.Repository); err != nil {
 		return false, err
 	}
+	if observe != nil {
+		observe(workLogLegacyOriginCorroborated, nil)
+	}
 	urls, err := exactOriginURLs(ctx, entry.WorktreeDir, false)
 	if err != nil || len(urls) != 1 {
 		return false, fmt.Errorf("relocated repository origin is ambiguous")
@@ -2295,6 +2367,9 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 		return true, nil
 	}
 	if intent == nil {
+		if observe != nil {
+			observe(workLogLegacyIntentBeforeAppend, nil)
+		}
 		intent, _, err = appendRelocationIntentForRepository(home, claim, expected.Source, expected.Destination, expected.To, expected.HeadSHA,
 			expected.SourceRepository, expected.DestinationRepository, expected.RemoteURL, relocationPlacementRecord{}, time.Now().UTC())
 		if err != nil {
@@ -2328,7 +2403,11 @@ func sameLegacyRelocatedCheckoutIntent(actual, expected workLogRelocationIntent)
 }
 
 func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, claim workLogClaim) error {
-	sourceCanonical, err := CanonicalRepositoryPath(projectsRoot, claim.Repository)
+	root, err := absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return err
+	}
+	oldOwner, oldName, sourceCanonical, err := canonicalRepositoryPath(root, claim.Repository)
 	if err != nil {
 		return err
 	}
@@ -2339,10 +2418,6 @@ func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, clai
 		filepath.Clean(entry.WorktreeDir) == filepath.Join(entry.WorktreesRoot, entry.Task) &&
 		filepath.Clean(claim.Worktree) == filepath.Join(sourceCanonical, ".worktrees", entry.Task) {
 		return nil
-	}
-	oldOwner, oldName, err := splitRepository(claim.Repository)
-	if err != nil {
-		return err
 	}
 	newOwner, newName, err := splitRepository(entry.Repository)
 	if err != nil {
@@ -2456,6 +2531,10 @@ func selectWorkLogProjection(projection workLogProjection, currentErr error, leg
 // corroborates that claim against live Git. Only then does it write the
 // approved .wb-worklog/recovery.json projection and unlink the old pointer.
 func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, error) {
+	return readWorkLogProjectionForClaimObserved(home, worktree, nil)
+}
+
+func readWorkLogProjectionForClaimObserved(home, worktree string, observe workLogProjectionObservation) (workLogProjection, error) {
 	current, currentErr := readWorkLogProjection(worktree)
 	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
 	projection, selection, err := selectWorkLogProjection(current, currentErr, legacy, legacyErr)
@@ -2475,6 +2554,9 @@ func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, er
 		if err := writeWorkLogProjection(worktree, projection); err != nil {
 			return workLogProjection{}, fmt.Errorf("migrate legacy work-log projection: %w", err)
 		}
+	}
+	if observe != nil {
+		observe(workLogProjectionCorroborated, nil)
 	}
 	if err := removeLegacyWorkLogProjection(worktree); err != nil {
 		return workLogProjection{}, err
@@ -2532,10 +2614,17 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 // gives retry enough evidence to append that completion. A physical layout
 // move is not a new task or claim.
 func corroborateClaimAtPath(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
+	return corroborateClaimAtPathObserved(home, worktree, finalCommit, projection, claim, nil)
+}
+
+func corroborateClaimAtPathObserved(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim, observe workLogProjectionObservation) error {
 	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
 		resolution, err := latestRelocationResolution(home, claim, worktree)
 		if err != nil {
 			return err
+		}
+		if observe != nil {
+			observe(workLogClaimRelocationResolved, nil)
 		}
 		if resolution.receipt == nil {
 			intent, _, intentErr := pendingRelocationIntent(home, claim, worktree, claim.Branch, finalCommit)
@@ -2618,6 +2707,10 @@ func corroborateClaimGit(worktree, finalCommit string, projection workLogProject
 }
 
 func removeWorkLogProjection(worktree string) error {
+	return removeWorkLogProjectionObserved(worktree, nil)
+}
+
+func removeWorkLogProjectionObserved(worktree string, observe workLogProjectionObservation) error {
 	directory, err := openWorkLogProjectionDirectory(worktree, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -2625,15 +2718,24 @@ func removeWorkLogProjection(worktree string) error {
 	if err != nil {
 		return err
 	}
+	if observe != nil {
+		observe(workLogProjectionBeforeRemove, directory)
+	}
 	if err := unix.Unlinkat(int(directory.Fd()), workLogProjectionName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		_ = directory.Close()
 		return fmt.Errorf("reset old work-log projection: %w", err)
+	}
+	if observe != nil {
+		observe(workLogProjectionBeforeSync, directory)
 	}
 	if err := directory.Sync(); err != nil {
 		_ = directory.Close()
 		return err
 	}
 	_ = directory.Close()
+	if observe != nil {
+		observe(workLogProjectionBeforeRootReopen, nil)
+	}
 	root, err := openAbsoluteDirectoryNoFollow(worktree, false)
 	if err != nil {
 		return err

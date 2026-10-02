@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/worktreepolicy"
 	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
@@ -113,10 +114,10 @@ func TestRetirementEntrySelectionBoundaries(t *testing.T) {
 func TestRetirementArchiveTargetBoundaries(t *testing.T) {
 	t.Parallel()
 
-	if err := validateRetiredArchiveRepositoryName(" backstage-retired"); err == nil {
+	if err := worktreepolicy.ValidateRetiredArchiveRepositoryName(" backstage-retired"); err == nil {
 		t.Fatal("archive repository with surrounding whitespace was accepted")
 	}
-	if err := validateRetiredArchiveRepositoryName("backstage-retired"); err != nil {
+	if err := worktreepolicy.ValidateRetiredArchiveRepositoryName("backstage-retired"); err != nil {
 		t.Fatalf("valid archive repository rejected: %v", err)
 	}
 	if _, err := ResolveRetiredArchiveTarget("../acme"); err == nil {

@@ -20,6 +20,12 @@ const defaultCommandTimeout = 30 * time.Minute
 // ExecGit runs real Git.
 type ExecGit struct{ Timeout time.Duration }
 
+// gitCommands keeps the command boundary local to one operation.
+// ExecGit always supplies its native bounded runner.
+type gitCommands struct {
+	run func(context.Context, string, ...string) (string, error)
+}
+
 func (git ExecGit) run(ctx context.Context, dir string, args ...string) (string, error) {
 	return runBounded(ctx, git.Timeout, dir, nil, "git", args...)
 }
@@ -40,6 +46,10 @@ func (git ExecGit) Fetch(ctx context.Context, dir string) error {
 // A local-ahead branch is left untouched; a divergent branch is refused so its
 // owner chooses the resolution rather than sync inventing one.
 func (git ExecGit) FastForwardToRemote(ctx context.Context, dir, branch, remote string) (string, bool, bool, error) {
+	return (gitCommands{run: git.run}).FastForwardToRemote(ctx, dir, branch, remote)
+}
+
+func (git gitCommands) FastForwardToRemote(ctx context.Context, dir, branch, remote string) (string, bool, bool, error) {
 	present, err := git.remoteRefPresent(ctx, dir, remote)
 	if err != nil {
 		return "", false, false, err
@@ -91,7 +101,7 @@ func (git ExecGit) FastForwardToRemote(ctx context.Context, dir, branch, remote 
 	return "", false, false, fmt.Errorf("%s and %s diverged; resolve the stream branch explicitly before syncing", branch, remote)
 }
 
-func (git ExecGit) remoteRefPresent(ctx context.Context, dir, remote string) (bool, error) {
+func (git gitCommands) remoteRefPresent(ctx context.Context, dir, remote string) (bool, error) {
 	_, err := git.run(ctx, dir, "show-ref", "--verify", "--quiet", "refs/remotes/"+remote)
 	if err == nil {
 		return true, nil
@@ -103,7 +113,7 @@ func (git ExecGit) remoteRefPresent(ctx context.Context, dir, remote string) (bo
 	return false, fmt.Errorf("inspect fetched %s: %w", remote, err)
 }
 
-func (git ExecGit) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+func (git gitCommands) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
 	_, err := git.run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
 	if err == nil {
 		return true, nil
@@ -125,6 +135,10 @@ func (git ExecGit) CurrentBranch(ctx context.Context, dir string) (string, error
 // worktree mid-rebase. A conflict in one agent's branch must not abort the
 // others, so the caller needs it as data and the tree back in a usable state.
 func (git ExecGit) Rebase(ctx context.Context, dir, branch, upstream string) ([]string, error) {
+	return (gitCommands{run: git.run}).Rebase(ctx, dir, branch, upstream)
+}
+
+func (git gitCommands) Rebase(ctx context.Context, dir, branch, upstream string) ([]string, error) {
 	if _, err := git.run(ctx, dir, "checkout", branch); err != nil {
 		return nil, fmt.Errorf("check out %s: %w", branch, err)
 	}
@@ -157,6 +171,10 @@ func (git ExecGit) AbortRebase(ctx context.Context, dir string) error {
 
 // Head implements Git.
 func (git ExecGit) Head(ctx context.Context, dir, revision string) (string, error) {
+	return (gitCommands{run: git.run}).Head(ctx, dir, revision)
+}
+
+func (git gitCommands) Head(ctx context.Context, dir, revision string) (string, error) {
 	out, err := git.run(ctx, dir, "rev-parse", revision)
 	return strings.TrimSpace(out), err
 }
@@ -181,6 +199,10 @@ func (git ExecGit) CommitsAhead(ctx context.Context, dir, branch, upstream strin
 // CommitAll implements Git. ok=false when there was nothing to commit, which
 // is what keeps a re-run of sync from writing an empty commit.
 func (git ExecGit) CommitAll(ctx context.Context, dir, message string) (string, bool, error) {
+	return (gitCommands{run: git.run}).CommitAll(ctx, dir, message)
+}
+
+func (git gitCommands) CommitAll(ctx context.Context, dir, message string) (string, bool, error) {
 	if _, err := git.run(ctx, dir, "add", "-A"); err != nil {
 		return "", false, err
 	}
@@ -249,6 +271,10 @@ func (git ExecGit) RestoreTo(ctx context.Context, dir, revision string) error {
 // another agent pushed in between. The pushed ref is then re-read: a push exit
 // code is not evidence the intended commit landed.
 func (git ExecGit) PushWithLease(ctx context.Context, dir, branch, expectedRemoteHead string) (string, error) {
+	return (gitCommands{run: git.run}).PushWithLease(ctx, dir, branch, expectedRemoteHead)
+}
+
+func (git gitCommands) PushWithLease(ctx context.Context, dir, branch, expectedRemoteHead string) (string, error) {
 	local, err := git.Head(ctx, dir, branch)
 	if err != nil {
 		return "", err

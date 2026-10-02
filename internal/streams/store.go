@@ -376,10 +376,14 @@ func (store *Store) writeAtomicallyInjected(name string, stream Stream, inj *fil
 // found the lock held would otherwise have to tell the caller to retry, and
 // `waits-are-verbs-not-instructions` puts that wait inside the verb.
 func (store *Store) lock(name string) (func(), error) {
+	return store.lockWithOpen(name, os.OpenFile)
+}
+
+func (store *Store) lockWithOpen(name string, open func(string, int, os.FileMode) (*os.File, error)) (func(), error) {
 	if err := os.MkdirAll(store.Dir(name), 0o700); err != nil {
 		return nil, fmt.Errorf("create stream directory: %w", err)
 	}
-	file, err := os.OpenFile(store.lockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := open(store.lockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open stream lock: %w", err)
 	}
@@ -397,10 +401,14 @@ func (store *Store) lock(name string) (func(), error) {
 // bookkeeping — never across a network call — so one stalled `gh` can never
 // freeze every stream verb on the machine.
 func (store *Store) lockStore() (func(), error) {
+	return store.lockStoreWithOpen(os.OpenFile)
+}
+
+func (store *Store) lockStoreWithOpen(open func(string, int, os.FileMode) (*os.File, error)) (func(), error) {
 	if err := os.MkdirAll(store.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("create stream store: %w", err)
 	}
-	file, err := os.OpenFile(filepath.Join(store.Root, ".store.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := open(filepath.Join(store.Root, ".store.lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open stream store lock: %w", err)
 	}

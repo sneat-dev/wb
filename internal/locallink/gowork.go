@@ -39,6 +39,16 @@ func (engine *Engine) linkGo(
 	declarations []streams.Declaration,
 	libraryRepository, hash string,
 ) ([]streams.Link, error) {
+	return engine.linkGoWithRender(ctx, library, consumer, declarations, libraryRepository, hash, renderGoWork)
+}
+
+func (engine *Engine) linkGoWithRender(
+	ctx context.Context,
+	library, consumer string,
+	declarations []streams.Declaration,
+	libraryRepository, hash string,
+	render func(string, []streams.GoModule, string, []streams.GoModule) (string, error),
+) ([]streams.Link, error) {
 	consumerModules, err := streams.GoModules(consumer)
 	if err != nil {
 		return nil, err
@@ -53,7 +63,7 @@ func (engine *Engine) linkGo(
 	if len(libraryModules) == 0 {
 		return nil, fmt.Errorf("%s contains no go.mod to place in the workspace", library)
 	}
-	contents, err := renderGoWork(consumer, consumerModules, library, libraryModules)
+	contents, err := render(consumer, consumerModules, library, libraryModules)
 	if err != nil {
 		return nil, err
 	}

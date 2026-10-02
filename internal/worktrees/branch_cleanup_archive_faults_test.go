@@ -85,7 +85,7 @@ func TestReviewedBranchArchiveStopsAtEveryFailedIOBoundary(t *testing.T) {
 					if err := fail("sync bundle"); err != nil {
 						return err
 					}
-					return syncFile(path)
+					return syncDirectory(path)
 				},
 				fileSHA256: func(path string) (string, error) {
 					if err := fail("hash bundle"); err != nil {

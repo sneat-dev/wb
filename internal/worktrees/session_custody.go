@@ -339,6 +339,7 @@ func externalTargetOwnerEvent(request sessionmove.Request, digest sessionmove.Di
 // ExternalTargetCompletionOptions records proof of a live successor before a
 // receipt may be published in the handoff aggregate.
 type ExternalTargetCompletionOptions struct {
+	beforeAppend  func()
 	ProjectsRoot  string
 	Request       sessionmove.Request
 	RequestDigest sessionmove.Digest
@@ -374,6 +375,9 @@ func RecordExternalTargetCompleted(options ExternalTargetCompletionOptions) (Loc
 	event.Extra["attempt_index"] = options.Receipt.AttemptIndex
 	event.Extra["pid"] = options.Receipt.PID
 	event.Extra["started_at"] = options.Receipt.StartedAt.UTC()
+	if options.beforeAppend != nil {
+		options.beforeAppend()
+	}
 	event, _, err = appendLocalEventWithoutCustody(claim.Worktree, event)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
@@ -1175,11 +1179,18 @@ func externalReceiptModel(claim workLogClaim) string {
 }
 
 func validateExternalHandoverPrompt(worktree string, at time.Time, runtime, model string, digest sessionmove.Digest, body []byte) error {
+	return validateExternalHandoverPromptWithDirectory(worktree, at, runtime, model, digest, body, nil)
+}
+
+func validateExternalHandoverPromptWithDirectory(worktree string, at time.Time, runtime, model string, digest sessionmove.Digest, body []byte, observe func(*os.File)) error {
 	directory, err := openJournalSubdirectory(worktree, promptsDirectory, false)
 	if err != nil {
 		return fmt.Errorf("external target Work Log must have exactly one handover prompt")
 	}
 	defer func() { _ = directory.Close() }()
+	if observe != nil {
+		observe(directory)
+	}
 	names, err := directory.Readdirnames(-1)
 	if err != nil {
 		return err
@@ -1325,6 +1336,10 @@ func validExternalAttempt(attemptID string, index uint64) bool {
 }
 
 func ensureExternalManifest(worktree string, manifest Manifest) error {
+	return ensureExternalManifestBeforeWrite(worktree, manifest, nil)
+}
+
+func ensureExternalManifestBeforeWrite(worktree string, manifest Manifest, observe func()) error {
 	if existing, err := ReadManifest(worktree); err == nil {
 		if !reflect.DeepEqual(existing, manifest) {
 			return fmt.Errorf("immutable target Work Log manifest conflicts with external claim")
@@ -1332,6 +1347,9 @@ func ensureExternalManifest(worktree string, manifest Manifest) error {
 		return nil
 	} else if !errors.Is(err, errManifestNotFound) {
 		return err
+	}
+	if observe != nil {
+		observe()
 	}
 	if err := WriteManifest(worktree, manifest); err != nil {
 		if existing, readErr := ReadManifest(worktree); readErr == nil && reflect.DeepEqual(existing, manifest) {

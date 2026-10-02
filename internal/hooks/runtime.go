@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -89,6 +90,10 @@ func ReplayPendingMetrics(repoPath, configPath, projectsRoot string) (int, error
 }
 
 func ensureExecutionLayout(layout ExecutionLayout) error {
+	return ensureExecutionLayoutInjected(layout, nil)
+}
+
+func ensureExecutionLayoutInjected(layout ExecutionLayout, inj *filewrite.Injector) error {
 	for _, path := range []string{
 		layout.Root,
 		layout.ReportRoot,
@@ -97,7 +102,7 @@ func ensureExecutionLayout(layout ExecutionLayout) error {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return fmt.Errorf("create hook runtime path %s: %w", path, err)
 		}
-		if err := os.Chmod(path, 0o700); err != nil {
+		if err := filewrite.ChmodPath(path, 0o700, inj); err != nil {
 			return fmt.Errorf("protect hook runtime path %s: %w", path, err)
 		}
 	}
@@ -163,16 +168,17 @@ func replayPendingMetrics(targetPath string, layout ExecutionLayout) (int, error
 }
 
 func persistPendingMetricsReceipt(root, targetPath string, events []Event, appendErr error, now time.Time) (string, error) {
+	return persistPendingMetricsReceiptInjected(root, targetPath, events, appendErr, now, nil)
+}
+
+func persistPendingMetricsReceiptInjected(root, targetPath string, events []Event, appendErr error, now time.Time, inj *filewrite.Injector) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("create pending hook metrics directory: %w", err)
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
+	if err := filewrite.ChmodPath(root, 0o700, inj); err != nil {
 		return "", fmt.Errorf("protect pending hook metrics directory: %w", err)
 	}
-	token, err := randomToken(8)
-	if err != nil {
-		return "", err
-	}
+	token := randomToken(8)
 	path := filepath.Join(root, now.UTC().Format("20060102T150405.000000000Z")+"-"+token+".json")
 	receipt := PendingMetricsReceipt{
 		SchemaVersion: pendingMetricsReceiptSchemaVersion,
@@ -186,7 +192,7 @@ func persistPendingMetricsReceipt(root, targetPath string, events []Event, appen
 		return "", fmt.Errorf("encode pending hook metrics receipt: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := filewrite.WriteFile(path, data, 0o600, inj); err != nil {
 		return "", fmt.Errorf("write pending hook metrics receipt %s: %w", path, err)
 	}
 	return path, nil
@@ -242,16 +248,12 @@ func sanitizeRuntimeSegment(segment string) string {
 			builder.WriteByte('_')
 		}
 	}
-	if builder.Len() == 0 {
-		return "unknown"
-	}
 	return builder.String()
 }
 
-func randomToken(bytes int) (string, error) {
+func randomToken(bytes int) string {
 	buffer := make([]byte, bytes)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", fmt.Errorf("generate pending hook metrics token: %w", err)
-	}
-	return hex.EncodeToString(buffer), nil
+	// Go1.27 crypto/rand.Read fills the buffer or terminates on entropy failure.
+	_, _ = rand.Read(buffer)
+	return hex.EncodeToString(buffer)
 }

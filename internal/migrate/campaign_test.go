@@ -351,10 +351,7 @@ func TestRepositoryLayersRunDependenciesFirst(t *testing.T) {
 			"github.com/acme/consumer": {"github.com/acme/provider"},
 		},
 	}
-	layers, err := c.repositoryLayers()
-	if err != nil {
-		t.Fatal(err)
-	}
+	layers := flattenRepositoryComponentLayers(c.repositoryComponentLayers())
 	if len(layers) != 2 || layers[0][0] != provider || layers[1][0] != consumer {
 		t.Fatalf("layers = %+v", layers)
 	}
@@ -380,10 +377,7 @@ func TestRepositoryLayersCollapseDependencyCycles(t *testing.T) {
 			consumer.repository: {cycleA.repository},
 		},
 	}
-	layers, err := c.repositoryLayers()
-	if err != nil {
-		t.Fatal(err)
-	}
+	layers := flattenRepositoryComponentLayers(c.repositoryComponentLayers())
 	if len(layers) != 3 {
 		t.Fatalf("len(layers) = %d, want 3: %+v", len(layers), layers)
 	}

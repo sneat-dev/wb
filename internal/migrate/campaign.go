@@ -238,10 +238,14 @@ func RunCampaign(spec Spec, sourceRoot string, options CampaignOptions) (Campaig
 }
 
 func normalizeCampaignOptions(options CampaignOptions) (CampaignOptions, error) {
+	return normalizeCampaignOptionsWithAbsolute(options, filepath.Abs)
+}
+
+func normalizeCampaignOptionsWithAbsolute(options CampaignOptions, absolute func(string) (string, error)) (CampaignOptions, error) {
 	if strings.TrimSpace(options.GitHubDir) == "" {
 		return CampaignOptions{}, fmt.Errorf("github directory is required")
 	}
-	abs, err := filepath.Abs(options.GitHubDir)
+	abs, err := absolute(options.GitHubDir)
 	if err != nil {
 		return CampaignOptions{}, err
 	}
@@ -288,7 +292,11 @@ func normalizeCampaignOptions(options CampaignOptions) (CampaignOptions, error) 
 }
 
 func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campaign, error) {
-	sourceRoot, err := filepath.Abs(sourceRoot)
+	return planCampaignWithAbsolute(spec, sourceRoot, options, filepath.Abs)
+}
+
+func planCampaignWithAbsolute(spec Spec, sourceRoot string, options CampaignOptions, absolute func(string) (string, error)) (*campaign, error) {
+	sourceRoot, err := absolute(sourceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -414,6 +422,10 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 // the report identity, while graph inspection uses the validated campaign
 // worktree when it already exists.
 func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions) (string, error) {
+	return campaignDiscoveryRootWithRun(spec, sourceRoot, options, runIn)
+}
+
+func campaignDiscoveryRootWithRun(spec Spec, sourceRoot string, options CampaignOptions, run func(string, string, ...string) (string, error)) (string, error) {
 	if !options.Resume {
 		return sourceRoot, nil
 	}
@@ -445,7 +457,7 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 	if worktree == "" {
 		return sourceRoot, nil
 	}
-	branch, err := runIn(worktree, "git", "branch", "--show-current")
+	branch, err := run(worktree, "git", "branch", "--show-current")
 	if err != nil {
 		return "", err
 	}
@@ -477,10 +489,7 @@ func (c *campaign) apply() error {
 			moduleRoots[module.path] = root
 		}
 	}
-	componentLayers, err := c.repositoryComponentLayers()
-	if err != nil {
-		return err
-	}
+	componentLayers := c.repositoryComponentLayers()
 	layers := flattenRepositoryComponentLayers(componentLayers)
 	var localVerificationErrors []error
 	for layerIndex, componentLayer := range componentLayers {
@@ -646,6 +655,10 @@ func (c *campaign) preflightRepository(
 // dependency layer finishes source rewriting before any peer normalizes its
 // manifest, so cyclic modules never observe a half-rewritten dependency.
 func (c *campaign) applyRepositorySources(repo *campaignRepository) error {
+	return c.applyRepositorySourcesWithApply(repo, Apply)
+}
+
+func (c *campaign) applyRepositorySourcesWithApply(repo *campaignRepository, apply func(Plan) error) error {
 	for _, modulePath := range c.order {
 		module := c.modules[modulePath]
 		if module.repository != repo.repository {
@@ -659,7 +672,7 @@ func (c *campaign) applyRepositorySources(repo *campaignRepository) error {
 		if err != nil {
 			return fmt.Errorf("plan %s: %w", module.path, err)
 		}
-		if err := Apply(plan); err != nil {
+		if err := apply(plan); err != nil {
 			return fmt.Errorf("apply %s: %w", module.path, err)
 		}
 		changedFiles := len(plan.Changes)
@@ -951,15 +964,7 @@ func (c *campaign) verifyRepository(repo *campaignRepository, publishableOnly bo
 	return nil
 }
 
-func (c *campaign) repositoryLayers() ([][]*campaignRepository, error) {
-	componentLayers, err := c.repositoryComponentLayers()
-	if err != nil {
-		return nil, err
-	}
-	return flattenRepositoryComponentLayers(componentLayers), nil
-}
-
-func (c *campaign) repositoryComponentLayers() ([][][]*campaignRepository, error) {
+func (c *campaign) repositoryComponentLayers() [][][]*campaignRepository {
 	repositories := map[string]*campaignRepository{}
 	for _, repo := range c.repos {
 		repositories[repo.repository] = repo
@@ -1040,7 +1045,7 @@ func (c *campaign) repositoryComponentLayers() ([][][]*campaignRepository, error
 			return layer[i][0].repository < layer[j][0].repository
 		})
 	}
-	return layers, nil
+	return layers
 }
 
 func flattenRepositoryComponentLayers(componentLayers [][][]*campaignRepository) [][]*campaignRepository {
@@ -1259,25 +1264,29 @@ func (c *campaign) syncReport() {
 }
 
 func prepareCampaignRepository(repo *campaignRepository, githubDir string) error {
-	if _, err := os.Stat(repo.canonical); os.IsNotExist(err) {
+	return prepareCampaignRepositoryWithIO(repo, githubDir, os.Stat, runIn, filepath.EvalSymlinks)
+}
+
+func prepareCampaignRepositoryWithIO(repo *campaignRepository, githubDir string, stat func(string) (os.FileInfo, error), run func(string, string, ...string) (string, error), resolve func(string) (string, error)) error {
+	if _, err := stat(repo.canonical); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(repo.canonical), 0o755); err != nil {
 			return err
 		}
-		if _, err := runIn(filepath.Dir(repo.canonical), "git", "clone", "--quiet", repo.cloneURL, repo.canonical); err != nil {
+		if _, err := run(filepath.Dir(repo.canonical), "git", "clone", "--quiet", repo.cloneURL, repo.canonical); err != nil {
 			return err
 		}
 	}
-	if _, err := runIn(repo.canonical, "git", "fetch", "--quiet", "origin"); err != nil {
+	if _, err := run(repo.canonical, "git", "fetch", "--quiet", "origin"); err != nil {
 		return err
 	}
-	physicalCanonical, err := filepath.EvalSymlinks(repo.canonical)
+	physicalCanonical, err := resolve(repo.canonical)
 	if err != nil {
 		return fmt.Errorf("resolve canonical repository path: %w", err)
 	}
 	repo.canonical = physicalCanonical
 	repo.report.CanonicalDir = physicalCanonical
 	base := "origin/" + repo.ref
-	baseRevision, err := runIn(repo.canonical, "git", "rev-parse", "--verify", base+"^{commit}")
+	baseRevision, err := run(repo.canonical, "git", "rev-parse", "--verify", base+"^{commit}")
 	if err != nil {
 		return fmt.Errorf("%s does not contain %s: %w", repo.repository, base, err)
 	}
@@ -1292,7 +1301,7 @@ func prepareCampaignRepository(repo *campaignRepository, githubDir string) error
 			repo.report.WorktreeDir = registered
 		}
 	}
-	if _, err := os.Stat(repo.worktree); err == nil {
+	if _, err := stat(repo.worktree); err == nil {
 		if repo.resume {
 			return validateResumeWorktree(repo)
 		}
@@ -1300,7 +1309,7 @@ func prepareCampaignRepository(repo *campaignRepository, githubDir string) error
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if _, err := runIn(repo.canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+repo.branch); err == nil {
+	if _, err := run(repo.canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+repo.branch); err == nil {
 		return fmt.Errorf("campaign branch already exists in %s: %s", repo.canonical, repo.branch)
 	}
 	placement, placementErr := worktrees.ResolveWorktreePlacement(context.Background(), githubDir, repo.canonical, baseRevision)
@@ -1400,6 +1409,10 @@ type campaignLock struct {
 }
 
 func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
+	return acquireCampaignLockWithInitializer(githubDir, migrationID, initializeCampaignLockMetadata)
+}
+
+func acquireCampaignLockWithInitializer(githubDir, migrationID string, initialize func(*os.File, string) error) (campaignLock, error) {
 	home, err := wbhome.EnsureRoot(githubDir)
 	if err != nil {
 		return campaignLock{}, err
@@ -1422,28 +1435,35 @@ func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
 		}
 		return campaignLock{directory: directory, lock: lock}, nil
 	}
-	file := lock.File()
-	if file == nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return campaignLock{}, fmt.Errorf("initialize migration campaign %q lock: descriptor is unavailable", migrationID)
-	}
-	if err := file.Truncate(0); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return campaignLock{}, fmt.Errorf("initialize migration campaign %q lock: %w", migrationID, err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return campaignLock{}, err
-	}
-	if _, err := fmt.Fprintf(file, "migration=%s\npid=%d\n", migrationID, os.Getpid()); err != nil {
+	// A successful fresh AcquireOperationLock owns a nonnil held descriptor;
+	// it has not escaped or been released before this initialization.
+	if err := initialize(lock.File(), migrationID); err != nil {
 		_ = lock.Release()
 		_ = directory.Close()
 		return campaignLock{}, err
 	}
 	return campaignLock{directory: directory, lock: lock}, nil
+}
+
+func initializeCampaignLockMetadata(file *os.File, migrationID string) error {
+	return initializeCampaignLockMetadataWithHooks(file, migrationID, nil, nil)
+}
+
+func initializeCampaignLockMetadataWithHooks(file *os.File, migrationID string, afterTruncate, afterSeek func()) error {
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("initialize migration campaign %q lock: %w", migrationID, err)
+	}
+	if afterTruncate != nil {
+		afterTruncate()
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if afterSeek != nil {
+		afterSeek()
+	}
+	_, err := fmt.Fprintf(file, "migration=%s\npid=%d\n", migrationID, os.Getpid())
+	return err
 }
 
 func (l campaignLock) release() error {
@@ -1484,14 +1504,16 @@ func validCampaignLockMetadata(file *os.File, migrationID string) bool {
 // migration. It never removes canonical clones, branches, reports, or a
 // worktree with uncommitted changes.
 func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
-	home, err := wbhome.Root(githubDir)
+	return cleanupCampaignWorktreesWithRootAndRun(githubDir, migrationID, wbhome.Root, runIn)
+}
+
+func cleanupCampaignWorktreesWithRootAndRun(githubDir, migrationID string, homeRoot func(string) (string, error), run func(string, string, ...string) (string, error)) ([]string, error) {
+	home, err := homeRoot(githubDir)
 	if err != nil {
 		return nil, err
 	}
-	root, err := filepath.Abs(filepath.Join(home, "worktrees", slug(migrationID)))
-	if err != nil {
-		return nil, err
-	}
+	// wbhome.Root already returns an absolute write home.
+	root := filepath.Join(home, "worktrees", slug(migrationID))
 	if _, err := os.Stat(filepath.Join(root, ".lock")); err == nil {
 		return nil, fmt.Errorf("campaign %q is locked at %s", migrationID, root)
 	} else if !os.IsNotExist(err) {
@@ -1503,14 +1525,15 @@ func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
 	}
 	sort.Slice(worktrees, func(i, j int) bool { return len(worktrees[i]) > len(worktrees[j]) })
 	for _, worktree := range worktrees {
-		changed, err := worktreeChanged(worktree)
+		status, err := run(worktree, "git", "status", "--porcelain")
+		changed := strings.TrimSpace(status) != ""
 		if err != nil {
 			return nil, err
 		}
 		if changed {
 			return nil, fmt.Errorf("refusing to clean dirty campaign worktree: %s", worktree)
 		}
-		if _, err := runIn(worktree, "git", "worktree", "remove", worktree); err != nil {
+		if _, err := run(worktree, "git", "worktree", "remove", worktree); err != nil {
 			return nil, err
 		}
 	}
@@ -1855,6 +1878,10 @@ func parseGoMod(path string) (*modfile.File, error) {
 }
 
 func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) (goManifestUpdate, error) {
+	return updateGoModuleWithRun(moduleRoot, spec, modulePath, moduleRoots, runIn)
+}
+
+func updateGoModuleWithRun(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string, run func(string, string, ...string) (string, error)) (goManifestUpdate, error) {
 	goMod := filepath.Join(moduleRoot, "go.mod")
 	before, err := os.ReadFile(goMod)
 	if err != nil {
@@ -1869,7 +1896,7 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 		direct[requirement.Mod.Path] = true
 	}
 	for _, requirement := range spec.GoModuleRequires {
-		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-require="+requirement.Path+"@"+requirement.Version); err != nil {
+		if _, err := run(moduleRoot, "go", "mod", "edit", "-require="+requirement.Path+"@"+requirement.Version); err != nil {
 			return goManifestUpdate{}, err
 		}
 		direct[requirement.Path] = true
@@ -1878,11 +1905,11 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 		if path == modulePath || !direct[path] {
 			continue
 		}
-		if err := replaceGoModule(moduleRoot, goMod, path, root); err != nil {
+		if err := replaceGoModule(moduleRoot, goMod, path, root, run); err != nil {
 			return goManifestUpdate{}, err
 		}
 	}
-	if _, err := runIn(moduleRoot, "go", "mod", "tidy"); err != nil {
+	if _, err := run(moduleRoot, "go", "mod", "tidy"); err != nil {
 		return goManifestUpdate{}, err
 	}
 	// Tidy removes unused requirements but intentionally retains their replace
@@ -1904,7 +1931,7 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 		if replaceErr != nil || !hasReplace {
 			continue
 		}
-		if err := dropCampaignReplace(moduleRoot, parsed, path); err != nil {
+		if err := dropCampaignReplace(moduleRoot, parsed, path, run); err != nil {
 			return goManifestUpdate{}, err
 		}
 	}
@@ -1934,6 +1961,10 @@ func finalizeGoModule(
 	moduleRoots map[string]string,
 	releaseOverrides map[string]string,
 ) (goManifestUpdate, error) {
+	return finalizeGoModuleWithRun(moduleRoot, spec, modulePath, moduleRoots, releaseOverrides, runIn)
+}
+
+func finalizeGoModuleWithRun(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string, releaseOverrides map[string]string, run func(string, string, ...string) (string, error)) (goManifestUpdate, error) {
 	goMod := filepath.Join(moduleRoot, "go.mod")
 	before, err := os.ReadFile(goMod)
 	if err != nil {
@@ -1969,10 +2000,10 @@ func finalizeGoModule(
 		if version == "" {
 			return goManifestUpdate{}, fmt.Errorf("dependency %s uses a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
 		}
-		if err := dropCampaignReplace(moduleRoot, parsed, dependency); err != nil {
+		if err := dropCampaignReplace(moduleRoot, parsed, dependency, run); err != nil {
 			return goManifestUpdate{}, err
 		}
-		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-require="+dependency+"@"+version); err != nil {
+		if _, err := run(moduleRoot, "go", "mod", "edit", "-require="+dependency+"@"+version); err != nil {
 			return goManifestUpdate{}, err
 		}
 	}
@@ -1981,7 +2012,7 @@ func finalizeGoModule(
 		return goManifestUpdate{}, err
 	}
 	if string(before) != string(afterEdit) {
-		if _, err := runIn(moduleRoot, "go", "mod", "tidy"); err != nil {
+		if _, err := run(moduleRoot, "go", "mod", "tidy"); err != nil {
 			return goManifestUpdate{}, err
 		}
 	}
@@ -2072,7 +2103,7 @@ func hasCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath, cam
 	return false, nil
 }
 
-func dropCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath string) error {
+func dropCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath string, run func(string, string, ...string) (string, error)) error {
 	for _, replacement := range parsed.Replace {
 		if replacement.Old.Path != modulePath {
 			continue
@@ -2081,14 +2112,14 @@ func dropCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath str
 		if replacement.Old.Version != "" {
 			old += "@" + replacement.Old.Version
 		}
-		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-dropreplace="+old); err != nil {
+		if _, err := run(moduleRoot, "go", "mod", "edit", "-dropreplace="+old); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func replaceGoModule(moduleRoot, goMod, modulePath, replacementRoot string) error {
+func replaceGoModule(moduleRoot, goMod, modulePath, replacementRoot string, run func(string, string, ...string) (string, error)) error {
 	contents, err := os.ReadFile(goMod)
 	if err != nil {
 		return err
@@ -2105,7 +2136,7 @@ func replaceGoModule(moduleRoot, goMod, modulePath, replacementRoot string) erro
 		if replacement.Old.Version != "" {
 			old += "@" + replacement.Old.Version
 		}
-		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-dropreplace="+old); err != nil {
+		if _, err := run(moduleRoot, "go", "mod", "edit", "-dropreplace="+old); err != nil {
 			return err
 		}
 	}
@@ -2116,7 +2147,7 @@ func replaceGoModule(moduleRoot, goMod, modulePath, replacementRoot string) erro
 	if relative != "." && !strings.HasPrefix(relative, ".") {
 		relative = "." + string(filepath.Separator) + relative
 	}
-	_, err = runIn(moduleRoot, "go", "mod", "edit", "-replace="+modulePath+"="+filepath.ToSlash(relative))
+	_, err = run(moduleRoot, "go", "mod", "edit", "-replace="+modulePath+"="+filepath.ToSlash(relative))
 	return err
 }
 
@@ -2334,10 +2365,8 @@ func WriteCampaignReports(dir string, report CampaignReport) error {
 	if err := os.WriteFile(filepath.Join(dir, "campaign.md"), []byte(report.Markdown()), 0o644); err != nil {
 		return err
 	}
-	raw, err := report.YAML()
-	if err != nil {
-		return err
-	}
+	// This concrete report contains only primitive values and their slices.
+	raw, _ := report.YAML()
 	return os.WriteFile(filepath.Join(dir, "campaign.yaml"), raw, 0o644)
 }
 

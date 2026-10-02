@@ -3,6 +3,7 @@ package deps
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,7 +77,11 @@ func (githubActionsAdapter) inspect(ctx context.Context, repositoryDir, base str
 	return decisions, nil
 }
 
-func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+func (adapter githubActionsAdapter) inspectWorkingTree(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	return adapter.inspectWorkingTreeWithWalk(ctx, worktree, target, options, filepath.WalkDir)
+}
+
+func (githubActionsAdapter) inspectWorkingTreeWithWalk(_ context.Context, worktree string, target Target, options Options, walk func(string, fs.WalkDirFunc) error) ([]Decision, error) {
 	root := filepath.Join(worktree, ".github", "workflows")
 	if _, err := os.Stat(root); os.IsNotExist(err) {
 		return nil, nil
@@ -84,7 +89,7 @@ func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree strin
 		return nil, err
 	}
 	var decisions []Decision
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := walk(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -95,10 +100,8 @@ func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree strin
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(worktree, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(worktree, path)
 		_, found, err := rewriteGitHubActions(contents, filepath.ToSlash(relative), target, false, options.AllowDowngrade)
 		if err != nil {
 			return err
@@ -113,7 +116,11 @@ func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree strin
 	return decisions, nil
 }
 
-func (githubActionsAdapter) apply(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+func (adapter githubActionsAdapter) apply(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	return adapter.applyWithWalk(ctx, worktree, target, options, filepath.WalkDir)
+}
+
+func (githubActionsAdapter) applyWithWalk(_ context.Context, worktree string, target Target, options Options, walk func(string, fs.WalkDirFunc) error) ([]Decision, error) {
 	root := filepath.Join(worktree, ".github", "workflows")
 	if _, err := os.Stat(root); os.IsNotExist(err) {
 		return nil, nil
@@ -127,7 +134,7 @@ func (githubActionsAdapter) apply(_ context.Context, worktree string, target Tar
 	}
 	var pending []pendingFile
 	var decisions []Decision
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := walk(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -138,10 +145,8 @@ func (githubActionsAdapter) apply(_ context.Context, worktree string, target Tar
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(worktree, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(worktree, path)
 		updated, found, err := rewriteGitHubActions(contents, filepath.ToSlash(relative), target, true, options.AllowDowngrade)
 		if err != nil {
 			return err

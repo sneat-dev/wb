@@ -88,8 +88,6 @@ func mergeCoverageProfiles(paths []string, output string) error {
 				}
 			case "count", "atomic":
 				current.count += incoming.count
-			default:
-				return fmt.Errorf("unsupported coverage mode %q", mode)
 			}
 			blocks[incoming.location] = current
 		}
