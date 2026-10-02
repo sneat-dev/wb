@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktreelanding"
 )
 
@@ -165,6 +166,10 @@ func TestE2ECleanupRetiresATaskWhoseIntegrationBranchLandedAndWasDeleted(t *test
 		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "remote", "set-url", "origin", relocatedRemote)
+	projection, err := readWorkLogProjection(result.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	applied, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: task, Base: "main", Apply: true, DeleteRemote: true,
 		ReportDir: filepath.Join(t.TempDir(), "audit"), Now: func() time.Time { return now },
@@ -181,6 +186,21 @@ func TestE2ECleanupRetiresATaskWhoseIntegrationBranchLandedAndWasDeleted(t *test
 	}
 	if remote := remoteBranchForTest(t, fixture.canonical, result.Branch); remote != "" {
 		t.Fatalf("remote task branch still exists after cleanup: %s", remote)
+	}
+	var terminal workLogTerminalRecord
+	readSealedJSON(t, filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "terminals", projection.ClaimID+".json"), &terminal)
+	assertSealedLandedOnDefaultBranch(t, terminal, head)
+}
+
+// assertSealedLandedOnDefaultBranch: work proved by containment in the default
+// branch is sealed landed there, not on the recorded base that could not
+// answer. landed_sha is the head, as the Work Log vocabulary defines for the
+// contained proof; the head of main that contained it is in the cleanup report.
+func assertSealedLandedOnDefaultBranch(t *testing.T, terminal workLogTerminalRecord, head string) {
+	t.Helper()
+	want := &worktreeclaims.LandedEvidence{Target: "main", LandedSHA: head, Proof: worktreeclaims.LandedProofContained}
+	if terminal.Disposition != "landed" || terminal.FinalCommit != head || !worktreeclaims.SameLandedEvidence(terminal.Landed, want) {
+		t.Fatalf("terminal = %q at %s with %#v, want landed with %#v", terminal.Disposition, terminal.FinalCommit, terminal.Landed, want)
 	}
 }
 
@@ -272,6 +292,14 @@ func TestE2ECleanupRetiresATaskStackedOnATaskBranchThatLanded(t *testing.T) {
 	if explicit.Results[0].Reason != wantRefusal {
 		t.Fatalf("explicit recorded base refusal = %q, want %q", explicit.Results[0].Reason, wantRefusal)
 	}
+
+	relocatedRemote := filepath.Join(fixture.canonical, ".wb-test-remote.git")
+	if err := os.Rename(fixture.remote, relocatedRemote); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", relocatedRemote)
+	terminal, _ := sealedByCleanup(t, fixture, "cv-t2-metrics", leaf.WorktreeDir, now())
+	assertSealedLandedOnDefaultBranch(t, terminal, leafHead)
 }
 
 // assertAbsorbedByDefaultBranchLanding proves cleanup and abort both accept a
