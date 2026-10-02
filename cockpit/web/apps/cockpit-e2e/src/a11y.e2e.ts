@@ -16,8 +16,7 @@ async function settled(page: Page, path: string): Promise<void> {
   await page.locator('app-overlays').waitFor({ state: 'attached' })
   if (path === '') {
     await expect(page.getByRole('heading', { level: 2, name: 'Cleanup' })).toBeVisible()
-    // The charts load when they scroll near; draw them so axe sees the canvases and their tables.
-    await page.getByRole('heading', { level: 2, name: 'Throughput' }).scrollIntoViewIfNeeded()
+    // The charts are a lazy chunk requested right after the first paint; wait for them so axe sees the canvases and their tables.
     await expect(page.locator('app-chart canvas').first()).toBeVisible()
   }
   if (path.startsWith('machines/mach-')) await expect(page.locator('app-machine-panel .source')).not.toContainText('Reading')

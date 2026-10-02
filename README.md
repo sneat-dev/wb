@@ -2498,16 +2498,19 @@ the drift warning above in its opening context; `wb skills hook install`
 merges that hook into `~/.claude/settings.json` (`--dry-run` to preview).
 `wb` never edits that file on its own outside this explicit subcommand.
 
-## Operations dashboard
+## Operations dashboard (retired: use Cockpit)
 
-`wb daemon serve` starts the embedded read-only dashboard and versioned JSON
-API at `http://127.0.0.1:8766` by default. It shows managed worktrees and
-privacy-safe `wb run --` cost from the last 14 days.
+`wb daemon serve` starts Cockpit and the versioned read-only JSON API at
+`http://127.0.0.1:8766` by default; `wb cockpit` opens and signs in to
+Cockpit, and `/` redirects to `/cockpit/`. The server-rendered operations pages
+that used to live at `/` and `/metrics`, with their `/coverage` redirect and
+`GET /api/v1/overview` data route, are retired and answer 404. The fleet
+metrics view has no Cockpit page yet; read it with `wb coverage` and the hub's
+`/v0/workbench/metrics` API.
 
 ```sh
 wb daemon serve
 curl http://127.0.0.1:8766/api/v1/health
-curl http://127.0.0.1:8766/api/v1/overview
 ```
 
 The command refuses non-loopback listeners. For access from another registered
@@ -2604,7 +2607,7 @@ its plist). `wb daemon start` and `wb daemon restart` read the installed plist
 first and refuse, changing nothing, when it serves a different projects root or
 cannot be read as a plist, naming that root and its listen address.
 `--replace-other-root` is the only way to proceed; `wb cockpit`,
-`wb dashboard --local` and the implicit daemon starts have no flag and refuse
+`wb dashboard --local` (deprecated) and the implicit daemon starts have no flag and refuse
 with the same instruction to run `wb daemon start --replace-other-root` first.
 
 The canonical systemd user unit:

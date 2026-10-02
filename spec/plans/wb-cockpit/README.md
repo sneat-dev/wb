@@ -80,7 +80,8 @@ in this plan:
   can be preserved first.
 - Publishing the application at the hosted URL, and proving in real browsers
   that an https page may read the http loopback daemon.
-- Retiring the existing dashboards. That is a full cutover and needs every
+- Retiring the existing dashboards. (The `internal/dashboard` pages, `/api/v1/overview` and `wb dashboard`
+  `--metrics`/`--coverage` were retired on 2026-10-02: cockpit#req:legacy-dashboard-retired.) That is a full cutover and needs every
   consumer of the old surfaces replaced first: the `wb dashboard` command and
   its `--local`, `--metrics` and `--coverage` flags; the `internal/dashboard`
   routes `/`, `/metrics`, `/coverage` and `/api/v1/*`; the five `hub/web`

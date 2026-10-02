@@ -37,14 +37,15 @@ export const taskNames = (fleet: JourneyFleet): string[] => [...new Set(fleet.wo
 /** The repositories of a fleet merged by identity: one per lower-cased name. */
 export const repositoryNames = (fleet: JourneyFleet): string[] => [...new Set(fleet.repositories.map((repository) => repository.name.toLowerCase()))].sort()
 
-/** Home loads and holds its sections, "Needs you" first, each one a heading of the second level. */
+/** Home loads and holds its sections, "Throughput" first and "Needs you" next, each one a heading of the second level. */
 export async function homeLoads(page: Page, origin: string, fleet: JourneyFleet): Promise<void> {
   await page.goto(`${origin}/cockpit/`)
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home')
   const sections = page.locator('h2.home-h')
-  await expect(sections.first()).toHaveText(exact('Needs you'))
-  // The sections after the first arrive with the first complete scan, as one lazy chunk.
-  for (const name of ['Ready to land', 'In flight', 'Resume', 'Cleanup', 'Throughput']) {
+  await expect(sections.first()).toHaveText(exact('Throughput'))
+  await expect(sections.nth(1)).toHaveText(exact('Needs you'))
+  // The sections after the first two arrive with the first complete scan, as one lazy chunk.
+  for (const name of ['Ready to land', 'In flight', 'Resume', 'Cleanup']) {
     await expect(sections.filter({ hasText: exact(name) }), name).toHaveCount(1, { timeout: 30_000 })
   }
   // The tasks of the fleet are what Resume offers, and the machine strip has one tile for each machine.

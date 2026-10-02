@@ -10,7 +10,7 @@ import (
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
 
-func TestRunCommandPreservesCombinedOutputOrder(t *testing.T) {
+func TestContractRunCommandPreservesCombinedOutputOrder(t *testing.T) {
 	t.Parallel()
 	fake := runnertest.New(t)
 	fake.ExpectArgv([]string{"git", "status"}, runner.Result{

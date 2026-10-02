@@ -1905,7 +1905,8 @@
                 "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
                 "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
                 "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications.",
-                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
+                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line.",
+                "--changed still measures a merge base whose own tests fail, from the profile those test runs wrote, with a stderr warning and a red_base field in the JSON report; a base that fails to build, times out, or produces no profile still fails the command."
               ]
             }
           ],
@@ -2350,7 +2351,7 @@
           "limitation": null
         }
       },
-      "notes": "The read-only dashboard remains on loopback TCP and cannot route to these mutation handlers."
+      "notes": "The read-only loopback listener (Cockpit and the JSON API) remains on TCP and cannot route to these mutation handlers."
     },
     {
       "id": "wb.daemon.operation.get",
@@ -2721,7 +2722,7 @@
                 "--quiet"
               ],
               "modes": [
-                "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener",
+                "Serves Cockpit (the daemon's web interface, under /cockpit/, with / redirecting to it) and the versioned read-only JSON API on a loopback listener",
                 "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /workbench/ when wb.yaml has a hub: section, and answers the dashboard's data routes (dashboard, stats, series, leaderboards, latest-merges, worktrees) from this machine's published snapshots, so the dashboard needs no hosted control plane",
                 "Polls GitHub for default-branch pushes and repository renames when hub.github.token_file is set and no App is configured (default interval 20m, floor 30s), narrating one console line per webhook delivery and per poll observation",
                 "--quiet silences the console lines; wb daemon start never passes it, so the detached daemon log keeps every line",
@@ -2767,7 +2768,7 @@
           "references": [
             {
               "path": "internal/dashboard/dashboard_test.go",
-              "name": "TestDashboardServesUIAndHealth",
+              "name": "TestHealthIsServedAsJSONWithSecurityHeaders",
               "kind": "integration"
             },
             {
@@ -3047,17 +3048,13 @@
             {
               "path": "wb dashboard",
               "flags": [
-                "--coverage",
                 "--format",
                 "--json",
-                "--local",
-                "--metrics"
+                "--local"
               ],
               "modes": [
                 "Opens the hosted cross-machine dashboard in the platform browser by default.",
-                "--local starts or reuses the loopback daemon and opens its local dashboard.",
-                "--metrics opens the fleet metrics and quality dashboard.",
-                "--coverage opens the fleet test coverage view.",
+                "--local (deprecated: use wb cockpit) starts or reuses the loopback daemon and opens Cockpit, without signing in.",
                 "JSON and non-interactive invocations return the resolved URL without launching a browser."
               ]
             }
@@ -3071,11 +3068,9 @@
               "command": "wb dashboard --help",
               "contains": [
                 "hosted cross-machine",
-                "--coverage",
                 "--format",
                 "--json",
-                "--local",
-                "--metrics"
+                "--local"
               ]
             }
           ],
@@ -3123,7 +3118,7 @@
           "limitation": null
         }
       },
-      "notes": "The hosted and local dashboards share a short human entry point while machine callers receive a side-effect-free URL receipt."
+      "notes": "The hosted dashboard has a short human entry point while machine callers receive a side-effect-free URL receipt. The local operations dashboard is retired; Cockpit (wb cockpit) replaces it and --local only repoints to it."
     },
     {
       "id": "wb.deadcode",

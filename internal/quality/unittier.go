@@ -220,9 +220,29 @@ func unitTierSkipDir(name string) bool {
 // require the e2e tag), of a pattern task-24's unit tier bans. Results are
 // sorted by file, then line.
 func FindUnitTierMatches(root string) ([]UnitTierMatch, error) {
-	fset := token.NewFileSet()
 	var matches []UnitTierMatch
-	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+	err := walkGoTestFiles(root, func(fset *token.FileSet, file *ast.File, rel string) {
+		if !fileRequiresE2ETag(file) {
+			matches = append(matches, scanUnitTierFile(fset, file, rel)...)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].File != matches[j].File {
+			return matches[i].File < matches[j].File
+		}
+		return matches[i].Line < matches[j].Line
+	})
+	return matches, nil
+}
+
+// walkGoTestFiles shares parsing, build comments and repository exclusions
+// between default-tier process guards and native test-selection validation.
+func walkGoTestFiles(root string, visit func(*token.FileSet, *ast.File, string)) error {
+	fset := token.NewFileSet()
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -235,27 +255,17 @@ func FindUnitTierMatches(root string) ([]UnitTierMatch, error) {
 		if !strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if parseErr != nil {
-			return fmt.Errorf("parse %s: %w", path, parseErr)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
 		}
-		if fileRequiresE2ETag(file) {
-			return nil
-		}
-		rel := relSlashFor(root, path)
-		matches = append(matches, scanUnitTierFile(fset, file, rel)...)
+		visit(fset, file, relSlashFor(root, path))
 		return nil
 	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("walk %s: %w", root, walkErr)
+	if err != nil {
+		return fmt.Errorf("walk %s: %w", root, err)
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].File != matches[j].File {
-			return matches[i].File < matches[j].File
-		}
-		return matches[i].Line < matches[j].Line
-	})
-	return matches, nil
+	return nil
 }
 
 // fileRequiresE2ETag reports whether a leading build constraint requires e2e.

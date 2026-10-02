@@ -11,10 +11,10 @@ import (
 // has no caller under the default build tags at all, which golangci-lint's
 // unused check (rightly) flags.
 
-// TestLandFastForwardsACleanWorktreeAfterUpdateBranch,
-// TestLandLeavesADirtyWorktreeUntouched, TestLandLeavesADivergedWorktreeUntouched,
-// TestLandDoesNotErrorWithNoWorktreeForTheBranch and
-// TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch moved to
+// TestE2ELandFastForwardsACleanWorktreeAfterUpdateBranch,
+// TestE2ELandLeavesADirtyWorktreeUntouched, TestE2ELandLeavesADivergedWorktreeUntouched,
+// TestE2ELandDoesNotErrorWithNoWorktreeForTheBranch and
+// TestE2EFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch moved to
 // pr_land_local_sync_e2e_test.go (spec/plans/coverage-to-100 task-17):
 // fastForwardWorktreeToUpdatedHead now runs part of its decision through
 // orchestrateGit (internal/runner), which task-24's runtime guard blocks
