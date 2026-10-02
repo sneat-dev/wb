@@ -98,7 +98,7 @@ func BenchmarkPublishWithThreeRemotesAtTheCaps(b *testing.B) {
 	for b.Loop() {
 		document := local
 		hidden, failures := snapshotter.overlayLive(&document, now, true, map[string]bool{"github.com": true})
-		snapshotter.appendCached(&document, hidden, failures, map[string]bool{"github.com": true})
+		snapshotter.appendCached(&document, hidden, failures, map[string]bool{"github.com": true}, true)
 		if payload := snapshotter.prepare(document); payload.Size() == 0 {
 			b.Fatal("an empty document")
 		}

@@ -59,7 +59,7 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	}
 	identity := publishIdentity(cfg, login, deps.now())
 	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, inv.nonInteractive))
-	snapshot, err := collectSnapshot(context.Background(), projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
+	snapshot, err := collectSnapshot(context.Background(), projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress, nil)
 	if err != nil {
 		progress.fail(err)
 		return err
@@ -77,9 +77,15 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		_, err = out.Write(data)
 		return err
 	}
+	// What a publish must say does not depend on whether it shows progress: a
+	// caller with no progress writer is told on stderr.
+	notes := progressOut
+	if notes == nil {
+		notes = deps.stderr
+	}
 	marker := ""
-	if progressOut != nil {
-		marker = noteHardware(deps.configPath, progressOut)
+	if notes != nil {
+		marker = noteHardware(deps.configPath, notes)
 	}
 	progress.phase("publishing snapshot")
 	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, deps.now())
@@ -89,8 +95,8 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	}
 	report.Location = result.Location
 	recordHardwareNoted(marker)
-	if diagnostic != nil && progressOut != nil {
-		_, _ = fmt.Fprintf(progressOut, "wb: %v\n", diagnostic)
+	if diagnostic != nil && notes != nil {
+		_, _ = fmt.Fprintf(notes, "wb: %v\n", diagnostic)
 	}
 	progress.finish(fmt.Sprintf("published %d repositories and %d worktrees", report.RepositoriesScanned, report.Worktrees))
 	if jsonOut {
@@ -115,7 +121,9 @@ func publishIdentity(cfg remotestate.Config, login string, now time.Time) remote
 }
 
 // hardwareNote is the one line the first real publish prints after the machine's
-// hardware facts joined the snapshot.
+// hardware facts joined the snapshot: on stderr, by hand or from `wb sync`,
+// with or without a progress writer, and in the daemon's log when the first
+// publish that sends them is the periodic one.
 const hardwareNote = "wb: this publish also includes this machine's os, arch, cpu_count and boot_time (new in this version); agents and metrics are never sent by hand\n"
 
 // noteHardware prints hardwareNote unless it was printed on an earlier
@@ -123,15 +131,41 @@ const hardwareNote = "wb: this publish also includes this machine's os, arch, cp
 // succeeded ("" when there is nothing to record), so a publish that fails does
 // not use the note up.
 func noteHardware(configPath string, out io.Writer) (marker string) {
+	if marker = hardwareNoteMarker(configPath); marker != "" {
+		_, _ = io.WriteString(out, hardwareNote)
+	}
+	return marker
+}
+
+// hardwareNoteMarker is the file that records that the hardware note was said,
+// or "" when it was (or when there is no configuration to keep it beside).
+func hardwareNoteMarker(configPath string) string {
 	if configPath == "" {
 		return ""
 	}
-	marker = filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
+	marker := filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
 	if _, err := os.Stat(marker); err == nil {
 		return ""
 	}
-	_, _ = io.WriteString(out, hardwareNote)
 	return marker
+}
+
+// periodicHardwareNote is hardwareNote as the daemon's log says it, when the
+// first publish that sends the hardware facts is the periodic one.
+const periodicHardwareNote = "remote publish: the snapshot now also carries this machine's os, arch, cpu_count and boot_time (new in this version)"
+
+// notePeriodicHardware says periodicHardwareNote in the daemon's log after a
+// periodic publish that reached the store, unless the note was already said by
+// an earlier publish, by hand or periodic.
+func notePeriodicHardware(configPath string, logf func(string, ...any)) {
+	marker := hardwareNoteMarker(configPath)
+	if marker == "" {
+		return
+	}
+	if logf != nil {
+		logf("%s", periodicHardwareNote)
+	}
+	recordHardwareNoted(marker)
 }
 
 // recordHardwareNoted writes the marker noteHardware returned. A marker that

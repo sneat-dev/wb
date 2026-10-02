@@ -131,8 +131,11 @@ is unchanged by an upgrade. It publishes no more often than the interval, skips
 a snapshot that says what the last published one said (a git store gains no
 commit for an idle machine; an unchanged snapshot is still published once
 max(6 hours, the interval) have passed), does not even scan while the daemon's
-change fingerprints are unchanged, runs one publish at a time under a time bound, and a failed
-publish is a typed diagnostic retried at the next interval, then with a doubling
+change fingerprints are unchanged, reads with Git only the repositories whose
+fingerprint moved since it last read them (what it keeps is never older than that
+keepalive), runs one publish at a time under a time bound, and a failed
+publish is a typed diagnostic that stays until the step that failed works again,
+retried at the next interval, then with a doubling
 backoff of at most one hour, and never delays the local fleet snapshot.
 [cockpit-views](../cockpit-views/README.md)#req:periodic-remote-publish is the
 full statement.

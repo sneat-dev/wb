@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,6 +45,25 @@ type fakeCockpitDaemon struct {
 	// longer fleet body than it sends.
 	fleetBody string
 	cutShort  bool
+	// legacy makes it a daemon of before the scoped read: it ignores the scope
+	// parameter and answers the whole document. hang, when set, holds every
+	// request until it is closed.
+	legacy bool
+	hang   chan struct{}
+	// served is the size of each fleet body it answered.
+	served []int
+}
+
+// scoped is what a daemon answers a scoped fleet read with: this machine's part
+// of document, built by the function the daemon builds it with, and what it
+// left out.
+func scoped(document cockpitfleet.Document, scope string) (cockpitfleet.Document, cockpitfleet.ExportDrops) {
+	envelope, drops := cockpitfleet.NewEnvelope(document, cockpitfleet.MetricsResponse{}, exportNow, false)
+	own := *envelope.Fleet
+	if scope == cockpitfleet.ScopeMachine {
+		own.Repositories, own.Worktrees, own.PullRequests, own.Agents = []cockpitfleet.Repository{}, []cockpitfleet.Worktree{}, []cockpitfleet.PullRequest{}, []cockpitfleet.Agent{}
+	}
+	return own, drops
 }
 
 func newFakeCockpitDaemon(t *testing.T) *fakeCockpitDaemon {
@@ -53,12 +73,25 @@ func newFakeCockpitDaemon(t *testing.T) *fakeCockpitDaemon {
 	fake.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		fake.mu.Lock()
 		fake.requests = append(fake.requests, request.Clone(context.Background()))
-		fleetStatus, metricsStatus, body, cutShort := fake.fleetStatus, fake.metricsStatus, fake.fleetBody, fake.cutShort
+		fleetStatus, metricsStatus, body, cutShort, hang := fake.fleetStatus, fake.metricsStatus, fake.fleetBody, fake.cutShort, fake.hang
 		fake.mu.Unlock()
+		if hang != nil {
+			<-hang
+		}
 		status := fleetStatus
 		var payload any = fake.document
 		switch request.URL.Path {
 		case cockpit.APIPrefix + cockpitfleet.FleetRoute:
+			if scope := request.URL.Query().Get("scope"); !fake.legacy && fleetStatus == 0 && body == "" && !cutShort && (scope == cockpitfleet.ScopeOwn || scope == cockpitfleet.ScopeMachine) {
+				own, drops := scoped(fake.document, scope)
+				writer.Header().Set(cockpitfleet.ExportDropsHeader, drops.Header())
+				payload = own
+			}
+			if encoded, err := json.Marshal(payload); err == nil {
+				fake.mu.Lock()
+				fake.served = append(fake.served, len(encoded))
+				fake.mu.Unlock()
+			}
 			// The verb says that its read is not a person looking; a daemon that
 			// took it for one would keep reading its own other machines.
 			if request.Header.Get(cockpitfleet.ExportReaderHeader) == "" {
@@ -352,9 +385,14 @@ func TestCockpitExportCarriesOnlyTheMetadataSet(t *testing.T) {
 		t.Errorf("metrics-only: err = %v, envelope = %s", err, stdout)
 	}
 
-	wantPaths := []string{"GET /api/v1/cockpit/fleet", "GET /api/v1/cockpit/machine-metrics?machine=" + exportLocalMachine}
-	if got := fake.paths(); !reflect.DeepEqual(got, append(append([]string(nil), wantPaths...), wantPaths...)) {
-		t.Errorf("requests = %v, want the fleet and the machine's own metrics twice", got)
+	metricsPath := "GET /api/v1/cockpit/machine-metrics?machine=" + exportLocalMachine
+	wantPaths := []string{"GET /api/v1/cockpit/fleet?scope=own", metricsPath, "GET /api/v1/cockpit/fleet?scope=machine", metricsPath}
+	if got := fake.paths(); !reflect.DeepEqual(got, wantPaths) {
+		t.Errorf("requests = %v, want this machine's own entries and its metrics, then its machine entry and its metrics", got)
+	}
+	// The metrics-only export reads nothing of the fleet but the machine entry.
+	if len(fake.served) != 2 || fake.served[1] >= fake.served[0] {
+		t.Errorf("the fleet bodies served = %v bytes, want the metrics-only read smaller than the full one", fake.served)
 	}
 	for _, request := range fake.requests {
 		if request.Header.Get("Cookie") != "" || request.Header.Get("Authorization") != "" || request.Header.Get("Origin") != "" || request.Header.Get("X-Forwarded-For") != "" {
@@ -423,20 +461,33 @@ func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 	// (TestCockpitExportDropsAndCountsAnEntryThatBreaksARule).
 	hostile := exportDocument()
 	hostile.Machines[1].WBVersion = "not a version"
+	// A daemon that could not list its repositories, and holds none, cannot say
+	// what the machine has: its empty fleet is not exported in its place.
+	unlistable := exportDocument()
+	unlistable.Error, unlistable.RepositoriesTotal = cockpitfleet.ErrorRepositoriesUnreadable, 0
+	unlistable.Repositories, unlistable.Worktrees, unlistable.PullRequests, unlistable.Agents = nil, nil, nil, nil
 	cases := map[string]func(*fakeCockpitDaemon){
-		"a 500 from the fleet route":    func(f *fakeCockpitDaemon) { f.fleetStatus = http.StatusInternalServerError },
-		"a 500 from the metrics route":  func(f *fakeCockpitDaemon) { f.metricsStatus = http.StatusInternalServerError },
-		"a fleet body with a new field": func(f *fakeCockpitDaemon) { f.fleetBody = `{"schema_version":2,"mystery":1}` },
-		"a fleet body that is not JSON": func(f *fakeCockpitDaemon) { f.fleetBody = `<html>` },
-		"a fleet body cut short":        func(f *fakeCockpitDaemon) { f.cutShort = true },
-		"a fleet body over its bound":   func(f *fakeCockpitDaemon) { f.fleetBody = strings.Repeat(" ", cockpitDocumentLimit+1) },
-		"a document that breaks a rule": func(f *fakeCockpitDaemon) { f.document = hostile },
+		"a daemon that cannot list its repositories": func(f *fakeCockpitDaemon) { f.document = unlistable },
+		"a 500 from the fleet route":                 func(f *fakeCockpitDaemon) { f.fleetStatus = http.StatusInternalServerError },
+		"a 500 from the metrics route":               func(f *fakeCockpitDaemon) { f.metricsStatus = http.StatusInternalServerError },
+		"a fleet body with a new field":              func(f *fakeCockpitDaemon) { f.fleetBody = `{"schema_version":2,"mystery":1}` },
+		"a fleet body that is not JSON":              func(f *fakeCockpitDaemon) { f.fleetBody = `<html>` },
+		"a fleet body cut short":                     func(f *fakeCockpitDaemon) { f.cutShort = true },
+		"a fleet body over its bound":                func(f *fakeCockpitDaemon) { f.fleetBody = strings.Repeat(" ", cockpitDocumentLimit+1) },
+		"a document that breaks a rule":              func(f *fakeCockpitDaemon) { f.document = hostile },
 	}
 	for name, set := range cases {
 		fake := newFakeCockpitDaemon(t)
 		set(fake)
 		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
 		requireTypedExportFailure(t, stdout, err, "export_failed", name)
+	}
+	// Its metrics are still exported: they do not depend on the fleet.
+	fake := newFakeCockpitDaemon(t)
+	fake.document = unlistable
+	stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)), "--metrics-only")
+	if only, decodeErr := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), true, exportNow); err != nil || decodeErr != nil || len(only.Metrics.Samples) != 360 {
+		t.Fatalf("the metrics-only export of a daemon that cannot list its repositories: %v %v %.200s", err, decodeErr, stdout)
 	}
 }
 
@@ -719,3 +770,148 @@ func TestSideEffectFreeCommandsRecordNoHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+// crowdedDocument is a daemon's document whose other machines' entries alone are
+// over the verb's bound, while this machine's own are a handful.
+func crowdedDocument() cockpitfleet.Document {
+	document := exportDocument()
+	for index := 0; len(document.Worktrees) < 40000; index++ {
+		document.Worktrees = append(document.Worktrees, cockpitfleet.Worktree{
+			Entry:      cockpitfleet.Entry{ID: fixtureID("wt", 100+index), Machine: "vm", MachineID: exportVMMachine, Route: cockpitfleet.RouteCached, ObservedAt: exportNow.Add(-time.Hour)},
+			Repository: fixtureID("repo", 2), Name: strings.Repeat("n", 100), Task: strings.Repeat("t", 100), Branch: "feature/other",
+		})
+	}
+	return document
+}
+
+// TestCockpitExportOfAMachineThatShowsManyOthersIsItsOwnEntries: the daemon's
+// document is over the verb's bound because of the other machines it shows. The
+// verb asks for this machine's own entries only and makes its export; the
+// metrics-only export asks for the machine entry alone. Against a daemon of
+// before the scoped read, which answers the whole document, the export fails as
+// it did (and does not break otherwise: a small document is read as before).
+func TestCockpitExportOfAMachineThatShowsManyOthersIsItsOwnEntries(t *testing.T) {
+	t.Parallel()
+	crowded := crowdedDocument()
+	if whole, _ := json.Marshal(crowded); len(whole) <= cockpitDocumentLimit {
+		t.Fatalf("the fixture's document is %d bytes, not over the bound of %d (the test would be vacuous)", len(whole), cockpitDocumentLimit)
+	}
+	fake := newFakeCockpitDaemon(t)
+	fake.document = crowded
+	deps := failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true))
+	stdout, err := runExport(t, deps)
+	if err != nil {
+		t.Fatalf("the export of a machine that shows many others: %v %s", err, stdout[:min(len(stdout), 200)])
+	}
+	envelope, err := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), false, exportNow)
+	if err != nil || envelope.Machine != "laptop" || len(envelope.Fleet.Worktrees) != 1 || envelope.Dropped != 0 {
+		t.Fatalf("err = %v, envelope = %.300s", err, stdout)
+	}
+	if stdout, err = runExport(t, deps, "--metrics-only"); err != nil {
+		t.Fatalf("the metrics-only export: %v", err)
+	}
+	if only, err := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), true, exportNow); err != nil || only.Machine != "laptop" || len(only.Metrics.Samples) != 360 {
+		t.Fatalf("metrics-only: err = %v, envelope = %.300s", err, stdout)
+	}
+
+	old := newFakeCockpitDaemon(t)
+	old.legacy, old.document = true, crowded
+	stdout, err = runExport(t, failingStartSeams(t, exportDependencies(readyRecord(old.listen()), true, true)))
+	requireTypedExportFailure(t, stdout, err, "export_failed", "a crowded daemon that knows no scope")
+	small := newFakeCockpitDaemon(t)
+	small.legacy = true
+	stdout, err = runExport(t, failingStartSeams(t, exportDependencies(readyRecord(small.listen()), true, true)))
+	if envelope, decodeErr := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), false, exportNow); err != nil || decodeErr != nil || len(envelope.Fleet.Worktrees) != 1 || len(envelope.Fleet.Machines) != 1 {
+		t.Fatalf("a daemon that knows no scope: %v %v %.300s", err, decodeErr, stdout)
+	}
+}
+
+// TestCockpitExportCountsWhatTheDaemonLeftOutOfItsAnswer: a daemon that
+// answers the scoped read has already left the entries out that break a rule,
+// and says how many in a header; the envelope's dropped field and the line on
+// stderr carry that count.
+func TestCockpitExportCountsWhatTheDaemonLeftOutOfItsAnswer(t *testing.T) {
+	t.Parallel()
+	fake := newFakeCockpitDaemon(t)
+	fake.document = exportDocument()
+	fake.document.Worktrees[0].Task = strings.Repeat("a", 300)
+	command := newCockpitCmdWithDependencies(&invocation{projectsRoot: "/root"}, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
+	command.SetArgs([]string{"export"})
+	command.SilenceUsage, command.SilenceErrors = true, true
+	var out, errOut bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("err = %v, stdout = %s", err, out.String())
+	}
+	envelope, err := cockpitfleet.DecodeEnvelope(strings.NewReader(out.String()), false, exportNow)
+	if err != nil || envelope.Dropped != 1 || len(envelope.Fleet.Worktrees) != 0 {
+		t.Fatalf("err = %v, envelope = %s", err, out.String())
+	}
+	if want := "wb cockpit export: left out 1 entries the envelope's rules refuse (repositories 0, worktrees 1, pull requests 0, agents 0)\n"; errOut.String() != want {
+		t.Errorf("stderr = %q, want %q", errOut.String(), want)
+	}
+}
+
+// TestCockpitExportOfARecordWithAMalformedPortIsAFailedExport: a daemon record
+// whose port is not a number names no address. The verb says export_failed and
+// exits 1; it does not panic, which a remote reader would take for a wb too old
+// to have the verb.
+func TestCockpitExportOfARecordWithAMalformedPortIsAFailedExport(t *testing.T) {
+	t.Parallel()
+	for _, listen := range []string{"127.0.0.1:http", "127.0.0.1:", "127.0.0.1:0", "127.0.0.1:99999", "localhost:80 80", "[::1]:-1"} {
+		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(listen), true, true)))
+		requireTypedExportFailure(t, stdout, err, "export_failed", listen)
+	}
+	// A request that cannot be made is a failed export too, whatever let the
+	// address through.
+	var document cockpitfleet.Document
+	header, failure := cockpitExportGet(t.Context(), cockpitExportClient(), url.URL{Scheme: "http", Host: "127.0.0.1:http", Path: cockpit.APIPrefix}, cockpitfleet.FleetRoute, nil, cockpitDocumentLimit, &document)
+	if failure != errExportFailed || header != nil {
+		t.Fatalf("a request that cannot be made = %q", failure)
+	}
+}
+
+// TestCockpitExportOfADaemonThatDoesNotAnswerInTimeIsAFailedExport: only a
+// connection that cannot be made says no daemon is serving. A daemon that
+// accepts the connection and does not answer within the limit, and a read that
+// is cancelled, are failed exports.
+func TestCockpitExportOfADaemonThatDoesNotAnswerInTimeIsAFailedExport(t *testing.T) {
+	t.Parallel()
+	fake := newFakeCockpitDaemon(t)
+	fake.hang = make(chan struct{})
+	t.Cleanup(func() { close(fake.hang) })
+	deps := exportDependencies(readyRecord(fake.listen()), true, true)
+	deps.client = func() *http.Client {
+		client := cockpitExportClient()
+		client.Timeout = 50 * time.Millisecond
+		return client
+	}
+	stdout, err := runExport(t, failingStartSeams(t, deps))
+	requireTypedExportFailure(t, stdout, err, "export_failed", "a daemon that does not answer in time")
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	for name, test := range map[string]struct {
+		ctx  context.Context
+		err  error
+		want exportFailure
+	}{
+		"a refused connection":        {t.Context(), errors.New("dial tcp 127.0.0.1:1: connect: connection refused"), errDaemonNotRunning},
+		"a deadline":                  {t.Context(), context.DeadlineExceeded, errExportFailed},
+		"a cancelled request":         {t.Context(), context.Canceled, errExportFailed},
+		"a cancelled command":         {cancelled, errors.New("anything"), errExportFailed},
+		"a timeout of the client":     {t.Context(), &url.Error{Op: "Get", URL: "http://127.0.0.1", Err: timeoutError{}}, errExportFailed},
+		"an error that is no timeout": {t.Context(), &url.Error{Op: "Get", URL: "http://127.0.0.1", Err: errors.New("EOF")}, errDaemonNotRunning},
+	} {
+		if got := exportTransportFailure(test.ctx, test.err); got != test.want {
+			t.Errorf("%s: %q, want %q", name, got, test.want)
+		}
+	}
+}
+
+// timeoutError is an error that says it is a timeout, as a net.Error does.
+type timeoutError struct{}
+
+func (timeoutError) Error() string { return "i/o timeout" }
+func (timeoutError) Timeout() bool { return true }

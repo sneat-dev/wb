@@ -199,7 +199,7 @@ func TestMetricsRouteIsCompressedAndRevalidatable(t *testing.T) {
 	zipped := server.get(target, nil, "Origin", hostedOrigin, "Accept-Encoding", "gzip")
 	header := zipped.Header()
 	if zipped.Code != 200 || header.Get("Content-Encoding") != "gzip" || !strings.HasSuffix(header.Get("ETag"), `-gzip"`) || header.Get("Vary") != "Origin, Accept-Encoding" ||
-		header.Get("Access-Control-Expose-Headers") != "ETag" || header.Get("Access-Control-Allow-Origin") != hostedOrigin {
+		header.Get("Access-Control-Expose-Headers") != "ETag, "+cockpit.CheckedAtHeader || header.Get("Access-Control-Allow-Origin") != hostedOrigin {
 		t.Fatalf("gzip response = %d %v", zipped.Code, header)
 	}
 	var response MetricsResponse
@@ -281,13 +281,28 @@ func TestUnsupportedPlatformServesNoneWithAReason(t *testing.T) {
 func TestSnapshotterStartsAndStopsItsSampler(t *testing.T) {
 	t.Parallel()
 	source := &countingSource{}
-	sampler := machinemetrics.New(machinemetrics.Options{Source: source, Tick: func(time.Duration) (<-chan time.Time, func()) { return make(chan time.Time), func() {} }})
+	// The sampler's loop ends a little after the snapshotter's own, so a stop that
+	// did not wait for the sampler returns while it still runs.
+	loopEnded := make(chan struct{})
+	var samplerEnded atomic.Bool
+	sampler := machinemetrics.New(machinemetrics.Options{Source: source, Tick: func(time.Duration) (<-chan time.Time, func()) {
+		return make(chan time.Time), func() {
+			<-loopEnded
+			time.Sleep(20 * time.Millisecond)
+			samplerEnded.Store(true)
+		}
+	}})
 	snapshotter, _ := newSnapshotter(oneRepoSources(t.TempDir()).collectors(), func(options *Options) {
 		options.Sampler = sampler
-		options.Tick = func(time.Duration) (<-chan time.Time, func()) { return make(chan time.Time), func() {} }
+		options.Tick = func(time.Duration) (<-chan time.Time, func()) {
+			return make(chan time.Time), func() { close(loopEnded) }
+		}
 	})
 	stop := snapshotter.Start(t.Context())
 	stop()
+	if !samplerEnded.Load() {
+		t.Fatal("the snapshotter's stop returned while its sampler was still running")
+	}
 	if source.reads.Load() != 1 || len(sampler.Snapshot().Samples) != 1 {
 		t.Errorf("the sampler took %d readings, want its first", source.reads.Load())
 	}

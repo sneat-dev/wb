@@ -470,11 +470,17 @@ func TestADaemonWithoutAPublisherPublishesNothing(t *testing.T) {
 	t.Parallel()
 	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), nil)
 	refreshAndSettle(t, snapshotter)
-	if snapshotter.publisher != nil {
-		t.Fatal("a publisher appeared without being configured")
-	}
-	// startPublish with none is a no-op.
+	// The pass handed nothing off: no hand-off is marked as running, and this
+	// machine's entry says nothing of publishing.
 	snapshotter.startPublish(t.Context())
+	if snapshotter.publishBusy.Load() {
+		t.Fatal("a hand-off to a publisher was started though none is configured")
+	}
+	snapshotter.side.Wait()
+	machine, found := machineNamed(snapshotter.Document(), testMachine)
+	if !found || machine.PublishError != "" {
+		t.Fatalf("this machine's entry = %+v (found %v), want no publish_error", machine, found)
+	}
 }
 
 func TestChangeTokenMovesWithWhatThePublisherMustSeeAndWithNothingElse(t *testing.T) {

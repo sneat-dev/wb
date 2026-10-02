@@ -3,7 +3,7 @@ package periodic
 import (
 	"context"
 	"errors"
-	"strings"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -28,10 +28,16 @@ type fakeProvider struct {
 	mu   sync.Mutex
 	seen []remotestate.Snapshot
 	errs []error
-	hold chan struct{}
+	// entered, when set, is told of each publish as it starts, and hold, when
+	// set, keeps each one from ending until it is closed.
+	entered chan struct{}
+	hold    chan struct{}
 }
 
 func (p *fakeProvider) Publish(_ context.Context, snapshot remotestate.Snapshot) (remotestate.PublishResult, error) {
+	if p.entered != nil {
+		p.entered <- struct{}{}
+	}
 	if p.hold != nil {
 		<-p.hold
 	}
@@ -97,7 +103,7 @@ func newHarness(t *testing.T, change func(*Options)) *harness {
 			}
 			return h.provider, nil
 		},
-		Logf: func(format string, args ...any) { h.logs = append(h.logs, format+strings.Repeat(" %v", 0)) },
+		Logf: func(format string, args ...any) { h.logs = append(h.logs, fmt.Sprintf(format, args...)) },
 	}
 	if change != nil {
 		change(&options)
@@ -196,8 +202,10 @@ func TestAFailedPublishIsRetriedWithBackoffAndIsATypedDiagnostic(t *testing.T) {
 	if st := h.publisher.Status(); st.Diagnostic != DiagnosticPublishFailed || st.Published != 0 {
 		t.Fatalf("status = %+v", st)
 	}
-	if len(h.logs) != 1 {
-		t.Fatalf("logs = %v", h.logs)
+	// The log line names the code and carries the detail, which is the daemon
+	// log's alone (the status holds the code only).
+	if len(h.logs) != 1 || h.logs[0] != "remote publish: publish_failed: push rejected /Users/alex/secret" {
+		t.Fatalf("logs = %q", h.logs)
 	}
 	// Retried at the next interval.
 	h.clock.advance(9 * time.Minute)
@@ -311,37 +319,38 @@ func TestExtrasAreAddedOnlyUnderTheirFlags(t *testing.T) {
 	}
 }
 
+// TestOnlyOneAttemptRunsAtATime: a call made while an attempt is publishing
+// returns at once and starts nothing. The first attempt is held inside the
+// store, which says when it is there; a second attempt that ran would reach the
+// store too, and that is what fails the test, at once.
 func TestOnlyOneAttemptRunsAtATime(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
-	h.provider.hold = make(chan struct{})
-	started := make(chan struct{})
-	done := make(chan struct{})
+	h.provider.entered, h.provider.hold = make(chan struct{}), make(chan struct{})
+	first, second := make(chan struct{}), make(chan struct{})
 	go func() {
-		close(started)
+		defer close(first)
 		h.scan()
-		close(done)
 	}()
-	<-started
-	deadline := time.After(5 * time.Second)
-	for {
-		h.publisher.mu.Lock()
-		running := h.publisher.running
-		h.publisher.mu.Unlock()
-		if running {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("the attempt never started")
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case <-h.provider.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the attempt never reached the store")
 	}
-	h.scan() // returns at once: single-flight
+	go func() {
+		defer close(second)
+		h.scan()
+	}()
+	select {
+	case <-second:
+	case <-h.provider.entered:
+		close(h.provider.hold)
+		t.Fatal("a second attempt ran while the first was publishing")
+	}
 	close(h.provider.hold)
-	<-done
-	if h.provider.count() != 1 {
-		t.Fatalf("published %d", h.provider.count())
+	<-first
+	if status := h.publisher.Status(); h.provider.count() != 1 || status.Attempts != 1 || status.Scans != 1 {
+		t.Fatalf("published %d, %+v", h.provider.count(), status)
 	}
 }
 
@@ -453,8 +462,78 @@ func TestAChangeOfPublishedAgentsOpensTheGate(t *testing.T) {
 	src.extras.Agents = append(src.extras.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-2", State: "running"})
 	h.clock.advance(11 * time.Minute) // 33 minutes since the last publish
 	h.publisher.Publish(context.Background(), src)
-	if h.collects != 2 || h.provider.count() != 2 {
-		t.Fatalf("a new agent: collects %d published %d", h.collects, h.provider.count())
+	if h.provider.count() != 2 || len(h.provider.seen[1].Agents) != 2 || !h.provider.seen[1].PublishedAt.Equal(h.clock.Now()) {
+		t.Fatalf("a new agent: published %d, %+v", h.provider.count(), h.provider.seen)
+	}
+	// The agents are not read by the scan: the repositories and worktrees are as
+	// the last scan found them (the same change token), so it is not run again.
+	if h.collects != 1 || h.publisher.Status().Scans != 1 {
+		t.Fatalf("a change of the agents alone scanned the repositories again: collects %d, %+v", h.collects, h.publisher.Status())
+	}
+}
+
+// TestAScanIsTakenAgainOnlyForTheTokenItWasMadeFor is the bound of that reuse:
+// an agents-only change that is held back does not scan at each interval while
+// it waits; a moved token, a source without a token, a scan as old as the
+// keepalive and a scan that failed are each scanned anew.
+func TestAScanIsTakenAgainOnlyForTheTokenItWasMadeFor(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.Agents, o.Every, o.Keepalive = true, 5*time.Minute, time.Hour })
+	src := &source{token: "t", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}}}
+	run := func(advance time.Duration, from remotestate.PublishSource) Status {
+		h.clock.advance(advance)
+		h.publisher.Publish(context.Background(), from)
+		return h.publisher.Status()
+	}
+	run(0, src)
+	src.extras.Agents = append(src.extras.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-2", State: "running"})
+	run(6*time.Minute, src)
+	if status := run(6*time.Minute, src); status.Held != 2 || status.Scans != 1 || h.collects != 1 {
+		t.Fatalf("a held agents-only change scanned at each interval: collects %d, %+v", h.collects, status)
+	}
+	if status := run(6*time.Minute, src); status.Published != 2 || status.Scans != 1 {
+		t.Fatalf("the held change, once due: %+v", status)
+	}
+	// A moved token is a new scan.
+	src.token, h.worktree = "u", "b"
+	if status := run(6*time.Minute, src); status.Scans != 2 || status.Published != 3 {
+		t.Fatalf("a moved token: %+v", status)
+	}
+	// A scan as old as the keepalive is not taken again, whatever the token says.
+	src.extras.Agents = src.extras.Agents[:1]
+	if status := run(time.Hour, src); status.Scans != 3 || status.Published != 4 {
+		t.Fatalf("after the keepalive: %+v", status)
+	}
+	// A source with no token says nothing of what the scan reads.
+	if status := run(6*time.Minute, &source{}); status.Scans != 4 {
+		t.Fatalf("a source without a token: %+v", status)
+	}
+	// A scan that failed is not one to take again.
+	src.token, h.collectEr = "v", errors.New("scan")
+	run(6*time.Minute, src)
+	h.collectEr = nil
+	if status := run(6*time.Minute, src); status.Scans != 6 || status.Diagnostic != DiagnosticNone {
+		t.Fatalf("after a failed scan: %+v", status)
+	}
+}
+
+// TestThePublishedHookIsToldOfEachPublishThatReachedTheStore and of no other
+// attempt.
+func TestThePublishedHookIsToldOfEachPublishThatReachedTheStore(t *testing.T) {
+	t.Parallel()
+	told := 0
+	h := newHarness(t, func(o *Options) { o.Published = func() { told++ } })
+	h.provider.errs = []error{errors.New("down")}
+	h.scan() // fails
+	if told != 0 {
+		t.Fatal("a failed publish was reported as published")
+	}
+	h.clock.advance(11 * time.Minute)
+	h.scan() // publishes
+	h.clock.advance(11 * time.Minute)
+	h.scan() // nothing changed: skipped
+	if told != 1 || h.publisher.Status().Skipped != 1 {
+		t.Fatalf("told %d times, %+v", told, h.publisher.Status())
 	}
 }
 
@@ -466,15 +545,15 @@ func TestAFailedAttemptAndATokenlessSourceNeverGate(t *testing.T) {
 	h.publisher.Publish(context.Background(), src)
 	h.clock.advance(11 * time.Minute)
 	h.publisher.Publish(context.Background(), src) // retried, not gated
-	if h.collects != 2 || h.provider.count() != 2 {
-		t.Fatalf("retry after a failure: collects %d published %d", h.collects, h.provider.count())
+	if h.provider.count() != 2 || h.publisher.Status().Gated != 0 {
+		t.Fatalf("retry after a failure: published %d, %+v", h.provider.count(), h.publisher.Status())
 	}
 	none := &source{}
 	for range 3 {
 		h.clock.advance(11 * time.Minute)
 		h.publisher.Publish(context.Background(), none)
 	}
-	if h.collects != 5 || h.publisher.Status().Gated != 0 {
+	if h.collects != 4 || h.publisher.Status().Gated != 0 {
 		t.Fatalf("a source with no token was gated: %d %+v", h.collects, h.publisher.Status())
 	}
 	if h.publisher.Diagnostic() != DiagnosticNone {
@@ -508,10 +587,11 @@ func TestAnAgentsOnlyChangeIsHeldBackForAtLeastFifteenMinutes(t *testing.T) {
 	}
 }
 
-// TestThePublishErrorLifecycle is the one rule of Diagnostic: the code of the
-// last completed outcome against the store; a gated, skipped or held attempt
-// never changes it; a success that carried the optional fields clears it; the
-// optional_fields_dropped code stays until such a success.
+// TestThePublishErrorLifecycle is the one rule of Diagnostic: a failure's code
+// stays until the step that failed has worked again, and no longer. A scan that
+// works clears collect_failed whatever the attempt then does; a failure of the
+// store is cleared by the next publish that reaches it, and the attempt after
+// such a failure is never gated, skipped or held back, so that there is one.
 func TestThePublishErrorLifecycle(t *testing.T) {
 	t.Parallel()
 	type step struct {
@@ -528,13 +608,20 @@ func TestThePublishErrorLifecycle(t *testing.T) {
 			s.token, h.worktree = "t1", "b"
 			h.provider.errs = []error{errors.New("x")}
 		}, DiagnosticPublishFailed},
-		{"a skip after the failure leaves it", 21 * time.Minute, func(h *harness, s *source) { h.worktree = "a"; s.token = "t0" }, DiagnosticPublishFailed},
-		{"a gated attempt leaves it", 41 * time.Minute, nil, DiagnosticPublishFailed},
-		{"a real success clears it", 61 * time.Minute, func(h *harness, s *source) { s.token, h.worktree = "t2", "c" }, ""},
+		{"the store still failing keeps it, though the machine is as it was published", 21 * time.Minute, func(h *harness, s *source) {
+			s.token, h.worktree = "t0", "a"
+			h.provider.errs = []error{errors.New("x")}
+		}, DiagnosticPublishFailed},
+		{"the store answering clears it, with nothing new to publish and the source's token unchanged", 41 * time.Minute, nil, ""},
+		{"a gated attempt after that changes nothing", 11 * time.Minute, nil, ""},
 		{"a collect failure sets its code", 11 * time.Minute, func(h *harness, s *source) { s.token = "t3"; h.collectEr = errors.New("scan") }, DiagnosticCollectFailed},
-		{"a store failure replaces it", 21 * time.Minute, func(h *harness, s *source) {
-			h.collectEr, h.openErr, h.publisher.provider, h.worktree = nil, errors.New("clone"), nil, "e"
+		{"a scan that works clears it, though it finds nothing to publish", 21 * time.Minute, func(h *harness, s *source) { h.collectEr = nil }, ""},
+		{"a collect failure on the token that was skipped (the keepalive's scan)", time.Hour * 7, func(h *harness, s *source) { h.collectEr = errors.New("scan") }, DiagnosticCollectFailed},
+		{"is not gated: the next scan clears it and publishes the keepalive", 21 * time.Minute, func(h *harness, s *source) { h.collectEr = nil }, ""},
+		{"a store failure sets its code", 11 * time.Minute, func(h *harness, s *source) {
+			s.token, h.openErr, h.publisher.provider, h.worktree = "t4", errors.New("clone"), nil, "e"
 		}, DiagnosticOpenFailed},
+		{"a scan that works does not clear a failure of the store", 21 * time.Minute, func(h *harness, s *source) { h.collectEr = nil }, DiagnosticOpenFailed},
 		{"recovery clears it", 41 * time.Minute, func(h *harness, s *source) { h.openErr, h.worktree = nil, "d" }, ""},
 	}
 	for _, st := range steps {
@@ -546,6 +633,43 @@ func TestThePublishErrorLifecycle(t *testing.T) {
 		if got := h.publisher.Diagnostic(); got != st.want {
 			t.Fatalf("%s: diagnostic = %q, want %q (%+v)", st.name, got, st.want, h.publisher.Status())
 		}
+	}
+	// The backoff a collect failure started ends with the scan that works: the
+	// next attempt is due after the interval.
+	if status := h.publisher.Status(); status.Gated != 1 || status.Skipped != 1 {
+		t.Fatalf("the lifecycle ran %+v, want its one gated and its one skipped attempt", status)
+	}
+}
+
+// TestAHeldBackAttemptClearsCollectFailedAndKeepsARememberedRefusal: the scan
+// worked, so collect_failed goes whatever the attempt does next; what an older
+// hub's refusal of the optional fields says comes back in its place, since no
+// publish has carried them.
+func TestAHeldBackAttemptClearsCollectFailedAndKeepsARememberedRefusal(t *testing.T) {
+	t.Parallel()
+	provider := &refusingProvider{fakeProvider: &fakeProvider{}, refuse: true}
+	h := newHarness(t, func(o *Options) {
+		o.Agents, o.Every = true, 5*time.Minute
+		o.Open = func() (remotestate.Provider, error) { return provider, nil }
+	})
+	src := &source{token: "t0", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}}}
+	run := func(advance time.Duration) string {
+		h.clock.advance(advance)
+		h.publisher.Publish(context.Background(), src)
+		return h.publisher.Diagnostic()
+	}
+	if got := run(0); got != DiagnosticOptionalFields {
+		t.Fatalf("an older hub's refusal: %q", got)
+	}
+	src.token, h.collectEr = "t1", errors.New("scan")
+	if got := run(6 * time.Minute); got != DiagnosticCollectFailed {
+		t.Fatalf("a failed scan: %q", got)
+	}
+	// The scan works; only the agents changed, three minutes short of the hold.
+	h.collectEr = nil
+	src.extras.Agents = append(src.extras.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-2", State: "running"})
+	if got := run(6 * time.Minute); got != DiagnosticOptionalFields || h.publisher.Status().Held != 1 {
+		t.Fatalf("a held-back attempt after a failed scan: %q, %+v", got, h.publisher.Status())
 	}
 }
 

@@ -25,6 +25,9 @@ type fakeHerdr struct {
 	err    error
 	hang   bool
 	calls  *atomic.Int64
+	// entered, when set, is told when a hung call has begun, and ended when it
+	// has returned.
+	entered, ended chan struct{}
 }
 
 func (f fakeHerdr) AgentList(ctx context.Context) ([]herdr.Agent, error) {
@@ -32,6 +35,10 @@ func (f fakeHerdr) AgentList(ctx context.Context) ([]herdr.Agent, error) {
 		f.calls.Add(1)
 	}
 	if f.hang {
+		if f.entered != nil {
+			f.entered <- struct{}{}
+			defer func() { f.ended <- struct{}{} }()
+		}
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -153,16 +160,37 @@ func TestAgentActivityIsOmittedWhenHerdrFailsOrIsSlowAndDoesNotDelayTheSnapshot(
 
 	// The refresh returns without waiting for a hung herdr: the pass ends and the
 	// document is complete while the herdr read is still waiting for its timeout.
+	// herdr hangs until the context of its read ends, which here is only when the
+	// test ends it: a refresh that waited for herdr would never return.
 	hung := &atomic.Int64{}
-	use(activityOver(fakeHerdr{hang: true, calls: hung}))
-	snapshotter.activityTimeout = time.Second
-	started := time.Now()
-	if err := snapshotter.Refresh(t.Context()); err != nil {
-		t.Fatal(err)
+	entered, ended := make(chan struct{}, 1), make(chan struct{}, 1)
+	use(activityOver(fakeHerdr{hang: true, calls: hung, entered: entered, ended: ended}))
+	snapshotter.activityTimeout = time.Hour
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	refreshed := make(chan error, 1)
+	go func() { refreshed <- snapshotter.Refresh(ctx) }()
+	<-entered
+	select {
+	case err := <-refreshed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ended:
+		t.Fatal("the herdr read ended before the refresh did: the test proved nothing")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the refresh waited for a herdr that hangs")
 	}
-	if took := time.Since(started); took >= time.Second || snapshotter.Document().WarmingUp {
-		t.Errorf("the refresh waited for herdr (%v) or did not complete", took)
+	if snapshotter.Document().WarmingUp {
+		t.Error("the pass did not complete while herdr hung")
 	}
+	select {
+	case <-ended:
+		t.Fatal("the herdr read had ended when the refresh returned: the test proved nothing")
+	default:
+	}
+	cancel()
+	<-ended
 	snapshotter.side.Wait()
 	if hung.Load() != 1 {
 		t.Errorf("hung herdr was listed %d times", hung.Load())

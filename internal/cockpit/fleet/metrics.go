@@ -69,10 +69,12 @@ type MetricsSource interface {
 	MachineMetrics(machineID string) (MetricsAnswer, bool)
 }
 
-// maxSkew is how far ahead of the daemon's clock a sample or fetch time may be
-// before it is taken as wrong; it allows for ordinary clock differences between
-// machines.
-const maxSkew = 5 * time.Second
+// maxSkew is how far ahead of the daemon's clock a time another machine reports
+// may be before it is taken as wrong. It allows for the ordinary difference
+// between the clocks of two machines that are not synchronised to the second: a
+// machine further ahead than this is refused with the code clock_skew, which
+// says what to fix, and not as a bad payload.
+const maxSkew = 60 * time.Second
 
 // marshalMetrics marshals a response; a test replaces it.
 var marshalMetrics = json.Marshal
@@ -236,11 +238,15 @@ func (s *Snapshotter) MachineMetrics(id string) (payload cockpit.Payload, found 
 
 // serveMetrics answers the machine named by the "machine" query parameter from
 // the sources' memory (never a fetch), with the shared writer's gzip and ETag.
-func (s *Snapshotter) serveMetrics(writer http.ResponseWriter, request *http.Request, _ cockpit.Principal) {
-	payload, found := s.MachineMetrics(request.URL.Query().Get(metricsQuery))
+// A read by a reader on this machine is recorded as demand for that machine's
+// metrics.
+func (s *Snapshotter) serveMetrics(writer http.ResponseWriter, request *http.Request, from demand) {
+	id := request.URL.Query().Get(metricsQuery)
+	payload, found := s.MachineMetrics(id)
 	if !found {
 		writeError(writer, http.StatusNotFound, "unknown_machine")
 		return
 	}
+	s.metricsRead(id, from)
 	cockpit.ServePayload(writer, request, payload)
 }

@@ -161,6 +161,7 @@ func newSSHLive(t *testing.T, sources *fakeSources, runner *fakeSSH, timeout tim
 	logs := &logRecorder{}
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{sshTarget()}
 		options.Transports = []RemoteTransport{{Name: TransportSSH, Exporter: newSSHExporter(foundSSH(t, nil), runner, timeout, func() time.Time { return clock.Now() }, logs.logf)}}
 		options.Logf = logs.logf
@@ -200,7 +201,7 @@ func TestSSHArgumentVectorContainsOnlyConfiguredValues(t *testing.T) {
 	}
 	before := runner.count()
 	for _, id := range []string{vm.ID, "vm; touch x", "$(reboot)", "-oProxyCommand=evil", "vm.example\nevil"} {
-		server.get(metricsURL+url.QueryEscape(id), nil)
+		server.get(metricsURL+url.QueryEscape(id), server.owner())
 	}
 	if runner.count() != before {
 		t.Fatal("a request started a process")
@@ -428,7 +429,7 @@ func TestAFailingSSHMachineIsRetriedWithADelayThatDoublesToFiveMinutes(t *testin
 	for range 17 * 60 / 5 {
 		pollAndSettle(t, snapshotter)
 		if vm, found := machineNamed(snapshotter.Document(), vmKey); found {
-			server.get(metricsURL+vm.ID, nil)
+			server.get(metricsURL+vm.ID, server.owner())
 		}
 		clock.advance(remoteStep)
 	}
@@ -689,7 +690,7 @@ func TestADaemonThatStopsIsNotATimedOutMachine(t *testing.T) {
 
 // TestHostilePayloadIsRefusedOverSSH proves the SSH half of
 // cockpit-views#ac:hostile-payload-is-refused through the whole daemon path:
-// each hostile stdout is bad_payload, nothing of it is rendered or served as
+// each hostile stdout is bad_payload (clock_skew for the sample in the future), nothing of it is rendered or served as
 // metrics, at most 8 MiB of it is held, and the unchanged envelope is accepted.
 func TestHostilePayloadIsRefusedOverSSH(t *testing.T) {
 	t.Parallel()
@@ -706,8 +707,8 @@ func TestHostilePayloadIsRefusedOverSSH(t *testing.T) {
 		pollAndSettle(t, snapshotter)
 		document := snapshotter.Document()
 		vm, found := machineNamed(document, vmKey)
-		if !found || vm.Route != RouteCached || vm.RemoteError != RemoteErrorBadPayload || vm.Transport != "" {
-			t.Errorf("%s: the machine = %+v, want its published entry with bad_payload", name, vm)
+		if !found || vm.Route != RouteCached || vm.RemoteError != hostileCode(name) || vm.Transport != "" {
+			t.Errorf("%s: the machine = %+v, want its published entry with %s", name, vm, hostileCode(name))
 		}
 		rendered := marshalled(t, document)
 		for _, absent := range []string{"vm-task", "agt-vm", "rm -rf", "/home/ai", RouteLiveRemote} {
@@ -808,6 +809,7 @@ func bothRoutes(t *testing.T, address string, runner *fakeSSH, httpTimeout time.
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
 		now := func() time.Time { return clock.Now() }
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{{Machine: vmKey, HTTP: &HTTPRoute{URL: address, TokenFile: tokenFile(t, vmBearer)}, SSH: &vmRoute}}
 		options.Transports = []RemoteTransport{
 			{Name: TransportHTTP, Exporter: newHTTPExporter(httpTimeout, httpTimeout, now, nil)},
@@ -863,7 +865,13 @@ func TestHTTPFailureFallsBackToSSH(t *testing.T) {
 			address, requests = hub.server.URL, func() int { return len(hub.seen()) }
 		}
 		runner := &fakeSSH{answer: exporting(t, full, only)}
-		snapshotter, _ := bothRoutes(t, address, runner, 200*time.Millisecond)
+		// Only the hub that never answers is waited for, and briefly; the others
+		// answer at once, and a loaded machine is given the time to connect.
+		timeout := 30 * time.Second
+		if name == "a timeout" {
+			timeout = time.Second
+		}
+		snapshotter, _ := bothRoutes(t, address, runner, timeout)
 		refreshAndSettle(t, snapshotter)
 		pollAndSettle(t, snapshotter)
 		document := snapshotter.Document()
@@ -930,7 +938,7 @@ func TestFallbackCoolDownIsHonoured(t *testing.T) {
 		vm := onSSH(second)
 		healthy.Store(true)
 		if second%10 == 0 {
-			server.get(metricsURL+vm.ID, nil)
+			server.get(metricsURL+vm.ID, server.owner())
 		}
 		clock.advance(remoteStep)
 	}
@@ -1024,6 +1032,7 @@ func TestMachineRoutesReachOnlyAnOwnerSessionAndNeverTheDocumentOrAnExport(t *te
 	logs := &logRecorder{}
 	var clock *manualClock
 	snapshotter, clock := newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Login = testLogin
 		options.Remotes = []RemoteTarget{{Machine: vmKey, SSH: &route}, {Machine: "fresh", SSH: &route}}
 		options.Transports = []RemoteTransport{{Name: TransportSSH, Exporter: NewSSHExporter(foundSSH(t, nil), runner, func() time.Time { return clock.Now() }, logs.logf)}}
 		// "bare" has an ssh section and is not read (cockpit.remote_ssh: false, say);
@@ -1090,11 +1099,15 @@ func TestMachineRoutesReachOnlyAnOwnerSessionAndNeverTheDocumentOrAnExport(t *te
 			}
 		}
 	}
-	// A published entry of the machine under another login is another id of it.
-	twice := cachedVM("someone")
-	sources.remote = append(sources.remote, twice)
+	// A machine another login published under the same name is not the configured
+	// machine: it is shown as a machine of its own and is given no route.
+	sources.change(func(f *fakeSources) { f.remote = append(f.remote, cachedVM("someone")) })
 	refreshAndSettle(t, snapshotter)
-	if routes := snapshotter.MachineRoutes(); len(routes) != 5 {
-		t.Errorf("with two published entries of vm the routes = %+v", routes)
+	routes := snapshotter.MachineRoutes()
+	if len(routes) != 3 || slices.ContainsFunc(routes, func(route cockpit.MachineRoute) bool { return route.MachineID == entryID(kindMachine, "someone/vm") }) {
+		t.Errorf("with another login's machine of the same name the routes = %+v", routes)
+	}
+	if !slices.ContainsFunc(snapshotter.Document().Machines, func(machine Machine) bool { return machine.ID == entryID(kindMachine, "someone/vm") }) {
+		t.Error("another login's machine of the same name is not shown (the test would be vacuous)")
 	}
 }

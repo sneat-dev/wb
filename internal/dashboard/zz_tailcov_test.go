@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -85,7 +86,7 @@ func TestTailCovHealthReportsHubStateAndOmitsZeroIdentity(t *testing.T) {
 		},
 	})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	handler.ServeHTTP(response, loopbackRequest("/api/v1/health"))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d", response.Code)
 	}
@@ -220,21 +221,42 @@ func TestTailCovOverviewFailsOnCorruptRunTelemetry(t *testing.T) {
 	tailCovWriteManifest(t, worktree, "task-a", "acme/widgets", "agent-7", "codex", "2026-09-06T10:00:00Z")
 	tailCovWriteRunEvents(t, worktree, "{not json")
 
-	handler := NewHandler(Options{ProjectsRoot: projectsRoot, Version: "test"})
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
-	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	var logged []string
+	handler := NewHandler(Options{ProjectsRoot: projectsRoot, Version: "test", Logf: func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}})
+	for range 2 {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, loopbackRequest("/api/v1/overview"))
+		if response.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		// The answer is a closed code and one fixed message: the error names a path
+		// under the projects root, which the route never repeats.
+		if payload["error"] != "overview_unavailable" || payload["message"] != overviewUnavailable || len(payload) != 3 {
+			t.Fatalf("payload = %#v", payload)
+		}
+		if body := response.Body.String(); strings.Contains(body, projectsRoot) || strings.Contains(body, "run telemetry") || strings.Contains(body, "task-a") {
+			t.Fatalf("the answer repeats the error or a path: %s", body)
+		}
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
+	// The reason is in the daemon's log, once for a failure that repeats.
+	if len(logged) != 1 || !strings.Contains(logged[0], "run telemetry") {
+		t.Fatalf("log = %q, want the reason once", logged)
 	}
-	if payload["error"] != "overview_unavailable" {
-		t.Fatalf("payload = %#v", payload)
+	// With no log the failure is answered the same way.
+	quiet := httptest.NewRecorder()
+	NewHandler(Options{ProjectsRoot: projectsRoot, Version: "test"}).ServeHTTP(quiet, loopbackRequest("/api/v1/overview"))
+	if quiet.Code != http.StatusInternalServerError || strings.Contains(quiet.Body.String(), projectsRoot) {
+		t.Fatalf("with no log = %d %s", quiet.Code, quiet.Body.String())
 	}
-	if message, _ := payload["message"].(string); !strings.Contains(message, "run telemetry") {
-		t.Fatalf("message = %q", message)
+	// The page shows its own fixed text, never one the server sent.
+	if strings.Contains(indexHTML, "r.json()).message") || !strings.Contains(indexHTML, "the overview is unavailable") {
+		t.Error("the index page still renders a message from the response")
 	}
 }
 
@@ -299,7 +321,7 @@ func TestTailCovBuildOverviewRejectsUnreadableProjectsRoot(t *testing.T) {
 func tailCovLoadOverview(t *testing.T, handler http.Handler) Overview {
 	t.Helper()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
+	handler.ServeHTTP(response, loopbackRequest("/api/v1/overview"))
 	if response.Code != http.StatusOK {
 		t.Fatalf("overview status = %d, body = %s", response.Code, response.Body.String())
 	}

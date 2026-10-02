@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 	"github.com/sneat-dev/wb/internal/runlog"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -65,6 +66,9 @@ type Options struct {
 	// A nil value keeps the previous behaviour (unmounted, 404s into the
 	// index) purely as a defensive default; every real caller sets it.
 	Peers http.Handler
+	// Logf is where a failed overview says why, in the daemon's own log, which is
+	// the owner's alone; the route itself answers a fixed message. Nil discards.
+	Logf func(format string, args ...any)
 }
 
 // defaultLogTailBytes bounds an unqualified /api/v1/log request. It is large
@@ -155,6 +159,9 @@ type service struct {
 	mu       sync.Mutex
 	cached   Overview
 	cachedAt time.Time
+	// failure is the text of the last failed overview, so that a failure that
+	// repeats on every poll is logged once.
+	failure string
 }
 
 // NewHandler returns the dashboard UI and versioned read-only API.
@@ -173,8 +180,8 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /", server.index)
 	mux.HandleFunc("GET /metrics", server.metrics)
 	mux.HandleFunc("GET /coverage", server.coverageRedirect)
-	mux.HandleFunc("GET /api/v1/health", server.health)
-	mux.HandleFunc("GET /api/v1/overview", server.overview)
+	mux.HandleFunc("GET /api/v1/health", loopbackOnly(server.health))
+	mux.HandleFunc("GET /api/v1/overview", loopbackOnly(server.overview))
 	mux.HandleFunc("GET /api/v1/log", server.log)
 	if options.Peers != nil {
 		// GET-qualified patterns: an unqualified "/api/v1/peers" pattern
@@ -256,17 +263,65 @@ func (server *service) health(writer http.ResponseWriter, request *http.Request)
 	writeJSON(writer, http.StatusOK, payload)
 }
 
+// overviewUnavailable is the one message a failed overview is answered with.
+// The error it failed with names a path under the projects root (a worktree
+// whose records could not be read), which no reader of this route is told.
+const overviewUnavailable = "the overview could not be built; the daemon's log says why"
+
+// An overview that is built again after a failure is not logged: the next
+// failure is.
+
+// misdirected is the one message a request on another host name is answered
+// with.
+const misdirected = "this route answers only on a loopback host name"
+
+// loopbackOnly refuses a request whose Host header does not name a loopback
+// host with status 421, before next runs (cockpit#req:host-header-check): the
+// dashboard's own JSON routes hold the machine's name, its daemon's process id
+// and the names of its worktrees, and a page that rebinds DNS to the loopback
+// address must not read them. The rule is the one Cockpit's guard applies.
+func loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if !loopbackhost.Request(request) {
+			writeJSON(writer, http.StatusMisdirectedRequest, map[string]any{
+				"schema_version": APISchemaVersion,
+				"error":          "misdirected_request",
+				"message":        misdirected,
+			})
+			return
+		}
+		next(writer, request)
+	}
+}
+
 func (server *service) overview(writer http.ResponseWriter, request *http.Request) {
 	overview, err := server.load(request.Context())
+	server.logFailure(err)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{
 			"schema_version": APISchemaVersion,
 			"error":          "overview_unavailable",
-			"message":        err.Error(),
+			"message":        overviewUnavailable,
 		})
 		return
 	}
 	writeJSON(writer, http.StatusOK, overview)
+}
+
+// logFailure logs a failed overview when its text is not the last one logged,
+// and forgets the last one when the overview is built again.
+func (server *service) logFailure(err error) {
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	server.mu.Lock()
+	changed := text != server.failure
+	server.failure = text
+	server.mu.Unlock()
+	if changed && text != "" && server.options.Logf != nil {
+		server.options.Logf("dashboard: the overview could not be built: %s", text)
+	}
 }
 
 func (server *service) load(ctx context.Context) (Overview, error) {

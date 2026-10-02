@@ -172,19 +172,23 @@ func TestReadmeIsReadFromTheObjectStoreByItsObjectID(t *testing.T) {
 }
 
 // TestGitUsableAsksTheGitBinary covers a current Git, an old one and a failing
-// one, over a scripted Git.
+// one, over a scripted Git: the first two are answers, and a Git whose version
+// could not be read is an error, not a Git that is too old.
 func TestGitUsableAsksTheGitBinary(t *testing.T) {
 	t.Parallel()
 	for name, test := range map[string]struct {
-		reply gitReply
-		want  bool
+		reply      gitReply
+		want       bool
+		unreadable bool
 	}{
-		"a current Git": {gitReply{Out: "git version 2.54.0\n"}, true},
-		"an old Git":    {gitReply{Out: "git version 2.30.0\n"}, false},
-		"a failing Git": {gitReply{Exit: 3}, false},
+		"a current Git":     {gitReply{Out: "git version 2.54.0\n"}, true, false},
+		"an old Git":        {gitReply{Out: "git version 2.30.0\n"}, false, false},
+		"an unknown answer": {gitReply{Out: "not a version\n"}, false, false},
+		"a failing Git":     {gitReply{Exit: 3}, false, true},
 	} {
-		if got := (LocalCollectors{Runner: newFakeGit(t).reply(test.reply)}).GitUsable(t.Context()); got != test.want {
-			t.Errorf("%s: usable = %v, want %v", name, got, test.want)
+		got, err := (LocalCollectors{Runner: newFakeGit(t).reply(test.reply)}).GitUsable(t.Context())
+		if got != test.want || (err != nil) != test.unreadable {
+			t.Errorf("%s: usable = %v, err = %v, want %v and an error %v", name, got, err, test.want, test.unreadable)
 		}
 	}
 }
