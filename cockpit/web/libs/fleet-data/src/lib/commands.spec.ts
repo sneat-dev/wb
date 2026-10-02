@@ -120,10 +120,10 @@ function verbOf(words: string[]): string | undefined {
 
 const TEMPLATES: Record<string, CopyCommand> = {
   worktreeList: worktreeList('fix-ci'),
-  pullRequestCreate: pullRequestCreate('fix-ci'),
+  pullRequestCreate: pullRequestCreate('fix-ci', {}),
   worktreeCleanup: worktreeCleanup('fix-ci'),
   worktreeGc: worktreeGc(),
-  pullRequestLand: pullRequestLand('sneat-dev/wb', 12),
+  pullRequestLand: pullRequestLand('sneat-dev/wb', 12, {}),
   worktreeCreate: worktreeCreate('fix-ci', ['sneat-dev/wb', 'sneat-co/sneat-go']),
   worktreeCreateFull: worktreeCreate('fix-ci', ['sneat-dev/wb'], { model: 'opus', promptFile: 'p.md', base: 'main' }),
   branchList: branchList('sneat-dev/wb'),
@@ -132,8 +132,8 @@ const TEMPLATES: Record<string, CopyCommand> = {
   branchCleanup: branchCleanup('sneat-dev/wb', 'topic'),
   agentStatus: agentStatus('run-1'),
   agentLogs: agentLogs('run-1'),
-  agentStop: agentStop('run-1'),
-  sessionSend: sessionSend('wb-session-1'),
+  agentStop: agentStop('run-1', {}),
+  sessionSend: sessionSend('wb-session-1', {}),
   sessionList: sessionList(),
   agentDispatch: agentDispatch('sneat-dev/wb', 'fix-ci'),
   agentDispatchBase: agentDispatch('sneat-dev/wb', 'fix-ci', { base: 'main', profile: 'deep', brief: 'do it' }),
@@ -198,12 +198,12 @@ describe('Copy command texts', () => {
   // cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers
   it('are exactly the commands of REQ:copy-the-command, values single-quoted and flags --flag=value', () => {
     expect(text(worktreeList('fix-ci'))).toBe("wb worktree list 'fix-ci'")
-    expect(text(pullRequestCreate('fix-ci'))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
-    expect(text(pullRequestCreate('fix-ci', 'ship it'))).toBe("wb pr create 'fix-ci' --commit-all --message='ship it'")
+    expect(text(pullRequestCreate('fix-ci', {}))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
+    expect(text(pullRequestCreate('fix-ci', {}, 'ship it'))).toBe("wb pr create 'fix-ci' --commit-all --message='ship it'")
     expect(text(worktreeCleanup('fix-ci'))).toBe("wb worktree cleanup 'fix-ci'")
     expect(text(worktreeGc())).toBe('wb worktree gc')
     expect(text(worktreeGc({ machine: 'vm' }))).toBe('wb worktree gc')
-    expect(text(pullRequestLand('sneat-dev/wb', 12))).toBe("wb pr land 'sneat-dev/wb#12'")
+    expect(text(pullRequestLand('sneat-dev/wb', 12, {}))).toBe("wb pr land 'sneat-dev/wb#12'")
     expect(text(worktreeCreate(PLACEHOLDERS.task, ['<owner/repository>']))).toBe(
       "wb worktree create <<<edit:task>>> '<owner/repository>' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>",
     )
@@ -213,9 +213,9 @@ describe('Copy command texts', () => {
     expect(text(branchCleanup('sneat-dev/wb', 'topic'))).toBe("wb branch cleanup --repo='sneat-dev/wb' --branch='topic'")
     expect(text(agentStatus('run-1'))).toBe("wb agent status 'run-1'")
     expect(text(agentLogs('run-1'))).toBe("wb agent logs 'run-1'")
-    expect(text(agentStop('run-1'))).toBe("wb agent stop 'run-1'")
-    expect(text(sessionSend('s-1'))).toBe("wb session send 's-1' --message=<<<edit:message>>>")
-    expect(text(sessionSend('s-1', 'hi'))).toBe("wb session send 's-1' --message='hi'")
+    expect(text(agentStop('run-1', {}))).toBe("wb agent stop 'run-1'")
+    expect(text(sessionSend('s-1', {}))).toBe("wb session send 's-1' --message=<<<edit:message>>>")
+    expect(text(sessionSend('s-1', {}, 'hi'))).toBe("wb session send 's-1' --message='hi'")
     expect(text(remotePublish())).toBe('wb remote publish')
     expect(text(selfUpdate())).toBe('wb self-update')
     expect(text(daemonStart())).toBe('wb daemon start')
@@ -227,8 +227,8 @@ describe('Copy command texts', () => {
 
   // cockpit-views#ac:copy-command-refuses-hostile-values
   it('leaves a placeholder bare and flags the entry needsEdit, so an unedited paste fails in the shell', () => {
-    expect(pullRequestCreate('t')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message=<<<edit:message>>>", needsEdit: true })
-    expect(pullRequestCreate('t', 'done')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message='done'", needsEdit: false })
+    expect(pullRequestCreate('t', {})).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message=<<<edit:message>>>", needsEdit: true })
+    expect(pullRequestCreate('t', {}, 'done')).toEqual({ ok: true, text: "wb pr create 't' --commit-all --message='done'", needsEdit: false })
     expect(worktreeList('t')).toMatchObject({ needsEdit: false })
     expect(worktreeCreate('t', ['o/r'])).toMatchObject({ needsEdit: true })
     expect(worktreeCreate('t', ['o/r'], { model: 'opus', promptFile: 'p.md' })).toMatchObject({ needsEdit: false })
@@ -280,7 +280,7 @@ describe('Copy command texts', () => {
 
   it('refuses a value that starts with a dash or holds a control character, saying why, and copies nothing', () => {
     for (const value of ['-x', '--upstream', 'a\nb', 'a\u0000b', 'a\u007fb', 'a\u202eb', 'a\u200fb', 'a\u061cb', 'a\u200bb', 'a\u200cb', 'a\u200db', 'a\ufeffb', 'a\u2028b', 'a\u2029b']) {
-      for (const command of [worktreeList(value), branchList('o/r', value), pullRequestCreate('t', value), agentStop(value), worktreeCreate('t', ['o/r'], { model: value })]) {
+      for (const command of [worktreeList(value), branchList('o/r', value), pullRequestCreate('t', {}, value), agentStop(value, {}), worktreeCreate('t', ['o/r'], { model: value })]) {
         expect(command.ok).toBe(false)
         expect(command.ok ? '' : command.reason.length).toBeGreaterThan(10)
       }
@@ -386,7 +386,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
   /** Every template, rendered with its placeholders (when it has any) and again with benign values. */
   const templates = (to: CommandTarget): { name: string; open: CopyCommand; filled: CopyCommand }[] => [
     { name: 'worktreeList', open: worktreeList('t', to), filled: worktreeList('t', to) },
-    { name: 'pullRequestCreate', open: pullRequestCreate('t', undefined, to), filled: pullRequestCreate('t', 'done', to) },
+    { name: 'pullRequestCreate', open: pullRequestCreate('t', to), filled: pullRequestCreate('t', to, 'done') },
     { name: 'worktreeCleanup', open: worktreeCleanup('t', to), filled: worktreeCleanup('t', to) },
     { name: 'worktreeGc', open: worktreeGc(to), filled: worktreeGc(to) },
     { name: 'pullRequestLand', open: pullRequestLand('o/r', 1, to), filled: pullRequestLand('o/r', 1, to) },
@@ -399,7 +399,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
     { name: 'agentLogs', open: agentLogs('a', to), filled: agentLogs('a', to) },
     { name: 'agentStop', open: agentStop('a', to), filled: agentStop('a', to) },
     { name: 'sessionList', open: sessionList(to), filled: sessionList(to) },
-    { name: 'sessionSend', open: sessionSend('s', undefined, to), filled: sessionSend('s', 'hello there', to) },
+    { name: 'sessionSend', open: sessionSend('s', to), filled: sessionSend('s', to, 'hello there') },
     { name: 'agentDispatch', open: agentDispatch('o/r', 't', { base: 'main' }, to), filled: agentDispatch('o/r', 't', { profile: 'deep', brief: "do it\nit's fine", base: 'main' }, to) },
     { name: 'agentDispatch no base', open: agentDispatch('o/r', 't', {}, to), filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
     { name: 'remotePublish', open: remotePublish(to), filled: remotePublish(to) },
@@ -456,12 +456,12 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
   it('builds a command that changes something only for this machine: another machine, with or without an ssh route, gets a refusal', () => {
     const remote: CommandTarget[] = [{ machine: 'vm' }, { machine: 'vm', ssh: { host: 'h', user: 'u' } }, { ssh: { host: 'h' } }]
     for (const to of remote) {
-      for (const built of [pullRequestCreate('t', undefined, to), pullRequestLand('o/r', 1, to), agentStop('a', to), sessionSend('s', undefined, to)]) {
+      for (const built of [pullRequestCreate('t', to), pullRequestLand('o/r', 1, to), agentStop('a', to), sessionSend('s', to)]) {
         expect(built.ok).toBe(false)
         expect(built.ok ? '' : built.reason).toMatch(/only offered for this machine/)
       }
     }
-    expect(pullRequestCreate('t', undefined, { machine: 'vm' })).toEqual({ ok: false, reason: "this changes things, so it is only offered for this machine's own entries: it is vm's, run it there" })
+    expect(pullRequestCreate('t', { machine: 'vm' })).toEqual({ ok: false, reason: "this changes things, so it is only offered for this machine's own entries: it is vm's, run it there" })
     // Reading commands, and the New task creation, stay available for another machine.
     for (const to of remote) for (const built of [worktreeList('t', to), agentStatus('a', to), agentLogs('a', to), sessionList(to), worktreeCleanup('t', to), worktreeCreate('t', ['o/r'], {}, to)]) expect(built.ok).toBe(true)
     expect(pullRequestLand('o/r', 1, {}).ok).toBe(true)

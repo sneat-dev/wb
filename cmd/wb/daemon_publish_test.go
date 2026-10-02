@@ -335,6 +335,36 @@ func TestRepositoryScansKeepNothingTheyCannotVouchFor(t *testing.T) {
 	}
 }
 
+// TestRepositoryScansNameTheOldestScanTheyKeep: the age of a whole scan taken
+// again is the age of the oldest read it kept, which the keeper reports.
+func TestRepositoryScansNameTheOldestScanTheyKeep(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	scans := &repositoryScans{
+		read: func(string) (gitops.RepoStatus, gitops.TrackingState, error) {
+			return gitops.RepoStatus{}, gitops.TrackingState{}, nil
+		},
+		fingerprint: func(string) (string, error) { return "a", nil },
+		maxAge:      time.Hour,
+	}
+	var none *repositoryScans
+	if !none.oldest().IsZero() || !scans.oldest().IsZero() {
+		t.Fatal("a keeper with nothing kept named a time")
+	}
+	for i, path := range []string{"/repos/a", "/repos/b", "/repos/c"} {
+		if _, _, err := scans.of(path, start.Add([]time.Duration{10 * time.Minute, 0, 20 * time.Minute}[i])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := scans.oldest(); !got.Equal(start) {
+		t.Fatalf("oldest = %v, want %v", got, start)
+	}
+	scans.keepOnly(map[string]bool{"/repos/a": true, "/repos/c": true})
+	if got := scans.oldest(); !got.Equal(start.Add(10 * time.Minute)) {
+		t.Fatalf("after the oldest left the fleet, oldest = %v", got)
+	}
+}
+
 // TestThePeriodicPublishSaysOnceInTheLogThatHardwareIsIncluded: when the first
 // publish that sends the hardware facts is the daemon's, the note is in the
 // daemon's log, once, and a publish by hand does not say it again.

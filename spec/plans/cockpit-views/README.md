@@ -133,7 +133,7 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 ### Task 5: Backend: periodic remote publish with agents, metrics and hardware
 
 **Id:** task-5
-**Verifies:** cockpit-views#ac:periodic-publish-runs-after-a-local-scan, cockpit-views#ac:remote-snapshot-carries-optional-agents-and-metrics, cockpit-views#ac:remote-agents-are-capped
+**Verifies:** cockpit-views#ac:periodic-publish-runs-after-a-local-scan, cockpit-views#ac:remote-snapshot-carries-optional-agents-and-metrics, cockpit-views#ac:remote-agents-are-capped, cockpit-views#ac:periodic-scan-reuse-is-bounded-by-the-oldest-kept-read
 **Depends-On:** 4
 **Status:** complete
 

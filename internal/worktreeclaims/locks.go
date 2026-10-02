@@ -278,8 +278,8 @@ var ErrOperationLockHeld = errors.New("worktree operation is already active in a
 
 // HoldOperationLock takes the exclusive kernel lock this operation keeps for
 // its whole lifetime, so a concurrent WB process is refused while it runs and
-// the kernel releases it if the process dies. Closing the descriptor releases
-// it, which every release path already does.
+// the kernel releases it when the last reference closes. A relinquishing owner
+// must explicitly unlock if a fork or duplicate can retain another reference.
 func HoldOperationLock(file *os.File) error {
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		if errors.Is(err, unix.EWOULDBLOCK) {
@@ -339,7 +339,14 @@ func ReclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool
 	}
 	// Nothing held it: this is an interrupted remnant, not a live operation.
 	if !reclaimInterrupted {
+		// Close alone can leave flock held through a forked or duplicated
+		// reference to this open file description. Release our inspection lock
+		// explicitly while preserving the entry and ownership metadata.
+		unlockErr := unix.Flock(int(file.Fd()), unix.LOCK_UN)
 		_ = file.Close()
+		if unlockErr != nil {
+			return OperationLock{}, fmt.Errorf("unlock inspected interrupted worktree operation lock: %w", unlockErr)
+		}
 		return OperationLock{}, fmt.Errorf(
 			"worktree operation was interrupted and left its lock behind; " +
 				"the durable cleanup backlog for this task can finish it",

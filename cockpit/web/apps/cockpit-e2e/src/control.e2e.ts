@@ -36,6 +36,12 @@ test('the gallery redraws its charts in the other colour scheme and honours redu
   expect(dark.every((url, index) => url !== lightEach[index])).toBe(true)
 })
 
+/** Whether a request is for the page's own script or style: same origin, under the app's path, a .js or .css file. */
+function isOwnCode(url: string, page: string): boolean {
+  const asked = new URL(url)
+  return asked.origin === new URL(page).origin && /^\/cockpit\/[^/]+\.(js|css)$/.test(asked.pathname)
+}
+
 test('a copy button puts exactly the library command on the clipboard and says so; an action slot only emits', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(gallery).origin })
   await stub(page)
@@ -46,7 +52,11 @@ test('a copy button puts exactly the library command on the clipboard and says s
   // visible. They are the last thing the page fetches by itself, and a chart is on its canvas only once they are in,
   // so wait for that before listening: what is counted below is what the click causes, not what the page was still loading.
   await expect.poll(() => page.locator('app-chart canvas').evaluateAll((canvases) => canvases.length === 6 && canvases.every((canvas) => (canvas as HTMLCanvasElement).toDataURL().length > 1000))).toBe(true)
-  page.on('request', (request) => requests.push(request.url()))
+  // What is counted is what a click asks of the daemon. The page's own code is not that: a chunk the gallery was
+  // still loading (a chart's, on a slow runner) is static, same-origin and carries no command, so it is left out.
+  page.on('request', (request) => {
+    if (!isOwnCode(request.url(), handled)) requests.push(request.url())
+  })
   const first = page.locator('app-copy-command-list li').first()
   const command = (await first.locator('code').innerText()).trim()
   await first.getByRole('button', { name: /^Copy wb worktree list/ }).click()
