@@ -780,32 +780,6 @@ func TestExecNodeLinkPreservesUnexpectedStageAndRecoveryArtifacts(t *testing.T) 
 	})
 }
 
-func TestCopyBuiltPackageRejectsSymlinks(t *testing.T) {
-	t.Parallel()
-	source := t.TempDir()
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "package.json"), []byte(`{"name":"@acme/core"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	symlinkRoot := filepath.Join(t.TempDir(), "dist")
-	if err := os.Symlink(outside, symlinkRoot); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyBuiltPackage(symlinkRoot, filepath.Join(t.TempDir(), "stage")); err == nil || !strings.Contains(err.Error(), "not a real directory") {
-		t.Fatalf("symlinked dist error = %v, want a source-boundary refusal", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(source, "package.json"), []byte(`{"name":"@acme/core"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(outside, "package.json"), filepath.Join(source, "escaped.json")); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyBuiltPackage(source, filepath.Join(t.TempDir(), "stage")); err == nil || !strings.Contains(err.Error(), "unsupported symlink") {
-		t.Fatalf("nested symlink error = %v, want an entry-boundary refusal", err)
-	}
-}
-
 func TestUnlinkRejectsMarkerForAnotherStagedPath(t *testing.T) {
 	t.Parallel()
 	consumer := t.TempDir()

@@ -587,16 +587,6 @@ func nodeLinkStagePath(consumerDir, target string, info os.FileInfo) (string, er
 	return filepath.Join(parent, "."+filepath.Base(target)+".wb-locallink-stage"), nil
 }
 
-func copyBuiltPackage(source, destination string) error {
-	if err := validateBuiltPackageSource(source); err != nil {
-		return err
-	}
-	if err := os.Mkdir(destination, 0o755); err != nil {
-		return err
-	}
-	return copyBuiltPackageContents(source, destination)
-}
-
 func validateBuiltPackageSource(source string) error {
 	info, err := os.Lstat(source)
 	if err != nil {
@@ -606,10 +596,6 @@ func validateBuiltPackageSource(source string) error {
 		return fmt.Errorf("built package source %s is not a real directory", source)
 	}
 	return nil
-}
-
-func copyBuiltPackageContents(source, destination string) error {
-	return copyBuiltPackageContentsInjected(source, destination, nil)
 }
 
 // copyBuiltPackageContentsInjected is copyBuiltPackageContents's test seam
