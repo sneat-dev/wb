@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -763,5 +764,21 @@ func TestSessionReceivePlacementHandlesExistingTargetAndPinFailures(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+//nolint:paralleltest // newGitFixture sets process-wide Git environment.
+func TestBranchClassificationKeepsRejectedSupersessionEvidence(t *testing.T) {
+	fixture := newGitFixture(t)
+	head, err := gitCanonical(context.Background(), mustOpenCanonical(t, fixture.canonical), "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := discover.Repo{Org: "acme", Name: "app", Path: fixture.canonical}
+	entry := classifyBranch(context.Background(), repository,
+		branchSweepOptions{Base: "main", SupersededBy: filepath.Join(t.TempDir(), "missing.json")},
+		branchRef{Name: "feature/rejected-receipt", SHA: head}, "local", head, "main", nil, nil, nil)
+	if entry.Disposition != BranchContained || !strings.Contains(entry.SupersessionRejection, "read supersession receipt") {
+		t.Fatalf("classified entry = %#v", entry)
 	}
 }

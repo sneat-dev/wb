@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
@@ -116,6 +118,16 @@ func TestZeroCoverageBatchValueHelpers(t *testing.T) {
 	if got := branchInUseKey("acme/app", "feature"); got != "acme/app|feature" {
 		t.Fatalf("branch in-use key = %q", got)
 	}
+	for _, tc := range []struct{ branch, base, head, want string }{
+		{branch: "main", base: "main", head: "trunk", want: "base branch"},
+		{branch: "trunk", base: "main", head: "trunk", want: "current HEAD"},
+		{branch: "release", base: "main", head: "trunk", want: "configured protected"},
+	} {
+		if got := protectedEvidence(tc.branch, tc.base, tc.head); !strings.Contains(got, tc.want) {
+			t.Fatalf("protected evidence = %q, want %q", got, tc.want)
+		}
+	}
+
 	evidence := LocalGitEvidence{Branch: "feature", Head: strings.Repeat("a", 40), Dirty: true}
 	pointer := ptrLocalGit(evidence)
 	pointer.Branch = "changed"
@@ -173,5 +185,34 @@ func TestZeroCoverageBatchValueHelpers(t *testing.T) {
 	prefix := taskBoundLocalStagePrefix("coverage-batch")
 	if !strings.HasPrefix(prefix, ".wb-stage-task-") || !strings.HasSuffix(prefix, "-") || prefix != taskBoundLocalStagePrefix("coverage-batch") {
 		t.Fatalf("task-bound stage prefix = %q", prefix)
+	}
+}
+
+func TestZeroCoverageBatchRemoteRefWrappers(t *testing.T) {
+	t.Parallel()
+
+	const repository = "/fixture/repository"
+	const separator = "\x1f"
+	const format = "--format=%(refname:short)" + separator + "%(objectname)" + separator + "%(committerdate:iso-strict)"
+	sha := strings.Repeat("a", 40)
+	date := time.Unix(20_000, 0).UTC().Format(time.RFC3339)
+
+	remote := runnertest.New(t)
+	remote.ExpectArgv([]string{"git", "-C", repository, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"}, runner.Result{}, nil)
+	remote.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/remotes/origin/"}, runner.Result{
+		CombinedOutput: "origin/feature/coverage" + separator + sha + separator + date,
+	}, nil)
+	refs, diagnostic := listRemoteRefs(withGitRunner(context.Background(), remote), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "feature/coverage" {
+		t.Fatalf("remote refs = %#v, %q", refs, diagnostic)
+	}
+	retired := runnertest.New(t)
+	retired.ExpectArgv([]string{"git", "-C", repository, "fetch", "--prune", "origin", "+refs/heads/retired/*:refs/remotes/origin/retired/*"}, runner.Result{}, nil)
+	retired.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/remotes/origin/retired/"}, runner.Result{
+		CombinedOutput: "origin/retired/coverage" + separator + sha + separator + date,
+	}, nil)
+	refs, diagnostic = listRetiredRemoteRefs(withGitRunner(context.Background(), retired), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "retired/coverage" {
+		t.Fatalf("retired remote refs = %#v, %q", refs, diagnostic)
 	}
 }

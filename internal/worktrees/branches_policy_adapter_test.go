@@ -44,7 +44,7 @@ func TestBranchPolicyFacadePreservesSelectorsPlansAndJSON(t *testing.T) {
 	if entry.ReceiptPullRequest != pr || entry.Disposition != BranchReceipted || !strings.Contains(entry.Evidence, "#9") {
 		t.Fatalf("facade receipt identity: %+v", entry)
 	}
-	if !isProtectedBranch("main", "main", "other") {
+	if !isProtectedBranch("main", "main", "other") || protectedEvidence("main", "main", "other") != `is the base branch "main"` {
 		t.Fatal("facade protection diverged")
 	}
 	if !worktreebranches.ScopeIncludesRemote(BranchScopeAll) || !worktreebranches.PeerEvidenceSafeDisposition(BranchUnique) {

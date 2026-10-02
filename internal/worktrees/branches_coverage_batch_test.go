@@ -3,6 +3,7 @@ package worktrees
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
@@ -48,6 +51,30 @@ func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
 	}
 }
 
+func TestBranchesCoverageBatchSHAShorteningAndReceiptedBranchEvidence(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+
+	if got := shortSHA("short"); got != "short" {
+		t.Fatalf("short SHA = %q", got)
+	}
+	if got := shortSHA("123456789012345"); got != "123456789012" {
+		t.Fatalf("trimmed SHA = %q", got)
+	}
+
+	pullRequest := &PullRequest{Number: 17}
+	explicit := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
+	if explicit.Disposition != BranchReceipted || explicit.LandingSHA != sha || explicit.ReceiptPullRequest != pullRequest ||
+		!strings.Contains(explicit.Evidence, "--absorbed-by 17") || !strings.Contains(explicit.Reason, "eligible") {
+		t.Fatalf("explicit receipt classification = %#v", explicit)
+	}
+	automatic := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
+	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
+		!strings.Contains(automatic.Reason, "--receipts") {
+		t.Fatalf("automatic receipt classification = %#v", automatic)
+	}
+}
+
 func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -83,6 +110,9 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 		t.Fatalf("retired append = count %d entries %#v names %#v", count, entries, names)
 	}
 
+	decorateBranchCommits(ctx, root, nil)
+	decorateBranchCommits(ctx, root, []BranchEntry{{SHA: ""}})
+	decorateBranchCommits(ctx, filepath.Join(root, "missing"), []BranchEntry{{SHA: strings.Repeat("a", 40)}})
 	if strings.TrimSpace(branchEvidenceHost()) == "" {
 		t.Fatal("branch evidence host is empty")
 	}
@@ -162,6 +192,18 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 		{Org: "acme", Name: "two", Path: "/repos/acme/two"},
 		{Org: "other", Name: "three", Path: "/repos/other/three"},
 	}
+	selected, err := selectBranchRepositories(repositories, "", "acme")
+	if err != nil || len(selected) != 2 || selected[0].Slug() != "acme/one" || selected[1].Slug() != "acme/two" {
+		t.Fatalf("organization selection = %#v/%v", selected, err)
+	}
+	selected, err = selectBranchRepositories(repositories, "other/three", "other")
+	if err != nil || len(selected) != 1 || selected[0].Slug() != "other/three" {
+		t.Fatalf("repository selection = %#v/%v", selected, err)
+	}
+	if selected, err = selectBranchRepositories(repositories, "missing/repository", ""); err == nil || selected != nil {
+		t.Fatalf("missing repository selection = %#v/%v", selected, err)
+	}
+
 	sweep := branchSweepOptions{Now: now, OlderThan: time.Hour, Name: "retired/*", Base: "main"}
 	refs := []branchRef{
 		{Name: "retired/old", CommitterDate: now.Add(-2 * time.Hour)},
@@ -203,17 +245,90 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 		t.Fatalf("progress output = %q", output)
 	}
 
+	directCalls := 0
+	directEntries, directDiagnostic := inspectRepositoryBranchesWithHeartbeat(ctx, repositories[0], branchSweepOptions{}, nil, 1, 1, 0,
+		func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string) {
+			directCalls++
+			return []BranchEntry{{Branch: "direct"}}, "direct diagnostic"
+		})
+	if directCalls != 1 || len(directEntries) != 1 || directDiagnostic != "direct diagnostic" {
+		t.Fatalf("direct inspection = %d/%#v/%q", directCalls, directEntries, directDiagnostic)
+	}
+
+	release := make(chan struct{})
+	var heartbeat bytes.Buffer
+	timer := time.AfterFunc(5*time.Millisecond, func() { close(release) })
+	t.Cleanup(func() { timer.Stop() })
+	heartbeatEntries, heartbeatDiagnostic := inspectRepositoryBranchesWithHeartbeat(ctx, repositories[0],
+		branchSweepOptions{Progress: &heartbeat}, nil, 1, 2, time.Millisecond,
+		func(context.Context, discover.Repo, branchSweepOptions, map[string]string) ([]BranchEntry, string) {
+			<-release
+			return []BranchEntry{{Branch: "heartbeat"}}, ""
+		})
+	if len(heartbeatEntries) != 1 || heartbeatDiagnostic != "" || !strings.Contains(heartbeat.String(), "still scanning acme/one") {
+		t.Fatalf("heartbeat inspection = %#v/%q/%q", heartbeatEntries, heartbeatDiagnostic, heartbeat.String())
+	}
 }
 
-func TestBranchesCoverageBatchSHAShorteningAndReceiptedBranchEvidence(t *testing.T) {
+func TestBranchesCoverageBatchClassificationBoundaries(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+	repository := discover.Repo{Org: "acme", Name: "app", Path: filepath.Join(t.TempDir(), "missing")}
 	sha := strings.Repeat("a", 40)
+	target := strings.Repeat("b", 40)
+	sweep := branchSweepOptions{Base: "main"}
+
+	protected := classifyBranch(ctx, repository, sweep, branchRef{Name: "main", SHA: sha}, BranchScopeLocal,
+		target, "trunk", nil, nil, nil)
+	if protected.Disposition != BranchProtected || !strings.Contains(protected.Evidence, "base branch") {
+		t.Fatalf("protected classification = %#v", protected)
+	}
+	inUse := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/one", SHA: sha}, BranchScopeLocal,
+		target, "main", map[string]string{"acme/app|feature/one": "task-1"}, nil, nil)
+	if inUse.Disposition != BranchInUse || inUse.Task != "task-1" || !strings.Contains(inUse.Reason, "task-1") {
+		t.Fatalf("claimed classification = %#v", inUse)
+	}
+	checkedOut := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/two", SHA: sha}, BranchScopeLocal,
+		target, "main", nil, map[string]bool{"feature/two": true}, nil)
+	if checkedOut.Disposition != BranchInUse || checkedOut.Task != "" || !strings.Contains(checkedOut.Reason, "working tree") {
+		t.Fatalf("checked-out classification = %#v", checkedOut)
+	}
+	unreadable := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/three", SHA: sha}, BranchScopeLocal,
+		target, "main", nil, nil, nil)
+	if unreadable.Disposition != BranchUnreadable {
+		t.Fatalf("unreadable classification = %#v", unreadable)
+	}
 
 	if got := shortSHA("short"); got != "short" {
 		t.Fatalf("short SHA = %q", got)
 	}
 	if got := shortSHA("123456789012345"); got != "123456789012" {
 		t.Fatalf("trimmed SHA = %q", got)
+	}
+	if got := protectedEvidence("main", "main", "trunk"); !strings.Contains(got, "base") {
+		t.Fatalf("base evidence = %q", got)
+	}
+	if got := protectedEvidence("trunk", "main", "trunk"); !strings.Contains(got, "current HEAD") {
+		t.Fatalf("HEAD evidence = %q", got)
+	}
+	if got := protectedEvidence("develop", "main", "trunk"); !strings.Contains(got, "configured") {
+		t.Fatalf("configured evidence = %q", got)
+	}
+
+	cache := map[string][]githubPullRequest{sha: {}}
+	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no merged pull request") {
+		t.Fatalf("missing receipt = %#v/%q", receipt, note)
+	}
+	mergedAt := time.Now().UTC()
+	cache[sha] = []githubPullRequest{{
+		Number: 7, MergedAt: &mergedAt, MergeCommitSHA: "invalid",
+		Base: githubRef{Ref: "main"}, Head: githubRef{SHA: sha},
+	}}
+	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no valid merge commit") {
+		t.Fatalf("invalid receipt = %#v/%q", receipt, note)
+	}
+	if absorbed, evidence, unique, err := classifyAbsorbedOrUnique(ctx, repository.Path, target, sha); err == nil || absorbed || evidence != "" || unique != 0 {
+		t.Fatalf("unreadable absorption = %t/%q/%d/%v", absorbed, evidence, unique, err)
 	}
 
 	pullRequest := &PullRequest{Number: 17}
@@ -226,5 +341,144 @@ func TestBranchesCoverageBatchSHAShorteningAndReceiptedBranchEvidence(t *testing
 	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
 		!strings.Contains(automatic.Reason, "--receipts") {
 		t.Fatalf("automatic receipt classification = %#v", automatic)
+	}
+
+	brokenGit := runnertest.New(t)
+	brokenGit.ExpectArgv(
+		[]string{"git", "-C", repository.Path, "merge-base", "--is-ancestor", sha, target},
+		runner.Result{ExitCode: 1}, errors.New("not an ancestor"),
+	)
+	brokenGit.ExpectArgv(
+		[]string{"git", "-C", repository.Path, "cherry", target, sha},
+		runner.Result{}, errors.New("unreadable cherry evidence"),
+	)
+	unreadableCherry := classifyBranch(withGitRunner(context.Background(), brokenGit), repository, sweep,
+		branchRef{Name: "feature/unreadable-cherry", SHA: sha}, BranchScopeLocal, target, "main", nil, nil, nil)
+	if unreadableCherry.Disposition != BranchUnreadable || !strings.Contains(unreadableCherry.Evidence, "unreadable cherry evidence") {
+		t.Fatalf("unreadable cherry classification = %#v", unreadableCherry)
+	}
+}
+
+func TestBranchesCoverageBatchGitFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "missing")
+	repository := discover.Repo{Org: "acme", Name: "app", Path: missing}
+	sweep := branchSweepOptions{Base: "main", Scope: BranchScopeAll, Now: time.Now()}
+
+	entries, diagnostic := inspectRepositoryBranches(ctx, repository, sweep, nil)
+	if len(entries) != 1 || entries[0].Disposition != BranchUnreadable || diagnostic == "" {
+		t.Fatalf("unreadable repository = %#v/%q", entries, diagnostic)
+	}
+	entry := BranchEntry{}
+	decorateBranchCommit(ctx, missing, &entry)
+	entry.SHA = strings.Repeat("a", 40)
+	decorateBranchCommit(ctx, missing, &entry)
+	if entry.Author != "" || entry.Title != "" {
+		t.Fatalf("failed decoration mutated entry = %#v", entry)
+	}
+	if refs, diagnostic := listRemoteRefs(ctx, missing); refs != nil || diagnostic == "" {
+		t.Fatalf("remote refs failure = %#v/%q", refs, diagnostic)
+	}
+	if refs, diagnostic := listRetiredTags(ctx, missing, false, false); refs != nil || diagnostic == "" {
+		t.Fatalf("local retired tags failure = %#v/%q", refs, diagnostic)
+	}
+	if refs, diagnostic := listRetiredTags(ctx, missing, true, false); refs != nil || diagnostic == "" {
+		t.Fatalf("remote retired tags failure = %#v/%q", refs, diagnostic)
+	}
+	if refs, diagnostic := listRefs(ctx, missing, "refs/heads/", ""); refs != nil || diagnostic == "" {
+		t.Fatalf("generic refs failure = %#v/%q", refs, diagnostic)
+	}
+}
+
+func TestBranchesCoverageBatchRefParsingWithFakeGit(t *testing.T) {
+	t.Parallel()
+	const repository = "/fixture/repository"
+	const separator = "\x1f"
+	const format = "--format=%(refname:short)" + separator + "%(objectname)" + separator + "%(committerdate:iso-strict)"
+	sha := strings.Repeat("a", 40)
+	date := time.Unix(20_000, 0).UTC().Format(time.RFC3339)
+	ctx := context.Background()
+
+	remote := runnertest.New(t)
+	remote.ExpectArgv([]string{"git", "-C", repository, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"}, runner.Result{}, nil)
+	remote.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/remotes/origin/"}, runner.Result{CombinedOutput: strings.Join([]string{
+		"origin/HEAD" + separator + sha + separator + date,
+		"origin/feature/one" + separator + sha + separator + date,
+		"feature/wrong-prefix" + separator + sha + separator + date,
+		"malformed",
+		"",
+	}, "\n")}, nil)
+	refs, diagnostic := listRemoteRefs(withGitRunner(ctx, remote), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "feature/one" || refs[0].SHA != sha || refs[0].CommitterDate.IsZero() {
+		t.Fatalf("remote refs = %#v/%q", refs, diagnostic)
+	}
+
+	retired := runnertest.New(t)
+	retired.ExpectArgv([]string{"git", "-C", repository, "fetch", "--prune", "origin", "+refs/heads/retired/*:refs/remotes/origin/retired/*"}, runner.Result{}, nil)
+	retired.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/remotes/origin/retired/"}, runner.Result{
+		CombinedOutput: "origin/retired/one" + separator + sha + separator + date,
+	}, nil)
+	refs, diagnostic = listRetiredRemoteRefs(withGitRunner(ctx, retired), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "retired/one" {
+		t.Fatalf("retired remote refs = %#v/%q", refs, diagnostic)
+	}
+
+	local := runnertest.New(t)
+	local.ExpectArgv([]string{"git", "-C", repository, "for-each-ref", format, "refs/heads/"}, runner.Result{
+		CombinedOutput: "feature/local" + separator + sha + separator + "not-a-date",
+	}, nil)
+	refs, diagnostic = listLocalRefs(withGitRunner(ctx, local), repository)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "feature/local" || !refs[0].CommitterDate.IsZero() {
+		t.Fatalf("local refs = %#v/%q", refs, diagnostic)
+	}
+
+	worktrees := runnertest.New(t)
+	worktrees.ExpectArgv([]string{"git", "-C", repository, "worktree", "list", "--porcelain"}, runner.Result{
+		CombinedOutput: "worktree /one\nbranch refs/heads/feature/one\n\nworktree /detached\ndetached\n",
+	}, nil)
+	checkedOut, diagnostic := checkedOutLocalBranches(withGitRunner(ctx, worktrees), repository)
+	if diagnostic != "" || !checkedOut["feature/one"] || len(checkedOut) != 1 {
+		t.Fatalf("checked out branches = %#v/%q", checkedOut, diagnostic)
+	}
+
+	remoteTags := runnertest.New(t)
+	remoteTags.ExpectArgv([]string{"git", "-C", repository, "ls-remote", "--tags", "--refs", "origin", "refs/tags/retired/*"}, runner.Result{
+		CombinedOutput: strings.Join([]string{
+			sha + " refs/tags/retired/one",
+			"invalid refs/tags/retired/bad",
+			sha + " refs/tags/active/wrong",
+			sha + " refs/tags/retired/peeled^{}",
+		}, "\n"),
+	}, nil)
+	refs, diagnostic = listRetiredTags(withGitRunner(ctx, remoteTags), repository, true, false)
+	if diagnostic != "" || len(refs) != 1 || refs[0].Name != "retired/one" || !refs[0].UnknownDate {
+		t.Fatalf("remote retired tags = %#v/%q", refs, diagnostic)
+	}
+}
+
+func TestBranchesCoverageBatchSharedCommitDecoration(t *testing.T) {
+	t.Parallel()
+	const repository = "/fixture/repository"
+	head := strings.Repeat("a", 40)
+	fake := runnertest.New(t)
+	expect := func() {
+		fake.ExpectArgv(
+			[]string{"git", "-C", repository, "show", "-s", "--format=%H%x1f%an%x1f%s%x1e", head},
+			runner.Result{CombinedOutput: head + "\x1fWB Test\x1fseed commit\x1e"}, nil,
+		)
+	}
+	expect()
+	entries := []BranchEntry{{SHA: head}, {SHA: head}}
+	ctx := withGitRunner(context.Background(), fake)
+	decorateBranchCommits(ctx, repository, entries)
+	if entries[0].Author == "" || entries[0].Title == "" || entries[1].Author != entries[0].Author || entries[1].Title != entries[0].Title {
+		t.Fatalf("batch decoration = %#v", entries)
+	}
+	expect()
+	single := BranchEntry{SHA: head}
+	decorateBranchCommit(ctx, repository, &single)
+	if single.Author != entries[0].Author || single.Title != entries[0].Title {
+		t.Fatalf("single decoration = %#v, batch = %#v", single, entries[0])
 	}
 }
