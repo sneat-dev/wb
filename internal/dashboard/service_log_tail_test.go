@@ -20,7 +20,7 @@ func TestServiceLogTailClamped(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(strings.Repeat("a", fileSize)), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
 	}
-	server := &service{options: Options{LogPath: logPath}}
+	server := &service{options: Options{LogPath: logPath, Owner: everyRequestIsTheOwner}}
 	// Requested tail exceeds maxLogTailBytes (4<<20); without the clamp the
 	// computed seek start would be negative and truncated would read false.
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/log?tail=6291456", nil)

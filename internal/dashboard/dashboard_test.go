@@ -216,7 +216,7 @@ func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 
 func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
 	t.Parallel()
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", Owner: everyRequestIsTheOwner})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -231,7 +231,7 @@ func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte("line one\nline two\nline three\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath, Owner: everyRequestIsTheOwner})
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
@@ -269,10 +269,15 @@ func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
 
 func TestLogReportsUnavailableWhenTheFileIsMissing(t *testing.T) {
 	t.Parallel()
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log")})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log"), Owner: everyRequestIsTheOwner})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503", recorder.Code)
+	}
+	// The open error names the file's path; the body carries a closed code and
+	// a fixed message instead (cockpit#ac:daemon-log-error-names-no-path).
+	if body := recorder.Body.String(); !strings.Contains(body, `"error":"log_unavailable"`) || strings.Contains(body, "missing.log") || strings.Contains(body, string(filepath.Separator)) {
+		t.Fatalf("body = %q; want the closed code and no path", body)
 	}
 }
