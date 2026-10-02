@@ -104,35 +104,61 @@ test('Home lists what needs the operator with one action each, and what is ready
   await expectClean()
 })
 
-// cockpit-views#ac:home-charts-from-throughput, #ac:csp-and-canvas-only: Chart.js is fetched only when its section nears the viewport.
-test('the charts are canvases that are drawn, and fetched, only when they scroll near the viewport', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 300 })
+// cockpit-views#ac:home-charts-from-throughput, #ac:csp-and-canvas-only: Throughput is the first section; Chart.js is a lazy chunk fetched right after the first paint.
+test('Throughput is the first section of Home, and its charts are canvases fetched after the first paint, not in the first page', async ({ page }) => {
   await serve(page)
   const expectClean = await watch(page)
-  const scripts = new Set<string>()
+  const scripts: string[] = []
   page.on('request', (request) => {
-    if (request.url().endsWith('.js')) scripts.add(request.url())
+    if (request.url().endsWith('.js')) scripts.push(request.url())
   })
   await page.goto('/cockpit/')
-  await expect(page.getByRole('region', { name: /^Fleet health|^Cleanup/ }).first()).toBeAttached()
-  await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toBeAttached()
-  // The charts' own slot stands where they will be, with nothing fetched for them yet.
-  await expect(page.locator('.viewport-slot')).toBeAttached()
-  await expect(page.locator('app-home-charts')).toHaveCount(0)
-  expect(await page.locator('canvas').count()).toBe(0)
-  const before = scripts.size
-
-  await page.getByRole('heading', { level: 2, name: 'Throughput' }).scrollIntoViewIfNeeded()
+  await expect.poll(() => page.locator('h2.home-h').allInnerTexts().then((texts) => texts.slice(0, 2).map((text) => text.replace(/\s+\d+$/, '')))).toEqual(['Throughput', 'Needs you'])
   await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
-  expect(scripts.size).toBeGreaterThan(before)
   await expect(page.locator('app-home-charts .data table')).toHaveCount(2)
   await expect(page.locator('app-home-charts')).toContainText('median 15 min · p90 15 h')
+  // The charts arrived in chunks the entry document does not name.
+  const entry = await page.evaluate(() => [...document.querySelectorAll('script[src], link[rel=modulepreload]')].map((element) => element.getAttribute('src') ?? element.getAttribute('href')))
+  expect(scripts.length).toBeGreaterThan(entry.length)
   // A chart does not link: pressing on its canvas goes nowhere.
   const url = page.url()
   await page.locator('app-home-charts canvas').first().click({ position: { x: 60, y: 60 } })
   expect(page.url()).toBe(url)
   await expectClean()
 })
+
+// cockpit-views#ac:home-charts-from-throughput: the keyboard goes through Home in the order it is drawn.
+test('the sections of Home are h2s whose document order is their visual order, so Tab follows what is drawn', async ({ page }) => {
+  await serve(page)
+  await page.goto('/cockpit/')
+  await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
+  const tops = await page.locator('h2.home-h').evaluateAll((headings) => headings.map((heading) => heading.getBoundingClientRect().top))
+  expect(tops).toEqual([...tops].sort((a, b) => a - b))
+  expect(await page.locator('h2.home-h').evaluateAll((headings) => headings.map((heading) => heading.tagName))).toEqual(Array(tops.length).fill('H2'))
+  const first = await page.locator('app-throughput').evaluate((element) => element.compareDocumentPosition(document.querySelector('app-needs-you')!) & Node.DOCUMENT_POSITION_FOLLOWING)
+  expect(first).toBeTruthy()
+})
+
+// cockpit-views#ac:home-charts-from-throughput: the slot keeps the height of the charts, so "Needs you" does not move when they arrive.
+for (const width of [1280, 800, 375]) {
+  test(`at ${width} px "Needs you" does not move when the charts arrive`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await serve(page)
+    // A slow network: every script takes 300 ms, so the charts' chunks (requested after the page's own scripts have run) arrive well after the first paint.
+    await page.route('**/*.js', async (route) => {
+      await new Promise((done) => setTimeout(done, 300))
+      await route.continue()
+    })
+    await page.goto('/cockpit/')
+    const needs = page.getByRole('heading', { level: 2, name: /^Needs you/ })
+    await expect(needs).toBeVisible()
+    expect(await page.locator('app-home-charts').count()).toBe(0)
+    const before = (await needs.boundingBox())!.y
+    await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
+    const after = (await needs.boundingBox())!.y
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(1)
+  })
+}
 
 test('an owner whose daemon has an action registry still gets no live button on Home: there is no handler, so each row offers Copy', async ({ page }) => {
   const asked: string[] = []
@@ -173,7 +199,8 @@ test('at 360 px Home shows its first three sections as cards and the rest behind
   const more = page.getByRole('button', { name: 'More' })
   await expect(more).toHaveAttribute('aria-expanded', 'false')
   await expect(page.getByRole('heading', { level: 2, name: 'Resume' })).toHaveCount(0)
-  await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toHaveCount(0)
+  // Throughput is on top, not behind More, and compact.
+  await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toBeVisible()
   const sideways = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(await sideways()).toBeLessThanOrEqual(0)
   // A row is its own card: bordered, rounded and apart from the next.
@@ -200,5 +227,10 @@ test('a healthy fleet shows a short, reassuring page: one calm line for each emp
   await expect(page.getByText('No agents running.')).toBeVisible()
   await expect(page.getByRole('heading', { level: 2, name: /^Fleet health/ })).toHaveCount(0)
   await expect(page.getByText(/^No charts: the daemon reports no throughput/)).toBeVisible()
+  // Without a throughput block the top of Home is "Needs you" and the calm line is last, where Throughput used to be.
+  const order = await page.locator('h2.home-h').allInnerTexts()
+  expect(order[0]).toMatch(/^Needs you/)
+  expect(order.at(-1)).toBe('Throughput')
+  await expect(page.locator('app-home-charts')).toHaveCount(0)
   await expectClean()
 })

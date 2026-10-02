@@ -1,0 +1,45 @@
+/* The two charts of Throughput. The height they keep while they load is `.throughput-slot` in styles/home.css, from the same --chart-card-min. */
+.charts-grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.chart-card {
+  min-height: var(--chart-card-min, 14rem);
+  padding: var(--space-3);
+}
+
+@media (min-width: 60rem) {
+  .charts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.chart-legend {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-2) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-left: var(--space-1);
+  border-radius: 2px;
+}
+
+.swatch.primary {
+  background: var(--chart-bar);
+}
+
+.swatch.soft {
+  background: var(--chart-bar-soft);
+}
+
+.swatch.muted {
+  background: var(--chart-bar-muted);
+}

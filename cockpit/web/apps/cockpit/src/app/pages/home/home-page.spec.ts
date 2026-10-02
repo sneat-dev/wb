@@ -51,18 +51,39 @@ describe('HomePage', () => {
   })
 
   it('renders "Needs you" at once from the model that is already loaded', async () => {
-    const { root } = await open()
+    const { root } = await open(fleet('no-throughput'))
     expect(headings(root)[0]).toBe('Needs you 6')
     expect(root.querySelectorAll('.needs-row')).toHaveLength(6)
   })
 
-  it('then appends the rest of Home from its lazy chunk, below, in order', async () => {
+  it('puts Throughput first, above "Needs you", when the document has a throughput block, and draws its charts from a lazy chunk', async () => {
     const { harness, root } = await open()
+    expect(headings(root).slice(0, 2)).toEqual(['Throughput', 'Needs you 6'])
+    expect(root.querySelector('.throughput-slot')).not.toBeNull()
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(headings(root)).toEqual(['Throughput', 'Needs you 6', 'Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2'])
+      expect(root.querySelectorAll('.throughput-slot app-chart')).toHaveLength(2)
+    }, { timeout: 5000 })
+    expect(root.querySelector('app-home-rest')).not.toBeNull()
+    expect(root.textContent).not.toContain('No charts')
+  })
+
+  it('keeps "Needs you" first and puts the "No charts" line last when there is no throughput block', async () => {
+    const { harness, root } = await open(fleet('no-throughput'))
     await vi.waitFor(async () => {
       await harness.fixture.whenStable()
       expect(headings(root)).toEqual(['Needs you 6', 'Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2', 'Throughput'])
     })
-    expect(root.querySelector('app-home-rest')).not.toBeNull()
+    expect(root.querySelectorAll('app-throughput')).toHaveLength(1)
+    expect(root.querySelector('.throughput-slot')).toBeNull()
+    expect(root.querySelector('app-throughput .home-calm')?.textContent).toContain('No charts: the daemon reports no throughput')
+  })
+
+  it('keeps the charts off the top, and the line out of sight, while the daemon is still warming up', async () => {
+    const { root } = await open({ ...fleet(), warming_up: true })
+    expect(headings(root)[0]).toMatch(/^Needs you/)
+    expect(root.querySelector('app-throughput')).toBeNull()
   })
 
   it('keeps the rest current with the model, and shows a skeleton and not "Nothing needs you" while the daemon is scanning', async () => {

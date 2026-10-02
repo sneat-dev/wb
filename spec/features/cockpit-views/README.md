@@ -388,7 +388,7 @@ agents, ending with the "Raw data" block.
 
 #### REQ: home-needs-you
 
-Serves J1 and J4. Home's first section, "Needs you", MUST show one row per task, at most 5
+Serves J1 and J4. Home's first decision section, "Needs you" (the first section of all when the document has no `throughput` block, and directly below the Throughput charts when it has, REQ:home-charts), MUST show one row per task, at most 5
 rows, each task for its worst kind and with exactly one primary action, then "+n more" that
 opens Tasks with chip `needs-you` (the same set); when there are none it shows one line saying
 nothing needs the operator. The Home badge of REQ:top-bar is the number of such tasks. "Needs
@@ -484,19 +484,30 @@ REQ:remote-error-is-visible for a remote error.
 
 #### REQ: home-charts
 
-Serves J2 and J6. Below the sections above, and hidden behind "more" on a phone, Home MUST show
-two charts drawn with Chart.js from the document's `throughput` block (REQ:throughput-block):
+Serves J2 and J6. Home MUST show, as its very first section and above "Needs you", the section
+"Throughput" with two charts drawn with Chart.js from the document's `throughput` block (REQ:throughput-block):
 "Finished per day" over the last 30 days (stacked bars of `finished` and `dropped`) and
 "Time to finish" (the slowest five finished tasks named, with the `median_seconds` and
 `p90_seconds` in the caption). They are non-linking
-(REQ:every-number-is-a-link). When the block is absent the charts are not rendered. Each chart
+(REQ:every-number-is-a-link). Each chart
 has a text alternative, a visually hidden table of the same numbers, and uses the theme's colours
-in light and dark. The charts never sit above sections 1 to 3.
+in light and dark. The section's heading and a slot that keeps the charts' height at the current
+breakpoint are part of the first page; the charts and Chart.js are a lazy chunk requested as soon
+as the section is created, so they arrive right after the first paint and nothing below them moves
+(REQ:initial-script-size and REQ:look-layout hold). On a phone the section stays on
+top, not behind "more", with shorter plots so that "Needs you" is still on the first screen. When
+the block is absent, or while the daemon's first scan is still running, there are no charts and
+Throughput is not on top: the top of Home is "Needs you", and the section is the one calm line
+"No charts: the daemon reports no throughput" at the bottom of Home, below "Fleet health" (shown
+only after the first scan, like the sections around it). It is one component placed by that
+condition. The sections after Throughput keep their order: Needs you, Ready to land, In flight,
+Resume, Cleanup, Fleet health.
 
 #### REQ: home-phone
 
 Serves J1 and J2. At a viewport 360 px wide, in hosted mode as well, Home MUST show
-sections 1 to 3 as cards and sections 4 to 6 and the charts behind "more". Every
+sections 1 to 3 as cards and sections 4 to 6 behind "more"; the Throughput charts, when there are
+any, stay on top, compact (REQ:home-charts). Every
 other page MUST merely not break at that width (REQ:responsive-to-360).
 
 ### Repositories
@@ -2383,7 +2394,7 @@ Then the first shows no Fleet health line, the second shows one line per problem
 Scenario: With and without throughput, and non-linking
 Given a document with a `throughput` block of 30 days and one without
 When Home is opened on a desktop viewport for each, and a bar and a number of the charts are clicked
-Then the first shows "Time to finish" with the slowest five named and the median and 90th percentile in its caption, and "Finished per day" as stacked finished and dropped bars, each with a visually hidden table and theme colours, below sections 1 to 3, nothing happens on a click because they do not link, and the second shows neither chart
+Then the first shows "Throughput" as the first section of Home, above "Needs you", with "Time to finish" (the slowest five named and the median and 90th percentile in its caption) and "Finished per day" (stacked finished and dropped bars), each with a visually hidden table and theme colours, nothing happens on a click because they do not link, and the heading of "Needs you" does not move when the charts arrive; the second shows neither chart, has "Needs you" as its first section and ends with the line "No charts: the daemon reports no throughput" in the place Throughput used to be
 
 ### AC: home-phone-layout
 
@@ -2392,7 +2403,7 @@ Then the first shows "Time to finish" with the slowest five named and the median
 Scenario: 360 px wide
 Given a viewport 360 px wide, in hosted mode
 When Home and each other page are opened
-Then sections 1 to 3 are cards, sections 4 to 6 and the charts are behind "more", and no page scrolls horizontally or breaks
+Then sections 1 to 3 are cards, sections 4 to 6 are behind "more", the Throughput charts are on top and compact with "Needs you" on the first screen, and no page scrolls horizontally or breaks
 
 ### AC: repository-identity-merges-local-and-cached
 

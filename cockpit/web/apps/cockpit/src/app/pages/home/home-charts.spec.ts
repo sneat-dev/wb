@@ -104,3 +104,32 @@ describe('HomeCharts', () => {
     expect([...root.querySelectorAll('.chart-legend')].map((legend) => text(legend))[0]).toBe('finished dropped')
   })
 })
+
+describe('HomeCharts on a phone', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stubMedia(matches: boolean) {
+    const listeners: Array<(event: { matches: boolean }) => void> = []
+    const remove = vi.fn()
+    vi.stubGlobal('matchMedia', () => ({ matches, addEventListener: (_: string, listener: (event: { matches: boolean }) => void) => listeners.push(listener), removeEventListener: remove }))
+    return { listeners, remove }
+  }
+  const plots = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('.plot')].map((plot) => plot.style.height)
+
+  it('draws shorter plots at 480 px and less, and follows the viewport when it changes', async () => {
+    const media = stubMedia(true)
+    const { fixture, root } = await render()
+    expect(plots(root)).toEqual(['6rem', '6rem'])
+    media.listeners[0]({ matches: false })
+    await fixture.whenStable()
+    expect(plots(root)).toEqual(['9rem', '9rem'])
+    fixture.destroy()
+    expect(media.remove).toHaveBeenCalled()
+  })
+
+  it('draws full plots on a wide viewport', async () => {
+    stubMedia(false)
+    const { root } = await render()
+    expect(plots(root)).toEqual(['9rem', '9rem'])
+  })
+})

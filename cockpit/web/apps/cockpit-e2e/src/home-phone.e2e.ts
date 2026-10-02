@@ -1,22 +1,24 @@
 import { expect, test } from '@playwright/test'
 import { stubBusy, watch } from './support'
 
-// cockpit-views#ac:home-phone-layout and usable-at-360-wide on Home: "Needs you" first, no chart above the fold,
-// every control a 44 px target, nothing scrolls sideways, and the bar's chips do not overlap.
+// cockpit-views#ac:home-phone-layout and usable-at-360-wide on Home: Throughput first and compact, "Needs you"
+// still on the first screen, every control a 44 px target, nothing scrolls sideways, and the bar's chips do not overlap.
 
 for (const width of [390, 360]) {
   test.describe(`${width} px wide`, () => {
     test.use({ viewport: { width, height: 800 } })
 
-    test('Needs you comes first, no chart is above the fold, and every tap target is 44 px', async ({ page }) => {
+    test('Throughput is first and compact, Needs you is still on the first screen, and every tap target is 44 px', async ({ page }) => {
       await stubBusy(page)
       const expectClean = await watch(page)
       await page.goto('/cockpit/')
       await expect(page.getByRole('heading', { level: 2, name: 'Needs you' })).toBeVisible()
       await expect(page.getByRole('button', { name: 'More' })).toBeVisible()
-      // The first section is "Needs you", and the charts (behind More) are not in the document before it is opened.
-      await expect(page.locator('h2.home-h').first()).toContainText('Needs you')
-      await expect(page.locator('app-chart canvas')).toHaveCount(0)
+      // The first section is Throughput (the charts stay out of "More"), short enough that "Needs you" is on the first screen.
+      await expect(page.locator('h2.home-h').first()).toContainText('Throughput')
+      await expect(page.locator('app-chart canvas')).toHaveCount(2)
+      const needs = await page.getByRole('heading', { level: 2, name: 'Needs you' }).boundingBox()
+      expect(needs!.y + needs!.height).toBeLessThan(800)
       const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
       expect(widths.page).toBeLessThanOrEqual(widths.window)
 

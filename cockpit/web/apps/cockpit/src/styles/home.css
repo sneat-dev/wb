@@ -27,6 +27,26 @@ main:has(.home) > app-skeleton-rows.warming {
   line-height: var(--lh-tight);
 }
 
+/* Throughput is the first section of Home and its charts are a lazy chunk (REQ:home-charts): this slot keeps
+   their height until they arrive, so "Needs you" below does not move. --chart-card-min is the card's
+   min-height (home-charts.css): two cards stacked under 60rem, one row of two from there; compact on a phone. */
+.throughput-slot {
+  --chart-card-min: 14rem;
+  min-height: calc(2 * var(--chart-card-min) + var(--space-3));
+}
+
+@media (min-width: 60rem) {
+  .throughput-slot {
+    min-height: var(--chart-card-min);
+  }
+}
+
+@media (max-width: 480px) {
+  .throughput-slot {
+    --chart-card-min: 12.5rem;
+  }
+}
+
 .home-count {
   display: inline-block;
   min-width: 1.5rem;
