@@ -31,4 +31,6 @@ func detachedRefusal(result ListResult) string {
 func (result ListResult) landedWithResidue() bool {
 	return worktreelanding.LandedWithResidue(result.Landing)
 }
-func (result ListResult) residueReason() string { return worktreelanding.ResidueReason(result.Landing) }
+func (result ListResult) residueReason() string {
+	return worktreelanding.ResidueReason(result.Landing, result.Task)
+}
