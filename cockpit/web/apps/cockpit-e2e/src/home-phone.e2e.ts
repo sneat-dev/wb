@@ -18,7 +18,7 @@ for (const width of [390, 360]) {
       await expect(page.locator('h2.home-h').first()).toContainText('Throughput')
       await expect(page.locator('app-chart canvas')).toHaveCount(2)
       const needs = await page.getByRole('heading', { level: 2, name: 'Needs you' }).boundingBox()
-      expect(needs!.y + needs!.height).toBeLessThan(800)
+      expect(needs!.y).toBeLessThanOrEqual(400)
       const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
       expect(widths.page).toBeLessThanOrEqual(widths.window)
 

@@ -22,7 +22,7 @@ const HOUR = 3600
 export const COMPACT_QUERY = '(max-width: 480px)'
 /** The height of a plot in rem: Throughput is the first section of Home, so on a phone it is shorter and "Needs you" stays near the top. */
 export const PLOT_HEIGHT = 9
-export const COMPACT_PLOT_HEIGHT = 6
+export const COMPACT_PLOT_HEIGHT = 5
 
 /** What the stacked chart's series are called, in the order they stack and in the legend. */
 export function seriesNames(series: Pick<ThroughputSeries, 'hasLanded'>): string[] {
@@ -70,7 +70,7 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
   template: `<div class="charts-grid">
     <div class="home-card chart-card" [attr.title]="notALink">
       <app-chart [spec]="specs().perDay" [height]="plotHeight()" />
-      <p class="chart-legend">
+      <p class="chart-legend line">
         @for (entry of specs().perDay.series; track entry.name) {
           <span [class]="'swatch ' + entry.tone" aria-hidden="true"></span>{{ entry.name }}
         }
@@ -79,7 +79,7 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
     <div class="home-card chart-card" [attr.title]="notALink">
       <app-chart [spec]="specs().slowest" [height]="plotHeight()" />
       @if (caption(); as text) {
-        <p class="chart-legend">{{ text }}</p>
+        <p class="chart-legend line">{{ text }}</p>
       }
       @if (series().capped) {
         <p class="chart-legend">The daemon capped its scan: older sealed tasks may be missing.</p>

@@ -4,22 +4,25 @@ import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { FIXED_CLOCK, fleet, modelOf } from './home-testing'
 import { ThroughputSection, hasThroughput, throughputOnTop } from './throughput-section'
 
-async function render(document = fleet()) {
+async function render(document = fleet(), warming = false) {
   TestBed.resetTestingModule()
   TestBed.configureTestingModule({ providers: [FIXED_CLOCK, provideRouter([]), { provide: CHART_ENGINE, useValue: async () => ({ create: () => ({ update: vi.fn(), destroy: vi.fn() }) }) }] })
   const fixture = TestBed.createComponent(ThroughputSection)
   fixture.componentRef.setInput('model', modelOf(document))
+  fixture.componentRef.setInput('warming', warming)
   await fixture.whenStable()
   return { fixture, root: fixture.nativeElement as HTMLElement }
 }
 
 describe('throughputOnTop', () => {
-  it('is true only for a document with a throughput block once the first scan is done', () => {
+  it('is true for a document with a throughput block, and while it is not known yet, and false for a complete document without one', () => {
     expect(hasThroughput(modelOf(fleet()))).toBe(true)
     expect(hasThroughput(modelOf(fleet('no-throughput')))).toBe(false)
     expect(throughputOnTop(modelOf(fleet()), false)).toBe(true)
-    expect(throughputOnTop(modelOf(fleet()), true)).toBe(false)
     expect(throughputOnTop(modelOf(fleet('no-throughput')), false)).toBe(false)
+    // Not known yet: the place is kept.
+    expect(throughputOnTop(modelOf(fleet()), true)).toBe(true)
+    expect(throughputOnTop(modelOf(fleet('no-throughput')), true)).toBe(true)
   })
 })
 
@@ -41,5 +44,13 @@ describe('ThroughputSection', () => {
     expect(root.querySelector('h2')?.textContent?.trim()).toBe('Throughput')
     expect(root.querySelector('.throughput-slot')).toBeNull()
     expect(root.querySelector('.home-calm')?.textContent).toContain('No charts: the daemon reports no throughput')
+  })
+
+  it('is the heading and an empty reserved slot, with no charts and no line, while it is not known whether there are any', async () => {
+    const { root } = await render(fleet('no-throughput'), true)
+    expect(root.querySelector('h2')?.textContent?.trim()).toBe('Throughput')
+    expect(root.querySelector('.throughput-slot.pending')?.getAttribute('aria-hidden')).toBe('true')
+    expect(root.querySelector('app-lazy-mount')).toBeNull()
+    expect(root.querySelector('.home-calm')).toBeNull()
   })
 })

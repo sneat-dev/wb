@@ -1,7 +1,7 @@
 /* The two charts of Throughput. The height they keep while they load is `.throughput-slot` in styles/home.css, from the same --chart-card-min. */
 .charts-grid {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--chart-card-gap, var(--space-3));
 }
 
 .chart-card {
@@ -42,4 +42,27 @@
 
 .swatch.muted {
   background: var(--chart-bar-muted);
+}
+
+/* A phone: dense and still clear. The card is only as tall as its title, plot and padding, the legend or
+   caption is on the title's line, and the cards are close: Throughput is the first section and "Needs you"
+   must stay on the first screen. The height is --chart-card-min, the same as the slot that keeps its place. */
+@media (max-width: 480px) {
+  .chart-card {
+    position: relative;
+    padding: var(--space-2);
+  }
+
+  .chart-card app-chart .title {
+    margin-bottom: var(--space-1);
+    line-height: 1.125rem;
+  }
+
+  .chart-card .chart-legend.line {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    margin: 0;
+    line-height: 1.125rem;
+  }
 }

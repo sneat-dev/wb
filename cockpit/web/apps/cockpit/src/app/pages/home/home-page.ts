@@ -9,10 +9,10 @@ const loadRest = () => import('./home-rest').then((module) => module.HomeRest)
 
 /**
  * Home, the front door: a dispatcher's inbox under a dashboard line. When the document has a
- * throughput block (and the daemon's first scan is done) "Throughput" is the first section; its
+ * throughput block, or it is not known yet (no document, or the first scan is running), "Throughput" is the first section; its
  * heading and the slot that keeps the charts' height are in the first page and the charts, with
- * Chart.js, are a lazy chunk requested right after the first paint (REQ:home-charts). Without a
- * block the calm line "No charts" is at the bottom of Home and the top is "Needs you", as it
+ * Chart.js, are a lazy chunk requested right after the first paint (REQ:home-charts). Once a
+ * complete document has no block the calm line "No charts" is at the bottom of Home and the top is "Needs you", as it
  * always was. "Needs you" renders from the model that is already loaded, with no request and no lazy
  * code of its own. Everything after it ("Ready to land", "In flight" with the machine strip,
  * "Resume", "Cleanup", "Fleet health" when something is wrong) is one lazy chunk, requested when the

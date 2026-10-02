@@ -188,11 +188,13 @@ test('the schema-mismatch state replaces the data: update wb when the daemon is 
 test('while the daemon warms up the chip counts the scan and skeleton rows wait, and the complete document shifts nothing', async ({ page }) => {
   await stub(page)
   let reads = 0
+  // The common case: the complete document has a throughput block, so the place kept for Throughput on top of Home while warming up is the place of its charts.
+  const complete = { ...fleet, throughput: { window_days: 30, per_day: [], slowest: [] } }
   await page.route('**/api/v1/cockpit/fleet', (route) => {
     reads++
     const warming = reads <= 2
     return route.fulfill({
-      json: warming ? { ...fleet, warming_up: true, repositories_total: 438, repositories_scanned: 120, repositories: fleet.repositories.slice(0, 1), worktrees: fleet.worktrees.slice(0, 1) } : fleet,
+      json: warming ? { ...complete, warming_up: true, repositories_total: 438, repositories_scanned: 120, repositories: fleet.repositories.slice(0, 1), worktrees: fleet.worktrees.slice(0, 1) } : complete,
       headers: { 'Cache-Control': 'no-cache', ...checkedAt() },
     })
   })

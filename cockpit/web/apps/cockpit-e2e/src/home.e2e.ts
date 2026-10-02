@@ -160,6 +160,47 @@ for (const width of [1280, 800, 375]) {
   })
 }
 
+// cockpit-views#ac:home-charts-from-throughput: while the first document is on its way the place of Throughput is kept.
+for (const width of [1280, 375]) {
+  test(`at ${width} px "Needs you" is where it was when the first document arrives with a throughput block`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await serve(page)
+    let complete = false
+    // The daemon is on its first scan (a document that says so) until the test releases the complete one.
+    await page.route('**/api/v1/cockpit/fleet', async (route) => {
+      await route.fulfill({
+        json: complete ? homeFleet : { ...homeFleet, warming_up: true, repositories_total: 438, repositories_scanned: 10, worktrees: [], pull_requests: [], agents: [] },
+        headers: { 'Cache-Control': 'no-cache', ...checkedAt() },
+      })
+    })
+    await page.goto('/cockpit/')
+    const needs = page.getByRole('heading', { level: 2, name: /^Needs you/ })
+    await expect(needs).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toBeVisible()
+    await expect(page.locator('.throughput-slot.pending')).toBeAttached()
+    const before = (await needs.boundingBox())!.y
+    complete = true
+    await expect(page.locator('app-home-charts canvas')).toHaveCount(2, { timeout: 15_000 })
+    await expect(page.locator('.throughput-slot.pending')).toHaveCount(0)
+    expect((await needs.boundingBox())!.y).toBe(before)
+  })
+}
+
+// cockpit-views#ac:home-phone-layout: dense on a phone, both charts shown, and "Needs you" high on the first screen.
+test('at 375 x 812 both charts are shown and the "Needs you" heading is at or above y 400', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await serve(page)
+  await page.goto('/cockpit/')
+  await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
+  await expect(page.locator('.chart-card')).toHaveCount(2)
+  const y = (await page.getByRole('heading', { level: 2, name: /^Needs you/ }).boundingBox())!.y
+  expect(y).toBeLessThanOrEqual(400)
+  const cards = await page.locator('.chart-card').evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height))
+  const slot = await page.locator('.throughput-slot').evaluate((element) => element.getBoundingClientRect().height)
+  // The slot is exactly the two cards and the gap between them: nothing is left over, so nothing moved.
+  expect(cards[0] + cards[1] + 8).toBe(slot)
+})
+
 test('an owner whose daemon has an action registry still gets no live button on Home: there is no handler, so each row offers Copy', async ({ page }) => {
   const asked: string[] = []
   await serve(page, OWNER)

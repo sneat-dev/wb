@@ -495,12 +495,16 @@ in light and dark. The section's heading and a slot that keeps the charts' heigh
 breakpoint are part of the first page; the charts and Chart.js are a lazy chunk requested as soon
 as the section is created, so they arrive right after the first paint and nothing below them moves
 (REQ:initial-script-size and REQ:look-layout hold). On a phone the section stays on
-top, not behind "more", with shorter plots so that "Needs you" is still on the first screen. When
-the block is absent, or while the daemon's first scan is still running, there are no charts and
-Throughput is not on top: the top of Home is "Needs you", and the section is the one calm line
-"No charts: the daemon reports no throughput" at the bottom of Home, below "Fleet health" (shown
-only after the first scan, like the sections around it). It is one component placed by that
-condition. The sections after Throughput keep their order: Needs you, Ready to land, In flight,
+top, not behind "more", and is dense: each chart's legend or caption is on its title's line, the
+cards are close together and tightly padded, and the plots are short, so that at 375 x 812 px the
+"Needs you" heading is at or above y 400 and both charts are readable. While it is not yet known
+whether there is a block (no document yet, or the daemon's first scan is still running) the section
+is its heading and an empty slot of the height of the charts, so the common case causes no shift
+when the first complete document arrives. When a complete document has no block there are no
+charts and Throughput is not on top: the slot is removed, the top of Home is "Needs you", and the
+section is the one calm line "No charts: the daemon reports no throughput" at the bottom of Home,
+below "Fleet health" (shown only after the first scan, like the sections around it). It is one
+component placed by that condition. The sections after Throughput keep their order: Needs you, Ready to land, In flight,
 Resume, Cleanup, Fleet health.
 
 #### REQ: home-phone
@@ -2394,7 +2398,7 @@ Then the first shows no Fleet health line, the second shows one line per problem
 Scenario: With and without throughput, and non-linking
 Given a document with a `throughput` block of 30 days and one without
 When Home is opened on a desktop viewport for each, and a bar and a number of the charts are clicked
-Then the first shows "Throughput" as the first section of Home, above "Needs you", with "Time to finish" (the slowest five named and the median and 90th percentile in its caption) and "Finished per day" (stacked finished and dropped bars), each with a visually hidden table and theme colours, nothing happens on a click because they do not link, and the heading of "Needs you" does not move when the charts arrive; the second shows neither chart, has "Needs you" as its first section and ends with the line "No charts: the daemon reports no throughput" in the place Throughput used to be
+Then the first shows "Throughput" as the first section of Home, above "Needs you", with "Time to finish" (the slowest five named and the median and 90th percentile in its caption) and "Finished per day" (stacked finished and dropped bars), each with a visually hidden table and theme colours, nothing happens on a click because they do not link, and the heading of "Needs you" does not move when the charts arrive, nor when the first complete document arrives after a warming-up one; the second shows neither chart, has "Needs you" as its first section and ends with the line "No charts: the daemon reports no throughput" in the place Throughput used to be
 
 ### AC: home-phone-layout
 
@@ -2403,7 +2407,7 @@ Then the first shows "Throughput" as the first section of Home, above "Needs you
 Scenario: 360 px wide
 Given a viewport 360 px wide, in hosted mode
 When Home and each other page are opened
-Then sections 1 to 3 are cards, sections 4 to 6 are behind "more", the Throughput charts are on top and compact with "Needs you" on the first screen, and no page scrolls horizontally or breaks
+Then sections 1 to 3 are cards, sections 4 to 6 are behind "more", the Throughput charts are on top, both shown, and compact so that the "Needs you" heading is at or above y 400 at 375 x 812 px, and no page scrolls horizontally or breaks
 
 ### AC: repository-identity-merges-local-and-cached
 

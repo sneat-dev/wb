@@ -80,10 +80,30 @@ describe('HomePage', () => {
     expect(root.querySelector('app-throughput .home-calm')?.textContent).toContain('No charts: the daemon reports no throughput')
   })
 
-  it('keeps the charts off the top, and the line out of sight, while the daemon is still warming up', async () => {
-    const { root } = await open({ ...fleet(), warming_up: true })
-    expect(headings(root)[0]).toMatch(/^Needs you/)
-    expect(root.querySelector('app-throughput')).toBeNull()
+  it('keeps the place of Throughput on top while it is not known yet, as the heading and an empty slot, then removes it when a complete document has no block', async () => {
+    const { harness, root, store } = await open({ ...fleet('warming'), warming_up: true })
+    expect(headings(root).slice(0, 2)).toEqual(['Throughput', 'Needs you'])
+    expect(root.querySelector('.throughput-slot.pending')).not.toBeNull()
+    expect(root.querySelector('app-home-charts')).toBeNull()
+    store.document.set({ ...fleet('no-throughput'), warming_up: false })
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(headings(root)[0]).toMatch(/^Needs you/)
+      expect(headings(root).at(-1)).toBe('Throughput')
+    })
+    expect(root.querySelector('.throughput-slot')).toBeNull()
+  })
+
+  it('keeps the same place for the charts when the first complete document has a throughput block', async () => {
+    const { harness, root, store } = await open({ ...fleet(), warming_up: true })
+    expect(root.querySelector('.throughput-slot.pending')).not.toBeNull()
+    store.document.set({ ...fleet(), warming_up: false })
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(root.querySelectorAll('.throughput-slot app-chart')).toHaveLength(2)
+    }, { timeout: 5000 })
+    expect(root.querySelector('.throughput-slot.pending')).toBeNull()
+    expect(root.querySelectorAll('app-throughput')).toHaveLength(1)
   })
 
   it('keeps the rest current with the model, and shows a skeleton and not "Nothing needs you" while the daemon is scanning', async () => {

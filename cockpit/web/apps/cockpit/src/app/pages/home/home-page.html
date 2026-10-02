@@ -1,6 +1,6 @@
 <div class="home">
   @if (throughputFirst()) {
-    <app-throughput [model]="store.model()" />
+    <app-throughput [model]="store.model()" [warming]="store.warmingUp()" />
   }
   <app-needs-you [model]="store.model()" [warming]="store.warmingUp()" />
   <app-lazy-mount [load]="loadRest" [inputs]="restInputs()" />
