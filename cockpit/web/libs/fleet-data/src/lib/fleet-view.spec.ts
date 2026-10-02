@@ -1,25 +1,5 @@
-import {
-  OWNER_SESSION_COMMAND,
-  canReadContent,
-  codeBrowserLink,
-  codeIndexView,
-  readmeFailureText,
-  codeIndexText,
-  agentLabel,
-  emptyDocument,
-  filterAgents,
-  filterMachines,
-  filterRepositories,
-  filterWorktrees,
-  formatAge,
-  groupBy,
-  machineOptions,
-  repositoryOptions,
-  mostRecentWorktrees,
-  repositoryLabel,
-  routeLabel,
-  worktreeLabel,
-} from './fleet-view'
+import { codeBrowserLink, codeIndexView, readmeFailureText, codeIndexText, agentLabel, filterMachines, filterRepositories, repositoryOptions, worktreeLabel } from './page-helpers'
+import { OWNER_SESSION_COMMAND, canReadContent, emptyDocument, ownerRoutes, filterAgents, filterWorktrees, formatAge, groupBy, machineOptions, mostRecentWorktrees, repositoryLabel, routeLabel } from './fleet-view'
 import { agent, fleetDocument, machine, repository, worktree } from './test-data'
 
 const doc = fleetDocument()
@@ -143,9 +123,12 @@ describe('ages and route labels', () => {
     expect(formatAge('not a time', NOW)).toBe('age unknown')
   })
 
-  it('labels local and cached entries', () => {
+  // cockpit-views#ac:route-vocabulary
+  it('labels every route in the one vocabulary: local, live and cached (with its age), never "live-remote"', () => {
     expect(routeLabel(machine('alpha'), NOW)).toBe('local')
+    expect(routeLabel({ ...machine('beta'), route: 'live-remote' }, NOW)).toBe('live')
     expect(routeLabel(machine('beta', 'cached'), NOW + 7 * 60_000)).toBe('cached, 7 min ago')
+    for (const route of ['local', 'live-remote', 'cached'] as const) expect(routeLabel({ ...machine('x'), route }, NOW)).not.toContain('remote')
   })
 })
 
@@ -182,6 +165,18 @@ describe('canReadContent', () => {
     expect(canReadContent(session)).toBe(true)
     expect(canReadContent({ ...session, principal: 'anonymous-local', capabilities: ['fleet.read'] })).toBe(false)
     expect(canReadContent(null)).toBe(false)
+  })
+})
+
+describe('ownerRoutes', () => {
+  const routes = [{ machine_id: 'mach-beta', ssh: { host: 'beta.example' } }]
+  const session = { principal: 'owner', capabilities: ['fleet.read'], code_browser_url: '', machine_routes: routes }
+
+  it('gives the SSH routes to the owner only, whatever else a session response carried', () => {
+    expect(ownerRoutes(session)).toBe(routes)
+    expect(ownerRoutes({ ...session, principal: 'anonymous-local' })).toBeUndefined()
+    expect(ownerRoutes({ ...session, machine_routes: undefined })).toBeUndefined()
+    expect(ownerRoutes(null)).toBeUndefined()
   })
 })
 

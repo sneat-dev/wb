@@ -239,10 +239,11 @@ if [ "$1" = api ] && echo "$2" | grep -q '/status'; then
   echo '{"state":"success","statuses":[]}'
   exit 0
 fi
-if [ "$1" = api ] && echo "$2" | grep -q '/branches/main/protection'; then
-  echo '{"required_status_checks":{"strict":true,"checks":[]}}'
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'
   exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q 'rules/branches/main'; then echo '[]'; exit 0; fi
 if [ "$1" = api ]; then echo '{}'; exit 0; fi
 echo "unexpected gh args: $*" >&2
 exit 30
@@ -268,6 +269,11 @@ exit 30
 	target := output.Targets[0]
 	if target.State != "merged" {
 		t.Errorf("state = %q, want merged", target.State)
+	}
+	// `wb wait pr` has always reported the checks of a merged pull request; only
+	// the Cockpit's lean observation skips reading them.
+	if target.Checks["pass"] != 1 {
+		t.Errorf("checks = %v, want the one passing check of the merged pull request", target.Checks)
 	}
 	// The caller supplied neither a base branch nor a head SHA; WB resolved
 	// both. That is the ergonomics defect this verb exists to fix.

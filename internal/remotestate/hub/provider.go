@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/internal/hubaddress"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -27,6 +29,16 @@ var (
 	defaultRetryDelays   = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond}
 	ErrClaimsUnsupported = errors.New("the HTTP hub provider does not yet support remote claims")
 )
+
+// StatusError is a hub's refusal of a request with an HTTP status. It
+// satisfies remotestate.StatusCoder, so a publisher can recognise the 400 an
+// older hub answers to the optional snapshot fields it does not know.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("hub returned HTTP %d", e.Code) }
+
+// HTTPStatus is the status the hub answered with.
+func (e *StatusError) HTTPStatus() int { return e.Code }
 
 // Options configures the authenticated HTTPS provider. Exactly one of Token
 // and TokenFile must be set; the constructor never invents a credential.
@@ -49,6 +61,48 @@ type Provider struct {
 	client      *http.Client
 	sleep       func(context.Context, time.Duration) error
 	retryDelays []time.Duration
+
+	refusalMu    sync.Mutex
+	refusedUntil time.Time
+}
+
+// OptionalFieldsRefused reports whether this hub refused the optional snapshot
+// fields and the refusal is still remembered at now (remotestate.
+// OptionalRefusalMemory). The memory lives and dies with the provider, so a
+// daemon restart forgets it.
+func (provider *Provider) OptionalFieldsRefused(now time.Time) bool {
+	provider.refusalMu.Lock()
+	defer provider.refusalMu.Unlock()
+	return now.Before(provider.refusedUntil)
+}
+
+// RefuseOptionalFields remembers a refusal of the optional fields until the
+// given time.
+func (provider *Provider) RefuseOptionalFields(until time.Time) {
+	provider.refusalMu.Lock()
+	defer provider.refusalMu.Unlock()
+	provider.refusedUntil = until
+}
+
+// newClient is the provider's own client: the default transport with the proxy
+// policy of a client that sends a machine credential (hubaddress.Proxy), so the
+// bearer is never handed to an HTTP proxy in a plain request; an https request
+// still tunnels through the proxy the environment names.
+func newClient(proxy func(*http.Request) (*url.URL, error)) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: credentialTransport(http.DefaultTransport, proxy)}
+}
+
+// credentialTransport is base with the proxy policy when base is the standard
+// transport type (the default transport's settings are kept), and a fresh
+// transport with the policy otherwise: a program that replaced
+// http.DefaultTransport with another type must not make this panic.
+func credentialTransport(base http.RoundTripper, proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	transport := &http.Transport{ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second}
+	if standard, isStandard := base.(*http.Transport); isStandard {
+		transport = standard.Clone()
+	}
+	transport.Proxy = proxy
+	return transport
 }
 
 // New validates the endpoint and credential source without making a request.
@@ -64,7 +118,7 @@ func New(options Options) (*Provider, error) {
 	}
 	client := options.Client
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = newClient(hubaddress.Proxy)
 	}
 	sleep := options.Sleep
 	if sleep == nil {
@@ -84,7 +138,7 @@ func New(options Options) (*Provider, error) {
 		return nil, errors.New("injected hub credential must contain one non-empty token")
 	}
 	return &Provider{
-		baseURL: strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"), machine: options.Machine,
+		baseURL: hubaddress.Origin(options.BaseURL), machine: options.Machine,
 		token: token, tokenFile: strings.TrimSpace(options.TokenFile),
 		client: client, sleep: sleep, retryDelays: append([]time.Duration(nil), retryDelays...),
 	}, nil
@@ -259,7 +313,7 @@ func (provider *Provider) doJSON(ctx context.Context, method, path string, input
 			if requestErr != nil {
 				return fmt.Errorf("hub request failed: %w", requestErr)
 			}
-			return fmt.Errorf("hub returned HTTP %d", responseCode)
+			return &StatusError{Code: responseCode}
 		}
 		if err := provider.sleep(ctx, provider.retryDelays[attempt]); err != nil {
 			return err

@@ -5,3 +5,14 @@
   <p class="readme-failed">The README could not be rendered.</p>
 }
 <article class="readme-content" #root></article>
+@if (parts(); as state) {
+  <p class="readme-more">
+    <button type="button" (click)="showRest()" [disabled]="state.running">
+      @if (state.running) {
+        Drawing the rest: part {{ state.drawn }} of {{ state.total }}
+      } @else {
+        Show the rest ({{ state.total - state.drawn }} more of {{ state.total }} parts)
+      }
+    </button>
+  </p>
+}

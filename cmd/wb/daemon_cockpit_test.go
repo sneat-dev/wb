@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +20,11 @@ import (
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/prsnapshot"
+	"github.com/sneat-dev/wb/internal/prwatch"
 	"github.com/sneat-dev/wb/internal/wbconfig"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub serves the real daemon
@@ -34,9 +40,10 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command.SetContext(ctx)
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	stderr := &lockedBuffer{} // the daemon's goroutines write to it together
 	command.SetOut(&stdout)
-	command.SetErr(&stderr)
+	command.SetErr(stderr)
 
 	served := make(chan error, 1)
 	go func() {
@@ -227,6 +234,19 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		return response.StatusCode, string(body)
 	}
+	// The daemon's log route asks Cockpit who the owner is
+	// (cockpit#ac:daemon-log-needs-an-owner-session): with
+	// no session it is refused before anything is read, and with the session
+	// the request gets past the gate. The invalid tail keeps this test from
+	// reading the machine's real daemon log, which is where the path points on
+	// macOS.
+	if response, body = get(address, "/api/v1/log?tail=x"); response.StatusCode != http.StatusUnauthorized || !strings.Contains(body, `"error":"owner_session_required"`) || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("/api/v1/log with no session = %s %q, want 401 owner_session_required", response.Status, body)
+	}
+	if status, body := owner("/api/v1/log?tail=x"); status != http.StatusBadRequest || !strings.Contains(body, `"error":"invalid_tail"`) {
+		t.Fatalf("/api/v1/log with the owner session = %d %q, want it past the owner check (400 invalid_tail)", status, body)
+	}
+
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		status, fleetBody := owner("/api/v1/cockpit/fleet")
@@ -256,19 +276,31 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	config.RefreshInterval = 90 * time.Second
 	var logs bytes.Buffer
 
-	bare := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, host)
+	bare := cockpitFleetOptionsWith(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, host, cockpitSSH{})
 	if bare.Machine != "the-host" || bare.Collectors.Remote != nil || bare.Interval != 90*time.Second || bare.Collectors.Repositories == nil || bare.Collectors.CodeIndex == nil {
 		t.Errorf("options with no remote section = %+v", bare)
+	}
+	if hardware := bare.Hardware; hardware.OS != runtime.GOOS || hardware.Arch != runtime.GOARCH || hardware.CPUCount != runtime.NumCPU() {
+		t.Errorf("hardware = %+v, want this machine's", hardware)
+	}
+	if bare.Sampler == nil {
+		t.Error("this machine has no metrics sampler")
+	}
+	if bare.Collectors.Activity == nil {
+		t.Error("this machine does not read herdr for agent activity")
+	}
+	if terminals, ok := bare.Terminals.(*cockpitfleet.LocalTerminals); !ok || terminals.ProjectsRoot != root || terminals.Home != home {
+		t.Errorf("the throughput source = %+v, want this machine's terminal records", bare.Terminals)
 	}
 	bare.Logf("refresh failed: %v", "boom")
 	if got := logs.String(); got != "wb: refresh failed: boom\n" {
 		t.Errorf("log = %q", got)
 	}
-	nameless := cockpitFleetOptions(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, func() (string, error) { return "", io.EOF })
+	nameless := cockpitFleetOptionsWith(root, home, filepath.Join(t.TempDir(), "absent.yaml"), config, &logs, func() (string, error) { return "", io.EOF }, cockpitSSH{})
 	if nameless.Machine != "local" {
 		t.Errorf("machine without a host name = %q, want local", nameless.Machine)
 	}
-	remote := cockpitFleetOptions(root, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")(), config, &logs, host)
+	remote := cockpitFleetOptionsWith(root, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")(), config, &logs, host, cockpitSSH{})
 	if remote.Machine != "laptop-1" || remote.Collectors.Remote == nil {
 		t.Errorf("options with a remote section = machine %q, remote %v", remote.Machine, remote.Collectors.Remote)
 	}
@@ -276,7 +308,7 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	// A hub provider and an unlocatable store know no other machines, and the
 	// daemon's log says so, once, while the options are built.
 	logs.Reset()
-	hub := cockpitFleetOptions(root, home, cockpitConfigFile(t, "remote:\n  provider: hub\n  url: https://hub.example\n  token_file: /tmp/token\n  machine: laptop-2\n")(), config, &logs, host)
+	hub := cockpitFleetOptionsWith(root, home, cockpitConfigFile(t, "remote:\n  provider: hub\n  url: https://hub.example\n  token_file: /tmp/token\n  machine: laptop-2\n")(), config, &logs, host, cockpitSSH{})
 	if hub.Machine != "laptop-2" || hub.Collectors.Remote != nil || !strings.Contains(logs.String(), "not read from the hub remote provider") {
 		t.Errorf("options with a hub provider = machine %q, remote %v, log %q", hub.Machine, hub.Collectors.Remote, logs.String())
 	}
@@ -285,7 +317,7 @@ func TestCockpitFleetOptionsReadThisMachineAndTheConfiguredRemote(t *testing.T) 
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	unlocatable := cockpitFleetOptions(file, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-3\n")(), config, &logs, host)
+	unlocatable := cockpitFleetOptionsWith(file, home, cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-3\n")(), config, &logs, host, cockpitSSH{})
 	if unlocatable.Collectors.Remote != nil || !strings.Contains(logs.String(), "cannot be located") {
 		t.Errorf("options with an unlocatable store = remote %v, log %q", unlocatable.Collectors.Remote, logs.String())
 	}
@@ -299,16 +331,63 @@ func TestCockpitFleetOptionsConfigureTheCodeIndexProviderOnlyWhenNamed(t *testin
 	t.Parallel()
 	host := func() (string, error) { return "the-host", nil }
 	absent := filepath.Join(t.TempDir(), "absent.yaml")
-	none := cockpitFleetOptions(t.TempDir(), t.TempDir(), absent, wbconfig.DefaultCockpitConfig(), io.Discard, host)
+	none := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), absent, wbconfig.DefaultCockpitConfig(), io.Discard, host, cockpitSSH{})
 	if none.Collectors.CodeIndexProvider != nil {
 		t.Errorf("a provider with none configured = %+v", none.Collectors.CodeIndexProvider)
 	}
 	config := wbconfig.DefaultCockpitConfig()
 	config.CodeIndexProvider, config.CodeIndexIndexer = wbconfig.CodeIndexProviderCodeGrapher, "code-graph"
-	named := cockpitFleetOptions(t.TempDir(), t.TempDir(), absent, config, io.Discard, host)
+	named := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), absent, config, io.Discard, host, cockpitSSH{})
 	provider := named.Collectors.CodeIndexProvider
 	if provider == nil || provider.Name() != "codegrapher" || provider.Indexer() != "code-graph" {
 		t.Errorf("the configured provider = %+v", provider)
+	}
+}
+
+// TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit
+// pins that the daemon hands the snapshotter the production watcher and
+// cockpit.pull_request_limit. Nothing here observes a pull request.
+func TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfiguredLimit(t *testing.T) {
+	t.Parallel()
+	config := wbconfig.DefaultCockpitConfig()
+	config.PullRequestLimit, config.PullRequestHourlyBudget = 7, 55
+	options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), config, io.Discard, func() (string, error) { return "h", nil }, cockpitSSH{})
+	watcher, ok := options.PullRequests.(*prwatch.Watcher)
+	if !ok || options.PullRequestLimit != 7 || options.PullRequestHourlyBudget != 55 {
+		t.Fatalf("pull request observer = %T limit %d budget %d, want a *prwatch.Watcher, 7 and 55", options.PullRequests, options.PullRequestLimit, options.PullRequestHourlyBudget)
+	}
+	// The observation is the lean one, shown by what a red head costs: the
+	// reads of any open pull request and not one run of `gh` to explain it.
+	var reads, executions atomic.Int64
+	watcher.Reader = &githubobserver.Reader{
+		Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+			reads.Add(1)
+			body := "{}"
+			switch {
+			case strings.HasSuffix(request.Endpoint, "/pulls/5"):
+				body = `{"number":5,"state":"open","head":{"sha":"abc"},"base":{"ref":"main"}}`
+			case strings.Contains(request.Endpoint, "/check-runs"):
+				body = `{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"failure","app":{"id":1,"slug":"gh"}}]}`
+			case strings.Contains(request.Endpoint, "/actions/runs"):
+				body = `{"total_count":0,"workflow_runs":[]}`
+			case strings.Contains(request.Endpoint, "/status"):
+				body = `{"state":"success","statuses":[]}`
+			case strings.HasSuffix(request.Endpoint, "/branches/main"):
+				body = `{"protected":false,"protection":{}}`
+			case strings.Contains(request.Endpoint, "/rules/"):
+				body = `[]`
+			}
+			return githubobserver.Response{Body: []byte(body), StatusCode: 200}, nil
+		},
+		Execute: func(context.Context, string, ...string) githubobserver.CommandResponse {
+			executions.Add(1)
+			return githubobserver.CommandResponse{ExitCode: 1}
+		},
+	}
+	outcome, err := watcher.Evaluate(context.Background(), worktrees.RegisteredPullRequestBinding{Task: "t", Repository: "acme/app", PullRequest: 5})
+	snapshot := outcome.Snapshot
+	if err != nil || snapshot.Err != nil || len(snapshot.Failed) != 1 || reads.Load() != prsnapshot.ReadsPerObservation || executions.Load() != 0 || len(snapshot.Failures) != 0 {
+		t.Errorf("a red head cost %d reads and %d executions: %+v", reads.Load(), executions.Load(), snapshot)
 	}
 }
 
@@ -331,7 +410,7 @@ func TestCockpitRegisterFleetServesTheWarmingDocumentBeforeTheFirstSnapshot(t *t
 			t.Errorf("%s = %d %s, want %d", target, recorder.Code, recorder.Body.String(), want)
 		}
 	}
-	if body, _ := snapshotter.Body(); !strings.Contains(string(body), `"warming_up":true`) {
+	if body := fleetBody(snapshotter); !strings.Contains(string(body), `"warming_up":true`) {
 		t.Error("a snapshotter that has not started is not warming up")
 	}
 }
@@ -412,4 +491,12 @@ func TestCockpitLoginCodeRouteIsRefusedByTheFileBridge(t *testing.T) {
 			t.Errorf("the file bridge prepared %s: %v", procedure, err)
 		}
 	}
+}
+
+// fleetBody is the fleet document as a request without Accept-Encoding would
+// receive it, from the snapshotter's prepared bytes.
+func fleetBody(snapshotter *cockpitfleet.Snapshotter) []byte {
+	recorder := httptest.NewRecorder()
+	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), snapshotter.Payload())
+	return recorder.Body.Bytes()
 }

@@ -1,0 +1,85 @@
+@if (data(); as data) {
+  <app-panel-content kind="Agent" [heading]="name()" [facts]="facts()" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
+    <app-panel-state panelHeader [reason]="headline()">
+      <app-state-badge kind="agent-state" [value]="data.agent.state" />
+      @if (data.agent.activity) {
+        <app-state-badge kind="agent-activity" [value]="data.agent.activity" />
+      } @else {
+        <span class="quiet">state not reported</span>
+      }
+      @if (blocked()) {
+        <p class="blocked" panelNote>Blocked: waiting on you</p>
+      }
+    </app-panel-state>
+
+    <section class="block" aria-label="Work">
+      <h3>Work</h3>
+      <dl class="facts">
+        <dt>{{ tasks().length > 1 ? 'Tasks' : 'Task' }}</dt>
+        <dd class="list">
+          @for (task of tasks(); track task.name) {
+            <a [routerLink]="task.link.path" [queryParams]="task.link.query">{{ task.name }}</a>
+          } @empty {
+            <span class="quiet">none: no worktree or task is linked</span>
+          }
+        </dd>
+        <dt>Repository</dt>
+        <dd>
+          @if (repository(); as repo) {
+            <a [routerLink]="target(repo.link)" [queryParams]="repo.link.query">{{ repo.slug }}</a>
+          } @else {
+            <span class="quiet">not reported</span>
+          }
+        </dd>
+      </dl>
+    </section>
+
+    <section class="block" aria-label="Worktrees">
+      <h3>Worktrees</h3>
+      <ul class="rows">
+        @for (item of worktrees(); track item.worktree.id) {
+          <li>
+            <span class="where">
+              <a class="repo-link" [routerLink]="item.link.path" [queryParams]="item.link.query" [attr.title]="'Open the worktree: ' + item.worktree.branch">{{ item.repository }}</a>
+              <code class="branch" [attr.title]="item.worktree.branch">{{ item.worktree.branch }}</code>
+              @if (tasks().length > 1) {
+                <span class="quiet">task {{ item.worktree.task }}</span>
+              }
+              @if (manyMachines() && item.worktree.machine_id !== data.agent.machine_id) {
+                <app-machine-cell [id]="item.worktree.machine_id" />
+              }
+            </span>
+            <span class="what"><app-owner-state-cell [worktree]="item.worktree" /></span>
+          </li>
+        } @empty {
+          <li class="quiet">None: no worktree is linked to this agent.</li>
+        }
+      </ul>
+    </section>
+
+    <section class="block" aria-label="Pull requests">
+      <h3>Pull requests</h3>
+      <ul class="rows">
+        @for (item of pullRequests(); track item.pr.id) {
+          <li>
+            @if (item.repository) {
+              <span class="repo">{{ item.repository }}</span>
+            }
+            <app-pr-chip [pullRequest]="item.pr" />
+          </li>
+        } @empty {
+          <li class="quiet">None</li>
+        }
+      </ul>
+    </section>
+
+    @if (controlNote(); as note) {
+      <p class="note control">{{ note }}</p>
+    }
+    @if (!remote() && data.agent.kind === 'run') {
+      <div panelActions>
+        <app-action-slot [actions]="actionsFor('agent:' + data.agent.id)" [target]="'agent:' + data.agent.id" />
+      </div>
+    }
+  </app-panel-content>
+}

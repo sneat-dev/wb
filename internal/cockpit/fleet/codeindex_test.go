@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -501,7 +502,9 @@ func TestCodeIndexFreshnessAppearsInTheReadModel(t *testing.T) {
 		snapshotter, _ := newSnapshotter(fleet.collectors(store), nil)
 		refreshAndSettle(t, snapshotter)
 		body, _ := snapshotter.Body()
-		if strings.Contains(string(body), fleet.root) || strings.Contains(string(body), "https://") {
+		// remote_url_web is the one https:// address the document may carry; it is
+		// built from the host and name, never from the origin URL.
+		if text := webURLField.ReplaceAllString(string(body), ""); strings.Contains(text, fleet.root) || strings.Contains(text, "https://") {
 			t.Fatalf("flat=%v: the document carries a path or the origin: %s", flat, body)
 		}
 		got := codeIndexByName(snapshotter.Document())
@@ -805,3 +808,6 @@ func TestACommitCheckThatFailsWithGenericFatalIsNotReadAsMissing(t *testing.T) {
 		}
 	}
 }
+
+// webURLField matches a repository's remote_url_web member.
+var webURLField = regexp.MustCompile(`"remote_url_web":"https://[A-Za-z0-9./_-]+"`)

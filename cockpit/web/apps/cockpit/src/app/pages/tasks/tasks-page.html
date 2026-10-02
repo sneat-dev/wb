@@ -1,0 +1,38 @@
+<app-list page="tasks" [columns]="columns" [panelLabel]="panelLabel">
+  <ng-template appCell="task" let-t><app-identity-cell [name]="t.name" [secondary]="repositories(t)" [link]="taskLink(t)" copyLabel="Copy task name" /></ng-template>
+  <ng-template appCell="state" let-t>
+    <span class="state">
+      <app-state-badge kind="task" size="small" [value]="t.state" />
+      @if (reporters(t); as names) {
+        <span class="via" [attr.title]="'As reported by ' + names + ', not by this machine'">via {{ names }}</span>
+      }
+    </span>
+  </ng-template>
+  <ng-template appCell="pr" let-t><app-task-pr-cell [pullRequests]="t.pullRequests" /></ng-template>
+  <ng-template appCell="agents" let-t>
+    @if (runningAgents(t)[0]; as agent) {
+      <span class="agent" [attr.title]="runningAgents(t).length + ' running'">
+        <app-state-badge kind="agent-state" size="small" [value]="agent.state" />
+        <span class="runtime">{{ agent.runtime ?? 'agent' }}</span>
+        @if (runningAgents(t).length > 1) {
+          <span class="more">+{{ runningAgents(t).length - 1 }}</span>
+        }
+      </span>
+    }
+  </ng-template>
+  <ng-template appCell="worktrees" let-t><app-count-link [value]="t.worktrees.length" [link]="worktreesLink(t)" /></ng-template>
+  <ng-template appCell="machines" let-t>
+    @if (anyRemote(t)) {
+      <span class="machines">
+        @for (machine of machinesShown(t); track machine.id) {
+          <app-machine-cell [id]="machine.id" />
+        }
+        @if (machinesMore(t) > 0) {
+          <span class="more" [attr.title]="machinesMore(t) + ' more machines'">+{{ machinesMore(t) }}</span>
+        }
+      </span>
+    }
+  </ng-template>
+  <ng-template appCell="activity" let-t><app-age [at]="t.lastActivityAt" /></ng-template>
+  <ng-template appListPanel let-t><app-task-panel [name]="t.name" /></ng-template>
+</app-list>

@@ -530,6 +530,30 @@ session_move:
 On the target, the validated `remote.machine` must be `hetzner-vm1`, and
 `tmux` plus the selected harness must be available on the remote `PATH`.
 
+A target may also carry an optional `http` section, which is not a courier:
+it is where this machine's daemon reads that machine's Cockpit export in the
+background, so its worktrees and agents appear live in the Cockpit.
+
+```yaml
+session_move:
+  targets:
+    hetzner-vm1:
+      default_courier: ssh
+      ssh:
+        host: hetzner-vm1
+      http:
+        url: https://vm1.example        # https, or http on a loopback host only
+        token_file: /Users/me/.config/wb/credentials/vm1.token
+```
+
+`url` is the origin of that machine's daemon-hosted hub and `token_file` a
+private file holding a machine credential enrolled with it (`wb remote enroll
+--url <hub-url> --token-stdin`). `token_file` may be omitted when `url` is the
+hub this machine is already enrolled with (`remote.url`). Set
+`cockpit.remote_http: false` to read no machine over HTTP, and `cockpit.remote_ssh: false` to read none over SSH
+(the fallback for a machine with no HTTP route). How Cockpit is put together, its pages and routes,
+configuration keys, cadences and budgets are in [docs/cockpit.md](docs/cockpit.md).
+
 Run a same-harness move by omitting `--harness`, or explicitly move between
 the two supported harnesses, `codex` and `claude-code`:
 
@@ -585,6 +609,9 @@ remote:
   machine: <unique-name-for-this-machine>
   publish:
     unpushed: subjects   # or: counts
+    # interval: 15m      # opt in: the daemon also publishes after a local scan (minimum 5m; unset = by hand only)
+    # agents: false      # opt in: include this machine's agents in the snapshot
+    # metrics: false     # opt in: include this machine's latest CPU, memory and disk sample
 ```
 
 `wb remote publish` scans this machine's attention repositories and live task
@@ -2477,6 +2504,22 @@ The command refuses non-loopback listeners. For access from another registered
 machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
+
+`GET /api/v1/log` serves the tail of the daemon's runtime log (`?tail=<bytes>`,
+256 KiB by default, at most 4 MiB) to the owner only. The log is file content,
+so the route requires the owner session `wb cockpit` sets, on a loopback `Host`;
+any other request gets `401 {"error":"owner_session_required"}` and the file is
+not opened. To read the log:
+
+- on the machine itself, read the file: `~/Library/Logs/wb/daemon.log` under
+  launchd, `daemon.log` in the daemon's runtime directory elsewhere;
+- in a browser, run `wb cockpit`, follow the printed login URL, then open
+  `http://127.0.0.1:8766/api/v1/log` in that browser. From another machine, do
+  the same over an SSH port forward (`ssh -L 8766:127.0.0.1:8766 <host>`).
+
+A reverse proxy or script that fetched `/api/v1/log` with no session is now
+refused: there is no unattended credential for the route, and the daemon's owner
+token does not open it. Read the file on disk instead.
 
 ### Running the daemon under a supervisor
 

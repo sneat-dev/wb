@@ -1,0 +1,53 @@
+@if (data(); as data) {
+<app-panel-content kind="Machine" [heading]="name()" [facts]="facts()" [related]="related()" [commands]="attention().commands" [raw]="data.view.raw" [page]="page()" [split]="page()">
+  <app-panel-state panelHeader [reason]="reach()">
+    @if (data.view.summary.state === 'stale') {
+    <span class="mark stale" title="Older than the freshness window">stale</span>
+    } @if (data.view.summary.outdated) {
+    <span class="mark older" title="Older than the newest WB in the fleet">older WB</span>
+    }
+    <app-state-badge kind="load" size="small" [value]="load()" />
+  </app-panel-state>
+
+  @if (attention().notes.length > 0) {
+  <section class="block" aria-label="Needs attention">
+    <h3>Needs attention</h3>
+    <ul class="rows">
+      @for (note of attention().notes; track note.id) {
+      <li>
+        <span class="warning">{{ note.text }}</span>
+        @if (note.reason) {
+        <span class="quiet">{{ note.reason }}</span>
+        }
+      </li>
+      }
+    </ul>
+  </section>
+  }
+
+  <section class="block" aria-label="Metrics">
+    <h3>Metrics</h3>
+    <p class="source" [attr.data-source]="metrics().kind">{{ metrics().source }}</p>
+    @if (metrics().reason; as reason) {
+    <p class="quiet">{{ reason }}</p>
+    } @if (metrics().stale) {
+    <p class="quiet">The last read failed; this is the earlier answer.</p>
+    } @if (metrics().latest; as latest) {
+    <dl class="facts latest">
+      <dt>CPU</dt>
+      <dd>{{ latest.cpu }}</dd>
+      <dt>Load (1 min)</dt>
+      <dd>{{ latest.load }}</dd>
+      <dt>Memory</dt>
+      <dd>{{ latest.memory }}</dd>
+      <dt>Disk free</dt>
+      <dd>{{ latest.disk }}</dd>
+    </dl>
+    } @if (metrics().charts) {
+    <div class="charts">
+      <app-viewport-mount [load]="loadCharts" [inputs]="chartInputs()" />
+    </div>
+    }
+  </section>
+</app-panel-content>
+}

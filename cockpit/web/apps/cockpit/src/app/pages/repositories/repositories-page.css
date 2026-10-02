@@ -1,0 +1,200 @@
+:host {
+  display: block;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+/* A segmented control: native radios, so the arrow keys move and choose, drawn as joined buttons. */
+.presets {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: var(--space-2);
+}
+
+legend {
+  float: left;
+  padding: 0;
+  margin-right: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.presets label {
+  position: relative;
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.presets label + label {
+  margin-left: -1px;
+}
+
+.presets label:first-of-type {
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+
+.presets label:last-of-type {
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.presets label:hover {
+  background: var(--surface-hover);
+}
+
+.presets label.on {
+  z-index: 1;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: var(--fw-semibold);
+}
+
+/* The native radio stays in the page for the keyboard and assistive technology; the label is what is drawn and clicked. */
+.presets input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.presets label:has(input:focus-visible) {
+  z-index: 2;
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.identity {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.scan-error {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--bad-border);
+  border-radius: var(--radius-sm);
+  background: var(--bad-soft);
+  color: var(--bad);
+  font-size: var(--fs-xs);
+  line-height: 1.25rem;
+}
+
+.chips {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.machine {
+  display: inline-flex;
+  flex: none;
+  max-width: 100%;
+  gap: var(--space-1);
+  align-items: center;
+  min-width: 0;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  line-height: 1.25rem;
+}
+
+.machine[hidden],
+.more[hidden] {
+  display: none;
+}
+
+.machine:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.machine-name {
+  overflow: hidden;
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+}
+
+.machine-detail,
+.more {
+  flex: none;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+
+.machine.stale {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+}
+
+.machine.stale .machine-detail {
+  color: var(--warn);
+}
+
+.quiet {
+  color: var(--text-3);
+}
+
+.actions {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.icon {
+  --glyph-size: 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+}
+
+.icon:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* On a phone the three presets must fit: tighter, and the legend is left to assistive technology. */
+@media (max-width: 40rem) {
+  legend {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .presets label {
+    padding: 0 var(--space-2);
+    font-size: var(--fs-xs);
+  }
+}

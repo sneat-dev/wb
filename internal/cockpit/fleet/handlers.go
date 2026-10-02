@@ -3,7 +3,7 @@ package fleet
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
 )
@@ -12,35 +12,65 @@ import (
 // no path parameter, because Cockpit's owner routes are exact paths: the
 // repository's stable id travels in the "repository" query parameter.
 const (
-	FleetRoute  = "fleet"
-	ReadmePath  = cockpit.APIPrefix + "readme"
-	readmeQuery = "repository"
+	FleetRoute    = "fleet"
+	BranchesRoute = "branches"
+	ReadmePath    = cockpit.APIPrefix + "readme"
+	readmeQuery   = "repository"
 )
 
-// Register adds the fleet metadata route and the owner-only README route to
-// server. Call it before the server's mounts are taken.
+// Register adds the fleet, branches and machine-metrics metadata routes and the owner-only README route to
+// server, and gives it the machines' SSH routes for an owner's session response. Call it before the server's mounts are taken.
 func Register(server *cockpit.Server, snapshotter *Snapshotter) {
-	server.HandleMetadata(FleetRoute, cockpit.CapabilityFleetRead, snapshotter.serveFleet)
+	server.HandleMetadata(FleetRoute, cockpit.CapabilityFleetRead, func(writer http.ResponseWriter, request *http.Request, principal cockpit.Principal) {
+		snapshotter.serveFleet(writer, request, demandOf(server, request, principal))
+	})
+	server.HandleMetadata(BranchesRoute, cockpit.CapabilityBranchRead, snapshotter.serveBranches)
+	server.HandleMetadata(MetricsRoute, cockpit.CapabilityMachineRead, func(writer http.ResponseWriter, request *http.Request, principal cockpit.Principal) {
+		snapshotter.serveMetrics(writer, request, demandOf(server, request, principal))
+	})
+	server.SetMachineRoutes(snapshotter.MachineRoutes)
 	server.HandleOwner(http.MethodGet, ReadmePath, cockpit.CapabilityRepoContentRead, snapshotter.serveReadme)
 }
 
-// serveFleet answers the fleet read model from the last snapshot's marshalled
-// bytes, with a strong ETag and If-None-Match support. It reads memory only: no
-// collector runs on a request.
-func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, _ cockpit.Principal) {
-	body, etag := s.Body()
-	header := writer.Header()
-	header.Set("ETag", etag)
-	// no-cache, not no-store: a client may keep the document but must revalidate
-	// it with the ETag on every use.
-	header.Set("Cache-Control", "no-cache")
-	for _, candidate := range strings.Split(request.Header.Get("If-None-Match"), ",") {
-		if strings.TrimSpace(candidate) == etag || strings.TrimSpace(candidate) == "*" {
-			writer.WriteHeader(http.StatusNotModified)
-			return
-		}
+// serveFleet answers the fleet read model from the last snapshot's prepared
+// bytes: gzip or identity with each encoding's strong ETag and If-None-Match
+// support. It reads memory only: no collector runs on a request and no
+// compressor either. A read by a reader on this machine (not by the export verb,
+// and not by the hosted page) is recorded as demand for the other machines'
+// entries; nothing is fetched on the request.
+//
+// With the "scope" query parameter it answers this machine's part alone (see
+// ScopeOwn and ScopeMachine), prepared once for each published document, with
+// what it left out in ExportDropsHeader. That is how the export verb reads a
+// machine whose document also shows many other machines: such a read is never
+// demand for them.
+func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, from demand) {
+	// When the document was last found current: on a 304 too, since a document
+	// that did not change keeps its ETag.
+	if checked := s.CheckedAt(); !checked.IsZero() {
+		writer.Header().Set(cockpit.CheckedAtHeader, checked.UTC().Format(time.RFC3339))
 	}
-	_, _ = writer.Write(body)
+	scope := request.URL.Query().Get(scopeQuery)
+	if scope != ScopeOwn && scope != ScopeMachine {
+		s.fleetRead(from)
+		cockpit.ServePayload(writer, request, s.Payload())
+		return
+	}
+	own := s.ownFleetNow()
+	writer.Header().Set(ExportDropsHeader, own.drops.Header())
+	cockpit.ServePayload(writer, request, s.scopedPayload(own, scope))
+}
+
+// serveBranches answers the branches of the repository named by the
+// "repository" query parameter, from the last scan (never from Git). An id
+// this daemon does not know is a 404 with no data.
+func (s *Snapshotter) serveBranches(writer http.ResponseWriter, request *http.Request, _ cockpit.Principal) {
+	payload, found := s.Branches(request.URL.Query().Get(readmeQuery))
+	if !found {
+		writeError(writer, http.StatusNotFound, "unknown_repository")
+		return
+	}
+	cockpit.ServePayload(writer, request, payload)
 }
 
 // serveReadme answers the README of the repository named by id, read from Git's

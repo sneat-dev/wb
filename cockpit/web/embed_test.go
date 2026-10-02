@@ -1,6 +1,8 @@
 package web
 
 import (
+	"bytes"
+	"compress/gzip"
 	"io"
 	"io/fs"
 	"net/http"
@@ -262,5 +264,168 @@ func TestFreshPolicyIsThePageShapeWithANewNonceEachTime(t *testing.T) {
 	first, second := FreshPolicy(), FreshPolicy()
 	if first == second || strings.Contains(first, "unsafe-") || !strings.Contains(first, "script-src 'self'; style-src 'self' 'nonce-") {
 		t.Errorf("FreshPolicy = %q then %q", first, second)
+	}
+}
+
+func gzipped(t *testing.T, text string) []byte {
+	t.Helper()
+	return gzipBytes([]byte(text))
+}
+
+func gunzipped(t *testing.T, data []byte) string {
+	t.Helper()
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(plain)
+}
+
+// compressedTree is a build whose assets were compressed at build time.
+func compressedTree(t *testing.T) fs.FS {
+	return fstest.MapFS{
+		"index.html":              {Data: []byte(`<app-root ngCspNonce="__CSP_NONCE__"></app-root>`)},
+		"index.html.gz":           {Data: gzipped(t, "STALE BUILD-TIME INDEX")},
+		"main-ABCDEF12.js":        {Data: []byte("export const main = 1")},
+		"main-ABCDEF12.js.gz":     {Data: gzipped(t, "export const main = 1")},
+		"styles.css":              {Data: []byte(":root{}")},
+		"styles.css.gz":           {Data: gzipped(t, ":root{}")},
+		"chunk-ZZZZZZZZ.js":       {Data: []byte("export const chunk = 1")},
+		"media/logo-1A2B3C4D.svg": {Data: []byte("<svg/>")},
+		"favicon.ico":             {Data: []byte("i")},
+		"chunk-kBDg_m1u.js":       {Data: []byte("export const mixed = 1")},
+		"theme-standard.css":      {Data: []byte("lowercase")},
+	}
+}
+
+func TestHashedAssetIsServedFromItsBuildTimeFileAndIsImmutable(t *testing.T) {
+	t.Parallel()
+	handler := HandlerFor(compressedTree(t))
+	request := httptest.NewRequest(http.MethodGet, "/cockpit/main-ABCDEF12.js", nil)
+	request.Header.Set("Accept-Encoding", "gzip, deflate")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	header := recorder.Header()
+	if recorder.Code != 200 || header.Get("Content-Encoding") != "gzip" || header.Get("Cache-Control") != "public, max-age=31536000, immutable" ||
+		header.Get("Vary") != "Origin, Accept-Encoding" || header.Get("Content-Type") != "text/javascript; charset=utf-8" {
+		t.Fatalf("hashed asset = %d %v", recorder.Code, header)
+	}
+	if gunzipped(t, recorder.Body.Bytes()) != "export const main = 1" || !bytes.Equal(recorder.Body.Bytes(), gzipped(t, "export const main = 1")) {
+		t.Error("the asset was not served from its build-time compressed file")
+	}
+	// Without the header, the identity file is served, still immutable.
+	identity, body := get(t, handler, "/cockpit/main-ABCDEF12.js")
+	if identity.Header.Get("Content-Encoding") != "" || body != "export const main = 1" || identity.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" || identity.Header.Get("Vary") != "Origin, Accept-Encoding" {
+		t.Errorf("identity = %v %q", identity.Header, body)
+	}
+}
+
+func TestAssetsWithoutAHashOrACompressedFileAreHandledHonestly(t *testing.T) {
+	t.Parallel()
+	handler := HandlerFor(compressedTree(t))
+	for target, want := range map[string]struct {
+		encoding, cache string
+	}{
+		"/cockpit/styles.css":              {"gzip", ""},                                // compressed, not hashed: revalidated
+		"/cockpit/chunk-ZZZZZZZZ.js":       {"", "public, max-age=31536000, immutable"}, // hashed, no .gz: identity
+		"/cockpit/media/logo-1A2B3C4D.svg": {"", "public, max-age=31536000, immutable"},
+		"/cockpit/favicon.ico":             {"", ""},
+		"/cockpit/chunk-kBDg_m1u.js":       {"", "public, max-age=31536000, immutable"}, // Angular's mixed-case hash with an underscore
+		"/cockpit/theme-standard.css":      {"", ""},                                    // a lower-case word is not a hash
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Header.Set("Accept-Encoding", "gzip")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != 200 || recorder.Header().Get("Content-Encoding") != want.encoding || recorder.Header().Get("Cache-Control") != want.cache {
+			t.Errorf("%s = %d %v", target, recorder.Code, recorder.Header())
+		}
+	}
+	for _, target := range []string{"/cockpit/main-ABCDEF12.js.gz", "/cockpit/index.html.gz", "/cockpit/nothing.gz"} {
+		if response, _ := get(t, handler, target); response.StatusCode != http.StatusNotFound {
+			t.Errorf("%s = %d: a build-time file must not be served under its own name", target, response.StatusCode)
+		}
+	}
+}
+
+func TestEntryDocumentIsCompressedPerResponseWithAFreshNonce(t *testing.T) {
+	t.Parallel()
+	handler := HandlerFor(compressedTree(t))
+	nonces := map[string]bool{}
+	for range 2 {
+		request := httptest.NewRequest(http.MethodGet, "/cockpit/", nil)
+		request.Header.Set("Accept-Encoding", "gzip")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		header := recorder.Header()
+		if recorder.Code != 200 || header.Get("Content-Encoding") != "gzip" || header.Get("Cache-Control") != "no-cache" || header.Get("Vary") != "Origin, Accept-Encoding" {
+			t.Fatalf("entry document = %d %v", recorder.Code, header)
+		}
+		nonce := nonceInPolicy.FindStringSubmatch(header.Get("Content-Security-Policy"))
+		body := gunzipped(t, recorder.Body.Bytes())
+		if nonce == nil || !strings.Contains(body, nonce[1]) || strings.Contains(body, "STALE") || strings.Contains(body, noncePlaceholder) {
+			t.Fatalf("body %q does not carry the response's nonce", body)
+		}
+		nonces[nonce[1]] = true
+	}
+	if len(nonces) != 2 {
+		t.Error("two responses shared a nonce")
+	}
+	// Refusing gzip, with a zero quality or an identity-only list, gets plain HTML.
+	for _, accept := range []string{"", "identity", "gzip;q=0", "gzip; q=0", "br"} {
+		request := httptest.NewRequest(http.MethodGet, "/cockpit/", nil)
+		if accept != "" {
+			request.Header.Set("Accept-Encoding", accept)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Header().Get("Content-Encoding") != "" || !strings.Contains(recorder.Body.String(), "<app-root") {
+			t.Errorf("Accept-Encoding %q = %v %q", accept, recorder.Header(), recorder.Body.String())
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/cockpit/", nil)
+	request.Header.Set("Accept-Encoding", "*")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Header().Get("Content-Encoding") != "gzip" {
+		t.Error("a wildcard Accept-Encoding was not served gzip")
+	}
+}
+
+func TestAcceptsGzipReadsTheHeaderLikeAClient(t *testing.T) {
+	t.Parallel()
+	for accept, want := range map[string]bool{
+		"gzip": true, "GZIP": true, "gzip, deflate, br": true, "deflate, gzip;q=0.5": true, " gzip ; q=1 ": true, "*": true, "*;q=0.1": true,
+		"identity": false, "br": false, "": false, "gzip;q=0": false, "gzip;q=0.0": false, "gzip;Q=0": false, "gzip; Q = 0": false, "gzip;level=1;q=0": false,
+		"*;q=0": false, "gzip;q=bad": true, "gzip;level=1": true, "gzip;q=0, *": false, "*, gzip;q=0": false, "gzip;q=0.5, *;q=0": true, "gzip, *;q=0": true,
+		"gzip;q=1, *;q=0": true, "*;q=0, gzip": true, "identity, *;q=0.5": true,
+	} {
+		if got := AcceptsGzip([]string{accept}); got != want {
+			t.Errorf("Accept-Encoding %q = %v, want %v", accept, got, want)
+		}
+	}
+	if !AcceptsGzip([]string{"br", "gzip"}) || AcceptsGzip(nil) {
+		t.Error("separate header lines are not read as one list")
+	}
+}
+
+// TestOnlyBuildHashesAreImmutable checks the rule against the file names of a
+// real production build (cockpit/web/dist after `pnpm build`) and against names
+// that merely look similar.
+func TestOnlyBuildHashesAreImmutable(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]bool{
+		"main-SS4IWIAX.js": true, "styles-J6F5IS5P.css": true, "chunk-BGJpRc85.js": true, "chunk-BzbuF09_.js": true, "chunk-kBDgmD1u.js": true,
+		"chunk-Cxlh3kJt.js": true, "media/font-A1B2C3D4.woff2": true,
+		"favicon.svg": false, "index.html": false, "prerendered-routes.json": false, "3rdpartylicenses.txt": false,
+		"logo-20240101.svg": false, "app-12345678.js": false, "theme-standard.css": false, "icon-96x96.png": false, "x-ABCD.js": false, "plain.js": false,
+	} {
+		if got := isHashedAsset(name); got != want {
+			t.Errorf("%s: immutable = %v, want %v", name, got, want)
+		}
 	}
 }

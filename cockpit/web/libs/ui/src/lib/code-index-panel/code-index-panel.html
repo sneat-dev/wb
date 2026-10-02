@@ -9,7 +9,8 @@
       <p class="panel-note">No code-index provider is configured. Set <code>cockpit.code_index_provider</code> in wb.yaml to show statistics.</p>
     }
     @default {
-      <p class="panel-freshness">Freshness: <app-code-index-label [states]="states()" [now]="now()" /></p>
+      <div class="summary">
+      <p class="panel-freshness"><app-code-index-label [states]="states()" [now]="now()" /></p>
       @switch (current.kind) {
         @case ('indexed') {
           <dl class="totals">
@@ -26,16 +27,23 @@
               <dd>{{ current.statistics.edges }}</dd>
             </div>
           </dl>
+        }
+      }
+      </div>
+      @switch (current.kind) {
+        @case ('indexed') {
           @if (current.statistics.kinds.length) {
-            <h4 class="kinds-title">Symbols by kind</h4>
-            <ul class="kinds">
-              @for (item of current.statistics.kinds; track item.kind) {
-                <li>
-                  <span class="kind">{{ item.kind }}</span>
-                  <span class="kind-count">{{ item.count }}</span>
-                </li>
-              }
-            </ul>
+            <details class="kinds-details">
+              <summary class="kinds-title">Symbols by kind</summary>
+              <ul class="kinds">
+                @for (item of current.statistics.kinds; track item.kind) {
+                  <li>
+                    <span class="kind">{{ item.kind }}</span>
+                    <span class="kind-count">{{ item.count }}</span>
+                  </li>
+                }
+              </ul>
+            </details>
           }
         }
         @case ('failed') {

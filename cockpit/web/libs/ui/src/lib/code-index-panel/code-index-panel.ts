@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
-import { CodeIndex, Entry, codeIndexView } from '@cockpit/fleet-data'
+import { CodeIndex, Entry } from '@cockpit/fleet-data'
+import { codeIndexView } from '@cockpit/fleet-data/list'
 import { CodeIndexLabel } from '../code-index-label/code-index-label'
 
 /**

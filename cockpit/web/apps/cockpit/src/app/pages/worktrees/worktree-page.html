@@ -1,0 +1,8 @@
+<p class="back"><a routerLink="/worktrees">&larr; Worktrees</a></p>
+@if (exists()) {
+  <app-worktree-panel [id]="id()" [page]="true" />
+} @else if (store.warmingUp() || !store.loaded()) {
+  <p class="muted">Waiting for the fleet snapshot…</p>
+} @else {
+  <p>This worktree is not in the fleet document; it may have been removed.</p>
+}

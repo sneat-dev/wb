@@ -1,0 +1,138 @@
+<div class="gallery">
+  <header class="intro">
+    <h2 class="page-title">Control surface</h2>
+    <p>State badges, chips, copy commands, action slots, the sign-in affordance and the chart presets, in every state. Preview build only.</p>
+  </header>
+
+  <section class="card" aria-labelledby="g-badges">
+    <h3 id="g-badges" class="section">State badges</h3>
+    <p class="note">One badge for every vocabulary: a colour role, a glyph and a word.</p>
+    @for (row of badgeRows; track row.kind) {
+      <div class="row">
+        <span class="row-label">{{ row.title }}</span>
+        <span class="row-items">
+          @for (value of row.values; track $index) {
+            <app-state-badge [kind]="row.kind" [value]="value" />
+          }
+        </span>
+      </div>
+    }
+    <div class="row">
+      <span class="row-label">Small, as in a table</span>
+      <span class="row-items">
+        @for (value of badgeRows[0].values; track $index) {
+          <app-state-badge kind="task" size="small" [value]="value" />
+        }
+      </span>
+    </div>
+    <div class="row">
+      <span class="row-label">Caller's word</span>
+      <span class="row-items">
+        <app-state-badge kind="code-index" value="stale" label="stale, 3 behind" />
+        <app-state-badge kind="owner" value="orphaned" label="orphaned 12 d" />
+        <app-state-badge kind="pr-state" value="surprise" />
+      </span>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="g-chips">
+    <h3 id="g-chips" class="section">Sync badges, pull request and machine chips, times</h3>
+    <div class="grid">
+      <div>
+        <h4 class="sub">Sync badges</h4>
+        @for (row of syncRows; track row.title) {
+          <div class="row">
+            <span class="row-label">{{ row.title }}</span>
+            <app-sync-badges [ahead]="row.ahead" [behind]="row.behind" [upstreamGone]="row.upstreamGone" [hasUpstream]="row.hasUpstream" />
+          </div>
+        }
+      </div>
+      <div>
+        <h4 class="sub">Pull request chips</h4>
+        @for (item of pullRequests; track item.title) {
+          <div class="row">
+            <span class="row-label">{{ item.title }}</span>
+            <app-pr-chip [pullRequest]="item.pullRequest" />
+          </div>
+        }
+      </div>
+      <div>
+        <h4 class="sub">Machine chips</h4>
+        @for (item of machines; track item.title) {
+          <div class="row">
+            <span class="row-label">{{ item.title }}</span>
+            <app-machine-chip [machine]="item.machine" [stale]="item.stale" />
+          </div>
+        }
+        <h4 class="sub">Relative time</h4>
+        <div class="row">
+          <span class="row-items">
+            @for (at of times; track at) {
+              <app-relative-time [at]="at" />
+            }
+            <app-relative-time />
+          </span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="g-copy">
+    <h3 id="g-copy" class="section">Copy command</h3>
+    <p class="note">{{ lastCopied() }}</p>
+    <div class="grid two">
+      @for (list of commandLists; track list.title) {
+        <div class="panel">
+          <h4 class="sub">{{ list.title }}</h4>
+          <app-copy-command-list [entries]="list.entries" (copied)="copied($event)" />
+        </div>
+      }
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="g-actions">
+    <h3 id="g-actions" class="section">Action slots</h3>
+    <p class="note">{{ lastAction() }}</p>
+    <div class="grid three">
+      <div class="panel">
+        <h4 class="sub">An owner: what the registry returned</h4>
+        <div class="slot-row"><span>worktree wt-1</span><app-action-slot [actions]="registry" target="worktree:wt-1" [run]="run" [copy]="slotCopy" /></div>
+      </div>
+      <div class="panel">
+        <h4 class="sub">An anonymous reader: one explanation</h4>
+        <div class="slot-row"><span>worktree wt-1</span><app-action-slot [actions]="anonymousRegistry" target="worktree:wt-1" [run]="run" [copy]="slotCopy" /></div>
+      </div>
+      <div class="panel">
+        <h4 class="sub">No registry: nothing, and no gap</h4>
+        <div class="slot-row"><span>worktree wt-1</span><app-action-slot target="worktree:wt-1" [run]="run" /></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="g-owner">
+    <h3 id="g-owner" class="section">Owner gating</h3>
+    <div class="panel narrow"><app-owner-signin /></div>
+  </section>
+
+  <section class="card" aria-labelledby="g-charts">
+    <h3 id="g-charts" class="section">Charts</h3>
+    <p class="note">{{ lastBucket() }}</p>
+    <h4 class="sub">Machine metrics, the last hour; twelve minutes of samples are missing</h4>
+    <div class="grid two">
+      @for (spec of metrics; track spec.title) {
+        <app-chart [spec]="spec" [height]="8" />
+      }
+    </div>
+    <div class="grid two spaced">
+      <div>
+        <h4 class="sub">Bars by day</h4>
+        <app-chart [spec]="landed" />
+      </div>
+      <div>
+        <h4 class="sub">Horizontal bars, buckets are links</h4>
+        <app-chart [spec]="ages" (bucketSelected)="selected($event)" />
+      </div>
+    </div>
+  </section>
+
+</div>

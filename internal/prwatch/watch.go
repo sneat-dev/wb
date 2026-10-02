@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -103,6 +104,12 @@ type Outcome struct {
 	Failures    []orchestrate.CIFailureDetail
 	Blocked     []string
 	EvaluatedAt time.Time
+	// Snapshot is the observation this Outcome was classified from, whole, so
+	// a caller that shows pull-request state (the cockpit fleet) reads
+	// prsnapshot's own facts (State, Merged, Draft, Mergeable, Green) rather
+	// than re-deriving any of them. It is the zero value, with Err set, for
+	// KindUnavailable.
+	Snapshot prsnapshot.Snapshot
 }
 
 // tickMemory is what a Watcher remembers about one binding's previous real
@@ -130,6 +137,13 @@ type Watcher struct {
 	// observation and makes no timing decision of its own — there is no
 	// timer to inject because there is nothing here that waits.
 	Now func() time.Time
+	// Observe takes one observation; nil means prsnapshot.Observe. A test
+	// injects a fake so no unit test reaches GitHub.
+	Observe func(ctx context.Context, repository, selector string) prsnapshot.Snapshot
+	// Reader, when set, answers every GitHub read of an evaluation instead of
+	// the real observer: a test counts and answers them without a process or the
+	// network.
+	Reader *githubobserver.Reader
 }
 
 // NewWatcher returns a Watcher with no remembered ticks.
@@ -161,7 +175,14 @@ func (w *Watcher) Evaluate(ctx context.Context, binding worktrees.RegisteredPull
 		return Outcome{}, fmt.Errorf("registered pull-request binding for task %q claim %q is missing a repository or pull-request number", binding.Task, binding.ClaimID)
 	}
 	number := strconv.Itoa(binding.PullRequest)
-	snapshot := prsnapshot.Observe(ctx, repository, number)
+	if w.Reader != nil {
+		ctx = githubobserver.WithReader(ctx, *w.Reader)
+	}
+	observe := w.Observe
+	if observe == nil {
+		observe = prsnapshot.Observe
+	}
+	snapshot := observe(ctx, repository, number)
 
 	now := time.Now().UTC()
 	if w.Now != nil {
@@ -172,7 +193,7 @@ func (w *Watcher) Evaluate(ctx context.Context, binding worktrees.RegisteredPull
 		PullRequest: binding.PullRequest, URL: binding.URL,
 		Head: snapshot.Head, Target: snapshot.Base,
 		Checks: snapshot.Checks, Failed: snapshot.Failed, Failures: snapshot.Failures, Blocked: snapshot.Blocked,
-		EvaluatedAt: now,
+		EvaluatedAt: now, Snapshot: snapshot,
 	}
 
 	if snapshot.Err != nil {
@@ -313,10 +334,21 @@ func (w *Watcher) Tick(ctx context.Context, projectsRoot string) ([]PollResult, 
 		outcome, evalErr := w.Evaluate(ctx, binding)
 		results = append(results, PollResult{Binding: binding, Outcome: outcome, Err: evalErr})
 		if outcome.Kind == KindMerged || outcome.Kind == KindClosed {
-			w.forget(binding)
+			w.Forget(binding)
 		}
 	}
 	return results, nil
+}
+
+// Retain drops the memory of every binding that is not in bindings, as Tick
+// does for a binding it no longer lists. A caller that evaluates bindings
+// itself, rather than through Tick, calls it with the bindings it still has.
+func (w *Watcher) Retain(bindings []worktrees.RegisteredPullRequestBinding) {
+	listed := make(map[string]bool, len(bindings))
+	for _, binding := range bindings {
+		listed[bindingKey(binding)] = true
+	}
+	w.pruneUnlisted(listed)
 }
 
 // pruneUnlisted drops every remembered key not present in listed.
@@ -330,8 +362,8 @@ func (w *Watcher) pruneUnlisted(listed map[string]bool) {
 	}
 }
 
-// forget drops binding's remembered tick, if any.
-func (w *Watcher) forget(binding worktrees.RegisteredPullRequestBinding) {
+// Forget drops binding's remembered tick, if any.
+func (w *Watcher) Forget(binding worktrees.RegisteredPullRequestBinding) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.seen != nil {

@@ -78,6 +78,9 @@ type Server struct {
 	frozen       bool
 	metadata     map[string]MetadataHandler
 	owner        map[string]ownerRoute
+	// routes is where an owner's session response gets its machine_routes; nil
+	// means there are none.
+	routes func() []MachineRoute
 }
 
 // New builds Cockpit over the embedded application.
@@ -230,8 +233,10 @@ func writeAPIError(writer http.ResponseWriter, status int, message string) {
 // everywhere but on a metadata route.
 func (server *Server) serveAPI(writer http.ResponseWriter, request *http.Request) {
 	setAPIHeaders(writer)
-	// Every answer depends on the Origin header, whoever asks.
-	writer.Header().Set("Vary", "Origin")
+	// Every answer depends on the Origin header, whoever asks, and a body
+	// served through ServePayload on the encodings the caller accepts. It is set
+	// to the whole value here, once, so no later Set can shorten it.
+	writer.Header().Set("Vary", varyHeader)
 	from := server.originKindOf(request)
 	metadata, isMetadata := server.metadata[strings.TrimPrefix(request.URL.Path, APIPrefix)]
 	if from == originForeign || (from == originHosted && !isMetadata) {
@@ -306,24 +311,56 @@ func (server *Server) serveOwner(writer http.ResponseWriter, request *http.Reque
 // sessionResponse is what the session route answers: the principal and its
 // capabilities, and the configured code browser base, which the application
 // builds its repository links from (cockpit#req:code-browser-link). The base
-// is configuration, not state or content, and is not secret.
+// is configuration, not state or content, and is not secret. MachineRoutes is
+// OWNER-ONLY and absent for every other principal.
 type sessionResponse struct {
 	Principal
-	CodeBrowserURL string `json:"code_browser_url"`
+	CodeBrowserURL string         `json:"code_browser_url"`
+	MachineRoutes  []MachineRoute `json:"machine_routes,omitempty"`
+}
+
+// MachineRoute is how the owner reaches one machine over SSH: the id of its
+// machine entry in the fleet document and the host, optional login and wb
+// command of the local configuration (session_move.targets.<machine>.ssh). It
+// names hosts and users, which are not metadata
+// (cockpit#req:anonymous-local-reads-metadata-only): it is sent to an owner
+// session and to nobody else.
+type MachineRoute struct {
+	MachineID string   `json:"machine_id"`
+	SSH       SSHRoute `json:"ssh"`
+}
+
+// SSHRoute is the SSH part of a MachineRoute.
+type SSHRoute struct {
+	Host   string `json:"host"`
+	User   string `json:"user,omitempty"`
+	WBPath string `json:"wb_path"`
+}
+
+// SetMachineRoutes names the source of the owner-only machine_routes of the
+// session response. It is set before Mounts is called.
+func (server *Server) SetMachineRoutes(source func() []MachineRoute) {
+	server.register(sessionRoute, func() { server.routes = source })
 }
 
 // serveSession reports the caller's principal and effective capabilities
 // (cockpit#req:effective-permissions-are-discoverable) and the code browser
-// base.
+// base, and to an owner session, and to it alone, the machines' SSH routes
+// (cockpit-views#req:copy-the-command). The hosted origin never resolves to the
+// owner (principal), so it never receives them either.
 func (server *Server) serveSession(writer http.ResponseWriter, _ *http.Request, principal Principal) {
-	_ = json.NewEncoder(writer).Encode(sessionResponse{Principal: principal, CodeBrowserURL: server.config.CodeBrowserURL})
+	response := sessionResponse{Principal: principal, CodeBrowserURL: server.config.CodeBrowserURL}
+	if principal.Name == PrincipalOwner && server.routes != nil {
+		response.MachineRoutes = server.routes()
+	}
+	_ = json.NewEncoder(writer).Encode(response)
 }
 
 // servePage answers everything under PagePrefix: the login exchange, the
 // owner routes there and the application. No foreign origin, the hosted one
 // included, may address a page route.
 func (server *Server) servePage(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Vary", "Origin")
+	writer.Header().Set("Vary", varyHeader)
 	from := server.originKindOf(request)
 	if from == originForeign || from == originHosted {
 		writer.Header().Set("Cache-Control", "no-store")

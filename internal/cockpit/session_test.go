@@ -383,13 +383,13 @@ func TestOnlyTheHostedOriginMayReadCrossOrigin(t *testing.T) {
 	hosted := f.do(call{target: fleetPath, headers: []string{"Origin", hostedOrigin}, cookie: cookie})
 	if hosted.Code != 200 || hosted.Body.String() != fleetResponse ||
 		hosted.Header().Get("Access-Control-Allow-Origin") != hostedOrigin ||
-		len(hosted.Header().Values("Access-Control-Allow-Credentials")) != 0 || hosted.Header().Get("Vary") != "Origin" {
+		len(hosted.Header().Values("Access-Control-Allow-Credentials")) != 0 || hosted.Header().Get("Vary") != "Origin, Accept-Encoding" {
 		t.Fatalf("hosted origin = %d %v", hosted.Code, hosted.Header())
 	}
 	for _, foreign := range []string{"https://other.example.test", "null"} {
 		recorder := f.do(call{target: fleetPath, headers: []string{"Origin", foreign}, cookie: cookie})
 		if recorder.Code != http.StatusForbidden || strings.Contains(recorder.Body.String(), "fleet data") ||
-			len(recorder.Header().Values("Access-Control-Allow-Origin")) != 0 || recorder.Header().Get("Vary") != "Origin" {
+			len(recorder.Header().Values("Access-Control-Allow-Origin")) != 0 || recorder.Header().Get("Vary") != "Origin, Accept-Encoding" {
 			t.Errorf("Origin %s = %d %q %v, want 403 with no allowance", foreign, recorder.Code, recorder.Body.String(), recorder.Header())
 		}
 	}
@@ -440,7 +440,7 @@ func TestHostedOriginPreflightGetsThePrivateNetworkAllowance(t *testing.T) {
 		if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 || header.Get("Access-Control-Allow-Origin") != hostedOrigin ||
 			header.Get("Access-Control-Allow-Private-Network") != "true" || header.Get("Access-Control-Allow-Methods") != "GET" ||
 			len(header.Values("Access-Control-Allow-Credentials")) != 0 || len(header.Values("Access-Control-Allow-Headers")) != 0 ||
-			header.Get("Access-Control-Max-Age") != "600" || header.Get("Vary") != "Origin, Access-Control-Request-Method, Access-Control-Request-Headers" {
+			header.Get("Access-Control-Max-Age") != "600" || header.Get("Vary") != "Origin, Accept-Encoding, Access-Control-Request-Method, Access-Control-Request-Headers" {
 			t.Errorf("preflight for %s = %d %v", target, recorder.Code, header)
 		}
 	}
@@ -503,8 +503,8 @@ func TestForeignOriginIsRefusedOnEveryCockpitRoute(t *testing.T) {
 	targets := []string{sessionPath, fleetPath, APIPrefix + "nowhere", PagePrefix, PagePrefix + "main.js", LoginPath + "?code=" + code}
 	for name, headers := range origins {
 		for _, target := range targets {
-			if recorder := f.do(call{target: target, headers: headers, cookie: cookie}); recorder.Code != http.StatusForbidden || len(recorder.Header().Values("Set-Cookie")) != 0 || recorder.Header().Get("Vary") != "Origin" {
-				t.Errorf("%s on %s = %d %v, want 403 with Vary: Origin", name, target, recorder.Code, recorder.Header())
+			if recorder := f.do(call{target: target, headers: headers, cookie: cookie}); recorder.Code != http.StatusForbidden || len(recorder.Header().Values("Set-Cookie")) != 0 || recorder.Header().Get("Vary") != "Origin, Accept-Encoding" {
+				t.Errorf("%s on %s = %d %v, want 403 with Vary: Origin, Accept-Encoding", name, target, recorder.Code, recorder.Header())
 			}
 		}
 		if recorder := f.logout(cookie, append([]string{"Content-Type", "application/json"}, headers...)...); recorder.Code != http.StatusForbidden {
@@ -537,15 +537,15 @@ func TestCanonicalOriginAndOriginlessRequestsAreServed(t *testing.T) {
 		"no port":              {host: "127.0.0.1", target: fleetPath, headers: []string{"Origin", "http://127.0.0.1"}},
 	} {
 		recorder := f.do(c)
-		if recorder.Code != 200 || len(recorder.Header().Values("Access-Control-Allow-Origin")) != 0 || recorder.Header().Get("Vary") != "Origin" ||
+		if recorder.Code != 200 || len(recorder.Header().Values("Access-Control-Allow-Origin")) != 0 || recorder.Header().Get("Vary") != "Origin, Accept-Encoding" ||
 			recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
 			t.Errorf("%s = %d %v", name, recorder.Code, recorder.Header())
 		}
 	}
-	if recorder := f.do(call{target: PagePrefix, headers: []string{"Origin", testOrigin}}); recorder.Body.String() != "served" || recorder.Header().Get("Vary") != "Origin" {
+	if recorder := f.do(call{target: PagePrefix, headers: []string{"Origin", testOrigin}}); recorder.Body.String() != "served" || recorder.Header().Get("Vary") != "Origin, Accept-Encoding" {
 		t.Errorf("page from the canonical origin = %d", recorder.Code)
 	}
-	if recorder := f.do(call{target: APIPrefix + "nowhere", headers: []string{"Origin", testOrigin}}); recorder.Code != http.StatusNotFound || recorder.Header().Get("Vary") != "Origin" {
+	if recorder := f.do(call{target: APIPrefix + "nowhere", headers: []string{"Origin", testOrigin}}); recorder.Code != http.StatusNotFound || recorder.Header().Get("Vary") != "Origin, Accept-Encoding" {
 		t.Errorf("unknown route = %d %v", recorder.Code, recorder.Header())
 	}
 	for _, method := range []string{http.MethodPost, http.MethodOptions, http.MethodHead, http.MethodDelete} {
@@ -687,8 +687,8 @@ func TestOwnerRouteNeedsASessionAndNeverGetsTheCrossOriginAllowance(t *testing.T
 			t.Errorf("%s = %d %q, want %d", name, recorder.Code, recorder.Body.String(), test.status)
 		}
 		if len(header.Values("Access-Control-Allow-Origin")) != 0 || len(header.Values("Access-Control-Allow-Private-Network")) != 0 ||
-			len(header.Values("Access-Control-Allow-Methods")) != 0 || header.Get("Vary") != "Origin" || header.Get("Cache-Control") != "no-store" {
-			t.Errorf("%s: headers %v carry an allowance or lack Vary: Origin", name, header)
+			len(header.Values("Access-Control-Allow-Methods")) != 0 || header.Get("Vary") != "Origin, Accept-Encoding" || header.Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: headers %v carry an allowance or lack Vary: Origin, Accept-Encoding", name, header)
 		}
 	}
 	if effects != 0 {
@@ -964,5 +964,56 @@ func TestDefaultClockAndRandomSourceIssueWorkingSecrets(t *testing.T) {
 	}
 	if id := recorder.Result().Cookies()[0].Value; len(id) < 43 || id == first.Code {
 		t.Fatalf("session identifier has %d characters or repeats the code", len(id))
+	}
+}
+
+// TestMachineRoutesAreSentToAnOwnerSessionAndToNobodyElse is the session half
+// of cockpit-views#ac:copy-command-for-an-ssh-machine and of
+// cockpit#req:anonymous-local-reads-metadata-only: the session response carries
+// machine_routes (machine id, ssh host, optional user and wb path) for an owner
+// session only. An anonymous-local reader, the hosted origin (with or without
+// the owner's cookie) and a proxied request never receive a host, a user or a
+// path, and a server with no source of routes sends none to anybody.
+func TestMachineRoutesAreSentToAnOwnerSessionAndToNobodyElse(t *testing.T) {
+	t.Parallel()
+	const host, user, path = "SENTINEL-host.example", "SENTINEL-user", "/opt/SENTINEL-path/wb"
+	asked := 0
+	f := newFixture(t, nil)
+	f.server.SetMachineRoutes(func() []MachineRoute {
+		asked++
+		return []MachineRoute{
+			{MachineID: "mach-vm", SSH: SSHRoute{Host: host, User: user, WBPath: path}},
+			{MachineID: "mach-old", SSH: SSHRoute{Host: host, WBPath: "wb"}},
+		}
+	})
+	cookie := f.login()
+	owned := f.do(call{target: sessionPath, cookie: cookie})
+	const want = `"machine_routes":[{"machine_id":"mach-vm","ssh":{"host":"SENTINEL-host.example","user":"SENTINEL-user","wb_path":"/opt/SENTINEL-path/wb"}},{"machine_id":"mach-old","ssh":{"host":"SENTINEL-host.example","wb_path":"wb"}}]`
+	if owned.Code != http.StatusOK || !strings.Contains(owned.Body.String(), want) || !strings.Contains(owned.Body.String(), `"principal":"owner"`) || asked != 1 {
+		t.Fatalf("the owner's session = %d %s (asked %d times)", owned.Code, owned.Body.String(), asked)
+	}
+	for name, other := range map[string]call{
+		"anonymous-local":                  {target: sessionPath},
+		"the hosted origin":                {target: sessionPath, headers: []string{"Origin", hostedOrigin}},
+		"the hosted origin with a session": {target: sessionPath, headers: []string{"Origin", hostedOrigin}, cookie: cookie},
+		"a proxied request":                {target: sessionPath, headers: []string{"Via", "1.1 proxy"}},
+		"a foreign origin with a session":  {target: sessionPath, headers: []string{"Origin", "https://evil.example.test"}, cookie: cookie},
+	} {
+		body := f.do(other).Body.String()
+		if strings.Contains(body, "SENTINEL") || strings.Contains(body, "machine_routes") || strings.Contains(body, "mach-vm") || strings.Contains(body, `"principal":"owner"`) {
+			t.Errorf("%s was sent the machine routes: %s", name, body)
+		}
+	}
+	if asked != 1 {
+		t.Errorf("the routes were read %d times, want once, for the owner", asked)
+	}
+	// With no source there is no field, for the owner either.
+	bare := newFixture(t, nil)
+	if body := bare.do(call{target: sessionPath, cookie: bare.login()}).Body.String(); strings.Contains(body, "machine_routes") || !strings.Contains(body, `"principal":"owner"`) {
+		t.Errorf("a server with no route source answered %s", body)
+	}
+	// The source is fixed before the mounts are taken, like every route.
+	if message := panics(func() { f.server.SetMachineRoutes(nil) }); !strings.Contains(message, "after the mounts were taken") {
+		t.Errorf("setting the source late = %q", message)
 	}
 }

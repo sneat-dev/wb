@@ -92,15 +92,28 @@ declaration, as every public WB leaf does.
 The loopback daemon MUST serve the Cockpit application under `/cockpit/` and
 its API under `/api/v1/cockpit/`, whether or not `wb.yaml` has a `hub:`
 section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
-`/workbench/` and `/v0/workbench/` — are unchanged.
+`/workbench/` and `/v0/workbench/` — are unchanged, with these exceptions.
+`GET /api/v1/log` requires an owner session (cockpit#req:daemon-log-is-owner-only).
+`GET /api/v1/health` and `GET /api/v1/overview`, which answer the machine's name, the daemon's
+process id and the names of its worktrees (metadata, which a local reader may read without a
+session), MUST apply the Host check (cockpit#req:host-header-check, the same rule, from one shared
+function): a request whose `Host` does not name a loopback host is refused with status 421 and the
+JSON body `{schema_version, error: "misdirected_request", message}` with a fixed message, so a page
+that rebinds DNS to the loopback address reads neither. A daemon published through a tunnel must
+therefore have the tunnel send a loopback `Host` to reach them; the static pages `/` and `/metrics`
+hold nothing of the machine and are not checked. An overview that cannot be built is answered with
+status 500, the closed code `overview_unavailable` and one fixed message; the error itself, which
+names a path under the projects root, goes to the daemon's log (once for a failure that repeats)
+and to no reader of the route, and the page shows a fixed text of its own.
 
 #### REQ: embedded-application
 
-The application is an Angular 22 project using PrimeNG 22 and the Angular
+The application is an Angular 22 project using the Angular
 CDK, kept at `cockpit/web`, with Vitest for unit tests and Playwright for
 end-to-end tests. This is the stack of the CodeGrapher web UI, chosen so its
-components can be reused (founder, 2026-10-01). Only PrimeNG's open-source
-components are used; no paid template or block. It MUST NOT use React. Its production build is
+components can be reused (founder, 2026-10-01). It has no component library
+of its own, and no paid template or block (PrimeNG and its licence banner were
+removed once no page used it). It MUST NOT use React. Its production build is
 embedded in the wb binary at release time, so running Cockpit needs neither
 Node nor a network connection. A wb built from source without that build
 MUST serve a one-line page saying Cockpit was not built and how to build it,
@@ -140,7 +153,9 @@ because arriving on the loopback listener is not proof of the local operator
 
 `cockpit.anonymous_metadata: false` turns the `anonymous-local` principal off
 altogether, for an operator whose proxy rewrites `Host` and strips those
-headers; WB cannot detect such a proxy.
+headers; WB cannot detect such a proxy. It also means this machine's metadata is
+exported to another machine by no transport
+([cockpit-views](../cockpit-views/README.md)#req:hub-export-route).
 
 #### REQ: anonymous-local-reads-metadata-only
 
@@ -149,11 +164,60 @@ principal `anonymous-local`. It MAY read metadata and nothing else. Metadata
 is this closed set of fields:
 
 - machine name, the machine's unique id, WB version, route and observation time;
-- repository forge host, `owner/name` and default branch name;
-- task name, stream name, branch name, lifecycle and owner state, last
-  activity time;
-- pull request number, state and URL;
-- agent run and session identifiers, runtime, model and state;
+  and, for the local machine and for another machine whose snapshot carries them,
+  operating system and architecture names, CPU count and boot time (`boot_time`);
+- the snapshot refresh interval in seconds (`refresh_interval_seconds`), and a
+  machine's last remote-read failure as a code (`remote_error`: `ssh_unavailable`,
+  `auth_failed`, `timeout`, `wb_missing`, `wb_too_old`, `daemon_not_running`,
+  `export_refused`, `http_unavailable`, `http_auth_failed`, `bad_payload`,
+  `remote_warming_up`, `export_too_large`, `self_export` or `clock_skew`), never the
+  remote's error text, the transport that supplied a machine's live entries
+  (`transport`: `http` or `ssh`), the number of another machine's entries that were
+  left out of its export or cut at this daemon's caps (`export_dropped`) and whether
+  its agents were cut (`agents_truncated`), and, on the local machine's entry only,
+  the code of its last failed or degraded periodic publish (`publish_error`:
+  `collect_failed`, `store_unavailable`, `publish_failed` or
+  `optional_fields_dropped`), never an error text;
+- a machine's resource samples, served only by the `machine-metrics` route and
+  never in the fleet document, which are numbers and times only: CPU percent,
+  one-minute load, memory used and total bytes, free and total bytes of the
+  projects-root disk, and the sample time, with the source of the answer
+  (`route`: `local`, `live-remote`, `cached` or `none`) and, for `live-remote`,
+  its fetch time (`fetched_at`)
+  ([cockpit-views](../cockpit-views/README.md)#req:machine-metrics-route);
+- repository forge host (split from the name of an entry mapped from another
+  machine's snapshot when that name has three or more segments and the first
+  contains a dot), `owner/name` as the name, default branch name, for a
+  local repository the time of its newest local-branch activity, and
+  `remote_url_web`, the `https://<host>/<owner>/<name>` address built from the
+  host and `owner/name` alone and emitted only when the host matches a hostname
+  pattern and every path segment matches `[A-Za-z0-9._-]+` and is not `.` or
+  `..`;
+- task name, stream name, branch name, lifecycle and owner state (`active`,
+  `idle`, `orphaned` or `unknown`), last activity time, the worktree name (its
+  task, never a path), and, for a worktree on the local machine only, its
+  `ahead` and `behind` commit counts, its `upstream_gone` flag and whether it
+  has an upstream (`has_upstream`); an owner state is one of those four values
+  or absent, and a value outside them from another machine is dropped;
+- pull request number, URL (only when it is `https` with a host of ASCII
+  letters, digits, dots and hyphens, no port and no user information) and state
+  (`open`, `merged`, `closed` or `draft`), the merge state GitHub reports as a
+  closed set (`mergeable`), the counts of checks total, passed, failed, skipped
+  and pending, the checks verdict (`checks_green`), the name of the first failing
+  check (`failed_check`, at most 100 characters, control and bidirectional
+  characters removed) and the time it was read (`checked_at`)
+  ([cockpit-views](../cockpit-views/README.md)#req:pull-request-fields);
+- agent run and session identifiers, runtime, model and state, the agent's
+  `activity` (`working`, `blocked`, `idle`, `done` or `unknown`) when it is
+  reported, the ids of the worktrees an agent works on, its task name, repository
+  and its start time, the finish time and exit code of a finished run, a
+  session's state (`live` or `parked`), and the same agent fields read from
+  another machine's snapshot, at most 200 agents per machine;
+- the sealed-work throughput block (`throughput`): the window in days, the
+  number of tasks finished and dropped per day (and how many of the finished were
+  sealed `landed`), at most five of the slowest finished tasks with their task name,
+  duration in seconds and sealing time, the median and 90th-percentile finished
+  durations, and whether the collector's bounds cut the scan;
 - counts, durability levels, risk reason codes, and code-index freshness: per
   configured indexer its configured name, its state, for a stale index the
   number of commits behind, and the time of the receipt it was read from;
@@ -162,8 +226,19 @@ is this closed set of fields:
   its totals of files, symbols and edges, the symbols per kind (each kind a short
   lower-case word, at most 32 kinds), and a short failure code when the provider
   could not answer;
-- the read model's own `error` code and `agents_truncated` flag;
+- the read model's own `error` code and `agents_truncated` flag and `pull_requests_throttled` flag;
 - the configured code browser base (`cockpit.code_browser_url`), on the session response.
+- NOT in this list, and never sent to `anonymous-local`: the session response's field
+  `machine_routes` (per machine with an SSH route, its `machine_id` and the `host`, optional
+  `user` and `wb_path` of `session_move.targets.<machine>.ssh`) is OWNER-ONLY, emitted only to a
+  session that holds the `owner` principal, because it names hosts and users that the metadata
+  set does not
+  ([cockpit-views](../cockpit-views/README.md)#req:copy-the-command).
+
+The metadata routes are `session`, `fleet`, `attention`, the action list, and
+two added by [cockpit-views](../cockpit-views/README.md): `GET /api/v1/cockpit/branches?repository=<id>`
+and `GET /api/v1/cockpit/machine-metrics?machine=<id>`, each of the same access
+class as `fleet`.
 
 It MUST NOT receive file content, file names, filesystem paths, diffs, commit
 subjects or messages, task summaries, prompts or log bodies, and it MUST NOT
@@ -174,10 +249,14 @@ machine's snapshot, whose source carries several of those fields.
 
 `/api/v1/cockpit/` MUST send `Access-Control-Allow-Origin` for exactly one
 foreign origin, the origin of `cockpit.hosted_url`, only on the metadata
-`GET` routes — `session`, `fleet`, `attention` and the action list — and
+`GET` routes — `session`, `fleet`, `branches`, `machine-metrics`, `attention` and the action list — and
 never with `Access-Control-Allow-Credentials`. Those responses carry
 `Vary: Origin`. A preflight from that origin is answered with the allowance
-and with `Access-Control-Allow-Private-Network: true`. A request carrying any
+and with `Access-Control-Allow-Private-Network: true`, and allows the request
+header `If-None-Match`; the responses expose `ETag`, so that conditional
+requests and `304` work from the hosted page
+([cockpit-views](../cockpit-views/README.md)#req:hosted-origin-conditional-requests).
+A request carrying any
 other foreign `Origin`, including `null`, is refused with status 403.
 
 A hosted page therefore reads metadata and nothing else, even in a browser
@@ -218,6 +297,46 @@ exception: it is a `GET` protected by its single-use code. A request with no
 session is refused with status 401, a session that lacks the required
 capability with status 403, and neither has any effect.
 
+#### REQ: daemon-log-is-owner-only
+
+The rule for everything the daemon's listener serves is the founder's
+(2026-10-02): anything that changes state or returns the content of a file
+requires authentication; a list of repositories, agents and the like, read on
+the loopback address, does not. The daemon's runtime log is file content, so
+`GET /api/v1/log`, which the dashboard serves outside Cockpit's two subtrees,
+MUST be served to an owner session and to nobody else. It asks Cockpit who the
+owner is and has no second mechanism: the request's `Host` MUST name a loopback
+host (cockpit#req:host-header-check), it MUST come from the canonical origin or
+carry no `Origin` at all, never from the hosted origin or any other, and it MUST
+carry a live session cookie (cockpit#req:owner-session). Neither the daemon's
+owner token nor arriving on the loopback address makes a request the owner's.
+
+Any other request is refused with status 401 and the JSON body
+`{schema_version, error: "owner_session_required", message}`, where `message`
+is a fixed text naming `wb cockpit`. The refusal comes before anything else:
+the log file is not opened, the `tail` parameter is not examined, and the
+answer does not say whether a log path is configured. A daemon built with no
+owner check refuses every request with status 403 and
+`error: "log_owner_check_unavailable"`; it never serves the log without one.
+Every answer of the route, the log itself included, carries
+`Cache-Control: no-store`.
+
+To the owner, a log that cannot be opened, inspected or positioned is status
+503 with `error: "log_unavailable"` and a fixed `message`. The error text of the
+operating system, which names the file's path, MUST NOT be in the body.
+
+The operator reads the log in one of two ways: the file on the machine itself
+(`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's
+runtime directory elsewhere), or, in the browser that holds the session
+`wb cockpit` set, `http://127.0.0.1:<port>/api/v1/log`. From another machine
+that is the same sign-in over an SSH port forward. A reverse proxy or script
+that fetched the route with no session is refused; there is no unattended
+credential for it.
+
+Because the log is the owner's alone, it may hold text the fleet document may
+not, such as the end of a failed `ssh` call's stderr
+([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch).
+
 ### Principals and capabilities
 
 #### REQ: capability-vocabulary
@@ -246,15 +365,20 @@ unavailable control.
 #### REQ: fleet-read-model
 
 `GET /api/v1/cockpit/fleet` MUST return one versioned document
-(`schema_version`) with `snapshot_at` and these collections:
+(`schema_version`, which is 2 since [cockpit-views](../cockpit-views/README.md)#req:schema-version-2)
+with `snapshot_at` and these collections:
 
 - **machines** — this machine, and every other machine whose snapshot is
   already in the local copy of the remote state store; the snapshot reads that
   copy and does not fetch it;
 - **repositories** — with counts of worktrees, local branches, remote
   branches, open pull requests where known, and active agents;
-- **worktrees** — task, repository, branch, owner state, last activity;
-- **branches** — local and remote;
+- **worktrees** — task, repository, branch, owner state, last activity, and
+  the fields [cockpit-views](../cockpit-views/README.md) adds;
+- **branches** — not part of the document: they are served per repository by
+  `GET /api/v1/cockpit/branches?repository=<id>`, and the document keeps each
+  repository's branch counts
+  ([cockpit-views](../cockpit-views/README.md)#req:lazy-branches-route);
 - **pull_requests** — every open pull request recorded locally, without a
   network call, tied to
   its repository and, where one exists, its worktree;
@@ -265,9 +389,13 @@ Every entry carries a stable `id` unique within its collection, its
 
 #### REQ: route-and-freshness-are-explicit
 
-`route` is `local` for state this daemon observed itself and `cached` for
+`route` is `local` for state this daemon observed itself, `live-remote` for
+state it read in the background from another machine over its configured HTTP route, or
+over SSH as the fallback
+([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch), and `cached` for
 state read from another machine's published snapshot. A `cached` entry's
-`observed_at` is the snapshot's publish time. The application MUST show the
+`observed_at` is the snapshot's publish time, and a `live-remote` entry's is the
+remote snapshot's time. The application MUST show the
 route and the age of every `cached` entry and MUST NOT render cached state as
 live.
 
@@ -278,7 +406,7 @@ background. A request MUST NOT wait for a Git scan of every repository. A
 request made before the first snapshot exists returns an empty, well-formed
 document marked as warming up.
 
-The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned.
+The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned. A warm-up always ends. When the repositories cannot be listed and no listing has ever worked, the first pass has nothing more to learn: `warming_up` becomes false and the document, which is empty, carries the closed code `repositories_unreadable` in `error`, so that a client that polls faster while the document warms up stops, and a reader of this machine is told that its export failed instead of being told `warming_up` for ever. The first listing that works then starts the first pass, and the document warms up again until that pass completes.
 
 #### REQ: snapshot-refresh
 
@@ -352,16 +480,25 @@ no forge host has no link. Cockpit does not check that the page exists.
 
 #### REQ: navigation
 
-The application MUST provide Dashboard, Repositories, Worktrees, Agents and
-Machines pages. Each list page is a table that can be filtered by machine and
-by repository.
+The application MUST provide Home (the former Dashboard, which `/dashboard`
+still shows), Tasks, Repositories, Worktrees, Agents and Machines pages, and shows no visible page heading that repeats the tab.
+Each list page is a table that can be filtered by machine and by a text filter
+with wildcards (not by a repository dropdown). Merged repository rows and task
+rows show a chip per machine that carries the age of cached data and a stale
+mark, which satisfies REQ:route-and-freshness-are-explicit. The behaviour of
+the pages — filtering, sorting, tabs, search, keyboard and detail pages — is
+defined by [cockpit-views](../cockpit-views/README.md), which takes precedence
+where it differs. The worktree page this Feature defines stays.
 
 #### REQ: summary-hover-drill-down
 
-Every count the application shows MUST have a hover card that names the
-entities it counts, or the first of them with the total when there are many,
-and a click that opens the list filtered to exactly those entities. A hover
-card contains no control that changes state.
+Every count the application shows MUST be a link whose click opens the list
+filtered to exactly those entities. A hover card that names the entities it
+counts is no longer required
+([cockpit-views](../cockpit-views/README.md)#req:every-number-is-a-link); one that
+is shown contains no control that changes state. Where cockpit-views defines a
+page's counts, such as the Home items and the tab badges, its definition takes
+precedence.
 
 #### REQ: repository-readme
 
@@ -380,8 +517,8 @@ not a regular file is not served.
 Every response under `/cockpit/` MUST carry a content security policy that
 allows scripts only from the daemon's own origin, with no `unsafe-inline` and
 no `unsafe-eval`, and forbids framing by another origin. Styles are allowed
-from the daemon's own origin and, for the style elements Angular and PrimeNG
-inject at run time, through a nonce issued per response; `unsafe-inline` is
+from the daemon's own origin and, for the style elements Angular injects
+at run time, through a nonce issued per response; `unsafe-inline` is
 not used for styles either.
 
 ### Test coverage
@@ -414,7 +551,8 @@ All code this Feature adds MUST reach 100% test coverage (founder,
 
 - Retiring `internal/dashboard` or `hub/web`, or porting their pages — a
   later Feature, after the port is complete.
-- Protecting the existing `/api/v1/*` routes — they keep today's behavior
+- Protecting the existing `/api/v1/*` routes other than `GET /api/v1/log`
+  (cockpit#req:daemon-log-is-owner-only) — they keep today's behavior
   until that Feature. They share an origin with Cockpit and their pages allow
   inline scripts; they render no repository content. A script injected into
   one of those pages would run in the origin that holds the owner session;
@@ -473,6 +611,15 @@ Scenario: Existing surfaces keep working
 Given a daemon serving Cockpit
 When `wb dashboard --local --format json`, `GET /`, `GET /metrics` and `GET /api/v1/overview` are requested
 Then each answers as it did before this Feature
+
+### AC: dashboard-json-routes-answer-only-on-loopback
+
+**Requirements:** cockpit#req:cockpit-mount, cockpit#req:host-header-check
+
+Scenario: A rebinding page, and an overview that fails
+Given a daemon serving its dashboard routes, and a worktree whose run telemetry cannot be read
+When `GET /api/v1/health` and `GET /api/v1/overview` are requested with a `Host` that names another host, with each of the three loopback names, and the overview is requested twice
+Then a foreign `Host` is refused with status 421 and `misdirected_request` and is told nothing of the machine, the loopback names are served, and the failed overview answers `overview_unavailable` with one fixed message that names no path while the reason is logged once
 
 ### AC: manifest-rows-exist
 
@@ -613,10 +760,10 @@ Then the row links to `https://codegrapher.dev/github.com/specscore/specscore-cl
 
 **Requirements:** cockpit#req:navigation, cockpit#req:route-and-freshness-are-explicit
 
-Scenario: Five pages
+Scenario: Six pages
 Given a read model with entries in every collection, some of them cached
-When each of the Dashboard, Repositories, Worktrees, Agents and Machines pages is opened and the machine filter is applied on a list page
-Then each page shows its entries, every cached row shows its route and age, and the filter leaves only that machine's rows
+When each of the Dashboard, Tasks, Repositories, Worktrees, Agents and Machines pages is opened and the machine filter is applied on a list page
+Then each page shows its entries, every cached row shows its route and age (a merged row through its per-machine chip), and the filter leaves only that machine's rows
 
 ### AC: counts-drill-down
 
@@ -625,7 +772,7 @@ Then each page shows its entries, every cached row shows its route and age, and 
 Scenario: From a count to its rows
 Given the Repositories page showing a repository with a worktree count of two
 When the operator hovers the count and then clicks it, in a browser set to dark mode
-Then the hover card names both worktrees and has no button, the click opens the Worktrees page filtered to that repository showing exactly those two rows, and the page uses the dark theme
+Then any hover card shown names both worktrees and has no button, the click opens the Worktrees page filtered to that repository showing exactly those two rows, and the page uses the dark theme
 
 ### AC: readme-needs-owner
 
@@ -635,6 +782,33 @@ Scenario: With and without a session
 Given a repository whose default branch tip has a committed `README.md`
 When its page is opened with an owner session and then without one
 Then the first renders the README and the second shows that an owner session is needed and names `wb cockpit`
+
+### AC: daemon-log-needs-an-owner-session
+
+**Requirements:** cockpit#req:daemon-log-is-owner-only, cockpit#req:owner-session, cockpit#req:host-header-check
+
+Scenario: The daemon's log holds a marker
+Given a daemon whose runtime log holds a marker line, and a browser that signed in with `wb cockpit`
+When `GET /api/v1/log` is requested with no cookie, with an unknown session cookie, with the session cookie and `Host: attacker.example:8766`, with the session cookie and the hosted or another foreign `Origin`, with the daemon's owner token as a bearer, after the session expired or was logged out, and then with the live session cookie on the canonical origin
+Then every request but the last is refused with status 401, `error: "owner_session_required"` and `Cache-Control: no-store`, none of those responses contains the marker or the log's path, the log file is not opened for them, and the last response is the log's tail with the marker and `Cache-Control: no-store`
+
+### AC: daemon-log-fails-closed-without-an-owner-check
+
+**Requirements:** cockpit#req:daemon-log-is-owner-only
+
+Scenario: A handler built without the owner check
+Given the dashboard handler built with a log path and no owner check
+When `GET /api/v1/log` is requested
+Then the response has status 403 with `error: "log_owner_check_unavailable"`, the log file is not opened, and the response contains nothing of the log
+
+### AC: daemon-log-error-names-no-path
+
+**Requirements:** cockpit#req:daemon-log-is-owner-only
+
+Scenario: A log that cannot be read
+Given an owner session and a log path whose file is missing, cannot be opened, or cannot be inspected
+When `GET /api/v1/log` is requested
+Then the response has status 503 with `error: "log_unavailable"` and a fixed message, and the body contains no part of the file's path
 
 ### AC: hostile-readme-is-inert
 
@@ -660,8 +834,8 @@ Then the Go check passes with every added statement covered, the web test config
 
 Scenario: The journey without crutches
 Given a temporary projects root with one repository and two worktrees, and no daemon running
-When one end-to-end test runs `wb cockpit`, follows the printed URL in a browser, hovers and clicks the worktree count, clears the cookie and reloads
-Then the Dashboard appears signed in as owner, the filtered Worktrees table shows both rows, and after the reload the lists still load while the repository README asks for an owner session
+When one end-to-end test runs `wb cockpit`, follows the printed URL in a browser, walks Home, the five tabs, a list's filter, chip, panel and detail route, the palette and "New task", clicks the local machine's worktree count, clears the cookie and reloads
+Then Home appears signed in as owner with its sections, each tab lists the rows of the real fleet, the filtered Worktrees list shows both rows, the local machine's metrics are drawn as charts or said not to be reported, and after the reload the lists still load while the repository README asks for an owner session (the page steps are `cockpit/web/apps/cockpit-e2e/src/journey/steps.ts`, the journey runs on Linux CI only)
 
 ## Open Questions
 

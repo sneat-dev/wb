@@ -15,12 +15,16 @@ package fleet
 
 import "time"
 
-// SchemaVersion is the document format this binary writes.
-const SchemaVersion = 1
+// SchemaVersion is the document format this binary writes: 2 since
+// cockpit-views#req:schema-version-2, which took the branches out of the
+// document and added the fields below.
+const SchemaVersion = 2
 
-// The two routes an entry can have (cockpit#req:route-and-freshness-are-
+// The routes an entry can have (cockpit#req:route-and-freshness-are-
 // explicit): local for state this daemon observed itself, cached for state
-// read from another machine's published snapshot.
+// read from another machine's published snapshot, and live-remote
+// (RouteLiveRemote) for state read in the background from another machine's own
+// export (cockpit-views#req:remote-entries-replace-cached).
 const (
 	RouteLocal  = "local"
 	RouteCached = "cached"
@@ -38,11 +42,17 @@ const (
 	BranchRemote = "remote"
 )
 
-// The owner states of a local worktree, from its heartbeat: active when the
-// last sign of use is within worktrees.DefaultSessionFreshness, idle after.
+// The owner states (cockpit-views#req:owner-state-vocabulary), from the
+// liveness of the worktree's recorded owner process: a worktree mapped on this
+// machine is active or orphaned when that process is alive or gone and unknown
+// when none is recorded. A worktree from another machine's snapshot keeps the
+// value that machine published when it is one of these four and has none
+// otherwise.
 const (
-	OwnerActive = "active"
-	OwnerIdle   = "idle"
+	OwnerActive   = "active"
+	OwnerIdle     = "idle"
+	OwnerOrphaned = "orphaned"
+	OwnerUnknown  = "unknown"
 )
 
 // The short codes a repository's Error can hold. They name the kind of
@@ -113,10 +123,6 @@ type KindCount struct {
 	Count int    `json:"count"`
 }
 
-// PullRequestUnknown is the state of a locally recorded pull request: the
-// record names it but not whether it is still open.
-const PullRequestUnknown = "unknown"
-
 // Entry is what every collection's entry carries: a stable identifier unique
 // within its collection, the machine it belongs to, its route and when it was
 // observed. Machine is the machine's name, which two logins can share;
@@ -149,23 +155,75 @@ type Document struct {
 	Error               string    `json:"error,omitempty"`
 	// CodeIndexProvider is the name of the configured code-index provider, or
 	// absent when none is configured, which is a normal state.
-	CodeIndexProvider string        `json:"code_index_provider,omitempty"`
-	Machines          []Machine     `json:"machines"`
-	Repositories      []Repository  `json:"repositories"`
-	Worktrees         []Worktree    `json:"worktrees"`
-	Branches          []Branch      `json:"branches"`
-	PullRequests      []PullRequest `json:"pull_requests"`
-	Agents            []Agent       `json:"agents"`
-	AgentsTruncated   bool          `json:"agents_truncated,omitempty"`
+	CodeIndexProvider string `json:"code_index_provider,omitempty"`
+	// RefreshIntervalSeconds is the daemon's snapshot refresh interval, which
+	// the application's freshness chip is measured against.
+	RefreshIntervalSeconds int `json:"refresh_interval_seconds"`
+	// The branches are not a collection of the document: each repository
+	// carries its counts and BranchesResponse serves the list per repository.
+	Machines        []Machine     `json:"machines"`
+	Repositories    []Repository  `json:"repositories"`
+	Worktrees       []Worktree    `json:"worktrees"`
+	PullRequests    []PullRequest `json:"pull_requests"`
+	Agents          []Agent       `json:"agents"`
+	AgentsTruncated bool          `json:"agents_truncated,omitempty"`
+	// PullRequestsThrottled says the hourly budget of pull request
+	// observations ran out with pull requests due, so their state is older than
+	// the cadence promises; each entry's checked_at says how old.
+	PullRequestsThrottled bool `json:"pull_requests_throttled,omitempty"`
+	// Throughput is this machine's landed-task throughput
+	// (cockpit-views#req:throughput-block), absent while no landed terminal
+	// record has both timestamps. It is local only and never exported.
+	Throughput *Throughput `json:"throughput,omitempty"`
 }
+
+// BranchesResponse is what the branches route answers for one repository: its
+// branches, and for a repository whose branches this machine does not hold (an
+// entry cached from another machine) an empty list and a Reason.
+type BranchesResponse struct {
+	Repository string   `json:"repository"`
+	Branches   []Branch `json:"branches"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+// ReasonCachedRepository is the reason of an empty branch list for a
+// repository cached from another machine, whose snapshot carries no branches.
+const ReasonCachedRepository = "cached_repository"
 
 // Machine is this machine or another machine the remote provider has a
 // snapshot for.
+//
+// OS, Arch, CPUCount and BootTime are the machine's hardware facts, for this
+// machine and for another whose published snapshot carries them, and omitted
+// otherwise. They are names and numbers: no process list, path or environment.
+// The document carries no resource samples; the metrics route serves them.
+//
+// Transport is the transport (`http` or `ssh`) that produced a machine's
+// live-remote entries, and RemoteError the code of the last failed read of
+// another machine (cockpit-views#req:remote-error-is-visible): one of
+// remoteErrorCodes, never the remote's own text. ExportDropped is the number of
+// that machine's entries its export left out, or this daemon cut at its caps
+// (of a live export and of a published snapshot alike), and AgentsTruncated
+// says its agents were cut. None of the four is ever set on this machine's own
+// entry.
 type Machine struct {
 	Entry
-	WBVersion       string `json:"wb_version,omitempty"`
-	RepositoryCount int    `json:"repository_count"`
-	WorktreeCount   int    `json:"worktree_count"`
+	WBVersion       string    `json:"wb_version,omitempty"`
+	RepositoryCount int       `json:"repository_count"`
+	WorktreeCount   int       `json:"worktree_count"`
+	OS              string    `json:"os,omitempty"`
+	Arch            string    `json:"arch,omitempty"`
+	CPUCount        int       `json:"cpu_count,omitempty"`
+	BootTime        time.Time `json:"boot_time,omitzero"`
+	Transport       string    `json:"transport,omitempty"`
+	RemoteError     string    `json:"remote_error,omitempty"`
+	ExportDropped   int       `json:"export_dropped,omitempty"`
+	// PublishError is the code of the last failed or degraded periodic publish
+	// of this machine's snapshot (cockpit-views#req:periodic-remote-publish),
+	// on this machine's own entry only: absent when it is healthy and when
+	// publishing is off.
+	PublishError    string `json:"publish_error,omitempty"`
+	AgentsTruncated bool   `json:"agents_truncated,omitempty"`
 }
 
 // Repository is one repository with its counts. A count that is nil is not
@@ -184,6 +242,13 @@ type Repository struct {
 	OpenPullRequestCount *int   `json:"open_pull_request_count,omitempty"`
 	ActiveAgentCount     *int   `json:"active_agent_count,omitempty"`
 	Error                string `json:"error,omitempty"`
+	// LastActivityAt is the newest local-branch activity time, omitted for an
+	// entry cached from another machine. RemoteURLWeb is the
+	// https://<host>/<owner>/<name> address built from the forge host and the
+	// name alone, only when both are safe (webURL); the origin URL itself is
+	// never in the document.
+	LastActivityAt time.Time `json:"last_activity_at,omitzero"`
+	RemoteURLWeb   string    `json:"remote_url_web,omitempty"`
 	// CodeIndex is one state per indexer configured for the repository. It is
 	// absent for a cached repository, whose published snapshot does not carry
 	// it, and for a local one with no indexer or whose state could not be told.
@@ -191,20 +256,34 @@ type Repository struct {
 }
 
 // Worktree is one WB task worktree. Repository is the id of its repository.
+// Name is its task, never a path. Ahead, Behind, UpstreamGone and HasUpstream
+// are the sync facts of its branch, each omitted when unknown. A `local` entry
+// carries what this daemon observed. A `live-remote` entry carries them, and its
+// lifecycle and owner state, as the other machine reported them: they are that
+// machine's word, not an observation of this one, and Route is what says so (no
+// entry with another route ever carries an id or the machine id of this
+// machine's entries, so a client that reads a fact as "observed here" only from
+// a `local` entry cannot be misled). A `cached` entry has no sync facts.
 type Worktree struct {
 	Entry
 	Repository     string    `json:"repository"`
+	Name           string    `json:"name"`
 	Task           string    `json:"task"`
 	Stream         string    `json:"stream,omitempty"`
 	Branch         string    `json:"branch"`
 	Lifecycle      string    `json:"lifecycle,omitempty"`
 	OwnerState     string    `json:"owner_state,omitempty"`
 	LastActivityAt time.Time `json:"last_activity_at,omitzero"`
+	Ahead          *int      `json:"ahead,omitempty"`
+	Behind         *int      `json:"behind,omitempty"`
+	UpstreamGone   bool      `json:"upstream_gone,omitempty"`
+	HasUpstream    *bool     `json:"has_upstream,omitempty"`
 	// CodeIndex is as on Repository.
 	CodeIndex []CodeIndex `json:"code_index,omitempty"`
 }
 
-// Branch is one local or remote branch. Worktree is the id of the worktree
+// Branch is one local or remote branch, served by the branches route and not
+// part of the fleet document. Worktree is the id of the worktree
 // that has it checked out, and Task that worktree's task, when there is one.
 // Upstream, Ahead, Behind and UpstreamGone describe a local branch's tracking
 // state.
@@ -224,7 +303,7 @@ type Branch struct {
 
 // PullRequest is one open pull request recorded locally, tied to its
 // repository and, where one exists, its worktree. State is empty for a local
-// record, which names the pull request but not its state; Repository is empty
+// record, which names the pull request but not its state until one is observed; Repository is empty
 // when the record's repository slug matches no single local repository.
 type PullRequest struct {
 	Entry
@@ -234,27 +313,79 @@ type PullRequest struct {
 	Number     int    `json:"number"`
 	State      string `json:"state,omitempty"`
 	URL        string `json:"url,omitempty"`
+	// The fields below come from the daemon's last successful observation of
+	// the pull request and are omitted until one has succeeded
+	// (cockpit-views#req:pull-request-fields). On a `live-remote` entry they,
+	// and State (`merged` included), are what the other machine's daemon reported
+	// of its own observation, validated and never observed here: Route says
+	// whose word they are. A `cached` entry has none of them. The counts and the
+	// verdict are pointers because zero and false are values. ChecksGreen is the
+	// observation's own verdict, not derived from the counts.
+	Mergeable     string    `json:"mergeable,omitempty"`
+	ChecksTotal   *int      `json:"checks_total,omitempty"`
+	ChecksPassed  *int      `json:"checks_passed,omitempty"`
+	ChecksFailed  *int      `json:"checks_failed,omitempty"`
+	ChecksSkipped *int      `json:"checks_skipped,omitempty"`
+	ChecksPending *int      `json:"checks_pending,omitempty"`
+	ChecksGreen   *bool     `json:"checks_green,omitempty"`
+	FailedCheck   string    `json:"failed_check,omitempty"`
+	CheckedAt     time.Time `json:"checked_at,omitzero"`
 }
 
+// The activity values of an agent entry: herdr's five agent statuses, which are
+// the only thing the cockpit reads from herdr (never the screen).
+const (
+	ActivityWorking = "working"
+	ActivityBlocked = "blocked"
+	ActivityIdle    = "idle"
+	ActivityDone    = "done"
+	ActivityUnknown = "unknown"
+)
+
+// maxAgentWorktrees bounds the worktrees one agent entry lists.
+const maxAgentWorktrees = 10
+
 // Agent is a registered session or a dispatched run: identifiers, runtime,
-// model and state, and the repository a run works in.
+// model and state, the repository, task and worktrees it works in, when it
+// started and, for a finished run, when it finished and its exit code.
+// Activity is herdr's status of a session of this machine, absent when herdr
+// does not report it. A session has Repository, Task and Worktrees only when a
+// worktree's declared owner process is the session's; they are never guessed.
 type Agent struct {
 	Entry
-	Kind       string `json:"kind"`
-	SessionID  string `json:"session_id,omitempty"`
-	RunID      string `json:"run_id,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
-	Model      string `json:"model,omitempty"`
-	State      string `json:"state"`
-	Repository string `json:"repository,omitempty"`
+	Kind       string    `json:"kind"`
+	SessionID  string    `json:"session_id,omitempty"`
+	RunID      string    `json:"run_id,omitempty"`
+	Runtime    string    `json:"runtime,omitempty"`
+	Model      string    `json:"model,omitempty"`
+	State      string    `json:"state"`
+	Activity   string    `json:"activity,omitempty"`
+	Repository string    `json:"repository,omitempty"`
+	Task       string    `json:"task,omitempty"`
+	Worktrees  []string  `json:"worktrees,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitzero"`
+	FinishedAt time.Time `json:"finished_at,omitzero"`
+	ExitCode   *int      `json:"exit_code,omitempty"`
 }
+
+// The codes of Machine.publish_error: the diagnostics of the periodic remote
+// publisher (internal/remotestate/periodic), a closed list, and never the text of
+// an error. A code outside it is dropped.
+const (
+	PublishErrorCollectFailed = "collect_failed"
+	PublishErrorStore         = "store_unavailable"
+	PublishErrorFailed        = "publish_failed"
+	PublishErrorOptional      = "optional_fields_dropped"
+)
+
+var publishErrorCodes = []string{PublishErrorCollectFailed, PublishErrorStore, PublishErrorFailed, PublishErrorOptional}
 
 // emptyDocument is the well-formed document served before the first snapshot:
 // every collection is an empty list, never null.
-func emptyDocument() Document {
+func emptyDocument(interval time.Duration) Document {
 	return Document{
-		SchemaVersion: SchemaVersion, WarmingUp: true,
+		SchemaVersion: SchemaVersion, WarmingUp: true, RefreshIntervalSeconds: int(interval / time.Second),
 		Machines: []Machine{}, Repositories: []Repository{}, Worktrees: []Worktree{},
-		Branches: []Branch{}, PullRequests: []PullRequest{}, Agents: []Agent{},
+		PullRequests: []PullRequest{}, Agents: []Agent{},
 	}
 }

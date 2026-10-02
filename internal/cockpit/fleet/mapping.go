@@ -1,12 +1,19 @@
 package fleet
 
 import (
+	"encoding/json"
+	"net/url"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/sneat-dev/wb/internal/agentfields"
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
@@ -23,6 +30,17 @@ type repoEntries struct {
 	repository Repository
 	worktrees  []Worktree
 	branches   []Branch
+	// owners are the worktrees whose declared owner process is alive, by that
+	// process id: the only link between a session and its worktrees.
+	owners []ownerLink
+}
+
+// ownerLink is a worktree held by a live owner process.
+type ownerLink struct {
+	pid                     int
+	agent                   string
+	started                 time.Time
+	worktree, task, project string
 }
 
 // recordedWorktree is a linked worktree joined with what it records about
@@ -81,10 +99,21 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 	identity := repository.Identity()
 	entry := func(id string) Entry { return localEntry(id, machine, at) }
 	repositoryID := localRepositoryID(machine, repository)
+	host := firstNonEmpty(repository.Host, originHost)
 	mapped := repoEntries{repository: Repository{
-		Entry: entry(repositoryID), Host: firstNonEmpty(repository.Host, originHost), Name: repository.Slug(),
+		Entry: entry(repositoryID), Host: host, Name: repository.Slug(),
 		DefaultBranch: firstNonEmpty(repository.DefaultBranch, defaultBranch), Error: errCode, CodeIndex: codeIndex.repository,
+		RemoteURLWeb: webURL(host, repository.Slug()),
 	}}
+	localRefs := map[string]BranchRef{}
+	for _, ref := range refs {
+		if ref.Scope == BranchLocal {
+			localRefs[ref.Name] = ref
+			if ref.CommittedAt.After(mapped.repository.LastActivityAt) {
+				mapped.repository.LastActivityAt = ref.CommittedAt
+			}
+		}
+	}
 	type linkedWorktree struct{ id, task string }
 	byBranch := map[string]linkedWorktree{}
 	for _, item := range recorded {
@@ -94,15 +123,26 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 		if activity.IsZero() {
 			activity = item.record.CreatedAt
 		}
-		ownerState := OwnerIdle
-		if at.Sub(activity) <= worktrees.DefaultSessionFreshness {
-			ownerState = OwnerActive
-		}
 		byBranch[branch] = linkedWorktree{id: id, task: item.record.Task}
-		mapped.worktrees = append(mapped.worktrees, Worktree{
-			Entry: entry(id), Repository: repositoryID, Task: item.record.Task, Branch: branch,
-			OwnerState: ownerState, LastActivityAt: activity, CodeIndex: codeIndex.byPath[item.linked.Path],
-		})
+		if item.record.OwnerPID > 0 {
+			mapped.owners = append(mapped.owners, ownerLink{pid: item.record.OwnerPID, worktree: id, task: item.record.Task, project: repositoryID, agent: item.record.OwnerAgent, started: item.record.OwnerStarted})
+		}
+		worktree := Worktree{
+			Entry: entry(id), Repository: repositoryID, Name: item.record.Task, Task: item.record.Task, Branch: branch,
+			OwnerState: localOwnerState(item.record.Owner), LastActivityAt: activity, CodeIndex: codeIndex.byPath[item.linked.Path],
+		}
+		if ref, tracked := localRefs[branch]; tracked {
+			hasUpstream := ref.Upstream != ""
+			worktree.HasUpstream = &hasUpstream
+			switch {
+			case ref.UpstreamGone:
+				worktree.UpstreamGone = true
+			case hasUpstream:
+				ahead, behind := ref.Ahead, ref.Behind
+				worktree.Ahead, worktree.Behind = &ahead, &behind
+			}
+		}
+		mapped.worktrees = append(mapped.worktrees, worktree)
 	}
 	for _, ref := range refs {
 		var linked linkedWorktree
@@ -121,16 +161,182 @@ func mapLocalRepository(machine string, repository discover.Repo, defaultBranch 
 	return mapped
 }
 
+// localOwnerState is the owner state of a worktree of this machine, from the
+// liveness of its recorded owner process (cockpit-views#req:owner-state-
+// vocabulary): alive is active, gone is orphaned, and no process recorded is
+// unknown. The heartbeat plays no part.
+func localOwnerState(owner string) string {
+	switch owner {
+	case worktrees.OwnerLive:
+		return OwnerActive
+	case worktrees.OwnerGone:
+		return OwnerOrphaned
+	}
+	return OwnerUnknown
+}
+
+// maxRemoteText caps a free-text field taken from another machine's snapshot.
+const maxRemoteText = 200
+
+// plainText is text with control and format characters (which include the
+// bidirectional controls) removed and at most maxRemoteText runes kept: a
+// snapshot is another machine's data, and a name in it is shown as text only.
+func plainText(text string) string { return plainTextMax(text, maxRemoteText) }
+
+// plainTextMax is plainText cut to at most limit characters.
+func plainTextMax(text string, limit int) string {
+	var kept []rune
+	for _, character := range text {
+		if len(kept) == limit {
+			break
+		}
+		if !unsafeRune(character) {
+			kept = append(kept, character)
+		}
+	}
+	return string(kept)
+}
+
+// unsafeRune reports whether character is one plainText removes: a control or
+// format character, or a line or paragraph separator.
+func unsafeRune(character rune) bool { return agentfields.UnsafeRune(character) }
+
+// remoteLifecycles are the lifecycle values a published snapshot is built with.
+var remoteLifecycles = []string{"working", "review", "merged", "superseded"}
+
+// publishedLifecycle keeps a published lifecycle that is one of the vocabulary
+// and drops any other value.
+func publishedLifecycle(lifecycle string) string {
+	if slices.Contains(remoteLifecycles, lifecycle) {
+		return lifecycle
+	}
+	return ""
+}
+
+// maxURLLength bounds an address taken from a pull request record.
+const maxURLLength = 2048
+
+// safeHTTPSURL is rawURL, with its scheme in lower case, when it is an https
+// address of printable ASCII, at most maxURLLength long, whose host passes the
+// hostname rule and is neither an IP literal nor localhost, with no port and no
+// user information; else empty. A pull request address reaches the browser as a
+// link, so only this shape does. A GitHub Enterprise address with a port loses
+// its link by design.
+func safeHTTPSURL(rawURL string) string {
+	if len(rawURL) > maxURLLength || len(rawURL) < len("https") ||
+		strings.ContainsFunc(rawURL, func(character rune) bool { return character <= ' ' || character > '~' }) {
+		return ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" || parsed.Opaque != "" ||
+		len(parsed.Host) > 253 || !hostnamePattern.MatchString(parsed.Host) || !hasLetterLabel(parsed.Host) ||
+		parsed.Host == "localhost" || strings.HasSuffix(parsed.Host, ".localhost") {
+		return ""
+	}
+	return "https" + rawURL[len("https"):]
+}
+
+// hasLetterLabel reports whether the last label of host holds a letter, which
+// no IP literal does (a numeric dotted host is an address, not a name).
+func hasLetterLabel(host string) bool {
+	last := host[strings.LastIndex(host, ".")+1:]
+	return strings.ContainsFunc(last, unicode.IsLetter)
+}
+
+// earliestBootTime is the oldest boot time a snapshot may publish.
+var earliestBootTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// publishedBootTime is bootTime when it lies between 2000-01-01 and now, else
+// the zero time.
+func publishedBootTime(bootTime, now time.Time) time.Time {
+	if bootTime.Before(earliestBootTime) || bootTime.After(now) {
+		return time.Time{}
+	}
+	return bootTime
+}
+
+// hostnamePattern is a dotted DNS name: labels of letters, digits and inner
+// hyphens. It admits no port, path, query, space or percent escape.
+var hostnamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
+
+// segmentPattern is one path segment of a repository address.
+var segmentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// webURL is the https://<host>/<owner>/<name> address of a repository
+// (cockpit-views#req:repository-activity-fields), built from the forge host and
+// the repository's owner/name alone, and empty unless the host matches a
+// hostname pattern and both segments match [A-Za-z0-9._-]+ and are not "." or
+// "..". It is never taken from an origin URL, which may carry a credential.
+func webURL(host, name string) string {
+	owner, repo, found := strings.Cut(name, "/")
+	if !found || len(host) > 253 || !hostnamePattern.MatchString(host) {
+		return ""
+	}
+	for _, segment := range []string{owner, repo} {
+		if !segmentPattern.MatchString(segment) || segment == "." || segment == ".." {
+			return ""
+		}
+	}
+	return "https://" + host + "/" + owner + "/" + repo
+}
+
+// shortNamePattern is an operating system or architecture name.
+var shortNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
+
+// shortName is name when it is a short plain word, else empty: a snapshot is
+// another machine's data and an odd value is dropped.
+func shortName(name string) string {
+	if shortNamePattern.MatchString(name) {
+		return name
+	}
+	return ""
+}
+
+// maxCPUCount bounds a published CPU count; a larger number is dropped.
+const maxCPUCount = 65536
+
+// cpuCount is count when it is plausible, else zero (omitted).
+func cpuCount(count int) int {
+	if count < 1 || count > maxCPUCount {
+		return 0
+	}
+	return count
+}
+
+// publishedOwnerState keeps the owner state another machine published when it
+// is one of the vocabulary and drops any other value.
+func publishedOwnerState(state string) string {
+	if slices.Contains([]string{OwnerActive, OwnerIdle, OwnerOrphaned, OwnerUnknown}, state) {
+		return state
+	}
+	return ""
+}
+
+// splitForgeName splits a snapshot's repository name that starts with a
+// hostname-like segment (one with a dot, as github.com is) into the host and
+// the rest, and returns the name unchanged with no host otherwise.
+func splitForgeName(name string) (host, rest string) {
+	first, remainder, found := strings.Cut(name, "/")
+	if found && strings.Contains(first, ".") && hostnamePattern.MatchString(first) && hasLetterLabel(first) && strings.Contains(remainder, "/") &&
+		!slices.Contains(strings.Split(remainder, "/"), "") {
+		return first, remainder
+	}
+	return "", name
+}
+
 // mapPullRequests maps the locally recorded pull requests. The record names a
 // repository by slug only, so it is attached to a repository when exactly one
 // local repository has that slug (repositories maps a slug to the ids of the
 // repositories with it) and to a worktree of it when one has the record's
 // task; otherwise it keeps no repository and counts as one diagnostic.
-func mapPullRequests(machine string, bindings []worktrees.RegisteredPullRequestBinding, at time.Time, repositories map[string][]string, worktreesOf map[string][]Worktree) (mapped []PullRequest, diagnostics int) {
+func mapPullRequests(machine string, bindings []worktrees.RegisteredPullRequestBinding, at time.Time, repositories map[string][]string, worktreesOf map[string][]Worktree, observed map[string]pullObservation) (mapped []PullRequest, diagnostics int) {
 	for _, binding := range bindings {
 		pull := PullRequest{
 			Entry:  localEntry(entryID(kindPR, machine, binding.Repository, strconv.Itoa(binding.PullRequest)), machine, at),
-			Number: binding.PullRequest, State: PullRequestUnknown, URL: binding.URL,
+			Number: binding.PullRequest, URL: safeHTTPSURL(binding.URL),
+		}
+		if observation, ok := observed[pullKey(binding.Repository, binding.PullRequest)]; ok {
+			observation.applyTo(&pull)
 		}
 		if ids := repositories[binding.Repository]; len(ids) == 1 {
 			pull.Repository = ids[0]
@@ -153,6 +359,12 @@ type agentRecord struct {
 	agent Agent
 	slug  string
 	when  time.Time
+	// pid and harness are a session's process id and harness-native session id,
+	// which join it to a worktree owner and to herdr; branch and task are a
+	// run's. None is emitted.
+	pid            int
+	harness        string
+	branch, taskOf string
 }
 
 // The agents the document carries: at most agentCap, the newest, being
@@ -167,16 +379,27 @@ const (
 // session with no identifier gets an entry id hashed from its process id and
 // no session id, so a raw pid is never emitted. It reports whether the cap cut
 // anything.
+//
+// The session registry and the run records are files an agent harness writes,
+// so their strings are held to the one set of rules every agent string is
+// (package agentfields), with the publisher's semantics: an agent whose state
+// or identifier fails is dropped, and a runtime, model or task that fails is
+// blanked. A path, an environment value or prose in one of them therefore never
+// reaches a reader, and this machine's own export never refuses its agents.
 func mapAgents(machine string, sessions []session.View, runs []agents.Result, at time.Time) (mapped []agentRecord, truncated bool) {
 	for _, view := range sessions {
-		if view.State != session.StateLive && view.State != session.StateParked {
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: AgentSession, SessionID: view.WBSessionID, Runtime: view.Runtime, Model: view.Model, State: view.State,
+		}, agentfields.IsText)
+		if !ok {
 			continue
 		}
-		identity := firstNonEmpty(view.WBSessionID, "pid\x00"+strconv.Itoa(view.PID))
+		identity := firstNonEmpty(fields.SessionID, "pid\x00"+strconv.Itoa(view.PID))
 		mapped = append(mapped, agentRecord{agent: Agent{
 			Entry: localEntry(entryID(kindAgent, machine, AgentSession, identity), machine, at),
-			Kind:  AgentSession, SessionID: view.WBSessionID, Runtime: view.Runtime, Model: view.Model, State: view.State,
-		}, when: view.StartedAt})
+			Kind:  AgentSession, SessionID: fields.SessionID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
+			StartedAt: view.StartedAt,
+		}, when: view.StartedAt, pid: view.PID, harness: firstNonEmpty(view.NativeHarnessID, view.AgentID)})
 	}
 	for _, run := range runs {
 		when := run.StartedAt
@@ -186,10 +409,18 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 		if run.State != agents.StateRunning && at.Sub(when) > agentRecent {
 			continue
 		}
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: AgentRun, RunID: run.AgentID, Runtime: run.Resolved.Harness, Model: run.Resolved.Model, State: string(run.State),
+			Task: plainText(run.Worktree),
+		}, agentfields.IsText)
+		if !ok {
+			continue
+		}
 		mapped = append(mapped, agentRecord{agent: Agent{
-			Entry: localEntry(entryID(kindAgent, machine, AgentRun, run.AgentID), machine, at),
-			Kind:  AgentRun, RunID: run.AgentID, Runtime: run.Resolved.Harness, Model: run.Resolved.Model, State: string(run.State),
-		}, slug: run.Repository, when: when})
+			Entry: localEntry(entryID(kindAgent, machine, AgentRun, fields.RunID), machine, at),
+			Kind:  AgentRun, RunID: fields.RunID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
+			Task: fields.Task, StartedAt: run.StartedAt, FinishedAt: finishedAt(run), ExitCode: exitCodeOf(run),
+		}, slug: run.Repository, when: when, branch: run.Branch, taskOf: fields.Task})
 	}
 	mapped = uniqueByID(mapped, func(item agentRecord) string { return item.agent.ID })
 	sort.Slice(mapped, func(i, j int) bool {
@@ -204,12 +435,138 @@ func mapAgents(machine string, sessions []session.View, runs []agents.Result, at
 	return mapped, truncated
 }
 
-// remoteView is what the other machines' snapshots contribute, mapped.
+// finishedAt is when a finished run finished, zero while it runs.
+func finishedAt(run agents.Result) time.Time {
+	if run.FinishedAt == nil || run.State == agents.StateRunning {
+		return time.Time{}
+	}
+	return *run.FinishedAt
+}
+
+// exitCodeOf is a finished run's exit code, nil while it runs or when the run
+// recorded none or one outside what the document allows (a negative code, which
+// a signal can leave). The run's free-text failure is never read.
+func exitCodeOf(run agents.Result) *int {
+	if run.ExitCode == nil || run.State == agents.StateRunning || *run.ExitCode < 0 || *run.ExitCode > maxCount {
+		return nil
+	}
+	code := *run.ExitCode
+	return &code
+}
+
+// completeAgent adds to a mapped agent what the rest of the snapshot knows:
+// a run's worktrees (those of its repository on its branch, or named as its
+// task when it recorded no branch), a live session's worktrees, task and
+// repository (those whose declared owner process is the session's: when the
+// links name one task or one repository the entry carries it, and otherwise
+// leaves it out), and a live session's herdr activity by its harness session id.
+// repositoryID is the id of the repository a run works in, "" for none.
+func completeAgent(record agentRecord, repositoryID string, worktreesOf map[string][]Worktree, ownersByPID map[int][]ownerLink, activity map[string]string) Agent {
+	agent := record.agent
+	if agent.Kind == AgentRun {
+		agent.Repository = repositoryID
+		for _, worktree := range worktreesOf[repositoryID] {
+			if (record.branch != "" && worktree.Branch == record.branch) || (record.branch == "" && worktree.Task == record.taskOf) {
+				agent.Worktrees = append(agent.Worktrees, worktree.ID)
+			}
+		}
+		agent.Worktrees = boundedIDs(agent.Worktrees)
+		return agent
+	}
+	if agent.State != session.StateLive {
+		return agent
+	}
+	var links []ownerLink
+	for _, link := range ownersByPID[record.pid] {
+		if record.pid > 0 && sameProcess(agent, record.harness, link) {
+			links = append(links, link)
+		}
+	}
+	if len(links) > 0 {
+		task, project := links[0].task, links[0].project
+		for _, link := range links {
+			agent.Worktrees = append(agent.Worktrees, link.worktree)
+			if link.task != task {
+				task = ""
+			}
+			if link.project != project {
+				project = ""
+			}
+		}
+		agent.Worktrees, agent.Task, agent.Repository = boundedIDs(agent.Worktrees), task, project
+	}
+	if status, found := activity[record.harness]; found && record.harness != "" {
+		agent.Activity = status
+	}
+	return agent
+}
+
+// sameProcess reports whether the session and a worktree's owner, which share a
+// process id, are the same process rather than a reuse of the id: the declared
+// runtime and harness session id must agree wherever both records carry one, and
+// the owner's process cannot have started after the session registered. When
+// neither record carries anything but the id, the id and the owner's liveness
+// are all there is.
+func sameProcess(session Agent, harness string, link ownerLink) bool {
+	runtime, id, split := strings.Cut(link.agent, "/")
+	switch {
+	case !split && link.agent != "" && (session.Runtime != "" || harness != ""):
+		if link.agent != session.Runtime && link.agent != harness {
+			return false
+		}
+	case split:
+		if (runtime != "" && session.Runtime != "" && runtime != session.Runtime) || (id != "" && harness != "" && id != harness) {
+			return false
+		}
+	}
+	return link.started.IsZero() || session.StartedAt.IsZero() || !link.started.After(session.StartedAt.Add(processStartSkew))
+}
+
+// boundedIDs is ids sorted, with no duplicate, at most maxAgentWorktrees.
+func boundedIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Strings(ids)
+	ids = slices.Compact(ids)
+	if len(ids) > maxAgentWorktrees {
+		ids = ids[:maxAgentWorktrees]
+	}
+	return ids
+}
+
+// remoteView is what the other machines' snapshots contribute, mapped. named
+// lists the machine entries by the machine name their snapshot was published
+// under, with the login, so that a configured machine's published entries can be
+// found by its configured key.
 type remoteView struct {
 	machines     []Machine
 	repositories []Repository
 	worktrees    []Worktree
 	pullRequests []PullRequest
+	agents       []Agent
+	// samples is the latest published metrics sample of each machine that
+	// published one, by machine id.
+	samples map[string]machinemetrics.Sample
+	named   map[string][]publishedMachine
+	// machinesCut is the number of usable machine entries left out at
+	// maxCachedMachines. bytes is the encoded size of everything the view
+	// contributes to the document and machineBytes that of its machine entries
+	// alone, which the document's size guard counts.
+	machinesCut  int
+	bytes        int
+	machineBytes int
+	// ownLogin is the login of this machine's own publication, when the login
+	// was not known and exactly one login published under this machine's name
+	// and projects root; else "".
+	ownLogin string
+}
+
+// publishedMachine is a published-store machine entry's id and the login it was
+// published under.
+type publishedMachine struct {
+	id    string
+	login string
 }
 
 // mapRemote maps every machine entry but this machine's own last publication
@@ -223,70 +580,247 @@ type remoteView struct {
 // subjects, task summaries, head SHAs, owners, attention text and login are not
 // read, so they cannot reach the document. Every entry is cached and observed
 // at its snapshot's publish time.
-func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry) remoteView {
+//
+// A published snapshot is another machine's data, as an export is, and is held
+// to the bounds an export is held to (the helpers are the export decoder's and
+// mapLive's own): a publish time before 2000 makes the snapshot unusable and
+// one in the future is taken as now, a last activity is never later than its
+// snapshot, a version that is not one is dropped, a pull request number is
+// within maxCount, and at most maxLiveRepositories, maxLiveWorktrees,
+// maxLivePullRequests and agentCap entries of one machine are kept, the rest
+// counted in its export_dropped (and agents_truncated). At most
+// maxCachedMachines machines are kept, the newest publications first.
+func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, now time.Time) remoteView {
 	var view remoteView
+	var usable []remotestate.Snapshot
+	var owners []string
 	for _, entry := range entries {
 		snapshot := entry.Snapshot
 		// With no login to compare, the machine's name alone could be another
 		// machine's, so the projects root (compared here, never emitted) must
 		// be this machine's too.
 		own := snapshot.Machine == local && ((login != "" && snapshot.Login == login) || (login == "" && projectsRoot != "" && snapshot.ProjectsRoot == projectsRoot))
-		unusable := entry.Error != "" || snapshot.PublishedAt.IsZero() || snapshot.Machine == "" || strings.ContainsAny(snapshot.Machine, `/\`)
-		if own || unusable {
-			continue
+		unusable := entry.Error != "" || snapshot.PublishedAt.IsZero() || snapshot.PublishedAt.Before(earliestBootTime) ||
+			plainText(snapshot.Machine) == "" || strings.ContainsAny(snapshot.Machine, `/\`)
+		if !own && !unusable {
+			usable = append(usable, snapshot)
 		}
+		if own && login == "" && entry.Error == "" && snapshot.Login != "" && !slices.Contains(owners, snapshot.Login) {
+			owners = append(owners, snapshot.Login)
+		}
+	}
+	// Two logins that both claim to be this machine say nothing about which is.
+	if len(owners) == 1 {
+		view.ownLogin = owners[0]
+	}
+	if len(usable) > maxCachedMachines {
+		sort.SliceStable(usable, func(i, j int) bool {
+			if !usable[i].PublishedAt.Equal(usable[j].PublishedAt) {
+				return usable[i].PublishedAt.After(usable[j].PublishedAt)
+			}
+			return usable[i].Key() < usable[j].Key()
+		})
+		usable, view.machinesCut = usable[:maxCachedMachines], len(usable)-maxCachedMachines
+	}
+	for _, snapshot := range usable {
+		machineName := plainText(snapshot.Machine)
 		key := snapshot.Key()
-		published := snapshot.PublishedAt
+		published := notAfter(snapshot.PublishedAt, now)
 		machineID := entryID(kindMachine, key)
 		cached := func(id string) Entry {
-			return Entry{ID: id, Machine: snapshot.Machine, MachineID: machineID, Route: RouteCached, ObservedAt: published}
+			return Entry{ID: id, Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published}
 		}
-		repositoryNames := map[string]bool{}
-		for _, name := range snapshot.KnownRepositories {
-			repositoryNames[name] = true
+		cut := 0
+		// The names in a fixed order, so that what the cap keeps does not change
+		// from one read to the next.
+		var names []string
+		named := map[string]bool{}
+		for _, name := range append(slices.Clone(snapshot.KnownRepositories), worktreeRepositories(snapshot.Worktrees)...) {
+			if !named[name] {
+				named[name] = true
+				names = append(names, name)
+			}
 		}
-		for _, state := range snapshot.Worktrees {
-			repositoryNames[state.Repository] = true
+		sort.Strings(names)
+		if len(names) > maxLiveRepositories {
+			names, cut = names[:maxLiveRepositories], cut+len(names)-maxLiveRepositories
 		}
 		var repositories []Repository
 		repositoryIDs := map[string]string{}
-		for name := range repositoryNames {
+		for _, name := range names {
 			id := entryID(kindRepository, key, name)
 			repositoryIDs[name] = id
-			repositories = append(repositories, Repository{Entry: cached(id), Name: name})
+			host, repositoryName := splitForgeName(name)
+			repositories = append(repositories, Repository{Entry: cached(id), Host: host, Name: plainText(repositoryName)})
 		}
 		var worktreeViews []Worktree
 		var pullRequests []PullRequest
+		seenWorktrees, seenPulls := map[string]bool{}, map[string]bool{}
 		for _, state := range snapshot.Worktrees {
 			id := entryID(kindWorktree, key, state.Repository, state.Task, state.Branch)
-			worktreeViews = append(worktreeViews, Worktree{
-				Entry: cached(id), Repository: repositoryIDs[state.Repository], Task: state.Task, Stream: state.Stream,
-				Branch: state.Branch, Lifecycle: state.Lifecycle, OwnerState: state.OwnerState, LastActivityAt: state.LastActivityAt,
-			})
-			if pull := state.PullRequest; pull != nil && strings.EqualFold(pull.State, "open") {
-				pullRequests = append(pullRequests, PullRequest{
-					Entry: cached(entryID(kindPR, key, state.Repository, strconv.Itoa(pull.Number))), Repository: repositoryIDs[state.Repository],
-					Worktree: id, Branch: state.Branch, Number: pull.Number, State: pull.State, URL: pull.URL,
+			repositoryID, kept := repositoryIDs[state.Repository]
+			// A worktree a snapshot lists twice has one entry, the first; its pull
+			// request is read from every listing.
+			if !seenWorktrees[id] {
+				if !kept || len(worktreeViews) == maxLiveWorktrees {
+					// A worktree of a repository that was cut, or over the cap.
+					cut++
+					continue
+				}
+				seenWorktrees[id] = true
+				worktreeViews = append(worktreeViews, Worktree{
+					Entry: cached(id), Repository: repositoryID, Name: plainText(state.Task), Task: plainText(state.Task), Stream: plainText(state.Stream),
+					Branch: plainText(state.Branch), Lifecycle: publishedLifecycle(state.Lifecycle), OwnerState: publishedOwnerState(state.OwnerState),
+					LastActivityAt: publishedTime(state.LastActivityAt, published),
 				})
 			}
+			if pull := state.PullRequest; pull != nil && strings.EqualFold(pull.State, "open") && pull.Number > 0 && pull.Number <= maxCount {
+				pullID := entryID(kindPR, key, state.Repository, strconv.Itoa(pull.Number))
+				switch {
+				case seenPulls[pullID]:
+				case len(pullRequests) == maxLivePullRequests:
+					cut++
+				default:
+					seenPulls[pullID] = true
+					pullRequests = append(pullRequests, PullRequest{
+						Entry: cached(pullID), Repository: repositoryID,
+						Worktree: id, Branch: plainText(state.Branch), Number: pull.Number, State: "open", URL: safeHTTPSURL(pull.URL),
+					})
+				}
+			}
 		}
-		worktreeViews = uniqueByID(worktreeViews, func(item Worktree) string { return item.ID })
-		pullRequests = uniqueByID(pullRequests, func(item PullRequest) string { return item.ID })
 		for index := range repositories {
 			repositories[index].WorktreeCount = countWhere(worktreeViews, func(item Worktree) bool { return item.Repository == repositories[index].ID })
 			open := countWhere(pullRequests, func(item PullRequest) bool { return item.Repository == repositories[index].ID })
 			repositories[index].OpenPullRequestCount = &open
 		}
+		agentViews, agentsCut := mapRemoteAgents(snapshot.Agents, key, machineName, machineID, published, now, repositoryIDs)
+		view.agents = append(view.agents, agentViews...)
+		if sample, ok := publishedSample(snapshot.Metrics, now); ok {
+			if view.samples == nil {
+				view.samples = map[string]machinemetrics.Sample{}
+			}
+			view.samples[machineID] = sample
+		}
+		if view.named == nil {
+			view.named = map[string][]publishedMachine{}
+		}
+		if !slices.ContainsFunc(view.named[snapshot.Machine], func(published publishedMachine) bool { return published.id == machineID }) {
+			view.named[snapshot.Machine] = append(view.named[snapshot.Machine], publishedMachine{id: machineID, login: snapshot.Login})
+		}
 		view.machines = append(view.machines, Machine{
-			Entry: cached(machineID), WBVersion: snapshot.WBVersion,
+			Entry: cached(machineID), WBVersion: publishedVersion(snapshot.WBVersion),
 			RepositoryCount: len(repositories), WorktreeCount: len(worktreeViews),
+			OS: shortName(snapshot.OS), Arch: shortName(snapshot.Arch), CPUCount: cpuCount(snapshot.CPUCount), BootTime: publishedBootTime(snapshot.BootTime, now),
+			// The cut is carried by the machine it cut, whether the publisher said
+			// so or this reader did, so hiding the machine hides the flag.
+			AgentsTruncated: snapshot.AgentsTruncated || agentsCut, ExportDropped: cut,
 		})
 		view.repositories = append(view.repositories, repositories...)
 		view.worktrees = append(view.worktrees, worktreeViews...)
 		view.pullRequests = append(view.pullRequests, pullRequests...)
 	}
 	view.machines = uniqueByID(view.machines, func(item Machine) string { return item.ID })
+	view.agents = uniqueByID(view.agents, func(item Agent) string { return item.ID })
+	// The document types cannot fail to marshal.
+	machines, _ := json.Marshal(view.machines)
+	rest, _ := json.Marshal([]any{view.repositories, view.worktrees, view.pullRequests, view.agents})
+	view.machineBytes, view.bytes = len(machines), len(machines)+len(rest)
 	return view
+}
+
+// maxCachedMachines is the most machines of the published store the document
+// carries; a store holds one snapshot for each machine of each login.
+const maxCachedMachines = 200
+
+// worktreeRepositories is the repository each published worktree names.
+func worktreeRepositories(states []remotestate.WorktreeState) []string {
+	names := make([]string, 0, len(states))
+	for _, state := range states {
+		names = append(names, state.Repository)
+	}
+	return names
+}
+
+// notAfter is when, or limit when when is later: a time another machine gave is
+// never shown as later than the time it can have been observed at.
+func notAfter(when, limit time.Time) time.Time {
+	if when.After(limit) {
+		return limit
+	}
+	return when
+}
+
+// publishedTime is a time of another machine's snapshot, made fit to show: the
+// zero time when it is before the earliest time a machine may report, and never
+// later than limit.
+func publishedTime(when, limit time.Time) time.Time {
+	if when.Before(earliestBootTime) {
+		return time.Time{}
+	}
+	return notAfter(when, limit)
+}
+
+// publishedVersion is version when it is one by the export decoder's rule, else
+// empty.
+func publishedVersion(version string) string {
+	if versionPattern.MatchString(version) {
+		return version
+	}
+	return ""
+}
+
+// mapRemoteAgents maps the agents another machine published as `cached` entries
+// observed at the snapshot's time, with no action, at most agentCap of them (the
+// second result is true when the cap cut valid ones). Every string is read by
+// the same rules as the export decoder's and the publisher's (package
+// agentfields; the task by the task-name rule, stricter than the decoder's text
+// rule so that prose cannot be planted in it): an agent whose kind, state or
+// identifier fails is dropped, any other failing field is blanked, so prose, a
+// path or an environment value planted in a snapshot never renders. An invalid
+// agent beyond the cap is not a cut. The repository is the id of the machine's
+// repository entry of that name, or none. An agent that names neither a session
+// nor a run keeps its position in the snapshot as its identity.
+func mapRemoteAgents(states []remotestate.AgentState, key, machineName, machineID string, published, now time.Time, repositoryIDs map[string]string) (mapped []Agent, truncated bool) {
+	for position, state := range states {
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: state.Kind, SessionID: state.SessionID, RunID: state.RunID, Runtime: state.Runtime, Model: state.Model, State: state.State,
+			Activity: state.Activity, Task: state.Task, Repository: state.Repository,
+		}, agentfields.IsTaskName)
+		if !ok {
+			continue
+		}
+		if len(mapped) == agentCap {
+			return mapped, true
+		}
+		identity := firstNonEmpty(fields.SessionID, fields.RunID, "n"+strconv.Itoa(position))
+		agent := Agent{
+			Entry: Entry{ID: entryID(kindAgent, key, fields.Kind, identity), Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published},
+			Kind:  fields.Kind, SessionID: fields.SessionID, RunID: fields.RunID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
+			Activity: fields.Activity, Task: fields.Task, Repository: repositoryIDs[fields.Repository],
+		}
+		if !state.StartedAt.IsZero() && !state.StartedAt.After(now) {
+			agent.StartedAt = state.StartedAt
+		}
+		mapped = append(mapped, agent)
+	}
+	return mapped, false
+}
+
+// publishedSample is the metrics sample another machine published, made fit to
+// serve: it needs a time that is neither missing nor in the future, and drops
+// every figure that is out of range (sanitizeMetrics applies the same rules
+// again on the way out). It reports false for a snapshot with no usable sample.
+func publishedSample(published *remotestate.MetricsSample, now time.Time) (machinemetrics.Sample, bool) {
+	if published == nil || published.SampledAt.IsZero() || published.SampledAt.After(now.Add(maxSkew)) {
+		return machinemetrics.Sample{}, false
+	}
+	sample := cleanSample(machinemetrics.Sample{
+		CPUPercent: published.CPUPercent, Load1: published.Load1,
+		MemoryUsedBytes: published.MemoryUsedBytes, MemoryTotalBytes: published.MemoryTotalBytes,
+		DiskFreeBytes: published.DiskFreeBytes, DiskTotalBytes: published.DiskTotalBytes, SampledAt: published.SampledAt,
+	})
+	return sample, sample.HasData()
 }
 
 // uniqueByID keeps the first of any items sharing an id, so an id is unique
