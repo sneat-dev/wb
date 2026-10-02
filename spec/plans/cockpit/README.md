@@ -224,6 +224,34 @@ applies (package `internal/loopbackhost`, which both ask), and a failed overview
 answers a closed code and a fixed message while its reason goes to the daemon's
 log.
 
+### Task 12: The session cookie alone is not an owner
+
+**Id:** task-12
+**Verifies:** cockpit#ac:replayed-cookie-is-not-the-owner, cockpit#ac:session-key-reaches-the-page-in-the-fragment, cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session, cockpit#ac:session-key-ends-with-its-session, cockpit#ac:session-key-is-never-served, cockpit#ac:login-url-is-printed-only-where-asked, cockpit#ac:dashboard-pages-create-nothing-from-data, cockpit#ac:records-with-markup-are-refused
+**Depends-On:** 2, 3, 10
+**Status:** complete
+
+Added 2026-10-02, from the security review: the session cookie is scoped to the
+loopback host, so every other local server is sent it and could replay it. The
+daemon mints a session key with each login code and answers it on the owner
+channel only; `wb cockpit` prints it in the login URL's fragment; the page takes
+it out of the address, keeps it in its origin's local storage and sends it in
+`X-Wb-Cockpit-Session-Key` (`libs/fleet-data` `session-key.ts`, added to every
+request by the `FETCH` token). `cockpit.Server` resolves the owner only from
+the cookie and the key together (`sessionID`), which `IsOwner` and so the
+daemon's log route share. `GET /api/v1/log` typed into the address bar is no
+longer the owner's: the documentation names the file and the two headers.
+
+The key is readable by every page of the origin, so the review's second round
+closed the ways a script could be injected into one: the dashboard's `/` and
+`/metrics` pages build what they show from elements and text
+(`internal/dashboard/assets`, tested in jsdom by
+`cockpit/web/tools/dashboard-pages.spec.mjs`), their scripts are files of the
+origin and the listener's policy refuses inline script, and the hub refuses a
+metric or coverage record that holds markup (`hub/record_validation.go`). The
+login URL is printed only on a terminal or with `--print-url`, and a daemon too
+old to issue a key is refused.
+
 ## Open Questions
 
 - The Go package layout under `internal/cockpit` is settled in Task 1.

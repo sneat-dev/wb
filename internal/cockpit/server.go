@@ -16,11 +16,17 @@ import (
 
 // LoginPath and LogoutPath are the two session routes under PagePrefix
 // (cockpit#req:owner-session). The login code travels in LoginPath's "code"
-// query parameter.
+// query parameter; the session key travels in the login URL's fragment, under
+// LoginKeyFragment, which the browser sends to no server.
 const (
 	LoginPath  = PagePrefix + "session/login"
 	LogoutPath = PagePrefix + "session/logout"
 )
+
+// LoginKeyFragment is the name the session key has in the fragment of the
+// login URL `wb cockpit` prints: `<LoginPath>?code=<code>#key=<key>`
+// (cockpit#req:session-key).
+const LoginKeyFragment = "key"
 
 // LoginCodeRPCPath is the owner-channel route that mints a login code. The
 // daemon registers it on the mux its unix socket serves, behind the owner
@@ -189,9 +195,12 @@ func (server *Server) MintLoginCode() (LoginCode, error) {
 }
 
 // loginCodeResponse is what LoginCodeRPCPath answers. The login URL is Path
-// on the canonical origin with the code in its "code" query parameter.
+// on the canonical origin with the code in its "code" query parameter and the
+// session key in its fragment. This answer, on the owner channel, is the only
+// place the daemon ever writes the key.
 type loginCodeResponse struct {
 	Code      string    `json:"code"`
+	Key       string    `json:"key"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Path      string    `json:"path"`
 }
@@ -211,7 +220,7 @@ func (server *Server) LoginCodeHandler() http.Handler {
 			writeAPIError(writer, http.StatusInternalServerError, "mint a login code: "+err.Error())
 			return
 		}
-		_ = json.NewEncoder(writer).Encode(loginCodeResponse{Code: issued.Code, ExpiresAt: issued.ExpiresAt, Path: LoginPath})
+		_ = json.NewEncoder(writer).Encode(loginCodeResponse{Code: issued.Code, Key: issued.Key, ExpiresAt: issued.ExpiresAt, Path: LoginPath})
 	})
 }
 
@@ -297,6 +306,8 @@ func (server *Server) serveOwner(writer http.ResponseWriter, request *http.Reque
 			return
 		}
 	}
+	// A session is the cookie and the session key together
+	// (cockpit#req:session-key): the cookie alone is refused like no session.
 	if server.sessionID(request) == "" {
 		writeAPIError(writer, http.StatusUnauthorized, "an owner session is required; run `wb cockpit`")
 		return
@@ -380,8 +391,11 @@ func (server *Server) servePage(writer http.ResponseWriter, request *http.Reques
 }
 
 // login exchanges a login code for the session cookie and redirects to the
-// application, so the code does not stay in the address bar. It is the one
-// route protected by its code instead of a session. A refused code sets no
+// application, so the code does not stay in the address bar. The session it
+// starts is bound to the session key minted with the code; the key is not in
+// this request or its answer, and the browser carries the login URL's fragment
+// over the redirect to the application, which takes it from there. It is the
+// one route protected by its code instead of a session. A refused code sets no
 // cookie.
 func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
@@ -392,11 +406,12 @@ func (server *Server) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	now := server.now()
-	if !server.codes.exchange(request.URL.Query().Get("code"), now) {
+	key, exchanged := server.codes.exchange(request.URL.Query().Get("code"), now)
+	if !exchanged {
 		http.Error(writer, "this login code is unknown, already used or expired; run `wb cockpit` again\n", http.StatusUnauthorized)
 		return
 	}
-	id, err := server.sessions.Create(now)
+	id, err := server.sessions.Create(now, key)
 	if err != nil {
 		http.Error(writer, "start a session: "+err.Error()+"\n", http.StatusInternalServerError)
 		return

@@ -62,6 +62,18 @@ daemon. It MUST obtain an owner login (REQ:owner-session) and print the login
 URL. It opens the platform browser only in text format on an interactive
 desktop session.
 
+The login URL is a credential: it carries the single-use code and the session
+key (cockpit#req:session-key). The command MUST request and print it only when
+stdout is a terminal, or when `--print-url` asks for it. Otherwise it requests
+no login code, prints the plain Cockpit URL and says on stderr that
+`--print-url` prints the login URL; it never writes the login URL to stderr or
+to a log. `--print-url` with `--hosted` is a usage error.
+
+A running daemon that answers a login code with no session key is an older wb.
+The command MUST refuse the login with exit code 1 and the advice to run
+`wb daemon restart`, and print and open nothing: a session that daemon starts
+would make the cookie alone an owner.
+
 `--listen <host:port>` names the loopback address of the daemon to start (default `127.0.0.1:8766`); without it a daemon already running on this machine is used wherever it listens. A running daemon recorded on a different address is never replaced: the command refuses and names that address. Non-loopback addresses are refused before anything starts.
 
 `--hosted` resolves the hosted Cockpit URL instead and starts no daemon. The
@@ -71,7 +83,9 @@ address.
 
 `--format json` and its `--json` shortcut MUST print
 `{url, scope, opened}`, where `scope` is `local` or `hosted`, and MUST NOT
-launch a browser. The JSON `url` never contains a login code.
+launch a browser. The JSON `url` never contains a login code or a session key
+(cockpit#req:session-key): it has no query string and no fragment. With
+`--print-url`, and only then, the object also has `login_url`.
 
 #### REQ: dashboard-command-unchanged
 
@@ -286,19 +300,122 @@ so the code does not stay in the address bar. A used or expired code is
 refused and establishes nothing.
 
 Sessions are held in the daemon's memory. The cookie is scoped to the host,
-not the port, so every HTTP server on the same loopback address receives it;
-the session identifier is useless to them without the daemon, and it is
-stored by the daemon only as a digest. `POST /cockpit/session/logout` ends
-the caller's session, and every session ends when the daemon restarts.
+not the port, so every HTTP server on the same loopback address receives it.
+The cookie alone therefore proves nothing: an owner session is the cookie
+together with the session key (cockpit#req:session-key). The session
+identifier is stored by the daemon only as a digest.
+`POST /cockpit/session/logout` ends the caller's session, and every session
+ends when the daemon restarts.
 
 This is the admin session
 [peer-connectivity](../peer-connectivity/README.md)#req:admin-requires-owner-credential
 describes; Cockpit provides it.
 
+#### REQ: session-key
+
+A browser sends a cookie of `127.0.0.1` to every server on that host, whatever
+its port. Any other local server the owner visits in the same browser is
+therefore sent the session cookie, and could replay it to the daemon from
+outside the browser, with no `Origin` and any header it chooses. No check of a
+header can stop that, so the cookie alone MUST NOT make a request the owner's.
+
+With each login code the daemon mints a session key: 256 random bits, in
+unpadded URL-safe base64. It answers the key beside the code on the owner
+channel (the unix socket behind the owner token), which is the only place the
+daemon ever writes it, and keeps only its SHA-256 digest: with the pending code,
+and then with the session that code starts. A new login has a new key; logout,
+expiry and a daemon restart drop the digest with the session.
+
+`wb cockpit` puts the key in the fragment of the login URL it prints and opens:
+`/cockpit/session/login?code=<code>#key=<key>`. A browser sends a fragment to no
+server (and never in a `Referer`), and carries it over the login redirect to
+`/cockpit/`. The page MUST take the key out of the address before anything else
+reads the address, with `history.replaceState`, so it is not in the address bar
+or in the history entry the page leaves; it MUST keep the key in the local
+storage of its own origin, and MUST send it in the request header
+`X-Wb-Cockpit-Session-Key` on every request to its own origin's API, and to no
+other address. An origin includes the port, so a page served by another local
+server cannot read that storage.
+
+The owner principal is: a local reader (cockpit#req:host-header-check, the
+canonical origin or none), AND a live session cookie, AND exactly one
+`X-Wb-Cockpit-Session-Key` header whose digest equals the session's, compared in
+constant time. A request with the cookie and no key, a wrong key, another
+session's key or the header twice is not an error: it is treated exactly like a
+request with no cookie. It is `anonymous-local` where that principal exists and
+is refused with status 401 on an owner route, through a proxy, and where
+`cockpit.anonymous_metadata` is off. The key MUST NOT appear in any response of
+the loopback listener (body or header), in any log line, or in JSON output.
+
+The page takes a key from the fragment only when it is served on a loopback
+host, so the hosted page never receives or uses one, and it keeps an offered key
+only after the daemon has answered that the key opens an owner session: an
+address anybody can write (`/cockpit/#key=...`) cannot replace the key of a
+signed-in owner. It forgets the key it holds when the daemon answers that the
+key no longer opens one.
+
+A reload and a second tab are the owner's without a new login. The local storage
+of the origin is shared by its tabs and survives a reload, and it is as safe
+against another port as per-tab storage is, because the boundary is the origin
+in both; the alternative, per-tab storage, would ask for `wb cockpit` again in
+every new tab for no gain. Where the browser gives the page no storage, the key
+is held by the tab alone and a reload asks for `wb cockpit` again. A tab that
+has the cookie and no key shows the anonymous session chip, whose card says
+"Sign in as owner: run `wb cockpit`" with its copy button.
+
+A client that is not the Cockpit page and wants an owner-only route sends both
+halves itself: the `Cookie: wb_cockpit_session_<port>=<id>` the login set and
+`X-Wb-Cockpit-Session-Key: <key>`. An address typed into the browser carries the
+cookie and cannot carry the header, so it is an anonymous reader's.
+
+What this does not cover. The login URL, with its key, is printed on the
+terminal (and only there, unless `--print-url` asks: cockpit#req:cockpit-command),
+is an argument of the command that opens the browser, and may be kept by the
+browser's history from the moment it is opened until the page replaces it. Each
+of those copies is one half. The key opens nothing until the single-use code
+beside it has been redeemed, which must happen within 60 seconds, and then only
+together with the cookie, which the browser that redeemed the code alone holds.
+A process that runs as the owner on the machine can read both halves, as it can
+read the owner token; that is outside what a loopback service defends.
+
+#### REQ: same-origin-pages-run-no-injected-script
+
+The key is in storage that every page of the daemon's origin can read, so a
+script injected into any of them would have it. Every page the daemon's listener
+serves is therefore held to three rules.
+
+- No data becomes markup. The dashboard's pages (`/` and `/metrics`) MUST build
+  what they show with `createElement` and `textContent`: no value read from a
+  route is concatenated into HTML, a class name is chosen from a closed set (an
+  unknown status is shown as `neutral`), a link's address is either built by the
+  page as `https://` and a repository name or accepted only when it parses as
+  `https`, and there is no inline event handler: a control names what it acts on
+  in `data-` attributes that one listener reads. This holds for any stored
+  value, including records written before the write side validated anything.
+- No inline script runs. Every response of the listener that does not set its
+  own policy carries `script-src 'self'` with no `'unsafe-inline'`,
+  `object-src 'none'` and `base-uri 'self'`; the dashboard's scripts are files
+  of the origin under `/dashboard-assets/`. The GitHub installation opener page
+  runs its one script by a nonce minted per response. The one exception is the
+  bench dashboard under `/workbench/`, whose Astro build emits inline scripts:
+  it sets its own policy, which still allows them, and it renders stored values
+  with `textContent` and takes a link's address only from a parser that accepted
+  it as an `http(s)` address.
+- The write side refuses markup. A metric or coverage record whose field is
+  outside its form is refused with status 400 and the closed code
+  `invalid_metric_record` or `invalid_coverage_record`, which repeats nothing of
+  the record, and is not stored: the repository is `owner/name`, the status one
+  of its closed set, the metric type, owner, name, ref and commit short
+  identifiers, the formatted value a number with a unit, the workflow run
+  address `https`, and metadata values and dimension details numbers, booleans
+  or short text with no angle bracket, quote, backtick, backslash or control
+  character and no nested value.
+
 #### REQ: owner-routes
 
-A route that returns content or changes state MUST require the session
-cookie. A state-changing route MUST also require an `Origin` equal to the
+A route that returns content or changes state MUST require the owner session:
+the session cookie and its session key (cockpit#req:session-key). A
+state-changing route MUST also require an `Origin` equal to the
 canonical origin and a JSON content type. The login exchange is the one
 exception: it is a `GET` protected by its single-use code. A request with no
 session is refused with status 401, a session that lacks the required
@@ -315,8 +432,9 @@ MUST be served to an owner session and to nobody else. It asks Cockpit who the
 owner is and has no second mechanism: the request's `Host` MUST name a loopback
 host (cockpit#req:host-header-check), it MUST come from the canonical origin or
 carry no `Origin` at all, never from the hosted origin or any other, and it MUST
-carry a live session cookie (cockpit#req:owner-session). Neither the daemon's
-owner token nor arriving on the loopback address makes a request the owner's.
+carry a live session cookie (cockpit#req:owner-session) and that session's key
+(cockpit#req:session-key). Neither the daemon's owner token, nor the cookie
+alone, nor arriving on the loopback address makes a request the owner's.
 
 Any other request is refused with status 401 and the JSON body
 `{schema_version, error: "owner_session_required", message}`, where `message`
@@ -332,13 +450,16 @@ To the owner, a log that cannot be opened, inspected or positioned is status
 503 with `error: "log_unavailable"` and a fixed `message`. The error text of the
 operating system, which names the file's path, MUST NOT be in the body.
 
-The operator reads the log in one of two ways: the file on the machine itself
+The operator reads the log by reading the file on the machine itself
 (`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's
-runtime directory elsewhere), or, in the browser that holds the session
-`wb cockpit` set, `http://127.0.0.1:<port>/api/v1/log`. From another machine
-that is the same sign-in over an SSH port forward. A reverse proxy or script
-that fetched the route with no session is refused; there is no unattended
-credential for it.
+runtime directory elsewhere). The route is for a client that holds both halves
+of an owner session (cockpit#req:session-key): a request from the signed-in
+Cockpit page, which adds the key, or another client that sends the session
+cookie and the `X-Wb-Cockpit-Session-Key` header itself. The address typed into
+a browser, `http://127.0.0.1:<port>/api/v1/log`, carries the cookie and no key
+and is refused like any request with no session. A reverse proxy or script that
+fetched the route with no session is refused; there is no unattended credential
+for it.
 
 Because the log is the owner's alone, it may hold text the fleet document may
 not, such as the end of a failed `ssh` call's stderr
@@ -602,7 +723,34 @@ Then a daemon is running on the loopback address, the printed URL is on `http://
 Scenario: An agent asks for the address
 Given a running daemon
 When `wb cockpit --format json` runs
-Then stdout is one JSON object with `url`, `scope` equal to `local` and `opened` equal to false, the URL has no query string, and no browser is launched
+Then stdout is one JSON object with `url`, `scope` equal to `local` and `opened` equal to false, the URL has no query string and no fragment, there is no `login_url`, no login code is requested, and no browser is launched
+
+### AC: login-url-is-printed-only-where-asked
+
+**Requirements:** cockpit#req:cockpit-command, cockpit#req:session-key
+
+Scenario: A terminal, a pipe and a request
+Given a running daemon that issues session keys, and one that is an older wb and issues none
+When `wb cockpit` runs with stdout a terminal, with stdout a pipe, with `--print-url` to a pipe, with `--format json`, with `--format json --print-url`, with `--hosted --print-url`, and against the older daemon
+Then the terminal and `--print-url` runs request one login code and print the login URL with its key in the fragment, the pipe run requests none, prints the plain Cockpit URL and names `--print-url` on stderr, the JSON run has no `login_url` and the JSON `--print-url` run has it, stderr never holds the code or the key, `--hosted --print-url` is a usage error with exit code 2, and the older daemon is refused with exit code 1 and the advice `wb daemon restart`, with nothing printed or opened
+
+### AC: dashboard-pages-create-nothing-from-data
+
+**Requirements:** cockpit#req:same-origin-pages-run-no-injected-script
+
+Scenario: A hostile value in every field
+Given the dashboard's `/` and `/metrics` pages as the daemon serves them, and routes that answer metric, coverage, metric type, worktree, command-cost and machine records with `<img src=x onerror=…>`, `'");alert(1)//`, an attribute break, a class break, a closing tag with a script and a `javascript:` address in every field, of every type the field could have
+When the pages load, every metric type tab is opened, every breakdown is expanded, a repository is opened from its Breakdown button and the filter is typed into
+Then every value is on the page as text, the document holds no element, attribute, class or address that the page's own markup and script do not create, the only script element is the page's own file, a status outside the closed set is the neutral pill, an address that is not `https` is not a link, each page's markup has no inline script and no inline event handler, and every response carries a policy whose `script-src` is `'self'` alone
+
+### AC: records-with-markup-are-refused
+
+**Requirements:** cockpit#req:same-origin-pages-run-no-injected-script
+
+Scenario: Markup in a metric or a coverage report
+Given a hub with a metrics store and a coverage store
+When a metric and a coverage report are posted with markup, a quote break, a backslash, a line break or a nested value in each field in turn, and the stores' save is called with the same records directly
+Then each post is answered status 400 with exactly `{"error":"invalid_metric_record"}` or `{"error":"invalid_coverage_record"}`, each save returns a refusal that names the field and never its value, nothing is stored, and a record as a real reporter sends it is stored
 
 ### AC: hosted-flag-uses-configured-url
 
@@ -712,6 +860,51 @@ Given an owner session
 When the session logs out, and separately when the daemon restarts
 Then in both cases a following request with the old cookie is `anonymous-local`
 
+### AC: replayed-cookie-is-not-the-owner
+
+**Requirements:** cockpit#req:session-key, cockpit#req:owner-routes, cockpit#req:daemon-log-is-owner-only
+
+Scenario: Another local server replays the session cookie
+Given a browser that signed in with `wb cockpit`, a daemon whose session response has `machine_routes`, an owner content route and a runtime log, each holding a marker
+When the session route, the owner content route, `GET /api/v1/log` and the logout route are requested with the live session cookie and no `X-Wb-Cockpit-Session-Key`, with a wrong key, with the key cut short, with another session's key, with the key twice, with the key as a bearer or in a cookie, and with the key and no cookie, with and without the canonical `Origin`
+Then the session route answers status 200 with the principal `anonymous-local` and no `machine_routes`, the owner routes and the log answer status 401, no response contains a marker, the session is not ended, and the same cookie with its key is then the owner on every one of those routes
+
+### AC: session-key-reaches-the-page-in-the-fragment
+
+**Requirements:** cockpit#req:session-key, cockpit#req:cockpit-command
+
+Scenario: Following the printed login URL
+Given `wb cockpit` in text format on a running daemon
+When the printed URL is opened in a browser
+Then the URL is `/cockpit/session/login?code=<code>#key=<key>` with the key in the fragment and nowhere in the path or query, no request is sent the key in its address, the page is an owner session, the address bar and the history entry show `/cockpit/` with no fragment, and every later request to the origin's API carries the key in `X-Wb-Cockpit-Session-Key`; a fragment whose key the daemon does not take is removed from the address, is not kept, and does not end a signed-in owner's session
+
+### AC: a-reload-and-a-second-tab-keep-the-owner-session
+
+**Requirements:** cockpit#req:session-key
+
+Scenario: The same origin, again
+Given a browser tab that signed in with the printed login URL
+When the tab is reloaded, and a second tab of the same origin is opened on an address with no fragment
+Then both are an owner session, and a browser that holds the session cookie but no key shows the anonymous session chip with "Sign in as owner: run `wb cockpit`" and its copy button, and no error
+
+### AC: session-key-ends-with-its-session
+
+**Requirements:** cockpit#req:session-key, cockpit#req:owner-session
+
+Scenario: Rotation, logout and expiry
+Given an owner session and its key
+When a second login is made, the second session is logged out, and twelve hours pass
+Then the second session has a different key and the first key does not open it, the logged-out and the expired session answer 401 on every owner-only route with their cookie and key, the daemon holds no digest of an ended session after the next login, and the page forgets a key the daemon no longer takes
+
+### AC: session-key-is-never-served
+
+**Requirements:** cockpit#req:session-key
+
+Scenario: Searching every answer for the key
+Given a minted login code and its key
+When the code is exchanged and the session, fleet, page, owner, log, logout and preflight routes are requested as the owner, with the cookie alone, with a wrong key, anonymously, from the hosted origin, from a foreign origin, through a proxy and on a foreign host
+Then no response body or header of the loopback listener and no log line contains the key or its digest, the login redirect names `/cockpit/` with no fragment, the daemon's pending codes and sessions hold the digest and never the key, and `wb cockpit --format json` prints neither a code nor a key
+
 ### AC: session-reports-principal-and-capabilities
 
 **Requirements:** cockpit#req:capability-vocabulary, cockpit#req:effective-permissions-are-discoverable
@@ -808,7 +1001,7 @@ Then the first renders the README and the second shows that an owner session is 
 
 Scenario: The daemon's log holds a marker
 Given a daemon whose runtime log holds a marker line, and a browser that signed in with `wb cockpit`
-When `GET /api/v1/log` is requested with no cookie, with an unknown session cookie, with the session cookie and `Host: attacker.example:8766`, with the session cookie and the hosted or another foreign `Origin`, with the daemon's owner token as a bearer, after the session expired or was logged out, and then with the live session cookie on the canonical origin
+When `GET /api/v1/log` is requested with no cookie, with an unknown session cookie, with the session cookie and its key and `Host: attacker.example:8766`, with the session cookie and its key and the hosted or another foreign `Origin`, with the daemon's owner token as a bearer, after the session expired or was logged out, and then with the live session cookie and its key on the canonical origin
 Then every request but the last is refused with status 401, `error: "owner_session_required"` and `Cache-Control: no-store`, none of those responses contains the marker or the log's path, the log file is not opened for them, and the last response is the log's tail with the marker and `Cache-Control: no-store`
 
 ### AC: daemon-log-fails-closed-without-an-owner-check

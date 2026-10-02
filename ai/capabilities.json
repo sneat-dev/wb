@@ -1306,14 +1306,17 @@
                 "--format",
                 "--hosted",
                 "--json",
-                "--listen"
+                "--listen",
+                "--print-url"
               ],
               "modes": [
-                "Starts or reuses the loopback daemon, requests a single-use login code over the owner channel and opens the Cockpit login URL on the canonical origin.",
+                "Starts or reuses the loopback daemon, requests a single-use login code over the owner channel and opens the Cockpit login URL on the canonical origin; the URL's fragment carries the session key the page sends with each request, without which the session cookie is not an owner.",
                 "--listen <host:port> names the loopback address to start the daemon on (default 127.0.0.1:8766); without it a running daemon is used wherever it listens; a running daemon on another address is refused, never replaced; non-loopback is refused.",
                 "--hosted opens the configured cockpit.hosted_url and starts no daemon.",
-                "JSON output prints {url, scope, opened} with no login code and launches no browser.",
-                "Non-interactive invocations print the login URL without launching a browser."
+                "The login URL is a credential: it is requested and printed only when stdout is a terminal or with --print-url; otherwise the plain Cockpit URL is printed.",
+                "JSON output prints {url, scope, opened} with no login code and no session key and launches no browser; with --print-url it adds login_url.",
+                "A running daemon too old to issue a session key is refused with exit 1 and the advice to run wb daemon restart.",
+                "Non-interactive invocations launch no browser."
               ]
             }
           ],

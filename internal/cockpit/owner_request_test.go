@@ -36,14 +36,8 @@ func TestDaemonLogIsServedToTheOwnerSessionAndToNobodyElse(t *testing.T) {
 		if c.host == "" {
 			c.host = testHost
 		}
-		request := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
-		request.Host = c.host
-		for i := 0; i < len(c.headers); i += 2 {
-			request.Header.Add(c.headers[i], c.headers[i+1])
-		}
-		if c.cookie != nil {
-			request.AddCookie(c.cookie)
-		}
+		c.method = http.MethodGet
+		request := f.request(c, "/api/v1/log")
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		return recorder

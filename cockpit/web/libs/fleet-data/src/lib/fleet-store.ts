@@ -4,6 +4,7 @@ import { FleetClient, FleetRequestError, FleetSchemaError, SchemaMismatch } from
 import { FleetModel, FleetModels, ModelOptions } from './fleet-model'
 import { canReadContent, emptyDocument, machineOptions, ownerRoutes, repositoryLabel } from './fleet-view'
 import { FleetDocument, SCHEMA_VERSION, Session, SessionStatus } from './fleet.types'
+import { LOGIN_KEY, SessionKeys } from './session-key'
 
 /** How often the store re-reads the fleet document, in milliseconds. */
 export interface PollIntervals {
@@ -45,6 +46,9 @@ export class FleetStore {
   private readonly expected = inject(EXPECTED_SCHEMA)
   private readonly models = new FleetModels(inject(MODEL_OPTIONS))
   private readonly doc = inject(DOCUMENT)
+  private readonly keys = inject(SessionKeys)
+  /** The session key the login URL offered, until the daemon has answered whether it opens an owner session. */
+  private offered = inject(LOGIN_KEY)
   private etag: string | undefined
   private digest: string | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -184,7 +188,7 @@ export class FleetStore {
     if (this.loadingSession) return
     this.loadingSession = true
     try {
-      this.session.set(await this.client.readSession())
+      this.session.set(await this.readSession())
       this.sessionStatus.set('ready')
     } catch {
       // Without a session the page still lists the fleet; it has no code links.
@@ -195,5 +199,27 @@ export class FleetStore {
     } finally {
       this.loadingSession = false
     }
+  }
+
+  /**
+   * One read of the session, with the session key (cockpit#req:session-key). A key the login URL offered is
+   * kept only when the daemon answers that it opens an owner session, so an address somebody else made up
+   * (`/cockpit/#key=...`) cannot replace the key of a signed-in owner; a read that fails keeps the offer for
+   * the next one. The key this origin holds is forgotten when the daemon says it no longer opens one.
+   */
+  private async readSession(): Promise<Session> {
+    const offered = this.offered
+    if (offered !== null) {
+      const session = await this.client.readSession(offered)
+      this.offered = null
+      if (session.principal === 'owner') {
+        this.keys.adopt(offered)
+        return session
+      }
+    }
+    const held = this.keys.current()
+    const session = await this.client.readSession()
+    if (held !== null && session.principal !== 'owner') this.keys.drop(held)
+    return session
   }
 }

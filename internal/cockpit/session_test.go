@@ -32,11 +32,15 @@ type fixture struct {
 	page   http.Handler
 	api    http.Handler
 	now    time.Time
+	// minted is the session key minted beside each login code, and keys the
+	// key of each session by its cookie value: what the page would hold.
+	minted map[string]string
+	keys   map[string]string
 }
 
 func newFixture(t *testing.T, change func(*Options)) *fixture {
 	t.Helper()
-	f := &fixture{t: t, now: time.Unix(1_700_000_000, 0).UTC()}
+	f := &fixture{t: t, now: time.Unix(1_700_000_000, 0).UTC(), minted: map[string]string{}, keys: map[string]string{}}
 	options := Options{
 		CanonicalHost: "127.0.0.1",
 		Config:        wbconfig.CockpitConfig{HostedURL: hostedOrigin + "/wb/cockpit/", AnonymousMetadata: true},
@@ -53,13 +57,33 @@ func newFixture(t *testing.T, change func(*Options)) *fixture {
 }
 
 // call is one request: its headers are name, value pairs, and a repeated
-// name adds a second header line.
+// name adds a second header line. A call with a session's cookie also carries
+// that session's key, as the Cockpit page's requests do, unless noKey is set:
+// that is the request of another server on the loopback host, which was sent
+// the cookie and replays it.
 type call struct {
 	method  string
 	host    string
 	target  string
 	headers []string
 	cookie  *http.Cookie
+	noKey   bool
+}
+
+// request builds c's request for target, with the session key of its cookie.
+func (f *fixture) request(c call, target string) *http.Request {
+	request := httptest.NewRequest(c.method, target, nil)
+	request.Host = c.host
+	for i := 0; i < len(c.headers); i += 2 {
+		request.Header.Add(c.headers[i], c.headers[i+1])
+	}
+	if c.cookie != nil {
+		request.AddCookie(c.cookie)
+		if key, known := f.keys[c.cookie.Value]; known && !c.noKey {
+			request.Header.Set(SessionKeyHeader, key)
+		}
+	}
+	return request
 }
 
 func (f *fixture) do(c call) *httptest.ResponseRecorder {
@@ -70,14 +94,7 @@ func (f *fixture) do(c call) *httptest.ResponseRecorder {
 	if c.host == "" {
 		c.host = testHost
 	}
-	request := httptest.NewRequest(c.method, c.target, nil)
-	request.Host = c.host
-	for i := 0; i < len(c.headers); i += 2 {
-		request.Header.Add(c.headers[i], c.headers[i+1])
-	}
-	if c.cookie != nil {
-		request.AddCookie(c.cookie)
-	}
+	request := f.request(c, c.target)
 	// The mounts are taken at the first request, as the daemon takes them
 	// once every route is registered.
 	if f.page == nil {
@@ -90,6 +107,12 @@ func (f *fixture) do(c call) *httptest.ResponseRecorder {
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
+	// A session a login starts has the key minted beside the code presented.
+	if request.URL.Path == LoginPath {
+		for _, cookie := range recorder.Result().Cookies() {
+			f.keys[cookie.Value] = f.minted[request.URL.Query().Get("code")]
+		}
+	}
 	return recorder
 }
 
@@ -102,9 +125,10 @@ func (f *fixture) mint() string {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		f.t.Fatal(err)
 	}
-	if recorder.Code != 200 || response.Code == "" || response.Path != LoginPath || !response.ExpiresAt.Equal(f.now.Add(60*time.Second)) {
+	if recorder.Code != 200 || response.Code == "" || len(response.Key) < 43 || response.Key == response.Code || response.Path != LoginPath || !response.ExpiresAt.Equal(f.now.Add(60*time.Second)) {
 		f.t.Fatalf("login code = %d %+v", recorder.Code, response)
 	}
+	f.minted[response.Code] = response.Key
 	return response.Code
 }
 
@@ -263,7 +287,7 @@ func TestSessionExpiresAfterTwelveHoursWhateverTheBrowserSends(t *testing.T) {
 	}
 	// The next login drops the expired session from memory.
 	f.login()
-	if sessions := len(f.server.sessions.(*memorySessions).expires); sessions != 1 {
+	if sessions := len(f.server.sessions.(*memorySessions).live); sessions != 1 {
 		t.Fatalf("sessions held = %d, want only the live one", sessions)
 	}
 }
@@ -787,11 +811,11 @@ func TestPlantedCookieWithTheSessionNameDoesNotHideTheRealOne(t *testing.T) {
 	f := newFixture(t, nil)
 	cookie := f.login()
 	// A browser sends the cookie with the longer path first.
-	both := []string{"Cookie", cookie.Name + "=planted; " + cookie.Name + "=; " + cookie.Name + "=" + cookie.Value}
+	both := []string{"Cookie", cookie.Name + "=planted; " + cookie.Name + "=; " + cookie.Name + "=" + cookie.Value, SessionKeyHeader, f.keys[cookie.Value]}
 	if got := f.who(call{headers: both}); got.Name != PrincipalOwner {
 		t.Fatalf("with a planted duplicate the owner is %+v", got)
 	}
-	if got := f.who(call{headers: []string{"Cookie", cookie.Name + "=planted; " + cookie.Name + "=also-planted"}}); got.Name != PrincipalAnonymousLocal {
+	if got := f.who(call{headers: []string{"Cookie", cookie.Name + "=planted; " + cookie.Name + "=also-planted", SessionKeyHeader, f.keys[cookie.Value]}}); got.Name != PrincipalAnonymousLocal {
 		t.Fatalf("two planted cookies are %+v", got)
 	}
 	if recorder := f.logout(nil, append(append([]string{}, canonicalJSON...), both...)...); recorder.Code != http.StatusNoContent {
@@ -832,7 +856,7 @@ func TestOneLoginCodePresentedConcurrentlyStartsOneSession(t *testing.T) {
 	if counts[http.StatusSeeOther] != 1 || counts[http.StatusUnauthorized] != presenters-1 {
 		t.Fatalf("results = %v, want one 303 and the rest 401", counts)
 	}
-	if sessions := len(f.server.sessions.(*memorySessions).expires); sessions != 1 {
+	if sessions := len(f.server.sessions.(*memorySessions).live); sessions != 1 {
 		t.Fatalf("sessions started = %d", sessions)
 	}
 }
@@ -849,19 +873,24 @@ func TestSessionsAndCodesAreSafeUnderConcurrentUse(t *testing.T) {
 	for range workers {
 		go func() {
 			for range 50 {
-				id, err := sessions.Create(now)
-				if err != nil || !sessions.Valid(id, now) {
+				issued, err := f.server.MintLoginCode()
+				if err != nil {
+					done <- err
+					return
+				}
+				key, first := f.server.codes.exchange(issued.Code, now)
+				if _, second := f.server.codes.exchange(issued.Code, now); !first || second || key != DigestKey(issued.Key) {
+					done <- errors.New("a code was not exchangeable exactly once for its own key")
+					return
+				}
+				id, err := sessions.Create(now, key)
+				if err != nil || !sessions.Valid(id, issued.Key, now) {
 					done <- errors.New("a session just created is not valid")
 					return
 				}
 				sessions.End(id)
-				if sessions.Valid(id, now) {
+				if sessions.Valid(id, issued.Key, now) {
 					done <- errors.New("an ended session is still valid")
-					return
-				}
-				issued, err := f.server.MintLoginCode()
-				if err != nil || !f.server.codes.exchange(issued.Code, now) || f.server.codes.exchange(issued.Code, now) {
-					done <- errors.New("a code was not exchangeable exactly once")
 					return
 				}
 			}
@@ -873,7 +902,7 @@ func TestSessionsAndCodesAreSafeUnderConcurrentUse(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	if held := len(sessions.(*memorySessions).expires); held != 0 {
+	if held := len(sessions.(*memorySessions).live); held != 0 {
 		t.Fatalf("sessions left = %d", held)
 	}
 }
@@ -927,7 +956,9 @@ func TestLoginIsAGetAndLeavesTheCodeUnusedOtherwise(t *testing.T) {
 // failingSessions is a SessionStore that cannot start a session.
 type failingSessions struct{ SessionStore }
 
-func (failingSessions) Create(time.Time) (string, error) { return "", errors.New("store is full") }
+func (failingSessions) Create(time.Time, KeyDigest) (string, error) {
+	return "", errors.New("store is full")
+}
 
 func TestLoginAndMintingReportAFailureWithoutEstablishingAnything(t *testing.T) {
 	t.Parallel()
@@ -945,7 +976,7 @@ func TestLoginAndMintingReportAFailureWithoutEstablishingAnything(t *testing.T) 
 	if _, err := broken.server.MintLoginCode(); err == nil || len(broken.server.codes.pending) != 0 {
 		t.Fatalf("MintLoginCode = %v with %d pending", err, len(broken.server.codes.pending))
 	}
-	if _, err := newMemorySessions(iotest.ErrReader(errors.New("no entropy"))).Create(time.Now()); err == nil {
+	if _, err := newMemorySessions(iotest.ErrReader(errors.New("no entropy"))).Create(time.Now(), DigestKey("k")); err == nil {
 		t.Fatal("a session was created without entropy")
 	}
 

@@ -34,7 +34,8 @@ The views are free functions over a model, not methods of it (`model.worktreeVie
 | Export | What it is |
 |---|---|
 | `FleetClient` | `readFleet(etag?, expected = SCHEMA_VERSION)` (200 or 304; a body of another schema throws `FleetSchemaError` with the message `update wb on this machine` (daemon older) or `reload` (page older)), `readSession()`, the three lazy reads are not methods of the client but functions in `@cockpit/fleet-data/lazy-client`: `readBranches(fetcher, repositoryId)` (lazy route, `{branches, reason?}`), `readMachineMetrics(fetcher, machineId, signal?)` (`{machine, route, fetched_at?, samples, reason?}`; `signal` cancels the request, which the metrics poller does when its last page leaves; the request timeout still applies) and `readReadme(fetcher, id)` |
-| `FETCH` | injection token for `fetch`; tests replace it |
+| `FETCH` | injection token for `fetch`; tests replace it. The default adds the session key this origin holds to every request to its own origin (`SessionKeys.sign`) |
+| `takeLoginKey`, `LOGIN_KEY`, `SessionKeys`, `SESSION_KEY_HEADER` | the session key (cockpit#req:session-key): `main.ts` takes it out of the login URL's fragment before the router reads the address and provides it as `LOGIN_KEY`; the store keeps it in the origin's local storage once the daemon says it opens an owner session |
 | `FleetStore` | polls, keeps the last document, exposes `document`, `model` (the memoised view model of the current document), `schemaMismatch`, `error`, `session`, `now`, `warmingUp`, `progress` |
 | `EXPECTED_SCHEMA`, `MODEL_OPTIONS`, `POLL_INTERVALS` | injection tokens (expected schema, view model options such as a clock or derivation counter, poll intervals) |
 | types | `FleetDocument`, `Machine`, `Repository`, `Worktree`, `PullRequest`, `Agent`, `Branch`, `Throughput`, `MachineMetrics`, `MetricsSample`, `BranchesResponse`, `Session`, ... and `isRunning(agent)` (a session `live` or a run `running`) |

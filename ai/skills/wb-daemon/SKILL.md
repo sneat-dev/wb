@@ -25,10 +25,15 @@ wb cockpit --hosted
 
 `wb cockpit --format=json` (or `--json`) starts or reuses the loopback daemon and
 prints `{url, scope, opened}` with the plain Cockpit URL: no login code, no
-browser. Bare `wb cockpit` is for the human operator: it requests a login code
-over the owner channel and prints `/cockpit/session/login?code=...`. That code is
-a single-use owner credential valid for 60 seconds, and an agent running it
-would put it in its transcript. The browser opens only in text format, on an
+browser. Bare `wb cockpit` is for the human operator at a terminal: it requests
+a login code over the owner channel and prints
+`/cockpit/session/login?code=...#key=...`. That URL is a credential (a single-use
+code valid for 60 seconds, and the session key that stays valid for the
+session), so it is printed only when stdout is a terminal. Run by an agent, or
+into a pipe, `wb cockpit` requests no code and prints the plain URL;
+`--print-url` asks for the login URL anyway (in JSON as `login_url`) and puts it
+in the transcript, so an agent does not pass it. A daemon too old to issue a
+session key is refused with exit 1: run `wb daemon restart`. The browser opens only in text format, on an
 interactive session whose stdout is a terminal. `--hosted` uses
 `cockpit.hosted_url` from wb.yaml and starts no daemon. Without `--listen` it
 uses a daemon already running here wherever it listens, else starts one on
@@ -205,7 +210,10 @@ dashboard and `/api/v1/*` read models for machine, worktree, and
 governed-command visibility.
 
 `GET /api/v1/log` (the tail of the daemon's runtime log) is file content and is
-served to an owner session only: without the cookie `wb cockpit` sets it answers
-`401 {"error":"owner_session_required"}`. An agent that needs the log reads the
+served to an owner session only. An owner session is two halves, the cookie
+`wb_cockpit_session_<port>` and the session key in the request header
+`X-Wb-Cockpit-Session-Key` (`wb cockpit` prints the key in the login URL's
+fragment and the Cockpit page sends it); the cookie alone, an address typed
+into a browser included, answers `401 {"error":"owner_session_required"}`. An agent that needs the log reads the
 file on the machine (`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log`
 in the daemon's runtime directory elsewhere); it does not fetch the route.

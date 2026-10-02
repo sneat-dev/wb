@@ -10,6 +10,7 @@
 //   @cockpit/fleet-data/list      the list rows, `applyListQuery` and the full filter vocabulary
 export * from './lib/fleet.types'
 export * from './lib/fleet-client'
+export * from './lib/session-key'
 export * from './lib/fleet-store'
 export * from './lib/fleet-view'
 export * from './lib/matcher'

@@ -64,6 +64,9 @@ func (store repositoryCoverageStore) SaveCoverage(ctx context.Context, record St
 	if store.backend == nil {
 		return errRepositoryCoverageStoreUnavailable
 	}
+	if err := validateCoverageRecord(record); err != nil {
+		return err
+	}
 	canonical := canonicalRepository(record.Repository)
 	if canonical == "" || canonical == "github.com/" {
 		return fmt.Errorf("%w: repository is required", errInvalidCoverageRecord)

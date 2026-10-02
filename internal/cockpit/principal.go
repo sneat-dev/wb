@@ -78,8 +78,11 @@ func forwarded(request *http.Request) bool {
 // principal resolves request, which has passed Guard, to its principal. The
 // second result is false when it has none and must be answered 401: it came
 // through a proxy, or anonymous-local is switched off, and it carries no
-// owner session. A request from the hosted origin never has a session, even
-// when the browser sent the cookie (cockpit#req:cross-origin-allowance).
+// owner session. A request with the session cookie and no session key is not
+// an error: it resolves like one with no cookie, to anonymous-local where that
+// is on (cockpit#req:session-key). A request from the hosted origin never has
+// a session, even when the browser sent the cookie
+// (cockpit#req:cross-origin-allowance).
 func (server *Server) principal(request *http.Request, from originKind) (Principal, bool) {
 	if from != originHosted && server.sessionID(request) != "" {
 		return owner(), true
@@ -112,8 +115,11 @@ func (server *Server) LocalReader(request *http.Request) bool {
 // apply to an owner read: the Host header names a loopback host
 // (cockpit#req:host-header-check), the request comes from the Cockpit page or
 // carries no Origin at all, never from the hosted or a foreign origin, and it
-// carries a live owner session (cockpit#req:owner-session). Nothing else makes
-// a request the owner's: there is no anonymous fallback here.
+// carries a live owner session (cockpit#req:owner-session): the session cookie
+// and, in SessionKeyHeader, the session key bound to it
+// (cockpit#req:session-key). The cookie alone, which any other server on the
+// loopback host is sent and can replay, is not the owner. Nothing else makes a
+// request the owner's: there is no anonymous fallback here.
 func (server *Server) IsOwner(request *http.Request) bool {
 	return server.LocalReader(request) && server.sessionID(request) != ""
 }
