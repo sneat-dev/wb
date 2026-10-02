@@ -130,13 +130,15 @@ func TestAgentActivityIsOmittedWhenHerdrFailsOrIsSlowAndDoesNotDelayTheSnapshot(
 	use(activityOver(working))
 	sources.activity = switching{current: &current}
 	snapshotter, _ := newSnapshotter(sources.collectors(), func(options *Options) {
-		options.ActivityTimeout = 20 * time.Millisecond
 		options.Logf = func(string, ...any) { logged.Add(1) }
 	})
 	refreshAndSettle(t, snapshotter)
 	if got := agentsBySession(snapshotter.Document())["wbs-1"].Activity; got != ActivityWorking {
 		t.Fatalf("activity = %q, want working (the test would be vacuous)", got)
 	}
+	// Only now the short bound: a read that answers is never held to it (which a
+	// loaded machine could break), and a hang, which never answers, meets it.
+	snapshotter.activityTimeout = 20 * time.Millisecond
 	for name, collector := range map[string]ActivityCollector{
 		"an error":      activityOver(fakeHerdr{err: errors.New("no server")}),
 		"a hang":        activityOver(fakeHerdr{hang: true}),

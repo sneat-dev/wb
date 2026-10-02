@@ -390,7 +390,9 @@ func TestAFailedAnswerIsAskedAgainUpToTheCapThenStays(t *testing.T) {
 		}
 	}
 	// With no budget left the earlier failed answer stays, and nothing is asked.
-	fleet.snapshotter.providerBudget = time.Nanosecond
+	// A budget already spent when the pass starts: a negative one is, for certain,
+	// where a nanosecond one may still have a tick left on a fast clock.
+	fleet.snapshotter.providerBudget = -time.Second
 	refreshAndSettle(t, fleet.snapshotter)
 	if got := fleet.statisticsOf(t, repoPath); got == nil || got.Error != ErrorProviderFailed || provider.asked(repoPath) != 2 {
 		t.Fatalf("with no budget: %+v after %d asks", got, provider.asked(repoPath))
@@ -433,7 +435,10 @@ func TestAFailedAnswerIsAskedAgainUpToTheCapThenStays(t *testing.T) {
 func TestAnExhaustedBudgetSkipsTheAsksAndRecordsNothing(t *testing.T) {
 	t.Parallel()
 	provider := newFakeProvider("index")
-	fleet := newProviderFleet(t, provider, func(options *Options) { options.ProviderBudget = time.Nanosecond })
+	fleet := newProviderFleet(t, provider)
+	// Spent before the pass starts, for certain: a negative budget is, where a
+	// nanosecond one may still have a tick left on a fast clock.
+	fleet.snapshotter.providerBudget = -time.Second
 	refreshAndSettle(t, fleet.snapshotter)
 	if provider.total() != 0 {
 		t.Fatalf("the provider was asked %d times with no budget", provider.total())
