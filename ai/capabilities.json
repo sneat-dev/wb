@@ -3143,6 +3143,7 @@
               ],
               "modes": [
                 "Reports functions that no path from any main package can reach, using golang.org/x/tools/cmd/deadcode's Rapid Type Analysis at a pinned version.",
+                "Analyses linux, darwin and windows and reports a function only when it is unreachable on all three, so the verdict is the same on every host.",
                 "Gates on a committed baseline: only findings absent from .wb/deadcode-baseline.txt fail, so the check can be adopted by a repository that is not already clean.",
                 "Reports baseline entries that became reachable or were deleted, which never fail, so the tolerated set only shrinks without review.",
                 "--update-baseline rewrites the tolerated set from the current run instead of gating; --no-baseline reports everything and never fails."
@@ -3194,6 +3195,11 @@
             {
               "path": "internal/quality/deadcode_test.go",
               "name": "TestDeadcodeFailsWhenTheAnalyzerItselfFails",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/deadcode_platforms_test.go",
+              "name": "TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform",
               "kind": "unit"
             }
           ],
