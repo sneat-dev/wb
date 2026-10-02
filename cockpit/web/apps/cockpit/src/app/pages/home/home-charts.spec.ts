@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing'
 import { buildThroughput } from '@cockpit/fleet-data/home-details'
 import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { fleet, modelOf } from './home-testing'
-import { HomeCharts, durationCaption, seriesNames, throughputSpecs } from './home-charts'
+import { CAPPED_NOTE, HomeCharts, durationCaption, seriesNames, throughputSpecs } from './home-charts'
 
 const series = (document = fleet()) => buildThroughput(modelOf(document))!
 
@@ -83,11 +83,21 @@ describe('HomeCharts', () => {
     expect(root.querySelectorAll('.data button')).toHaveLength(0)
   })
 
-  it('says when the daemon capped its scan, and has no caption when no task finished', async () => {
+  it('says in a word on the caption line, and in full for a screen reader and as a tooltip, that the daemon capped its scan, and adds no line to the card', async () => {
     const capped = { ...series(), capped: true, medianSeconds: undefined, p90Seconds: undefined, slowest: [] }
     const { root } = await render(capped)
-    const legends = [...root.querySelectorAll('.chart-legend')].map((legend) => text(legend))
-    expect(legends).toEqual(['finished dropped', 'The daemon capped its scan: older sealed tasks may be missing.'])
+    const legends = [...root.querySelectorAll('.chart-legend')]
+    expect(legends.map((legend) => text(legend))).toEqual(['finished dropped', `scan capped ${CAPPED_NOTE}`])
+    expect(legends[1].getAttribute('title')).toBe(CAPPED_NOTE)
+    expect(legends[1].querySelector('.visually-hidden')?.textContent).toBe(CAPPED_NOTE)
+    expect(root.querySelectorAll('.chart-legend')).toHaveLength(2)
+    const both = await render({ ...series(), capped: true })
+    expect(text(both.root.querySelectorAll('.chart-legend')[1])).toContain('median 15 min · p90 15 h · scan capped')
+  })
+
+  it('has no caption when no task finished and the scan was not capped', async () => {
+    const { root } = await render({ ...series(), medianSeconds: undefined, p90Seconds: undefined, slowest: [] })
+    expect([...root.querySelectorAll('.chart-legend')].map((legend) => text(legend))).toEqual(['finished dropped'])
   })
 
   it('says "No data" for a window with nothing finished or dropped', async () => {

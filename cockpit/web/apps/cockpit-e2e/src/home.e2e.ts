@@ -104,22 +104,43 @@ test('Home lists what needs the operator with one action each, and what is ready
   await expectClean()
 })
 
+// The charts' chunk is the one that holds Chart.js itself: its text has the library's own names.
+const isChartJs = (text: string) => text.includes('resolveAnimations') && text.includes('getDatasetMeta')
+
+// The scripts the page needs before it can draw anything: the entry document's scripts and preloads, and what they import statically (a dynamic import() is not one).
+async function initialScripts(page: Page): Promise<Set<string>> {
+  const roots = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('script[src], link[rel=modulepreload]')].map((element) => (element as HTMLScriptElement).src || (element as HTMLLinkElement).href))
+  const seen = new Set<string>()
+  const queue = [...roots]
+  while (queue.length > 0) {
+    const url = queue.pop()!
+    if (seen.has(url)) continue
+    seen.add(url)
+    const text = await (await page.request.get(url)).text()
+    for (const match of text.matchAll(/(?:\bfrom|\bimport)\s*"(\.\/[^"]+\.js)"/g)) queue.push(new URL(match[1], url).href)
+  }
+  return seen
+}
+
 // cockpit-views#ac:home-charts-from-throughput, #ac:csp-and-canvas-only: Throughput is the first section; Chart.js is a lazy chunk fetched right after the first paint.
-test('Throughput is the first section of Home, and its charts are canvases fetched after the first paint, not in the first page', async ({ page }) => {
+test('Throughput is the first section of Home, and its charts are canvases from a lazy chunk, with Chart.js outside the first page', async ({ page }) => {
   await serve(page)
   const expectClean = await watch(page)
-  const scripts: string[] = []
-  page.on('request', (request) => {
-    if (request.url().endsWith('.js')) scripts.push(request.url())
+  const loaded: string[] = []
+  page.on('response', (response) => {
+    if (response.url().endsWith('.js')) loaded.push(response.url())
   })
   await page.goto('/cockpit/')
   await expect.poll(() => page.locator('h2.home-h').allInnerTexts().then((texts) => texts.slice(0, 2).map((text) => text.replace(/\s+\d+$/, '')))).toEqual(['Throughput', 'Needs you'])
   await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
   await expect(page.locator('app-home-charts .data table')).toHaveCount(2)
   await expect(page.locator('app-home-charts')).toContainText('median 15 min · p90 15 h')
-  // The charts arrived in chunks the entry document does not name.
-  const entry = await page.evaluate(() => [...document.querySelectorAll('script[src], link[rel=modulepreload]')].map((element) => element.getAttribute('src') ?? element.getAttribute('href')))
-  expect(scripts.length).toBeGreaterThan(entry.length)
+  // Chart.js was fetched, and it is in none of the scripts the first page is made of.
+  const initial = await initialScripts(page)
+  const chartChunks: string[] = []
+  for (const url of new Set(loaded)) if (isChartJs(await (await page.request.get(url)).text())) chartChunks.push(url)
+  expect(chartChunks.length).toBeGreaterThan(0)
+  for (const url of chartChunks) expect(initial.has(url), url).toBe(false)
   // A chart does not link: pressing on its canvas goes nowhere.
   const url = page.url()
   await page.locator('app-home-charts canvas').first().click({ position: { x: 60, y: 60 } })
@@ -127,7 +148,7 @@ test('Throughput is the first section of Home, and its charts are canvases fetch
   await expectClean()
 })
 
-// cockpit-views#ac:home-charts-from-throughput: the keyboard goes through Home in the order it is drawn.
+// cockpit-views#ac:home-charts-from-throughput: the document order of the sections is their visual order, so Tab follows what is drawn.
 test('the sections of Home are h2s whose document order is their visual order, so Tab follows what is drawn', async ({ page }) => {
   await serve(page)
   await page.goto('/cockpit/')
@@ -139,54 +160,113 @@ test('the sections of Home are h2s whose document order is their visual order, s
   expect(first).toBeTruthy()
 })
 
-// cockpit-views#ac:home-charts-from-throughput: the slot keeps the height of the charts, so "Needs you" does not move when they arrive.
-for (const width of [1280, 800, 375]) {
-  test(`at ${width} px "Needs you" does not move when the charts arrive`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 })
-    await serve(page)
-    // A slow network: every script takes 300 ms, so the charts' chunks (requested after the page's own scripts have run) arrive well after the first paint.
-    await page.route('**/*.js', async (route) => {
-      await new Promise((done) => setTimeout(done, 300))
-      await route.continue()
+const WARMING = { ...homeFleet, warming_up: true, repositories_total: 438, repositories_scanned: 10, worktrees: [], pull_requests: [], agents: [] }
+const WITHOUT_BLOCK = { ...homeFleet, throughput: undefined }
+const EMPTY_BLOCK = { ...homeFleet, throughput: { window_days: 30, per_day: [], slowest: [] } }
+const CAPPED = { ...homeFleet, throughput: { ...homeFleet.throughput, capped: true } }
+
+/** Serves the document that `current()` returns, and reads it again at once when the test says so (a page that is visible again reads at once). */
+async function serveSequence(page: Page, current: () => object) {
+  await serve(page)
+  let version = 0
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: current(), headers: { ETag: `"v${version++}"`, 'Cache-Control': 'no-cache', ...checkedAt() } }))
+}
+const slotState = (page: Page) => page.locator('.throughput-slot').getAttribute('data-state')
+async function readAgain(page: Page, state: string) {
+  await expect
+    .poll(async () => {
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+      return slotState(page)
     })
-    await page.goto('/cockpit/')
-    const needs = page.getByRole('heading', { level: 2, name: /^Needs you/ })
-    await expect(needs).toBeVisible()
-    expect(await page.locator('app-home-charts').count()).toBe(0)
-    const before = (await needs.boundingBox())!.y
-    await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
-    const after = (await needs.boundingBox())!.y
-    expect(Math.abs(after - before)).toBeLessThanOrEqual(1)
-  })
+    .toBe(state)
 }
 
-// cockpit-views#ac:home-charts-from-throughput: while the first document is on its way the place of Throughput is kept.
-for (const width of [1280, 375]) {
-  test(`at ${width} px "Needs you" is where it was when the first document arrives with a throughput block`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 })
-    await serve(page)
-    let complete = false
-    // The daemon is on its first scan (a document that says so) until the test releases the complete one.
-    await page.route('**/api/v1/cockpit/fleet', async (route) => {
-      await route.fulfill({
-        json: complete ? homeFleet : { ...homeFleet, warming_up: true, repositories_total: 438, repositories_scanned: 10, worktrees: [], pull_requests: [], agents: [] },
-        headers: { 'Cache-Control': 'no-cache', ...checkedAt() },
-      })
-    })
-    await page.goto('/cockpit/')
-    const needs = page.getByRole('heading', { level: 2, name: /^Needs you/ })
-    await expect(needs).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toBeVisible()
-    await expect(page.locator('.throughput-slot.pending')).toBeAttached()
-    const before = (await needs.boundingBox())!.y
-    complete = true
-    await expect(page.locator('app-home-charts canvas')).toHaveCount(2, { timeout: 15_000 })
-    await expect(page.locator('.throughput-slot.pending')).toHaveCount(0)
-    expect((await needs.boundingBox())!.y).toBe(before)
-  })
+/** What the layout of Home is: where "Needs you" starts, and how tall the slot and the cards in it are. */
+async function measure(page: Page) {
+  return page.evaluate(() => ({
+    needs: [...document.querySelectorAll('h2')].find((heading) => (heading.textContent ?? '').trim().startsWith('Needs you'))!.getBoundingClientRect().y,
+    slot: document.querySelector('.throughput-slot')!.getBoundingClientRect().height,
+    // A card clips what it holds when its title, plot or legend ends below it (the hidden data table is out of the way).
+    clipped: [...document.querySelectorAll('.chart-card')].filter((card) => {
+      const box = card.getBoundingClientRect()
+      return [...card.querySelectorAll('.title, .plot, .chart-legend')].some((part) => part.getBoundingClientRect().bottom > box.bottom + 0.5 || part.getBoundingClientRect().right > box.right + 0.5)
+    }).length,
+    overlaps: [...document.querySelectorAll('.chart-card')].filter((card) => {
+      const parts = [card.querySelector('.title'), card.querySelector('.chart-legend')].map((part) => part?.getBoundingClientRect())
+      const [title, legend] = parts
+      return title !== undefined && legend !== undefined && title.left < legend.right - 0.5 && legend.left < title.right - 0.5 && title.top < legend.bottom - 0.5 && legend.top < title.bottom - 0.5
+    }).length,
+  }))
 }
 
-// cockpit-views#ac:home-phone-layout: dense on a phone, both charts shown, and "Needs you" high on the first screen.
+// cockpit-views#ac:home-charts-from-throughput, #ac:warming-up-shows-progress: the slot is one fixed height, so no state of it moves "Needs you".
+for (const width of [1280, 800, 375, 360]) {
+  for (const capped of [false, true]) {
+    test(`at ${width} px "Needs you" and the slot keep their place from the warming-up document through no block to the charts and back${capped ? ' (scan capped)' : ''}`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 })
+      let document: object = WARMING
+      await serveSequence(page, () => document)
+      await page.goto('/cockpit/')
+      await expect(page.getByRole('heading', { level: 2, name: /^Needs you/ })).toBeVisible()
+      await expect(page.locator('.throughput-slot[data-state=pending]')).toBeAttached()
+      await expect(page.locator('section[aria-busy=true] [role=status]')).toHaveText('Loading throughput charts')
+      const base = await measure(page)
+
+      // The first complete document comes without the block, as the daemon publishes it.
+      document = WITHOUT_BLOCK
+      await readAgain(page, 'none')
+      await expect(page.locator('.throughput-note')).toContainText('No charts: the daemon reports no throughput')
+      expect(await measure(page)).toEqual({ ...base, clipped: 0, overlaps: 0 })
+
+      // A later one has it.
+      document = capped ? CAPPED : homeFleet
+      await readAgain(page, 'charts')
+      await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
+      const charts = await measure(page)
+      expect(charts).toEqual({ ...base, clipped: 0, overlaps: 0 })
+      if (capped) await expect(page.locator('.chart-legend').nth(1)).toContainText('scan capped')
+
+      // And a block with nothing in it, or none, is calm again.
+      document = EMPTY_BLOCK
+      await readAgain(page, 'none')
+      expect(await measure(page)).toEqual({ ...base, clipped: 0, overlaps: 0 })
+      document = WITHOUT_BLOCK
+      await readAgain(page, 'none')
+      expect(await measure(page)).toEqual({ ...base, clipped: 0, overlaps: 0 })
+    })
+  }
+}
+
+// cockpit-views#ac:home-charts-from-throughput: a chunk that cannot be fetched says so, Retry asks again, and "Needs you" does not move.
+test('when the charts chunk cannot be fetched Throughput says so with a Retry, and Retry (a page reload) draws the charts', async ({ page }) => {
+  await serve(page)
+  let failing = true
+  await page.route('**/*.js', async (route) => {
+    const response = await route.fetch()
+    if (failing && (await response.text()).includes('app-throughput-charts')) return route.abort()
+    return route.fulfill({ response })
+  })
+  await page.goto('/cockpit/')
+  const slot = page.locator('.throughput-slot')
+  await expect(slot).toHaveAttribute('data-state', 'failed')
+  await expect(slot).toContainText('Charts unavailable.')
+  const before = await measure(page)
+  // A browser remembers a module that failed until the page is loaded again, so Retry reloads the page.
+  failing = false
+  await slot.getByRole('button', { name: 'Retry' }).click()
+  await expect(page.locator('app-home-charts canvas')).toHaveCount(2)
+  expect(await measure(page)).toEqual({ ...before, clipped: 0, overlaps: 0 })
+})
+
+// cockpit-views#ac:home-charts-from-throughput: nothing to chart is a calm line centred in the slot.
+test('a block with nothing in it is the calm line in the slot of Throughput', async ({ page }) => {
+  await serveSequence(page, () => EMPTY_BLOCK)
+  await page.goto('/cockpit/')
+  await expect(page.locator('.throughput-slot[data-state=none]')).toContainText('No charts: the daemon reports no throughput')
+  await expect(page.locator('app-home-charts')).toHaveCount(0)
+})
+
+// cockpit-views#ac:home-phone-layout: dense on a phone, both charts shown, readable, and "Needs you" high on the first screen.
 test('at 375 x 812 both charts are shown and the "Needs you" heading is at or above y 400', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
   await serve(page)
@@ -197,12 +277,13 @@ test('at 375 x 812 both charts are shown and the "Needs you" heading is at or ab
   expect(y).toBeLessThanOrEqual(400)
   const cards = await page.locator('.chart-card').evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height))
   const slot = await page.locator('.throughput-slot').evaluate((element) => element.getBoundingClientRect().height)
-  // The slot is exactly the two cards and the gap between them: nothing is left over, so nothing moved.
-  expect(cards[0] + cards[1] + 8).toBe(slot)
+  // The slot is the two cards and the gap between them (8 px): nothing is left over.
+  expect(Math.abs(cards[0] + cards[1] + 8 - slot)).toBeLessThan(0.5)
   // Five rows of 11 px labels: the "Time to finish" plot is at least five label lines tall (a line is 1.25 times the font), so the rows do not touch.
   const plot = await page.locator('.chart-card').nth(1).locator('.plot').evaluate((element) => element.getBoundingClientRect().height)
   expect(plot).toBeGreaterThanOrEqual(5 * 11 * 1.25)
 })
+
 
 test('an owner whose daemon has an action registry still gets no live button on Home: there is no handler, so each row offers Copy', async ({ page }) => {
   const asked: string[] = []
@@ -271,10 +352,11 @@ test('a healthy fleet shows a short, reassuring page: one calm line for each emp
   await expect(page.getByText('No agents running.')).toBeVisible()
   await expect(page.getByRole('heading', { level: 2, name: /^Fleet health/ })).toHaveCount(0)
   await expect(page.getByText(/^No charts: the daemon reports no throughput/)).toBeVisible()
-  // Without a throughput block the top of Home is "Needs you" and the calm line is last, where Throughput used to be.
+  // Without a throughput block Throughput is still the first section, a calm line in its slot, and nothing is left at the bottom.
   const order = await page.locator('h2.home-h').allInnerTexts()
-  expect(order[0]).toMatch(/^Needs you/)
-  expect(order.at(-1)).toBe('Throughput')
+  expect(order[0]).toBe('Throughput')
+  expect(order.filter((text) => text === 'Throughput')).toHaveLength(1)
+  await expect(page.locator('.throughput-slot[data-state=none]')).toContainText('No charts')
   await expect(page.locator('app-home-charts')).toHaveCount(0)
   await expectClean()
 })

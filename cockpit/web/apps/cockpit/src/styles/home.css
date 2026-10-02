@@ -27,34 +27,49 @@ main:has(.home) > app-skeleton-rows.warming {
   line-height: var(--lh-tight);
 }
 
-/* Throughput is the first section of Home and its charts are a lazy chunk (REQ:home-charts): this slot keeps
-   their height until they arrive (and while it is not known yet whether there are any), so "Needs you" below
-   does not move. --chart-card-min and -min-2 are the heights of the first and second card (home-charts.css) and --chart-card-gap the space between
-   the cards: two cards stacked under 60rem, one row of two from there; compact on a phone. */
+/* Throughput is the first section of Home, always, and its slot has one fixed height whatever it holds
+   (REQ:home-charts): a skeleton while the daemon scans, the charts (a lazy chunk), a calm line when there is
+   nothing to chart, or "Charts unavailable" with Retry. The daemon's first complete document may lack the block
+   and gain it later, so none of these changes may move "Needs you". --chart-card-1 and -2 are the heights of the two
+   cards (home-charts.css; what the rendered cards need, measured) and --chart-card-gap the space between: two
+   cards stacked under 60rem, one row of two from there, and a phone's compact pair. */
 .throughput-slot {
-  --chart-card-min: 14rem;
-  --chart-card-min-2: var(--chart-card-min);
+  --chart-card-1: 13.875rem;
+  --chart-card-2: 13.875rem;
   --chart-card-gap: var(--space-3);
-  min-height: calc(var(--chart-card-min) + var(--chart-card-min-2) + var(--chart-card-gap));
-}
-
-.throughput-slot.pending {
-  border-radius: var(--radius-lg);
-  background: var(--surface-sunken);
+  height: calc(var(--chart-card-1) + var(--chart-card-2) + var(--chart-card-gap));
 }
 
 @media (min-width: 60rem) {
   .throughput-slot {
-    min-height: var(--chart-card-min);
+    height: var(--chart-card-1);
   }
 }
 
 @media (max-width: 480px) {
   .throughput-slot {
-    --chart-card-min: 6.625rem;
-    --chart-card-min-2: 8.125rem;
+    --chart-card-1: 6.625rem;
+    --chart-card-2: 8.125rem;
     --chart-card-gap: var(--space-2);
   }
+}
+
+.throughput-skeleton,
+.throughput-note {
+  box-sizing: border-box;
+  height: 100%;
+  border-radius: var(--radius-lg);
+}
+
+.throughput-skeleton {
+  background: var(--surface-sunken);
+}
+
+.throughput-note {
+  justify-content: center;
+  padding: 0 var(--space-3);
+  border: 1px dashed var(--border);
+  text-align: center;
 }
 
 .home-count {

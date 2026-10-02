@@ -1,45 +1,71 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
+import { DOCUMENT } from '@angular/common'
+import { ChangeDetectionStrategy, Component, InjectionToken, computed, effect, inject, input, signal, untracked } from '@angular/core'
 import type { FleetModel } from '@cockpit/fleet-data'
 import { LazyMount } from './lazy-mount'
 
 /** The charts' chunk: the series (home-details) and the charts with Chart.js behind them, requested right after the first paint. */
 const loadCharts = () => import('./throughput-charts').then((module) => module.ThroughputCharts)
 
-/** Whether the document has a throughput block at all (REQ:throughput-block); the series itself is built in the lazy chunk. */
-export function hasThroughput(model: FleetModel): boolean {
-  return model.document.throughput !== undefined
-}
-
 /**
- * Whether Throughput is Home's first section: the block is there, or it is not known yet (no document
- * yet, or the daemon's first scan is still running), so the place is kept and nothing moves when the
- * answer is yes. A complete document without a block takes it off the top.
+ * Reloads the page. A browser remembers a module that could not be fetched until the page is loaded
+ * again (a second `import()` of it fails at once, with no request), so that is what "Retry" must do.
  */
-export function throughputOnTop(model: FleetModel, warming: boolean): boolean {
-  return warming || hasThroughput(model)
+export const RELOAD_PAGE = new InjectionToken<() => void>('reload the page', {
+  providedIn: 'root',
+  factory: () => {
+    const view = inject(DOCUMENT).defaultView
+    return () => view?.location.reload()
+  },
+})
+
+/** What the slot of Throughput holds: the skeleton, nothing to chart yet, or the charts (from their lazy chunk, which may fail: `failed`). */
+export type ThroughputState = 'pending' | 'none' | 'charts' | 'failed'
+
+/** Whether the document has throughput to chart: a block with a day or a task in it (REQ:throughput-block); the series itself is built in the lazy chunk. */
+export function hasThroughput(model: FleetModel): boolean {
+  const block = model.document.throughput
+  return block !== undefined && (block.per_day.length > 0 || block.slowest.length > 0)
 }
 
 /**
- * Home's "Throughput" section (REQ:home-charts). With a throughput block it is the first section of
- * Home: the heading and a slot that keeps the height of the charts (`.throughput-slot`, in home.css)
- * are in the first page, and the charts, with Chart.js, are a lazy chunk requested as soon as the
- * section is created, so "Needs you" below never moves when they arrive. While it is not known whether
- * there is a block (`warming`), it is the heading and an empty slot of the same height. Without a block
- * it is the calm line "No charts", and the page places it at the bottom, where it used to be. One component
- * for both places, so the heading and the line are written once.
+ * Throughput is the first section of Home, always, in one slot whose height never depends on its
+ * content (REQ:home-charts): the daemon's first complete document may come without the block and
+ * gain it on a later publish, so the block coming and going must not move "Needs you" by a pixel.
+ */
+export function throughputState(model: FleetModel, warming: boolean): Exclude<ThroughputState, 'failed'> {
+  if (warming) return 'pending'
+  return hasThroughput(model) ? 'charts' : 'none'
+}
+
+/**
+ * Home's "Throughput" section (REQ:home-charts), the first section of Home. Its heading and its slot
+ * are in the first page: the slot has a fixed height at every breakpoint (`.throughput-slot` in
+ * home.css) and holds exactly one of a skeleton while the daemon's first scan runs, the two charts
+ * (a lazy chunk with Chart.js, requested as soon as the section is created), a calm centred line when
+ * there is nothing to chart yet, or "Charts unavailable" with a Retry (a page reload, see RELOAD_PAGE) when the chunk could not be fetched.
  */
 @Component({
   selector: 'app-throughput',
   imports: [LazyMount],
-  template: `<section class="home-section" aria-labelledby="home-charts-h">
+  template: `<section class="home-section" aria-labelledby="home-charts-h" [attr.aria-busy]="state() === 'pending' ? 'true' : null">
     <h2 id="home-charts-h" class="home-h">Throughput</h2>
-    @if (warming()) {
-      <div class="throughput-slot pending" aria-hidden="true"></div>
-    } @else if (present()) {
-      <div class="throughput-slot"><app-lazy-mount [load]="loadCharts" [inputs]="chartInputs()" /></div>
-    } @else {
-      <p class="home-calm">No charts: the daemon reports no throughput (finished and dropped work) yet.</p>
-    }
+    <div class="throughput-slot" [attr.data-state]="state()">
+      @switch (state()) {
+        @case ('pending') {
+          <span class="visually-hidden" role="status">Loading throughput charts</span>
+          <div class="throughput-skeleton" aria-hidden="true"></div>
+        }
+        @case ('none') {
+          <p class="home-calm throughput-note">No charts: the daemon reports no throughput (finished and dropped work) yet.</p>
+        }
+        @case ('failed') {
+          <p class="home-calm throughput-note">Charts unavailable. <button type="button" class="home-act" (click)="retry()">Retry</button></p>
+        }
+        @default {
+          <app-lazy-mount [load]="loadCharts" [inputs]="chartInputs()" (loadFailed)="failed.set(true)" />
+        }
+      }
+    </div>
   </section>`,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -49,6 +75,21 @@ export class ThroughputSection {
   readonly warming = input(false)
 
   protected readonly loadCharts = loadCharts
-  protected readonly present = computed(() => hasThroughput(this.model()))
+  protected readonly failed = signal(false)
+  private readonly reload = inject(RELOAD_PAGE)
+  private readonly settled = computed(() => throughputState(this.model(), this.warming()))
+  protected readonly state = computed<ThroughputState>(() => (this.settled() === 'charts' && this.failed() ? 'failed' : this.settled()))
   protected readonly chartInputs = computed(() => ({ model: this.model() }))
+
+  constructor() {
+    // A failure belongs to the charts it happened to: once the slot holds something else it is forgotten.
+    effect(() => {
+      if (this.settled() !== 'charts') untracked(() => this.failed.set(false))
+    })
+  }
+
+  /** The page is loaded again, which is the only way to ask for a chunk that failed. */
+  protected retry(): void {
+    this.reload()
+  }
 }

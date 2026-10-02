@@ -4,7 +4,8 @@ import { FETCH, FleetStore, Session } from '@cockpit/fleet-data'
 import { CHART_ENGINE } from '@cockpit/ui/chart'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { FIXED_CLOCK, fleet, modelOf } from './home-testing'
-import { ACTION_CAPABILITIES, HomeRest, PHONE_QUERY, registryTargets } from './home-rest'
+import { ACTION_CAPABILITIES, HomeRest, registryTargets } from './home-rest'
+import { PHONE_QUERY } from './home-phone'
 import { HomeRegistry } from './home-registry'
 
 const session = (capabilities: string[]): Session => ({ principal: 'owner', capabilities, code_browser_url: 'https://codegrapher.dev/' })

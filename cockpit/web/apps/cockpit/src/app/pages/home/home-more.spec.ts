@@ -17,7 +17,7 @@ async function render(document = fleet(), dropped = 0) {
 const headings = (root: HTMLElement) => [...root.querySelectorAll('h2')].map((heading) => (heading.textContent ?? '').replace(/\s+/g, ' ').trim())
 
 describe('HomeMore', () => {
-  it('shows Cleanup and Fleet health when something is wrong, and no Throughput: with charts it is on top of Home', async () => {
+  it('shows Cleanup and Fleet health when something is wrong, and no Throughput: that is the first section of Home', async () => {
     const { root } = await render()
     expect(headings(root)).toEqual(['Cleanup', 'Fleet health 2'])
     expect(root.querySelector('app-throughput')).toBeNull()
@@ -25,16 +25,9 @@ describe('HomeMore', () => {
 
   it('shows no Fleet health for a fleet with nothing wrong, and the dropped entries when this page left some out', async () => {
     const calm = await render(fleet('healthy'))
-    expect(headings(calm.root)).toEqual(['Cleanup', 'Throughput'])
+    expect(headings(calm.root)).toEqual(['Cleanup'])
     const dropped = await render(fleet('healthy'), 3)
-    expect(headings(dropped.root)).toEqual(['Cleanup', 'Fleet health 1', 'Throughput'])
+    expect(headings(dropped.root)).toEqual(['Cleanup', 'Fleet health 1'])
     expect(dropped.root.textContent).toContain('3 entries of the fleet document were invalid and left out')
-  })
-
-  it('says why there are no charts, last, when the daemon sent no throughput block', async () => {
-    const { root } = await render(fleet('no-throughput'))
-    expect(headings(root)).toEqual(['Cleanup', 'Fleet health 2', 'Throughput'])
-    expect(root.querySelectorAll('app-chart')).toHaveLength(0)
-    expect(root.querySelector('.home-calm')?.textContent).toContain('No charts: the daemon reports no throughput')
   })
 })

@@ -2,6 +2,7 @@ import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ViewEncapsulation, computed, inject, input, signal } from '@angular/core'
 import { ThroughputSeries } from '@cockpit/fleet-data'
 import { ChartView, HorizontalBarsSpec, StackedBarsSpec } from '@cockpit/ui/chart'
+import { PHONE_QUERY } from './home-phone'
 import { spanText } from './home-time'
 
 /** Why no number of the charts is a link (REQ:every-number-is-a-link), as the title of each. */
@@ -16,10 +17,11 @@ export function durationCaption(series: Pick<ThroughputSeries, 'medianSeconds' |
   return parts.length === 0 ? undefined : parts.join(' \u00b7 ')
 }
 
+/** The daemon's scan of sealed tasks stopped at its cap: said in a word on the caption's line, and in full to a screen reader and as a tooltip, so no line is added to a card of fixed height. */
+export const CAPPED_NOTE = 'The daemon capped its scan: older sealed tasks may be missing.'
+
 const HOUR = 3600
 
-/** The width at and below which the charts are compact (a phone, as Home's own layout counts it). */
-export const COMPACT_QUERY = '(max-width: 480px)'
 /** The height of a plot in rem: Throughput is the first section of Home, so on a phone it is shorter and "Needs you" stays near the top. */
 export const PLOT_HEIGHT = 9
 /** On a phone the "Time to finish" plot is as tall as its five rows of 11 px labels need (with the value axis), and "Finished per day" gives the pixels up. */
@@ -63,8 +65,9 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
  * text legend) and "Time to finish" (the slowest five, with the median and p90 as its caption), drawn
  * with Chart.js from the throughput block, each with its hidden data table. The numbers come from
  * sealed records that have no entries in the fleet document, so no bar or number here is a link. The
- * host creates this component only when its section scrolls near the viewport, so the Chart.js chunk
- * never costs the first page.
+ * Throughput section creates this component from a lazy chunk right after the first paint, so
+ * Chart.js never costs the first page; the cards are as tall as the section's slot says
+ * (`--chart-card-1` and `--chart-card-2`, home.css), whatever they hold.
  */
 @Component({
   selector: 'app-home-charts',
@@ -72,7 +75,7 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
   template: `<div class="charts-grid">
     <div class="home-card chart-card" [attr.title]="notALink">
       <app-chart [spec]="specs().perDay" [height]="perDayHeight()" />
-      <p class="chart-legend line">
+      <p class="chart-legend">
         @for (entry of specs().perDay.series; track entry.name) {
           <span [class]="'swatch ' + entry.tone" aria-hidden="true"></span>{{ entry.name }}
         }
@@ -81,10 +84,12 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
     <div class="home-card chart-card" [attr.title]="notALink">
       <app-chart [spec]="specs().slowest" [height]="slowestHeight()" />
       @if (caption(); as text) {
-        <p class="chart-legend line">{{ text }}</p>
-      }
-      @if (series().capped) {
-        <p class="chart-legend">The daemon capped its scan: older sealed tasks may be missing.</p>
+        <p class="chart-legend" [attr.title]="series().capped ? cappedNote : null">
+          {{ text }}
+          @if (series().capped) {
+            <span class="visually-hidden">{{ cappedNote }}</span>
+          }
+        </p>
       }
     </div>
   </div>`,
@@ -97,15 +102,16 @@ export class HomeCharts {
   readonly series = input.required<ThroughputSeries>()
 
   protected readonly notALink = NOT_A_LINK
+  protected readonly cappedNote = CAPPED_NOTE
 
   private readonly compact = signal(false)
   protected readonly perDayHeight = computed(() => (this.compact() ? COMPACT_PER_DAY_HEIGHT : PLOT_HEIGHT))
   protected readonly slowestHeight = computed(() => (this.compact() ? COMPACT_SLOWEST_HEIGHT : PLOT_HEIGHT))
   protected readonly specs = computed(() => throughputSpecs(this.series()))
-  protected readonly caption = computed(() => durationCaption(this.series()))
+  protected readonly caption = computed(() => [durationCaption(this.series()), this.series().capped ? 'scan capped' : undefined].filter((part) => part !== undefined).join(' \u00b7 ') || undefined)
 
   constructor() {
-    const query = inject(DOCUMENT).defaultView?.matchMedia?.(COMPACT_QUERY)
+    const query = inject(DOCUMENT).defaultView?.matchMedia?.(PHONE_QUERY)
     if (query !== undefined) {
       this.compact.set(query.matches)
       const changed = (event: MediaQueryListEvent): void => this.compact.set(event.matches)

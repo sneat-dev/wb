@@ -2,6 +2,3 @@
 @if (health().length > 0) {
   <app-health [rows]="health()" />
 }
-@if (!hasThroughput()) {
-  <app-throughput [model]="model()" />
-}
