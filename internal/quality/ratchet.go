@@ -632,6 +632,11 @@ type PackageRatchet struct {
 	Changed               bool // true when the PR itself touches a file (including _test.go) in this package
 	NewlyUncoveredChanged []RatchetFinding
 	Pass                  bool
+	// Tolerance and Tolerated are set only when the package passed because
+	// of its configured RatchetTolerance: Tolerance is the configured
+	// statement allowance and Tolerated the statements it let through.
+	Tolerance int                  `yaml:"tolerance,omitempty" json:"tolerance,omitempty"`
+	Tolerated []ToleratedStatement `yaml:"tolerated,omitempty" json:"tolerated,omitempty"`
 }
 
 // EvaluateRatchet applies the per-change coverage ratchet
@@ -659,7 +664,14 @@ type PackageRatchet struct {
 // file is reported as attributable (the original, pre-5a7d0df6 behavior,
 // before the blanket touched-file skip existed — this is the LEAST
 // conservative option, not a conservative one).
-func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string, changedOwners ...[]string) ([]PackageRatchet, []RatchetWarning) {
+//
+// tolerances (task-3 (b3), from LoadRatchetTolerances on the head checkout)
+// loosens only the count rule, only for the changed packages it names, and
+// only for statements on lines the change did not add or modify; see
+// toleratedStatements. A package that passes this way has Rose false and
+// carries Tolerance and Tolerated so the caller can warn about it. Pass nil
+// for the strict ratchet.
+func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string, tolerances RatchetTolerances, changedOwners ...[]string) ([]PackageRatchet, []RatchetWarning) {
 	uncovered := PackageUncoveredCounts(blocks, modulePath)
 	findingsByPackage := make(map[string][]RatchetFinding)
 	reported := make(map[string]map[string]bool) // pkg -> "file:line" already reported
@@ -769,12 +781,14 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 			baselineCount, hasBaseline = 0, true
 		}
 		rose := hasBaseline && count > baselineCount
+		var tolerated []ToleratedStatement
 		if rose {
 			// A count-only rise still needs a file:line an author can act
 			// on (review item B2): every currently-uncovered block in this
 			// package that the baseline did not already record as
 			// uncovered is one of the statements behind the rise.
 			base := baselineBlocks[pkg]
+			var newlyUncovered []CoverageBlock
 			for _, block := range blocksByPackage[pkg] {
 				relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
 				if base[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] {
@@ -784,12 +798,27 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 					continue
 				}
 				if isChangedPkg {
-					report(pkg, relativeFile, block.StartLine, ReasonNewlyUncoveredAtBase)
+					newlyUncovered = append(newlyUncovered, block)
 				} else {
 					warnings = append(warnings, RatchetWarning{Package: pkg, File: relativeFile, Line: block.StartLine, Reason: ReasonNewlyUncoveredAtBase})
 				}
 			}
+			tolerance, configured := tolerances[pkg]
+			tolerated = toleratedStatements(tolerance, configured, count, baselineCount, newlyUncovered, changed, modulePath)
+			if tolerated != nil {
+				rose = false
+			} else {
+				for _, block := range newlyUncovered {
+					report(pkg, strings.TrimPrefix(block.File, modulePath+"/"), block.StartLine, ReasonNewlyUncoveredAtBase)
+				}
+			}
 		}
+		sort.Slice(tolerated, func(i, j int) bool {
+			if tolerated[i].File != tolerated[j].File {
+				return tolerated[i].File < tolerated[j].File
+			}
+			return tolerated[i].Line < tolerated[j].Line
+		})
 		findings := append([]RatchetFinding(nil), findingsByPackage[pkg]...)
 		sort.Slice(findings, func(i, j int) bool {
 			if findings[i].File != findings[j].File {
@@ -797,7 +826,13 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 			}
 			return findings[i].Line < findings[j].Line
 		})
+		toleranceUsed := 0
+		if tolerated != nil {
+			toleranceUsed = tolerances[pkg].Statements
+		}
 		results = append(results, PackageRatchet{
+			Tolerance:             toleranceUsed,
+			Tolerated:             tolerated,
 			Package:               pkg,
 			Uncovered:             count,
 			BaselineUncovered:     baselineCount,

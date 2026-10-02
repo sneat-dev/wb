@@ -1,0 +1,28 @@
+version: 1
+
+# Timing tolerance for the per-change coverage ratchet (`wb coverage --changed`).
+#
+# STOPGAP (founder, 2026-10-02: "Give rachet a tolerance for them for now").
+# A few branches are executed or not depending on which goroutine or timer
+# wins, so the same commit measures a different uncovered count from one run
+# to the next and pull requests that never touched those lines failed at
+# random. Each entry below must be deleted once its branches are made
+# deterministic under test; the aim is an empty list, not a longer one.
+#
+# For a listed package that a change touches, the count rule passes while the
+# uncovered count is at most the merge-base count plus `statements`, and only
+# if every newly uncovered statement sits on a line the change did not add or
+# modify and together they hold at most `statements` statements. Anything
+# beyond that fails and names every statement. A statement the change adds or
+# modifies must still be covered, and every package not listed here keeps the
+# strict rule. Every use prints a WARNING and is recorded in the JSON report.
+#
+# This file is read from the checkout being judged (the pull request's head),
+# never from the merge base. `statements` is 1 to 5; `reason` is required.
+timing_tolerance:
+  - package: internal/orchestrate
+    statements: 2
+    reason: >-
+      timing-dependent branches not yet deterministic under test, for example
+      ciwait.go:458 (the context.DeadlineExceeded branch of the wait loop) and
+      worktree_merge.go:4168 (the fall-through after a validation-cache miss)

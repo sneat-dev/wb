@@ -72,6 +72,15 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return fmt.Errorf("--changed requires exactly one Go module at %s: %w", repoPath, err)
 	}
 
+	// The timing tolerance is read from repoPath, the checkout being judged,
+	// and before anything is measured: a malformed policy must not cost a
+	// full coverage run to discover. The merge-base checkout's copy is never
+	// consulted, so a change that adds or tightens an entry is judged by it.
+	tolerances, err := quality.LoadRatchetTolerances(repoPath)
+	if err != nil {
+		return err
+	}
+
 	mergeBase, err := quality.GitMergeBase(ctx, repoPath, options.target)
 	if err != nil {
 		return err
@@ -182,7 +191,8 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 
 	warnRedBase(cmd.ErrOrStderr(), baseline.RedBase)
 
-	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath, changedOwners)
+	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath, tolerances, changedOwners)
+	warnToleratedCoverage(cmd.ErrOrStderr(), results)
 
 	report := changedCoverageReport{
 		MergeBase:    mergeBase,
@@ -293,6 +303,22 @@ func warnRedBase(stderr io.Writer, redBase *quality.RedBaseline) {
 	_, _ = fmt.Fprintln(stderr, "  The baseline uses the coverage those test runs still wrote, so the uncovered counts of their packages are an upper bound and the count-rise check is looser for them. Changed statements are still held to full coverage.")
 }
 
+// warnToleratedCoverage reports every package that passed only because of
+// its configured timing tolerance (.wb/coverage-ratchet.yaml). The tolerance
+// is a stopgap, so each use is said out loud; a run that needed none prints
+// nothing.
+func warnToleratedCoverage(stderr io.Writer, results []quality.PackageRatchet) {
+	for _, result := range results {
+		if len(result.Tolerated) == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintf(stderr, "WARNING: coverage ratchet tolerance used for %s: uncovered count %d is above baseline %d, within the configured tolerance of %d statement(s). Reason: %s\n", result.Package, result.Uncovered, result.BaselineUncovered, result.Tolerance, result.Tolerated[0].Reason)
+		for _, statement := range result.Tolerated {
+			_, _ = fmt.Fprintf(stderr, "  tolerated: %s:%d: %s\n", statement.File, statement.Line, quality.ReasonNewlyUncoveredAtBase)
+		}
+	}
+}
+
 func changedCoverageRatchetError(results []quality.PackageRatchet) error {
 	var failing []string
 	for _, result := range results {
@@ -373,6 +399,9 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		_, _ = fmt.Fprintf(out, "  %s %s: uncovered %d (%s)\n", status, result.Package, result.Uncovered, baselineText)
 		for _, finding := range result.NewlyUncoveredChanged {
 			_, _ = fmt.Fprintf(out, "    %s:%d: %s\n", finding.File, finding.Line, finding.Reason)
+		}
+		for _, statement := range result.Tolerated {
+			_, _ = fmt.Fprintf(out, "    TOLERATED (tolerance %d) %s:%d: %s\n", result.Tolerance, statement.File, statement.Line, statement.Reason)
 		}
 	}
 	for _, warning := range report.Warnings {

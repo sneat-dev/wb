@@ -1906,7 +1906,8 @@
                 "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
                 "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications.",
                 "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line.",
-                "--changed still measures a merge base whose own tests fail, from the profile those test runs wrote, with a stderr warning and a red_base field in the JSON report; a base that fails to build, times out, or produces no profile still fails the command."
+                "--changed still measures a merge base whose own tests fail, from the profile those test runs wrote, with a stderr warning and a red_base field in the JSON report; a base that fails to build, times out, or produces no profile still fails the command.",
+                "--changed reads .wb/coverage-ratchet.yaml from the checkout being judged: a listed package may exceed its baseline by at most the configured 1-5 timing-dependent statements, only on lines the change did not add or modify, with a stderr WARNING and tolerance/tolerated fields in the JSON report; changed statements and unlisted packages stay strict."
               ]
             }
           ],

@@ -86,6 +86,10 @@ public WB repository as a fleet tracker or mirror upstream issues.
   CI invokes `wb coverage --changed --affected-packages --target <base>`:
   changed statements require 100% coverage, and a changed package's uncovered
   statement count must never rise. Unchanged packages only warn on a rise.
+  As a stopgap, `.wb/coverage-ratchet.yaml` (read from the head checkout)
+  lets a listed package exceed its baseline by a few timing-dependent
+  statements on lines the change did not touch; each use prints a `WARNING`.
+  Remove an entry once its branches are deterministic; never raise one to fit.
   Base and head measure the same logical changed-package and reverse-dependent
   selection, including test imports and all production/test embedding consumers.
   Shared inputs and differing default/native package membership select the
