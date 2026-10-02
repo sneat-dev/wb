@@ -1,3 +1,5 @@
+//go:build e2e
+
 package main
 
 import (
@@ -41,7 +43,7 @@ func Add(a, b int) int {
 }
 `
 
-func TestCoverageChangedPackagesOnlyMeasuresTheTouchedPackageAndSaysWhatItSkipped(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyMeasuresTheTouchedPackageAndSaysWhatItSkipped(t *testing.T) {
 	t.Parallel()
 	repo, baseSHA := changedPackagesOnlyFixture(t)
 	repo.writeFile("app.go", changedPackagesOnlyMovedSource)
@@ -62,7 +64,7 @@ func TestCoverageChangedPackagesOnlyMeasuresTheTouchedPackageAndSaysWhatItSkippe
 	}
 }
 
-func TestCoverageChangedPackagesOnlyStillFailsAnUncoveredAddedStatement(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyStillFailsAnUncoveredAddedStatement(t *testing.T) {
 	t.Parallel()
 	repo, baseSHA := changedPackagesOnlyFixture(t)
 	repo.writeFile("app.go", ratchetFixtureBaseSource+"\nfunc NewlyAdded(a, b int) int {\n\treturn a * b\n}\n")
@@ -81,7 +83,7 @@ func TestCoverageChangedPackagesOnlyStillFailsAnUncoveredAddedStatement(t *testi
 // A package the change adds has no directory at the merge base; its baseline
 // is measured over the packages that existed there and the new one counts as
 // a baseline of zero.
-func TestCoverageChangedPackagesOnlyMeasuresAPackageTheChangeAdds(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyMeasuresAPackageTheChangeAdds(t *testing.T) {
 	t.Parallel()
 	repo, baseSHA := changedPackagesOnlyFixture(t)
 	repo.writeFile("fresh/fresh.go", "package fresh\n\nfunc Untested() int { return 2 }\n")
@@ -97,7 +99,7 @@ func TestCoverageChangedPackagesOnlyMeasuresAPackageTheChangeAdds(t *testing.T) 
 	}
 }
 
-func TestCoverageChangedPackagesOnlyWithNoGoPackageChangedMeasuresNothingAndSaysSo(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyWithNoGoPackageChangedMeasuresNothingAndSaysSo(t *testing.T) {
 	t.Parallel()
 	repo, baseSHA := changedPackagesOnlyFixture(t)
 	repo.writeFile("README.md", "docs only\n")
@@ -123,7 +125,7 @@ func TestCoverageChangedPackagesOnlyWithNoGoPackageChangedMeasuresNothingAndSays
 	}
 }
 
-func TestCoverageChangedPackagesOnlyWithNoGoPackageChangedSaysSoInText(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyWithNoGoPackageChangedSaysSoInText(t *testing.T) {
 	t.Parallel()
 	repo, baseSHA := changedPackagesOnlyFixture(t)
 	repo.writeFile("README.md", "docs only\n")
@@ -136,7 +138,7 @@ func TestCoverageChangedPackagesOnlyWithNoGoPackageChangedSaysSoInText(t *testin
 	}
 }
 
-func TestCoverageRejectsChangedPackagesOnlyWithoutChanged(t *testing.T) {
+func TestE2ECoverageRejectsChangedPackagesOnlyWithoutChanged(t *testing.T) {
 	t.Parallel()
 	repo := newRatchetFixtureRepo(t)
 	repo.writeFile("app.go", ratchetFixtureBaseSource)
@@ -149,7 +151,7 @@ func TestCoverageRejectsChangedPackagesOnlyWithoutChanged(t *testing.T) {
 	}
 }
 
-func TestCoverageChangedPackagesOnlyFailsClosedWhenTheTargetIsUnknown(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyFailsClosedWhenTheTargetIsUnknown(t *testing.T) {
 	t.Parallel()
 	repo := newRatchetFixtureRepo(t)
 	repo.writeFile("app.go", ratchetFixtureBaseSource)
@@ -166,7 +168,7 @@ func TestCoverageChangedPackagesOnlyFailsClosedWhenTheTargetIsUnknown(t *testing
 // forwards every other invocation, so everything before that step succeeds.
 //
 //nolint:paralleltest // t.Setenv puts a git shim on the shared process PATH
-func TestCoverageChangedPackagesOnlyFailsClosedWhenTheChangedPackagesCannotBeResolved(t *testing.T) {
+func TestE2ECoverageChangedPackagesOnlyFailsClosedWhenTheChangedPackagesCannotBeResolved(t *testing.T) {
 	repo, baseSHA := changedPackagesOnlyFixture(t)
 	repo.writeFile("app.go", changedPackagesOnlyMovedSource)
 	repo.commitAll("move Uncovered above Add")

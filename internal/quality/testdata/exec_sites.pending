@@ -47,7 +47,6 @@ internal/locallink/guard.go	2	task-15
 internal/migrate/campaign.go	1	task-15
 internal/npmrelease/release.go	1	task-15
 internal/quality/changed_packages.go	2	task-15
-internal/quality/deadcode.go	1	task-15
 internal/quality/ratchet.go	6	task-15
 internal/recipe/command.go	1	task-15
 internal/remotessh/remotessh.go	1	task-8

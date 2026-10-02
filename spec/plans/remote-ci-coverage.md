@@ -216,7 +216,7 @@ Uploaded under artifact name `wb-coverage-summary`:
 - fleet-quality#ac:complete-conventional-verification — verified by existing verification test suite
 - fleet-quality#ac:exact-graduation-receipt — verified by existing graduation receipt test suite
 - fleet-quality#ac:fleet-metrics-web-dashboard — verified by fleet-metrics-web plan
-- fleet-quality#ac:changed-coverage-local-scope — verified by TestCoverageChangedPackagesOnlyMeasuresTheTouchedPackageAndSaysWhatItSkipped
+- fleet-quality#ac:changed-coverage-local-scope — verified by TestE2ECoverageChangedPackagesOnlyMeasuresTheTouchedPackageAndSaysWhatItSkipped
 - fleet-quality#ac:deadcode-same-verdict-on-every-host — verified by TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform
 
 ---

@@ -2,36 +2,29 @@ package quality
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
-
-// platformAnalyzer is a shell analyzer that reports a different dead set per
-// GOOS, the way the real analyzer does when a file is built for one platform.
-func platformAnalyzer(t *testing.T, bodyByPlatform map[string]string) []string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("shell analyzer fixture requires POSIX")
-	}
-	var script strings.Builder
-	script.WriteString("#!/bin/sh\ncase \"$GOOS/$GOARCH/$CGO_ENABLED\" in\n")
-	for platform, body := range bodyByPlatform {
-		script.WriteString(platform + "/amd64/0) cat <<'EOF'\n" + body + "\nEOF\n;;\n")
-	}
-	script.WriteString("*) echo \"unexpected environment $GOOS/$GOARCH/$CGO_ENABLED\" >&2; exit 2;;\nesac\n")
-	path := filepath.Join(t.TempDir(), "platform-analyzer")
-	if err := testenv.WriteExecutableFile(path, []byte(script.String()), 0o755); err != nil { // #nosec G306 -- test fixture.
-		t.Fatal(err)
-	}
-	return []string{path}
-}
 
 func deadFunctionJSON(pkg, name string) string {
 	return `{"Name":"p","Path":"` + pkg + `","Funcs":[{"Name":"` + name + `","Position":{"File":"f.go","Line":1,"Col":1}}]}`
+}
+
+// expectPlatformRun scripts the analyzer's answer for one GOOS, and checks the
+// call carried the fixed analysis environment.
+func expectPlatformRun(fake *runnertest.Fake, program, platform, stdout string) {
+	fake.Expect(func(call runnertest.Call) bool {
+		return call.Name == program && slices.Contains(call.Opts.Env, "GOOS="+platform) &&
+			slices.Contains(call.Opts.Env, "GOARCH=amd64") && slices.Contains(call.Opts.Env, "CGO_ENABLED=0") &&
+			slices.Equal(call.Args, []string{"-json", "./..."})
+	}, runner.Result{Stdout: stdout}, nil)
 }
 
 // TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform proves the verdict no
@@ -40,10 +33,14 @@ func deadFunctionJSON(pkg, name string) string {
 func TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform(t *testing.T) {
 	t.Parallel()
 	shared := deadFunctionJSON("example.com/m/shared", "Dead")
-	linuxOnlyCaller := deadFunctionJSON("example.com/m/procfs", "Read")
+	darwinOnly := deadFunctionJSON("example.com/m/procfs", "Read")
+	fake := runnertest.New(t)
+	expectPlatformRun(fake, "analyzer", "linux", "["+shared+"]")
+	expectPlatformRun(fake, "analyzer", "darwin", "["+shared+","+darwinOnly+"]")
+	expectPlatformRun(fake, "analyzer", "windows", "["+shared+"]")
+
 	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
-		Tool:      platformAnalyzer(t, map[string]string{"linux": "[" + shared + "]", "darwin": "[" + shared + "," + linuxOnlyCaller + "]", "windows": "[" + shared + "]"}),
-		Platforms: []string{"linux", "darwin", "windows"},
+		Tool: []string{"analyzer"}, Platforms: []string{"linux", "darwin", "windows"}, Runner: fake,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,17 +59,18 @@ func TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform(t *testing.T) {
 func TestDeadcodeReportsDuplicateIdentityOnceAndKeepsNothingWhenPlatformsDisagree(t *testing.T) {
 	t.Parallel()
 	dead := deadFunctionJSON("example.com/m/a", "F")
-	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
-		Tool:      platformAnalyzer(t, map[string]string{"linux": "[" + dead + "," + dead + "]", "darwin": "[" + dead + "]"}),
-		Platforms: []string{"linux", "darwin"},
-	})
+	fake := runnertest.New(t)
+	expectPlatformRun(fake, "analyzer", "linux", "["+dead+","+dead+"]")
+	expectPlatformRun(fake, "analyzer", "darwin", "["+dead+"]")
+	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{Tool: []string{"analyzer"}, Platforms: []string{"linux", "darwin"}, Runner: fake})
 	if err != nil || len(report.Findings) != 1 {
 		t.Fatalf("duplicate identity = %#v, %v; want one finding", report.Findings, err)
 	}
-	report, err = Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
-		Tool:      platformAnalyzer(t, map[string]string{"linux": "[" + dead + "]", "darwin": "[" + deadFunctionJSON("example.com/m/b", "G") + "]"}),
-		Platforms: []string{"linux", "darwin"},
-	})
+
+	fake = runnertest.New(t)
+	expectPlatformRun(fake, "analyzer", "linux", "["+dead+"]")
+	expectPlatformRun(fake, "analyzer", "darwin", "["+deadFunctionJSON("example.com/m/b", "G")+"]")
+	report, err = Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{Tool: []string{"analyzer"}, Platforms: []string{"linux", "darwin"}, Runner: fake})
 	if err != nil || len(report.Findings) != 0 {
 		t.Fatalf("disjoint platforms = %#v, %v; want no findings", report.Findings, err)
 	}
@@ -82,65 +80,79 @@ func TestDeadcodeReportsDuplicateIdentityOnceAndKeepsNothingWhenPlatformsDisagre
 // failed gate instead of a silently smaller intersection.
 func TestDeadcodeNamesThePlatformWhoseAnalysisFailed(t *testing.T) {
 	t.Parallel()
-	_, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
-		Tool:      platformAnalyzer(t, map[string]string{"linux": "[]"}),
-		Platforms: []string{"linux", "plan9"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "platform plan9") || !strings.Contains(err.Error(), "unexpected environment plan9/amd64/0") {
+	fake := runnertest.New(t)
+	expectPlatformRun(fake, "analyzer", "linux", "[]")
+	fake.Expect(func(call runnertest.Call) bool { return slices.Contains(call.Opts.Env, "GOOS=plan9") },
+		runner.Result{Stderr: "build constraints exclude every file"}, errors.New("exit status 1"))
+	_, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{Tool: []string{"analyzer"}, Platforms: []string{"linux", "plan9"}, Runner: fake})
+	if err == nil || !strings.Contains(err.Error(), "platform plan9") || !strings.Contains(err.Error(), "build constraints exclude every file") {
 		t.Fatalf("error = %v, want it to name platform plan9 and the analyzer's complaint", err)
 	}
 }
 
-// stubGoInstaller writes a fake `go` that implements only `go install`: it
-// checks the host pinning and writes the analyzer binary to GOBIN.
-func stubGoInstaller(t *testing.T, analyzerJSON string, installExit int) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("shell go fixture requires POSIX")
-	}
-	script := "#!/bin/sh\n" +
-		"[ \"$1\" = install ] || { echo \"unexpected go subcommand $1\" >&2; exit 2; }\n" +
-		"[ \"$2\" = golang.org/x/tools/cmd/deadcode@v0.50.0 ] || { echo \"unexpected package $2\" >&2; exit 2; }\n" +
-		"[ \"$GOOS\" = \"" + runtime.GOOS + "\" ] || { echo \"install not pinned to the host: $GOOS\" >&2; exit 2; }\n" +
-		"[ -n \"$GOBIN\" ] || { echo missing GOBIN >&2; exit 2; }\n" +
-		"[ " + itoaTest(installExit) + " -eq 0 ] || { echo 'install failed' >&2; exit " + itoaTest(installExit) + "; }\n" +
-		"printf '#!/bin/sh\\ncat <<'\"'\"'EOF'\"'\"'\\n%s\\nEOF\\n' '" + analyzerJSON + "' > \"$GOBIN/deadcode\"\n" +
-		"chmod +x \"$GOBIN/deadcode\"\n"
-	path := filepath.Join(t.TempDir(), "go")
-	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil { // #nosec G306 -- test fixture.
-		t.Fatal(err)
-	}
-	return path
+func isGoInstall(call runnertest.Call) bool {
+	return call.Name == "go" && slices.Equal(call.Args, []string{"install", "golang.org/x/tools/cmd/deadcode@v0.50.0"})
 }
 
-// TestDeadcodeInstallsThePinnedAnalyzerOnceAndRunsItPerDefaultPlatform covers
-// the production path: no Tool override means the pinned analyzer is installed
-// for the host and run for linux, darwin and windows.
-func TestDeadcodeInstallsThePinnedAnalyzerOnceAndRunsItPerDefaultPlatform(t *testing.T) {
+// TestDeadcodeInstallsThePinnedAnalyzerForTheHostThenRunsItPerDefaultPlatform
+// covers the production path: no Tool override means the pinned analyzer is
+// installed for the host (never for the analysis platform) and the installed
+// binary runs for linux, darwin and windows.
+func TestDeadcodeInstallsThePinnedAnalyzerForTheHostThenRunsItPerDefaultPlatform(t *testing.T) {
 	t.Parallel()
-	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{
-		GoCommand: stubGoInstaller(t, "[]", 0),
-	})
+	fake := runnertest.New(t)
+	fake.Expect(func(call runnertest.Call) bool {
+		return isGoInstall(call) && slices.Contains(call.Opts.Env, "GOOS="+runtime.GOOS) && slices.Contains(call.Opts.Env, "GOARCH="+runtime.GOARCH) &&
+			slices.ContainsFunc(call.Opts.Env, func(entry string) bool { return strings.HasPrefix(entry, "GOBIN=") }) && call.Opts.CaptureCombined
+	}, runner.Result{}, nil)
+	for _, platform := range DefaultDeadcodePlatforms {
+		fake.Expect(func(call runnertest.Call) bool {
+			return strings.HasPrefix(filepath.Base(call.Name), "deadcode") && slices.Contains(call.Opts.Env, "GOOS="+platform)
+		}, runner.Result{Stdout: "[]"}, nil)
+	}
+	report, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{Runner: fake})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := strings.Join(report.Platforms, ","), strings.Join(DefaultDeadcodePlatforms, ","); got != want {
 		t.Fatalf("platforms = %q, want %q", got, want)
 	}
+	if got := fake.CallCount(); got != 1+len(DefaultDeadcodePlatforms) {
+		t.Fatalf("calls = %d, want one install plus one analysis per platform", got)
+	}
 }
 
 func TestDeadcodeFailsWhenTheAnalyzerCannotBeInstalled(t *testing.T) {
 	t.Parallel()
-	_, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{GoCommand: stubGoInstaller(t, "[]", 3)})
-	if err == nil || !strings.Contains(err.Error(), "install deadcode analyzer") || !strings.Contains(err.Error(), "install failed") {
-		t.Fatalf("error = %v, want the install failure with the tool's output", err)
+	for name, result := range map[string]runner.Result{
+		"combined output": {CombinedOutput: "module lookup failed\n"},
+		"split streams":   {Stdout: "module ", Stderr: "lookup failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := runnertest.New(t)
+			fake.Expect(isGoInstall, result, errors.New("exit status 1"))
+			_, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{Runner: fake})
+			if err == nil || !strings.Contains(err.Error(), "install deadcode analyzer") || !strings.Contains(err.Error(), "lookup failed") {
+				t.Fatalf("error = %v, want the install failure with the tool's output", err)
+			}
+		})
+	}
+}
+
+func TestDeadcodeUsesTheNamedGoCommandToInstall(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	fake.Expect(func(call runnertest.Call) bool { return call.Name == "/opt/go/bin/go" && call.Args[0] == "install" }, runner.Result{}, errors.New("stop here"))
+	if _, err := Deadcode(context.Background(), t.TempDir(), DeadcodeOptions{Runner: fake, GoCommand: "/opt/go/bin/go"}); err == nil {
+		t.Fatal("want the scripted install failure")
 	}
 }
 
 func TestInstallDeadcodeToolReportsAnUnusableInstallDirectory(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing")
-	_, _, err := installDeadcodeTool(context.Background(), t.TempDir(), "", missing)
+	_, _, err := installDeadcodeTool(context.Background(), runnertest.New(t), t.TempDir(), "", missing)
 	if err == nil || !strings.Contains(err.Error(), "create deadcode analyzer directory") {
 		t.Fatalf("error = %v, want the install directory failure", err)
 	}

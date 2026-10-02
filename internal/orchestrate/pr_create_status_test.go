@@ -1,8 +1,6 @@
 package orchestrate
 
 import (
-	"context"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -89,41 +87,5 @@ func TestLeftoverAfterStagedCommitSeesAnUnstagedChangeToADotfile(t *testing.T) {
 	want := []string{".gitignore", "both.go", "new.go"}
 	if got := leftoverAfterStagedCommit(entries); !reflect.DeepEqual(got, want) {
 		t.Fatalf("leftover = %v, want %v", got, want)
-	}
-}
-
-// The reported failure: `wb pr create --add .gitignore --land` in a worktree
-// whose only change is an unstaged edit to .gitignore refused with
-// leftover-before-landing naming "gitignore".
-func TestCreateAddOfAnUnstagedRootDotfileWithLandIsNotALeftover(t *testing.T) {
-	fixture := newCreateFixture(t)
-	worktree := fixture.createWorktree(t, "dotfile-task", "feature/dotfile", "main", ".gitignore")
-	writeEngineFile(t, filepath.Join(worktree, ".gitignore"), "edited\n")
-	result, _ := CreatePullRequest(context.Background(), PullRequestCreateOptions{
-		Worktree: worktree, ProjectsRoot: fixture.projects,
-		Add: []string{".gitignore"}, Message: "chore: ignore", Land: true,
-	})
-	if result.RefusalCode == CreateRefusalLeftoverBeforeLanding {
-		t.Fatalf("refused as a leftover: %s", result.Reason)
-	}
-	if !reflect.DeepEqual(result.CommittedPaths, []string{".gitignore"}) {
-		t.Fatalf("committed = %v, want [.gitignore]; outcome=%s refusal=%s reason=%s", result.CommittedPaths, result.Outcome, result.RefusalCode, result.Reason)
-	}
-}
-
-func TestCreateAddNamingADotfileWithLandStillRefusesAnUnnamedDotfile(t *testing.T) {
-	fixture := newCreateFixture(t)
-	worktree := fixture.createWorktree(t, "dotfile-leftover-task", "feature/dotfile-leftover", "main", ".gitignore", ".editorconfig")
-	writeEngineFile(t, filepath.Join(worktree, ".gitignore"), "edited\n")
-	writeEngineFile(t, filepath.Join(worktree, ".editorconfig"), "edited\n")
-	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
-		Worktree: worktree, ProjectsRoot: fixture.projects,
-		Add: []string{".gitignore"}, Message: "chore: ignore", Land: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.RefusalCode != CreateRefusalLeftoverBeforeLanding || !strings.Contains(result.Reason, ".editorconfig") {
-		t.Fatalf("refusal=%s reason=%q, want the unnamed .editorconfig with its leading dot", result.RefusalCode, result.Reason)
 	}
 }

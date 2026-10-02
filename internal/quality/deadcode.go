@@ -41,12 +41,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // DefaultDeadcodeBaseline is the repository-relative baseline path. It sits
@@ -92,6 +93,8 @@ type DeadcodeOptions struct {
 	// ToolDirectory is the parent directory the analyzer is installed under;
 	// empty means the operating system's temporary directory.
 	ToolDirectory string
+	// Runner starts the analyzer and the go tool; nil uses the real runner.
+	Runner runner.Runner
 	// GoCommand is the go tool used to install the pinned analyzer; empty
 	// means "go".
 	GoCommand string
@@ -164,6 +167,10 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
+	run := options.Runner
+	if run == nil {
+		run = runner.New()
+	}
 	runContext := ctx
 	if options.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -174,7 +181,7 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 	tool := options.Tool
 	platforms := options.Platforms
 	if len(tool) == 0 {
-		binary, cleanup, err := installDeadcodeTool(runContext, repositoryPath, options.GoCommand, options.ToolDirectory)
+		binary, cleanup, err := installDeadcodeTool(runContext, run, repositoryPath, options.GoCommand, options.ToolDirectory)
 		if err != nil {
 			return DeadcodeReport{}, err
 		}
@@ -198,7 +205,7 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 	var findings []DeadcodeFinding
 	if len(platforms) == 0 {
 		var err error
-		findings, err = runDeadcodeAnalyzer(runContext, repositoryPath, tool[0], arguments, nil)
+		findings, err = runDeadcodeAnalyzer(runContext, run, repositoryPath, tool[0], arguments, nil)
 		if err != nil {
 			return DeadcodeReport{}, err
 		}
@@ -207,7 +214,7 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 		for _, platform := range platforms {
 			// Sequential on purpose: each analysis type-checks the whole
 			// module, and running them together would multiply the peak load.
-			found, err := runDeadcodeAnalyzer(runContext, repositoryPath, tool[0], arguments, deadcodePlatformEnv(platform))
+			found, err := runDeadcodeAnalyzer(runContext, run, repositoryPath, tool[0], arguments, deadcodePlatformEnv(platform))
 			if err != nil {
 				return DeadcodeReport{}, fmt.Errorf("platform %s: %w", platform, err)
 			}
@@ -350,29 +357,26 @@ func deadcodePlatformEnv(platform string) []string {
 
 // runDeadcodeAnalyzer runs the analyzer once and parses its findings. extraEnv
 // is appended to the process environment, so its entries win.
-func runDeadcodeAnalyzer(ctx context.Context, repositoryPath, program string, arguments, extraEnv []string) ([]DeadcodeFinding, error) {
-	command := exec.CommandContext(ctx, program, arguments...)
-	command.Dir = repositoryPath
+func runDeadcodeAnalyzer(ctx context.Context, run runner.Runner, repositoryPath, program string, arguments, extraEnv []string) ([]DeadcodeFinding, error) {
+	var options runner.RunOptions
 	if len(extraEnv) > 0 {
-		command.Env = append(os.Environ(), extraEnv...)
+		options.Env = append(os.Environ(), extraEnv...)
 	}
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
+	result, err := run.RunOpts(ctx, repositoryPath, options, program, arguments...)
+	if err != nil {
 		// deadcode exits 0 even when it reports findings, so a non-zero exit
 		// is a real failure — a build error, a missing module, a timeout. It
 		// must fail the gate rather than be read as "nothing is dead".
-		detail := strings.TrimSpace(stderr.String())
+		detail := strings.TrimSpace(result.Stderr)
 		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
+			detail = strings.TrimSpace(result.Stdout)
 		}
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("deadcode analysis in %s: %w: %s", repositoryPath, ctx.Err(), detail)
 		}
 		return nil, fmt.Errorf("deadcode analysis in %s: %w: %s", repositoryPath, err, detail)
 	}
-	findings, err := parseDeadcodeOutput(stdout.Bytes())
+	findings, err := parseDeadcodeOutput([]byte(result.Stdout))
 	if err != nil {
 		return nil, fmt.Errorf("deadcode analysis in %s: %w", repositoryPath, err)
 	}
@@ -406,7 +410,7 @@ func intersectDeadcodeFindings(perPlatform [][]DeadcodeFinding) []DeadcodeFindin
 // temporary directory and returns the binary and a cleanup. GOOS and GOARCH
 // are pinned to the host so an ambient cross-compilation setting cannot
 // produce a binary this machine cannot execute.
-func installDeadcodeTool(ctx context.Context, repositoryPath, goCommand, parent string) (string, func(), error) {
+func installDeadcodeTool(ctx context.Context, run runner.Runner, repositoryPath, goCommand, parent string) (string, func(), error) {
 	if goCommand == "" {
 		goCommand = "go"
 	}
@@ -415,12 +419,15 @@ func installDeadcodeTool(ctx context.Context, repositoryPath, goCommand, parent 
 		return "", nil, fmt.Errorf("create deadcode analyzer directory: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(directory) }
-	command := exec.CommandContext(ctx, goCommand, "install", deadcodeToolPackage)
-	command.Dir = repositoryPath
-	command.Env = append(os.Environ(), "GOBIN="+directory, "GOOS="+runtime.GOOS, "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0", "GOFLAGS=")
-	if output, err := command.CombinedOutput(); err != nil {
+	env := append(os.Environ(), "GOBIN="+directory, "GOOS="+runtime.GOOS, "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0", "GOFLAGS=")
+	result, err := run.RunOpts(ctx, repositoryPath, runner.RunOptions{Env: env, CaptureCombined: true}, goCommand, "install", deadcodeToolPackage)
+	if err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("install deadcode analyzer %s: %w: %s", deadcodeToolPackage, err, strings.TrimSpace(string(output)))
+		output := result.CombinedOutput
+		if output == "" {
+			output = result.Stdout + result.Stderr
+		}
+		return "", nil, fmt.Errorf("install deadcode analyzer %s: %w: %s", deadcodeToolPackage, err, strings.TrimSpace(output))
 	}
 	return filepath.Join(directory, deadcodeBinaryName(runtime.GOOS)), cleanup, nil
 }
