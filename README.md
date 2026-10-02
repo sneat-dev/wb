@@ -2341,7 +2341,9 @@ whose output is piped into another command (`wb worktree create … 2>&1 | tail
 verb's refusal exits 0 and the `&&` chain runs on; on 2026-10-02 that opened a
 duplicate pull request. The remedy is `--quiet` on the verb (outcome and
 refusals only, no progress) instead of a pipe, or `set -o pipefail` earlier in
-the same command. Read-only verbs, a verb that ends its pipeline
+the same shell (reading `PIPESTATUS` afterwards does not count, and neither
+does a pipefail that a `bash -c` payload, a closed subshell or an `&&` branch
+would not carry). Read-only verbs, a verb that ends its pipeline
 (`printf … | wb worktree create … --original-prompt-file -`), and other
 programs are not affected, and there is no override.
 

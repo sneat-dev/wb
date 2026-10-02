@@ -50,8 +50,10 @@ refused verb prints), the same exit code, and the same `--format json` document.
 It suppresses the stderr commentary that is not an outcome: live progress and
 heartbeat lines, remote-claim success notes (`acquired`, `refreshed`,
 `released`), per-candidate inspection progress, informational `info:` lines, and
-the `suggestion:` courtesy line. Warnings, errors, and the remote-claim note
-that a claim is held by someone else are never suppressed.
+the `suggestion:` courtesy line. Warnings, errors, the remote-claim note
+that a claim is held by someone else, and the `info: cleanup …` line of an
+artifact a run actually changed (`applied=true`, the only line that says a
+mutation was applied) are never suppressed.
 
 `--quiet` is distinct from `--non-interactive`: `--non-interactive` removes
 terminal-only UI, and a non-terminal agent still receives newline-delimited
@@ -62,18 +64,54 @@ progress so a long CI wait is visibly alive. `--quiet` removes that progress too
 `wb hooks agent pre-tool-use` refuses a Bash command in which a state-changing
 wb verb is not the last command of a pipeline (`|` or `|&`), because the
 pipeline then reports the status of the command after it. State-changing verbs
-are the lifecycle verbs above plus `pr update`, `worktree end`, and the
-`--apply` forms of the destructive maintenance verbs. Read-only verbs (`list`,
+are the lifecycle verbs above plus `pr update`, `worktree end`, `remote
+claim|release`, `session park|move`, `agent dispatch`, `deps bump`, `repo
+init-remote`, `sync`, `hooks install|repair`, `self-update`, and the `--apply`
+forms of the verbs that plan by default (the destructive maintenance verbs,
+`worktree adopt`, `branch quarantine`, `fleet merge-policy`, `migrate`).
+`internal/agentguard/pipeline.go` holds the table and a test checks every path in
+it against the real command tree. Read-only verbs (`list`,
 `status`, `commands`, `--help`, a dry-run cleanup) piped into `tail` or `grep`
 are allowed, as is a state-changing verb that is the last command of a pipeline
 (`printf … | wb worktree create … --original-prompt-file -`), where the
 pipeline's status is the verb's own.
 
-The command is allowed when it makes the status observable in the same command
-line: `set -o pipefail` (or `setopt pipefail`, or a `bash -o pipefail -c`
-wrapper) earlier in it, or a `PIPESTATUS`/`pipestatus` read. There is no other
-escape hatch and no environment override. The refusal explains the hazard in two
-lines and names the fix.
+The command is allowed when pipefail is in effect in the shell that runs the
+pipeline: `set -o pipefail` (or `setopt pipefail`) earlier in the same shell, or
+a `bash -o pipefail -c` wrapper. Reading `PIPESTATUS`/`pipestatus` is not
+accepted: by the time anything reads it the `&&` chain has already run on, and
+in zsh `${PIPESTATUS[0]}` is empty. Pipefail counts only when the hook can tell
+it is in effect where the pipeline runs, and otherwise the command is refused:
+
+- a `-c` payload of `bash`, `zsh`, `sh` and the like starts with pipefail off,
+  because a child shell does not inherit the parent's; only its own options
+  (`-o pipefail`) or its own body turn it on;
+- a `set -o pipefail` inside `( )`, `$( )` or a backtick substitution is gone
+  once that group closes, and one behind `&&`, `||`, a pipe or `then`, or in a
+  group that is, may not have run;
+- the last option wins (`set -o pipefail +o pipefail`, `setopt nopipefail`,
+  `NO_PIPE_FAIL`), and words after `--` are positional parameters;
+- a group whose output is piped (`{ cmd; } 2>&1 | tail`, `(cmd) | tail`) hides
+  the status of the group, so the pipefail in effect where the group opened
+  decides, and backtick and double-quoted `$( )` substitutions are read like
+  `$( )`;
+- a flag's value is never read as a marker: in `wb pr create --title --help` the
+  title is `--help`.
+
+There is no other escape hatch and no environment override. The refusal explains
+the hazard in two lines and names the fix: `--quiet` where the verb has it, or,
+for a `--format json` run feeding a parser, capture then parse
+(`x=$(wb … --format json) && jq … <<<"$x"`), or pipefail.
+
+### What the hook does not see through, by design
+
+The hook reads the command text and models no expansion. It does not see through
+`eval`, `script`, `unbuffer`, `$WB` or any other variable used as the command,
+shell function wrappers, `env -S`, `go run ./cmd/wb`, a renamed or copied binary,
+or a remote shell such as `ssh`. Those resolve to "allowed", like every other
+construct the agent guard cannot model. Gating read verbs (`wb run`, `wb ci
+wait`, `wb check`) are not in the verb table either: their status gates a
+follow-up step but they change nothing, so they stay maskable.
 
 ## Requirements
 
@@ -91,7 +129,8 @@ consuming verbs and no effect elsewhere.
 With `--quiet` the consuming verbs MUST keep their stdout outcome lines,
 refusal reason, refusal code, `resolve with:` line, exit code, warnings and
 errors, and `--format json` document unchanged, and MUST NOT write progress,
-heartbeat, remote-claim success, inspection-progress, `info:` or `suggestion:`
+heartbeat, remote-claim success, inspection-progress, `info:` (except the
+`info: cleanup …` line of an artifact with `applied=true`) or `suggestion:`
 lines.
 
 #### REQ: quiet-is-discoverable
@@ -104,8 +143,9 @@ lines.
 The agent pre-tool-use hook MUST deny a Bash command in which a state-changing
 wb verb (including through a path to the binary, an environment prefix, a
 subshell, a `bash -c` payload, a command substitution, or `2>&1 |` and `|&`) is
-followed by a pipe, unless the command enables pipefail or reads PIPESTATUS
-earlier or later in the same command line.
+followed by a pipe, unless pipefail is in effect in the shell that runs the
+pipeline, as the behavior section defines it. Reading PIPESTATUS MUST NOT make
+the command allowed.
 
 #### REQ: masked-pipeline-allows-everything-else
 
@@ -118,13 +158,15 @@ forms.
 
 The refusal MUST state in two lines that a pipeline reports only its last
 command's status and so a refusal from the verb is lost, and MUST name the fix:
-drop the pipe and use `--quiet` where the verb supports it.
+drop the pipe and use `--quiet` where the verb supports it, or, when the command
+asks for `--format json`, capture the output and parse it afterwards. It MUST
+NOT recommend reading PIPESTATUS.
 
 #### REQ: no-bypass-for-masked-pipeline
 
 No flag, environment variable, or marker comment MAY disable the masked-pipeline
-refusal; only enabling pipefail or reading PIPESTATUS in the command makes the
-status observable.
+refusal; only pipefail in effect where the pipeline runs makes the status
+observable.
 
 #### REQ: skills-name-the-pipe-trigger
 
@@ -161,8 +203,10 @@ returns each of them. **Verifies:** help and catalog tests in `cmd/wb`.
 **Requirements:** quiet-verbs-and-masked-status-guard#req:masked-pipeline-refused, quiet-verbs-and-masked-status-guard#req:masked-pipeline-refusal-text, quiet-verbs-and-masked-status-guard#req:no-bypass-for-masked-pipeline
 
 The exact 2026-10-02 command shape is denied with the two-line explanation and
-the `--quiet` fix. A command that sets pipefail or reads PIPESTATUS is allowed.
-**Verifies:** a table-driven `internal/agentguard` test.
+the `--quiet` fix. A command that sets pipefail in the shell that runs the
+pipeline is allowed; one that only reads PIPESTATUS, or whose pipefail is in a
+closed subshell, behind `&&`, switched off again or in another shell, is
+refused. **Verifies:** a table-driven `internal/agentguard` test.
 
 ### AC: hook-allows-every-non-masking-shape
 

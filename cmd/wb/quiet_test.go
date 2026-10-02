@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
+	"github.com/sneat-dev/wb/internal/agentguard"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -274,7 +276,10 @@ func TestWorktreeCleanupQuietKeepsOutcomeAndWarningsAndDropsCommentary(t *testin
 			{ListResult: worktrees.ListResult{Task: "fixture-task", Repository: "acme/app"}, Eligible: true, Applied: true},
 		},
 		Diagnostics: []worktrees.ListDiagnostic{{Task: "fixture-task", Path: "/p", Message: "unreadable manifest"}},
-		Artifacts:   []worktrees.LifecycleArtifact{{Kind: "lock", Path: "/p/lock", Disposition: "retired", Reason: "dead"}},
+		Artifacts: []worktrees.LifecycleArtifact{
+			{Kind: "lock", Path: "/p/lock", Disposition: "skipped", Reason: "dead"},
+			{Kind: "journal", Path: "/p/journal", Disposition: "retired", Eligible: true, Applied: true, Reason: "landed"},
+		},
 	}
 	for _, test := range []struct {
 		name  string
@@ -299,11 +304,16 @@ func TestWorktreeCleanupQuietKeepsOutcomeAndWarningsAndDropsCommentary(t *testin
 		if !strings.Contains(stderr.String(), "warning: cleanup skipped malformed candidate") {
 			t.Errorf("%s: the warning was dropped: %q", test.name, stderr.String())
 		}
-		commentary := []string{"info: cleanup WB internal", "remote claim: released"}
+		commentary := []string{"info: cleanup WB internal lock /p/lock", "remote claim: released"}
 		for _, line := range commentary {
 			if got := strings.Contains(stderr.String(), line); got == test.quiet {
 				t.Errorf("%s: stderr contains %q = %t, want %t:\n%s", test.name, line, got, !test.quiet, stderr.String())
 			}
+		}
+		// The applied line is the only one saying a mutation happened, so
+		// --quiet keeps it.
+		if applied := "info: cleanup WB internal journal /p/journal"; !strings.Contains(stderr.String(), applied) || !strings.Contains(stderr.String(), "applied=true") {
+			t.Errorf("%s: the applied=true line was dropped: %q", test.name, stderr.String())
 		}
 	}
 }
@@ -316,5 +326,54 @@ func TestPRCreateOffersNoClosesSuggestionUnderQuiet(t *testing.T) {
 		if got := suggestedClosesToPrint(inv, context.Background(), missing); got != nil {
 			t.Errorf("quiet = %t: suggestedClosesToPrint = %v for an unreadable worktree, want none", quiet, got)
 		}
+	}
+}
+
+// The masked-pipeline policy (internal/agentguard) steps over a value-taking
+// flag's value, so a word like `--help` after `--title` is read as the title
+// and not as a marker. The policy cannot see cobra, so this test is what keeps
+// its tables honest: every watched verb exists, and every flag of one that
+// takes a value is known to the policy.
+func TestEveryStatefulWBVerbIsAWBCommand(t *testing.T) {
+	t.Parallel()
+	root := newRootCmd()
+	for _, path := range agentguard.MaskedPipelineVerbPaths() {
+		command, _, err := root.Find(path)
+		if err != nil || command == root || strings.TrimPrefix(command.CommandPath(), "wb ") != strings.Join(path, " ") {
+			t.Errorf("the masked-pipeline policy watches %q, which is not a wb command", strings.Join(path, " "))
+		}
+	}
+}
+
+func TestEveryValueTakingFlagOfAWatchedVerbIsKnownToTheMaskedPipelinePolicy(t *testing.T) {
+	t.Parallel()
+	root := newRootCmd()
+	missing := map[string]bool{}
+	check := func(flag *pflag.Flag) {
+		if flag.Value.Type() == "bool" || flag.NoOptDefVal != "" {
+			return
+		}
+		if !agentguard.MaskedPipelineValueFlag("--" + flag.Name) {
+			missing["--"+flag.Name] = true
+		}
+		if flag.Shorthand != "" && !agentguard.MaskedPipelineValueFlag("-"+flag.Shorthand) {
+			missing["-"+flag.Shorthand] = true
+		}
+	}
+	for _, path := range agentguard.MaskedPipelineVerbPaths() {
+		command, _, err := root.Find(path)
+		if err != nil {
+			continue
+		}
+		command.LocalFlags().VisitAll(check)
+		command.InheritedFlags().VisitAll(check)
+	}
+	if len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for name := range missing {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		t.Errorf("add these value-taking flags to valueFlags in internal/agentguard/pipeline.go:\n%q", names)
 	}
 }

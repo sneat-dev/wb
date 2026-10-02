@@ -214,7 +214,8 @@ reason. `--apply` records which tasks an inclusion covered in its manifest;
   JSON mode. Structured command output remains on stdout while interactive
   progress uses stderr.
 - `--quiet` prints only the outcome and any refusal: no progress, heartbeat,
-  inspection-progress, remote-claim success, `info:` or `suggestion:` lines.
+  inspection-progress, remote-claim success, `info:` (bar the `applied=true`
+  cleanup line, which says a mutation happened) or `suggestion:` lines.
   Stdout outcome lines, refusal blocks (`refusal:`, `resolve with:`), warnings,
   errors, exit codes, and the `--format json` document are unchanged. It is
   consumed only by `create`, `worktree create`, `land`, `worktree land`,

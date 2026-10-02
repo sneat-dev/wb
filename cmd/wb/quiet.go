@@ -39,13 +39,21 @@ func suggestedClosesToPrint(inv *invocation, ctx context.Context, worktreeArg st
 }
 
 // quietArtifacts is the WB-internal artifact list `worktree cleanup` narrates
-// as `info:` lines on stderr. Under --quiet there are none: the same artifacts
-// stay in the --format json document.
+// as `info:` lines on stderr. Under --quiet only the artifacts a run actually
+// changed (applied=true) keep their line, because that line is the only one
+// that says a mutation was applied; every other artifact stays in the
+// --format json document only.
 func quietArtifacts(inv *invocation, artifacts []worktrees.LifecycleArtifact) []worktrees.LifecycleArtifact {
-	if inv.quiet {
-		return nil
+	if !inv.quiet {
+		return artifacts
 	}
-	return artifacts
+	var applied []worktrees.LifecycleArtifact
+	for _, artifact := range artifacts {
+		if artifact.Applied {
+			applied = append(applied, artifact)
+		}
+	}
+	return applied
 }
 
 // routineClaimNotes are the remote-claim notes that report success. A claim
