@@ -148,9 +148,6 @@ func ClassifyPushTier(updates []RefUpdate, defaultBranch string, lookup PRLookup
 		}
 	}
 	if best == tierIrrelevant {
-		if reason == "" {
-			reason = "every pushed ref carries no local verification requirement of its own"
-		}
 		return Classification{Tier: TierSkip, Reason: reason + "; skipping language validation"}
 	}
 	return Classification{Tier: best, Reason: reason}

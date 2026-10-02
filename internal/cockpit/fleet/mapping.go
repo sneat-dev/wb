@@ -584,12 +584,12 @@ type publishedMachine struct {
 // A published snapshot is another machine's data, as an export is, and is held
 // to the bounds an export is held to (the helpers are the export decoder's and
 // mapLive's own): a publish time before 2000 makes the snapshot unusable and
-// one in the future is taken as now, a last activity is never later than its
+// one more than 60 seconds in the future is observed at an unknown time (shown as stale, and sorted last by the machine cap), one less is taken as now, a last activity is never later than its
 // snapshot, a version that is not one is dropped, a pull request number is
 // within maxCount, and at most maxLiveRepositories, maxLiveWorktrees,
 // maxLivePullRequests and agentCap entries of one machine are kept, the rest
 // counted in its export_dropped (and agents_truncated). At most
-// maxCachedMachines machines are kept, the newest publications first.
+// maxCachedMachines machines are kept, the most recently observed first.
 func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, now time.Time) remoteView {
 	var view remoteView
 	var usable []remotestate.Snapshot
@@ -614,9 +614,13 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 		view.ownLogin = owners[0]
 	}
 	if len(usable) > maxCachedMachines {
+		// The cut sorts on the time each snapshot is observed at, never on the raw
+		// publish time: one that claims a time far ahead is of an unknown time and
+		// sorts last, so it cannot take a place from a snapshot that is real.
 		sort.SliceStable(usable, func(i, j int) bool {
-			if !usable[i].PublishedAt.Equal(usable[j].PublishedAt) {
-				return usable[i].PublishedAt.After(usable[j].PublishedAt)
+			ti, tj := snapshotObservedAt(usable[i].PublishedAt, now), snapshotObservedAt(usable[j].PublishedAt, now)
+			if !ti.Equal(tj) {
+				return ti.After(tj)
 			}
 			return usable[i].Key() < usable[j].Key()
 		})
@@ -625,7 +629,13 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 	for _, snapshot := range usable {
 		machineName := plainText(snapshot.Machine)
 		key := snapshot.Key()
-		published := notAfter(snapshot.PublishedAt, now)
+		published := snapshotObservedAt(snapshot.PublishedAt, now)
+		// A last activity is never later than the snapshot's observed time, or than
+		// now when that time is unknown.
+		activityLimit := published
+		if activityLimit.IsZero() {
+			activityLimit = now
+		}
 		machineID := entryID(kindMachine, key)
 		cached := func(id string) Entry {
 			return Entry{ID: id, Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published}
@@ -671,7 +681,7 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 				worktreeViews = append(worktreeViews, Worktree{
 					Entry: cached(id), Repository: repositoryID, Name: plainText(state.Task), Task: plainText(state.Task), Stream: plainText(state.Stream),
 					Branch: plainText(state.Branch), Lifecycle: publishedLifecycle(state.Lifecycle), OwnerState: publishedOwnerState(state.OwnerState),
-					LastActivityAt: publishedTime(state.LastActivityAt, published),
+					LastActivityAt: publishedTime(state.LastActivityAt, activityLimit),
 				})
 			}
 			if pull := state.PullRequest; pull != nil && strings.EqualFold(pull.State, "open") && pull.Number > 0 && pull.Number <= maxCount {
@@ -740,6 +750,24 @@ func worktreeRepositories(states []remotestate.WorktreeState) []string {
 		names = append(names, state.Repository)
 	}
 	return names
+}
+
+// maxPublishedSkew is how far ahead of this machine's clock a snapshot's publish
+// time may be and still be taken as now: the clocks of two machines differ by
+// that much and no more.
+const maxPublishedSkew = 60 * time.Second
+
+// snapshotObservedAt is the time a published snapshot is observed at: its
+// publish time, taken as now when it is ahead of now by no more than
+// maxPublishedSkew, and the zero time, an unknown time that shows as stale and
+// never as fresh, when it is further ahead. A snapshot that says it was
+// published in the future cannot have been, and clamping it to now would keep it
+// fresh for ever.
+func snapshotObservedAt(publishedAt, now time.Time) time.Time {
+	if publishedAt.After(now.Add(maxPublishedSkew)) {
+		return time.Time{}
+	}
+	return notAfter(publishedAt, now)
 }
 
 // notAfter is when, or limit when when is later: a time another machine gave is

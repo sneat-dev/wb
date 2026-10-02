@@ -59,6 +59,11 @@ type Options struct {
 	Agents, Metrics bool
 	// Collect builds the snapshot as `wb remote publish` does, stamped now.
 	Collect func(ctx context.Context, now time.Time) (remotestate.Snapshot, error)
+	// OldestRead, when set, is asked after each scan that worked for the time of
+	// the oldest read that scan kept from an earlier scan (zero when it kept
+	// none). A scan is taken again only while that read, and not the scan, is
+	// younger than the keepalive, so nothing published is older than one.
+	OldestRead func() time.Time
 	// Open returns the provider; it is asked once, on the first attempt that
 	// reaches a publish, and its answer kept.
 	Open func() (remotestate.Provider, error)
@@ -111,7 +116,8 @@ type Publisher struct {
 	lastToken  string
 	// scanned is the snapshot of the last scan, before the extras, scannedToken
 	// the source's change token read before that scan ("" when it had none) and
-	// scannedAt its time: an attempt for the same token reuses it.
+	// scannedAt the time of the oldest read in it (its own time when it kept
+	// none): an attempt for the same token reuses it.
 	scanned      remotestate.Snapshot
 	scannedToken string
 	scannedAt    time.Time
@@ -324,7 +330,7 @@ func (p *Publisher) guarded(ctx context.Context, now time.Time, extras func() re
 // scan is the snapshot of this attempt before the extras: the last scan's,
 // stamped now, when the source's change token is the one that scan was made for
 // (nothing the scan reads has moved) and the scan is younger than the
-// keepalive, and a new scan otherwise. The token was read before the scan, so a
+// keepalive (measured from the oldest read it kept), and a new scan otherwise. The token was read before the scan, so a
 // change during it is a different token at the next attempt.
 func (p *Publisher) scan(ctx context.Context, now time.Time, scanToken string) (remotestate.Snapshot, error) {
 	p.mu.Lock()
@@ -342,7 +348,13 @@ func (p *Publisher) scan(ctx context.Context, now time.Time, scanToken string) (
 		p.scanned, p.scannedToken = remotestate.Snapshot{}, ""
 		return remotestate.Snapshot{}, err
 	}
-	p.scanned, p.scannedToken, p.scannedAt = snapshot, scanToken, now
+	readAt := now
+	if p.options.OldestRead != nil {
+		if oldest := p.options.OldestRead(); !oldest.IsZero() && oldest.Before(now) {
+			readAt = oldest
+		}
+	}
+	p.scanned, p.scannedToken, p.scannedAt = snapshot, scanToken, readAt
 	return snapshot, nil
 }
 

@@ -71,6 +71,22 @@ func TestBranchNamingPrecedenceReadsTargetBaseObject(t *testing.T) {
 	if got := derive(branchNamingOptions{}); got != "task" {
 		t.Fatalf("canonical parking policy leaked into fetched target base: %q", got)
 	}
+
+	// Repository policy admission succeeds from the fetched base before the
+	// machine-local resolver refuses its invalid root. The parked checkout
+	// document remains irrelevant to both admission and placement.
+	userPath := filepath.Join(configHome, "wb", "worktrees.yaml")
+	mustWriteBranchConfig(t, userPath, "version: 1\nworktrees:\n  root: relative\n")
+	if _, found, err := validatedRepositoryBranchConfig(context.Background(), canonical, base, userPath); err != nil || !found {
+		t.Fatalf("fetched repository policy admission=(%t,%v)", found, err)
+	}
+	placement, err := configuredWorktreePlacement(context.Background(), fixture.projectsRoot, canonical, base)
+	if err == nil || !strings.Contains(err.Error(), "must be an absolute path") || placement.Root != "" {
+		t.Fatalf("machine root refusal after repository admission=(%+v,%v)", placement, err)
+	}
+	if actual, err := os.ReadFile(userPath); err != nil || string(actual) != "version: 1\nworktrees:\n  root: relative\n" {
+		t.Fatalf("refused machine policy changed=%q,%v", actual, err)
+	}
 }
 
 func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testing.T) {

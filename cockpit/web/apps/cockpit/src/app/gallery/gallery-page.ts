@@ -39,7 +39,7 @@ export class GalleryPage {
   private readonly handled = inject(ActivatedRoute).snapshot.queryParamMap.has('handler')
   protected readonly run = this.handled ? (activation: ActionActivation): void => this.activated(activation) : undefined
   /** What a slot offers without a handler: the command of the same intent, to copy. */
-  protected readonly slotCopy: SlotCopy = { build: async () => pullRequestCreate('fix-ci'), label: copyLabel(true, 'wb pr create', 'commit and open the pull request'), template: true }
+  protected readonly slotCopy: SlotCopy = { build: async () => pullRequestCreate('fix-ci', {}), label: copyLabel(true, 'wb pr create', 'commit and open the pull request'), template: true }
   protected readonly badgeRows = BADGE_ROWS
   protected readonly syncRows = SYNC_ROWS
   protected readonly pullRequests = galleryPullRequests(this.now)

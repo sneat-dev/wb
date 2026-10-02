@@ -17,16 +17,17 @@ import (
 )
 
 type ParkedSessionWorkLogPrepareOptions struct {
-	ProjectsRoot  string
-	Request       sessionpark.RemoteRequest
-	RequestDigest sessionmove.Digest
-	Member        sessionpark.RemoteMember
-	ReceivedAt    time.Time
-	Session       session.Record
-	AttemptID     string
-	AttemptIndex  uint64
-	WorktreeDir   string
-	PinnedCommit  string
+	beforeProjectionRepair func()
+	ProjectsRoot           string
+	Request                sessionpark.RemoteRequest
+	RequestDigest          sessionmove.Digest
+	Member                 sessionpark.RemoteMember
+	ReceivedAt             time.Time
+	Session                session.Record
+	AttemptID              string
+	AttemptIndex           uint64
+	WorktreeDir            string
+	PinnedCommit           string
 }
 
 type ParkedSessionWorkLogPrepareResult struct {
@@ -98,6 +99,9 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 	}
 	if err := writeWorkLogProjection(prepared.worktree, activeTargetProjection(claim)); err != nil {
 		return result, err
+	}
+	if options.beforeProjectionRepair != nil {
+		options.beforeProjectionRepair()
 	}
 	if _, err := repairCurrentLocalProjection(prepared.worktree); err != nil {
 		return result, err

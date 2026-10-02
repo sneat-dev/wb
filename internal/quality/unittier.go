@@ -258,18 +258,9 @@ func FindUnitTierMatches(root string) ([]UnitTierMatch, error) {
 	return matches, nil
 }
 
-// fileRequiresE2ETag reports whether file's own leading build constraint (a
-// `//go:build` or legacy `// +build` comment before the package clause) is
-// exactly the bare "e2e" tag -- the one shape task-24 defines the e2e tier
-// by ("_test.go files with //go:build e2e"), and the only shape this
-// repository's own e2e-tagged files use. A more elaborate constraint that
-// merely mentions "e2e" alongside something else (`e2e || windows`, say) is
-// deliberately not treated as e2e-only: working out whether every tag
-// assignment that satisfies it also sets e2e is a harder, unneeded problem
-// while no real file in this repository combines the two, so such a file is
-// conservatively still scanned -- the same "detector, not oracle" stance
-// FindInlineWriteSequences and the other guards in this package take. A
-// file with no build constraint at all is, of course, a default-tier file.
+// fileRequiresE2ETag reports whether a leading build constraint requires e2e.
+// AND constraints require e2e when either operand does; OR constraints require
+// it only when both do. Other expressions remain conservatively scanned.
 func fileRequiresE2ETag(file *ast.File) bool {
 	for _, group := range file.Comments {
 		if group.Pos() >= file.Package {
@@ -283,12 +274,25 @@ func fileRequiresE2ETag(file *ast.File) bool {
 			if err != nil {
 				continue
 			}
-			if tag, ok := expr.(*constraint.TagExpr); ok && tag.Tag == "e2e" {
+			if buildConstraintRequiresE2E(expr) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func buildConstraintRequiresE2E(expr constraint.Expr) bool {
+	switch expr := expr.(type) {
+	case *constraint.TagExpr:
+		return expr.Tag == "e2e"
+	case *constraint.AndExpr:
+		return buildConstraintRequiresE2E(expr.X) || buildConstraintRequiresE2E(expr.Y)
+	case *constraint.OrExpr:
+		return buildConstraintRequiresE2E(expr.X) && buildConstraintRequiresE2E(expr.Y)
+	default:
+		return false
+	}
 }
 
 // unitTierAliasedPackages maps the import path of every package this

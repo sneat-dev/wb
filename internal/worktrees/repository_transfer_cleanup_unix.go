@@ -37,6 +37,10 @@ func openRepositoryTransferCleanupQuarantine(parent *os.File, _ string, name str
 }
 
 func retireRepositoryTransferReplacement(path string, held *os.File) error {
+	return retireRepositoryTransferReplacementWithObservation(path, held, nil)
+}
+
+func retireRepositoryTransferReplacementWithObservation(path string, held *os.File, observe func(string, *os.File)) error {
 	parentPath := filepath.Dir(path)
 	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
 	if err != nil {
@@ -50,11 +54,20 @@ func retireRepositoryTransferReplacement(path string, held *os.File) error {
 	if err := removeDirectoryContentsAt(held, path, 0); err != nil {
 		return err
 	}
+	if observe != nil {
+		observe("identity", parent)
+	}
 	if !directoryEntryStillMatches(parent, name, held) {
 		return fmt.Errorf("replacement quarantine changed during retirement: %s", path)
 	}
+	if observe != nil {
+		observe("unlink", parent)
+	}
 	if err := unlinkResidueEntry(parent, parentPath, name, unix.AT_REMOVEDIR); err != nil {
 		return err
+	}
+	if observe != nil {
+		observe("absence", parent)
 	}
 	absent, err := noFollowChildAbsent(int(parent.Fd()), name)
 	if err != nil || !absent {

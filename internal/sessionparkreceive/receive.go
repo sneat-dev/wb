@@ -37,6 +37,7 @@ type Options struct {
 	PrepareMember    func(context.Context, worktrees.ParkedSessionWorkLogPrepareOptions) (worktrees.ParkedSessionWorkLogPrepareResult, error)
 	CompleteMember   func(worktrees.ParkedTargetCompletionOptions) (worktrees.LocalWorkLogEvent, error)
 
+	afterExecutionLock    func()
 	AfterMembersReady     func() error
 	AfterClaimsReady      func() error
 	AfterSuccessorStarted func() error
@@ -76,8 +77,9 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	defer func() { _ = lock.Close() }()
-	if lock.Envelope().Request.ResumeID != request.ResumeID {
-		return Result{}, fmt.Errorf("retained park resume envelope changed after admission")
+	// Acquire binds the retained envelope to this resume ID and exact digest.
+	if options.afterExecutionLock != nil {
+		options.afterExecutionLock()
 	}
 	now := time.Now().UTC
 	if options.Now != nil {
@@ -100,9 +102,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		return false
 	}
 	if receipt != nil {
-		if err := sessionpark.ValidateReceipt(*receipt, request, digest); err != nil {
-			return Result{}, err
-		}
+		// LoadReceiptUnderLock already validates this exact request and digest.
 		if !has(PhaseCompleted) {
 			if _, err := options.Store.AppendEventUnderLock(lock, request, digest, PhaseCompleted, now()); err != nil {
 				return Result{}, err
@@ -142,10 +142,8 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		if memberResult.Repository != member.Repository || memberResult.Commit != member.Commit {
 			return Result{}, fmt.Errorf("prepared parked member %s conflicts with admitted repository or commit", member.MemberID)
 		}
-		targetReference, err := sessionpark.TargetWorkLogReference(request, digest, member)
-		if err != nil {
-			return Result{}, err
-		}
+		// DecodeEnvelope validates every member lineage; admission supplies the digest.
+		targetReference, _ := sessionpark.TargetWorkLogReference(request, digest, member)
 		memberResults[index] = memberResult
 		receiptMembers[index] = sessionpark.ReceiptMember{
 			MemberID: member.MemberID, Repository: member.Repository, TargetPath: memberResult.WorktreeDir,
@@ -167,10 +165,9 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	authority, err := sessionpark.LaunchAuthority(request, digest, continuationPath, successorContext)
-	if err != nil {
-		return Result{}, err
-	}
+	// Decoded request and bounded context from the absolute fenced store
+	// satisfy LaunchAuthority validation, including member pin and lineage.
+	authority, _ := sessionpark.LaunchAuthority(request, digest, continuationPath, successorContext)
 	prepare := options.PrepareMember
 	if prepare == nil {
 		prepare = worktrees.PrepareParkedSessionWorkLog

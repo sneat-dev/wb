@@ -74,7 +74,11 @@ type ChangedPackagesResult struct {
 // that do not end in ".go" are ignored; a "_test.go" change counts like any
 // other Go file. The module root package maps to ".".
 func ChangedPackages(ctx context.Context, workingDir, target string) (ChangedPackagesResult, error) {
-	workingDir, err := filepath.Abs(workingDir)
+	return changedPackagesWithAbs(ctx, workingDir, target, filepath.Abs)
+}
+
+func changedPackagesWithAbs(ctx context.Context, workingDir, target string, absolute func(string) (string, error)) (ChangedPackagesResult, error) {
+	workingDir, err := absolute(workingDir)
 	if err != nil {
 		return ChangedPackagesResult{}, err
 	}

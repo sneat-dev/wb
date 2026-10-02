@@ -177,9 +177,9 @@ func NewHandler(options Options) http.Handler {
 	}
 	server := &service{options: options}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", server.index)
-	mux.HandleFunc("GET /metrics", server.metrics)
-	mux.HandleFunc("GET /coverage", server.coverageRedirect)
+	mux.HandleFunc("GET /", loopbackOnly(server.index))
+	mux.HandleFunc("GET /metrics", loopbackOnly(server.metrics))
+	mux.HandleFunc("GET /coverage", loopbackOnly(server.coverageRedirect))
 	mux.HandleFunc("GET /api/v1/health", loopbackOnly(server.health))
 	mux.HandleFunc("GET /api/v1/overview", loopbackOnly(server.overview))
 	mux.HandleFunc("GET /api/v1/log", server.log)

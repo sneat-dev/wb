@@ -147,13 +147,21 @@ func (engine *Engine) Run(ctx context.Context, options Options) (Result, error) 
 }
 
 func (engine *Engine) link(ctx context.Context, options Options) (Result, error) {
+	return engine.linkWithAbsolute(ctx, options, filepath.Abs)
+}
+
+func (engine *Engine) linkWithAbsolute(ctx context.Context, options Options, absolute func(string) (string, error)) (Result, error) {
+	return engine.linkWithConsumerResolution(ctx, options, absolute, engine.resolveConsumerStreams)
+}
+
+func (engine *Engine) linkWithConsumerResolution(ctx context.Context, options Options, absolute func(string) (string, error), resolveConsumers func(Options) (map[string]string, []string, error)) (Result, error) {
 	if strings.TrimSpace(options.Library) == "" {
 		return Result{}, fmt.Errorf("a library worktree is required; pass the path of the library's checkout")
 	}
 	if len(options.Consumers) == 0 {
 		return Result{}, fmt.Errorf("at least one --to <consumer-worktree> is required")
 	}
-	library, err := filepath.Abs(options.Library)
+	library, err := absolute(options.Library)
 	if err != nil {
 		return Result{}, err
 	}
@@ -182,7 +190,7 @@ func (engine *Engine) link(ctx context.Context, options Options) (Result, error)
 	}
 	result.LibraryRepository = libraryRepository
 
-	consumerStreams, unrecordable, err := engine.resolveConsumerStreams(options)
+	consumerStreams, unrecordable, err := resolveConsumers(options)
 	if err != nil {
 		return result, err
 	}
@@ -209,7 +217,7 @@ func (engine *Engine) link(ctx context.Context, options Options) (Result, error)
 	}
 
 	for _, consumerPath := range options.Consumers {
-		consumer, err := filepath.Abs(consumerPath)
+		consumer, err := absolute(consumerPath)
 		if err != nil {
 			result.Consumers = append(result.Consumers, ConsumerResult{Consumer: consumerPath, Errors: []string{err.Error()}})
 			continue
@@ -266,6 +274,19 @@ func (engine *Engine) linkConsumer(
 	identities []streams.Identity,
 	hash string,
 ) ConsumerResult {
+	return engine.linkConsumerWithWorkspace(ctx, options, result, stream, library, consumer, identities, hash, workspacePath)
+}
+
+func (engine *Engine) linkConsumerWithWorkspace(
+	ctx context.Context,
+	options Options,
+	result Result,
+	stream string,
+	library, consumer string,
+	identities []streams.Identity,
+	hash string,
+	resolveWorkspace func(string, string) (string, error),
+) ConsumerResult {
 	outcome := ConsumerResult{Consumer: consumer}
 	declarations, err := streams.DiscoverDeclarations(consumer, identities)
 	if err != nil {
@@ -296,7 +317,7 @@ func (engine *Engine) linkConsumer(
 			return outcome
 		}
 		for _, workspace := range declarationWorkspaces(npmDeclarations) {
-			workspaceDir, err := workspacePath(consumer, workspace)
+			workspaceDir, err := resolveWorkspace(consumer, workspace)
 			if err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				return outcome
@@ -354,7 +375,7 @@ func (engine *Engine) linkConsumer(
 	// reconciliation; its recorded link remains undoable for recovery.
 	if len(appliedNpm) == len(npmDeclarations) {
 		for workspace, names := range npmLinkGroups(appliedNpm) {
-			workspaceDir, workspaceErr := workspacePath(consumer, workspace)
+			workspaceDir, workspaceErr := resolveWorkspace(consumer, workspace)
 			if workspaceErr != nil {
 				outcome.Errors = append(outcome.Errors, workspaceErr.Error())
 				continue
@@ -552,6 +573,10 @@ func (engine *Engine) libraryRepository(options Options, library string) (string
 // stream's branch or PR, and a re-link of an already-admitted consumer must
 // resolve exactly the way a member's does.
 func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string, []string, error) {
+	return engine.resolveConsumerStreamsWithAbsolute(options, filepath.Abs)
+}
+
+func (engine *Engine) resolveConsumerStreamsWithAbsolute(options Options, absolute func(string) (string, error)) (map[string]string, []string, error) {
 	open, err := engine.openStreams(options)
 	if err != nil {
 		return nil, nil, err
@@ -559,7 +584,7 @@ func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string
 	resolved := map[string]string{}
 	var unrecordable []string
 	for _, consumerPath := range options.Consumers {
-		consumer, absErr := filepath.Abs(consumerPath)
+		consumer, absErr := absolute(consumerPath)
 		if absErr != nil {
 			return nil, nil, absErr
 		}

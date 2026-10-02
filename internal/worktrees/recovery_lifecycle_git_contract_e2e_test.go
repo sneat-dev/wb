@@ -144,7 +144,7 @@ func TestE2EDisposableDestinationRefusals(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if reason := disposableDestinationReason(context.Background(), fixture.destination, options, head); reason == "" {
+			if reason := disposableDestinationReason(context.Background(), fixture.destination, options, head, gitRawOutput); reason == "" {
 				t.Fatalf("%s was considered disposable", scenario)
 			}
 		})

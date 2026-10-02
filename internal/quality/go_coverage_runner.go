@@ -523,50 +523,53 @@ func (sink *coverageDiagnosticsSink) persist(index int, job goCoverageJob, resul
 	for _, jobIndex := range indices {
 		sink.manifest.Files = append(sink.manifest.Files, sink.files[jobIndex])
 	}
-	manifestRaw, err := yaml.Marshal(sink.manifest)
-	if err != nil {
-		return err
-	}
+	// This finite manifest contains only strings, integer fields and slices
+	// of concrete structs, with no custom YAML marshalers.
+	manifestRaw, _ := yaml.Marshal(sink.manifest)
 	manifestPath := filepath.Join(sink.directory, "coverage-diagnostics-"+sink.stem+".yaml")
 	return writeCoverageDiagnosticFileAtomically(manifestPath, manifestRaw)
 }
 
-func writeCoverageDiagnosticFileAtomically(path string, data []byte) (err error) {
+func writeCoverageDiagnosticFileAtomically(path string, data []byte) error {
+	return writeCoverageDiagnosticFileWithIO(path, data, nil, os.Open)
+}
+
+func writeCoverageDiagnosticFileWithIO(path string, data []byte, inj *filewrite.Injector, openDirectory func(string) (*os.File, error)) (err error) {
 	directory := filepath.Dir(path)
-	temporary, err := filewrite.CreateTemp(directory, ".coverage-diagnostic-*.tmp", nil)
+	temporary, err := filewrite.CreateTemp(directory, ".coverage-diagnostic-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() {
 		if temporary != nil {
-			err = errors.Join(err, filewrite.Close(temporary, temporaryPath, nil))
+			err = errors.Join(err, filewrite.Close(temporary, temporaryPath, inj))
 		}
 		if err != nil {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, nil); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := filewrite.Write(temporary, data, temporaryPath, nil); err != nil {
+	if err := filewrite.Write(temporary, data, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := filewrite.Sync(temporary, temporaryPath, nil); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := filewrite.Close(temporary, temporaryPath, nil); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
 	temporary = nil
-	if err := filewrite.Rename(temporaryPath, path, nil); err != nil {
+	if err := filewrite.Rename(temporaryPath, path, inj); err != nil {
 		return err
 	}
-	directoryFile, err := os.Open(directory)
+	directoryFile, err := openDirectory(directory)
 	if err != nil {
 		return err
 	}
-	syncErr := filewrite.SyncDir(directoryFile, nil)
+	syncErr := filewrite.SyncDir(directoryFile, inj)
 	closeErr := directoryFile.Close()
 	if syncErr != nil || closeErr != nil {
 		return errors.Join(syncErr, closeErr)
@@ -696,9 +699,6 @@ func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob,
 					}
 					detail := summarizeCoverageFailures([]goCoverageJob{jobs[index]}, []goCoverageJobResult{{output: output, err: err}})
 					detail = strings.TrimSpace(strings.TrimPrefix(detail, coverageFailureSummaryHeader))
-					if detail == "" {
-						detail = "command failed"
-					}
 					report(index, ProgressRetrying, StatusFailed, attempts, fmt.Sprintf("%s attempt %d failed: %s; retrying", jobs[index].label, attempts, detail))
 				}
 				result := goCoverageJobResult{output: output, err: err, attempts: attempts, elapsed: time.Since(started), timeoutSource: timeoutSource}

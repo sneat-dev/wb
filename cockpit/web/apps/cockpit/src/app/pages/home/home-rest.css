@@ -126,11 +126,16 @@ app-home-rest {
   background: var(--surface);
 }
 
+/*
+ * The load badge follows the name instead of being pushed to the right edge: its word changes when the
+ * machine's sample arrives ("not reported" to "free"), and a badge that is right-aligned moves its left
+ * edge with its width (cockpit-views#ac:no-layout-shift-on-arrival).
+ */
 .tile-head {
   display: flex;
   gap: var(--space-2);
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
 .tile-name {

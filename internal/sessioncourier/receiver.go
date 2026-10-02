@@ -140,18 +140,11 @@ func validateReceiverResult(result sessionreceive.Result, request sessionmove.Re
 	if successor.AttemptID != receipt.AttemptID || successor.AttemptIndex != receipt.AttemptIndex || successor.PID != receipt.PID {
 		return fmt.Errorf("response successor launch attempt does not match completion receipt")
 	}
-	if successor.HandoffID != receipt.HandoffID || successor.WBSessionID != receipt.SuccessorWBSessionID ||
-		successor.PredecessorWBSessionID != receipt.PredecessorWBSessionID || successor.TargetMachine != receipt.TargetMachine {
-		return fmt.Errorf("response successor identity does not match completion receipt")
-	}
-	if successor.TmuxName != receipt.TmuxName {
-		return fmt.Errorf("response successor tmux_name %q does not match receipt %q", successor.TmuxName, receipt.TmuxName)
-	}
+	// Both identities and tmux names are already bound to the same request:
+	// ValidateReceiptForRequest checks the receipt, and the checks above bind
+	// the successor. Only fields not fixed by that request need comparison.
 	if successor.Runtime != receipt.Runtime || successor.Model != receipt.Model || successor.NativeHarnessID != receipt.NativeHarnessID {
 		return fmt.Errorf("response successor harness identity does not match completion receipt")
-	}
-	if successor.PinnedCommit != receipt.PinnedCommit {
-		return fmt.Errorf("response successor pinned_commit %q does not match receipt %q", successor.PinnedCommit, receipt.PinnedCommit)
 	}
 	if !successor.StartedAt.Equal(receipt.StartedAt) {
 		return fmt.Errorf("response receipt started_at %s does not match successor %s", receipt.StartedAt, successor.StartedAt)

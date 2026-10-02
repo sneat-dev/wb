@@ -89,6 +89,10 @@ type DiscardedLifecycleBacklogProof struct {
 // its no-follow directory boundary and accepts only one exact completed
 // discarded identity whose checkout is both absent and no longer registered.
 func FindDiscardedLifecycleBacklogProof(ctx context.Context, projectsRoot, repository, target, task, worktree, branch, head string) (*DiscardedLifecycleBacklogProof, error) {
+	return findDiscardedLifecycleBacklogProofWithRead(ctx, projectsRoot, repository, target, task, worktree, branch, head, readLifecycleBacklogEntries)
+}
+
+func findDiscardedLifecycleBacklogProofWithRead(ctx context.Context, projectsRoot, repository, target, task, worktree, branch, head string, readEntries func(*os.File) ([]os.DirEntry, error)) (*DiscardedLifecycleBacklogProof, error) {
 	projectsRoot = filepath.Clean(projectsRoot)
 	if _, _, err := splitRepository(repository); err != nil {
 		return nil, fmt.Errorf("invalid discarded cleanup repository: %w", err)
@@ -105,7 +109,7 @@ func FindDiscardedLifecycleBacklogProof(ctx context.Context, projectsRoot, repos
 		return nil, fmt.Errorf("open discarded cleanup backlog: %w", err)
 	}
 	defer func() { _ = directory.Close() }()
-	entries, err := directory.ReadDir(-1)
+	entries, err := readEntries(directory)
 	if err != nil {
 		return nil, fmt.Errorf("read discarded cleanup backlog: %w", err)
 	}
@@ -191,6 +195,11 @@ func lifecycleBacklogPath(home, id string) string {
 	return filepath.Join(lifecycleBacklogDirectory(home), id+".json")
 }
 
+// readLifecycleBacklogEntries reads the already-owned journal directory; callers retain its lifetime.
+func readLifecycleBacklogEntries(directory *os.File) ([]os.DirEntry, error) {
+	return directory.ReadDir(-1)
+}
+
 func openLifecycleBacklogDirectory(home string, create bool) (*os.File, error) {
 	homeDirectory, err := openAbsoluteDirectoryNoFollow(home, create)
 	if err != nil {
@@ -232,6 +241,10 @@ func persistLifecycleBacklog(home string, record *lifecycleBacklogRecord, stage 
 }
 
 func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
+	return validateLifecycleBacklogWithRel(record, filepath.Rel)
+}
+
+func validateLifecycleBacklogWithRel(record lifecycleBacklogRecord, relative func(string, string) (string, error)) error {
 	if record.Version != lifecycleBacklogVersion || !validClaimID(record.ID) || !validSafeSegment(record.Task) {
 		return fmt.Errorf("invalid lifecycle backlog identity")
 	}
@@ -260,7 +273,7 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 			return fmt.Errorf("lifecycle backlog marked external but its worktree is nested under the WB worktrees root")
 		}
 	} else {
-		relativeWorktree, err := filepath.Rel(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
+		relativeWorktree, err := relative(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
 		if err != nil {
 			return fmt.Errorf("resolve lifecycle backlog worktree: %w", err)
 		}
@@ -342,6 +355,10 @@ type LifecycleBacklogQuarantine struct {
 }
 
 func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string) ([]lifecycleBacklogRecord, []LifecycleBacklogQuarantine, error) {
+	return loadResumableLifecycleBacklogWithRead(ctx, home, projectsRoot, worktreesRoots, tasks, filter, disposition, readLifecycleBacklogEntries)
+}
+
+func loadResumableLifecycleBacklogWithRead(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string, readEntries func(*os.File) ([]os.DirEntry, error)) ([]lifecycleBacklogRecord, []LifecycleBacklogQuarantine, error) {
 	directory, err := openLifecycleBacklogDirectory(home, false)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
 		return nil, nil, nil
@@ -350,7 +367,7 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
 	defer func() { _ = directory.Close() }()
-	entries, err := directory.ReadDir(-1)
+	entries, err := readEntries(directory)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
@@ -581,6 +598,10 @@ func resumeLifecycleBacklogWithPorts(ctx context.Context, home string, record *l
 // journal. Anything still present returns lockErr unchanged, so a record that
 // still owes a deletion is never quietly marked done.
 func completeVacantLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord, lockErr error) error {
+	return completeVacantLifecycleBacklogObserved(ctx, home, record, lockErr, nil)
+}
+
+func completeVacantLifecycleBacklogObserved(ctx context.Context, home string, record *lifecycleBacklogRecord, lockErr error, observe func(*canonicalRepository)) error {
 	if _, err := os.Lstat(record.WorktreeDir); !errors.Is(err, os.ErrNotExist) {
 		return lockErr
 	}
@@ -589,6 +610,9 @@ func completeVacantLifecycleBacklog(ctx context.Context, home string, record *li
 		return lockErr
 	}
 	defer canonical.close()
+	if observe != nil {
+		observe(canonical)
+	}
 	if err := canonical.validate(); err != nil {
 		return lockErr
 	}

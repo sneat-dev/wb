@@ -88,11 +88,7 @@ func NewService(projectsRoot, operationsDirectory, build, generation string, aut
 		return nil, fmt.Errorf("create daemon operation store: %w", err)
 	}
 	if generation == "" {
-		var err error
-		generation, err = randomID("wbg-")
-		if err != nil {
-			return nil, err
-		}
+		generation = randomID("wbg-")
 	}
 	service := &Service{
 		projects: projectsRoot, directory: directory, build: build,
@@ -262,11 +258,7 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 			return connect.NewResponse(operation), nil
 		}
 	}
-	id, err := randomID("wbo-")
-	if err != nil {
-		service.mu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
+	id := randomID("wbo-")
 	now := service.now()
 	operation := &daemonv1.Operation{
 		SchemaVersion: QueueSchema, OperationId: id, IdempotencyKey: input.IdempotencyKey,
@@ -523,10 +515,9 @@ func (service *Service) persistRecord(item *record) error {
 // the identical O_WRONLY|O_CREATE|O_TRUNC flag set the original
 // os.OpenFile call used.
 func (service *Service) persistRecordInjected(item *record, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(item, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode daemon operation: %w", err)
-	}
+	// record and its generated Operation expose only primitive JSON fields,
+	// string maps and byte/string slices, with no custom JSON marshalers.
+	contents, _ := json.MarshalIndent(item, "", "  ")
 	path := filepath.Join(service.directory, item.Operation.OperationId+".json")
 	temporary := path + ".tmp"
 	file, err := filewrite.CreateOrTruncatePath(temporary, 0o600, inj)
@@ -577,12 +568,11 @@ func cloneOperation(operation *daemonv1.Operation) *daemonv1.Operation {
 	return proto.Clone(operation).(*daemonv1.Operation)
 }
 
-func randomID(prefix string) (string, error) {
+func randomID(prefix string) string {
 	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return "", fmt.Errorf("generate daemon ID: %w", err)
-	}
-	return prefix + hex.EncodeToString(value), nil
+	// Go 1.27 crypto/rand.Read fills the buffer or terminates the process.
+	_, _ = rand.Read(value)
+	return prefix + hex.EncodeToString(value)
 }
 
 func nextCursor(cursor string) string {

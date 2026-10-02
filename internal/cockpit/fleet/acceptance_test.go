@@ -210,6 +210,10 @@ func TestRequestsReadTheLastSnapshotAndRunNoCollector(t *testing.T) {
 	t.Cleanup(stop)
 	waitFor(t, "the first snapshot", func() bool { return !snapshotter.Document().WarmingUp })
 	waitFor(t, "the first refresh to finish", func() bool { return sources.calls.Load() == passCalls })
+	// The pass's reads of the other machines and the like outlive it, and a pass
+	// that starts while one still runs skips it (one at a time), so its calls
+	// would never reach the count below. The first pass has started all it will.
+	snapshotter.side.Wait()
 	warm := request()
 	if warm.WarmingUp || warm.SnapshotAt.IsZero() || len(localWorktrees(warm)) != 2 {
 		t.Fatalf("warm response = %+v, want a snapshot with two worktrees", warm)

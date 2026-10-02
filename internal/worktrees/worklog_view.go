@@ -316,6 +316,10 @@ func loadOriginalPrompt(home string, claim workLogClaim, prompts []PromptRecord)
 }
 
 func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, error) {
+	return listPromptRecordsObserved(worktree, includeBodies, nil)
+}
+
+func listPromptRecordsObserved(worktree string, includeBodies bool, observe workLogProjectionObservation) ([]PromptRecord, error) {
 	directory, err := openJournalSubdirectory(worktree, promptsDirectory, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return []PromptRecord{}, nil
@@ -325,9 +329,15 @@ func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, err
 	}
 	defer func() { _ = directory.Close() }()
 
+	if observe != nil {
+		observe(workLogPromptNamesRead, directory)
+	}
 	names, err := directory.Readdirnames(-1)
 	if err != nil {
 		return nil, fmt.Errorf("read prompt sequence: %w", err)
+	}
+	if observe != nil {
+		observe(workLogPromptNamesRewind, directory)
 	}
 	if _, err := directory.Seek(0, 0); err != nil {
 		return nil, fmt.Errorf("rewind prompt sequence: %w", err)
@@ -340,6 +350,9 @@ func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, err
 		if match == nil {
 			continue
 		}
+		if observe != nil {
+			observe(workLogPromptRecordRead, directory)
+		}
 		content, err := readBytesAt(directory, name)
 		if err != nil {
 			return nil, err
@@ -348,10 +361,7 @@ func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, err
 		if err != nil {
 			return nil, fmt.Errorf("prompt %s: %w", name, err)
 		}
-		ordinal, err := strconv.Atoi(match[1])
-		if err != nil {
-			continue
-		}
+		ordinal, _ := strconv.Atoi(match[1]) // exactly four ASCII digits: representable on every Go architecture.
 		if header.Seq != ordinal {
 			return nil, fmt.Errorf("prompt %s records seq %d but its ordinal is %d", name, header.Seq, ordinal)
 		}
@@ -381,9 +391,7 @@ func parsePromptFile(content []byte) (PromptHeader, string, error) {
 	}
 	text := string(content)
 	end := strings.Index(text[4:], "\n---\n")
-	if end < 0 {
-		return PromptHeader{}, "", fmt.Errorf("unterminated YAML frontmatter")
-	}
+	// ParsePromptHeader already required this exact delimiter on the same immutable bytes.
 	body := strings.TrimPrefix(text[4+end+5:], "\n")
 	return header, body, nil
 }

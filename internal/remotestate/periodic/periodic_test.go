@@ -517,6 +517,35 @@ func TestAScanIsTakenAgainOnlyForTheTokenItWasMadeFor(t *testing.T) {
 	}
 }
 
+// TestAScanIsNotTakenAgainOnceTheOldestReadItKeptIsAsOldAsTheKeepalive: what a
+// scan kept of an earlier read is as old as that read, so reusing the scan is
+// bounded by the oldest read in it and not by the scan's own time. Nothing
+// published is ever older than one keepalive.
+func TestAScanIsNotTakenAgainOnceTheOldestReadItKeptIsAsOldAsTheKeepalive(t *testing.T) {
+	t.Parallel()
+	var oldestAge time.Duration
+	var h *harness
+	h = newHarness(t, func(o *Options) {
+		o.Agents, o.Every, o.Keepalive = true, 5*time.Minute, time.Hour
+		o.OldestRead = func() time.Time { return h.clock.Now().Add(-oldestAge) }
+	})
+	src := &source{token: "t", extras: remotestate.Extras{Agents: []remotestate.AgentState{{Kind: "run", RunID: "agt-1", State: "running"}}}}
+	run := func(advance time.Duration) Status {
+		h.clock.advance(advance)
+		h.publisher.Publish(context.Background(), src)
+		return h.publisher.Status()
+	}
+	oldestAge = 50 * time.Minute // the scan kept a read made 50 minutes before it
+	run(0)
+	src.extras.Agents = append(src.extras.Agents, remotestate.AgentState{Kind: "run", RunID: "agt-2", State: "running"})
+	if status := run(6 * time.Minute); status.Scans != 1 {
+		t.Fatalf("a read 56 minutes old was not reused: %+v", status)
+	}
+	if status := run(6 * time.Minute); status.Scans != 2 {
+		t.Fatalf("a read 62 minutes old was reused though the scan is only 12 minutes old: %+v", status)
+	}
+}
+
 // TestThePublishedHookIsToldOfEachPublishThatReachedTheStore and of no other
 // attempt.
 func TestThePublishedHookIsToldOfEachPublishThatReachedTheStore(t *testing.T) {

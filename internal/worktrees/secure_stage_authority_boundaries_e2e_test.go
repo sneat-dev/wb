@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	unixcompat "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 func newRetiredStageClaimFixture(t *testing.T, names ...string) (string, *os.File) {
@@ -121,7 +121,7 @@ func TestE2ERetiredStageClaimSkipsExhaustedCollisionAndReclaimsSibling(t *testin
 			func(int) string { return "fixed-collision" },
 			func(*os.File, string, *os.File, string, *os.File, func()) (*os.File, error) {
 				attempts++
-				return nil, unix.EEXIST
+				return nil, unixcompat.EEXIST
 			})
 	}
 	name, claimed, err := claimRetiredStageDirectoryWith(parent, ".wb-stage-", ".wb-retired-stage-", retiredStageClaimOps{empty: directoryEmpty, claim: claim})

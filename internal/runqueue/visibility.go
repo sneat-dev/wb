@@ -326,7 +326,10 @@ func reapStaleTempFile(dir string, entry os.DirEntry) {
 // registerAt is Register generalized to any namespace/directory; RegisterHeavy
 // (heavy.go) is its only other caller.
 func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self Participant) *Ticket {
-	now := time.Now().UTC()
+	return registerAtTime(projectsRoot, namespace, dir, self, time.Now().UTC())
+}
+
+func registerAtTime(projectsRoot string, namespace ticketNamespace, dir string, self Participant, now time.Time) *Ticket {
 	ticket := &Ticket{projectsRoot: projectsRoot, namespace: namespace, createdAt: now, self: self}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ticket
@@ -562,10 +565,13 @@ type Announcement struct {
 // just means that slot stays anonymous in State (readHolders skips slots
 // with no holder file), never a hard error.
 func (lease *Lease) Announce(self Participant) *Announcement {
+	return lease.announceAt(self, time.Now().UTC())
+}
+
+func (lease *Lease) announceAt(self Participant, started time.Time) *Announcement {
 	if lease == nil || len(lease.files) == 0 {
 		return &Announcement{}
 	}
-	started := time.Now().UTC()
 	announcement := &Announcement{self: self, started: started}
 	for _, file := range lease.files {
 		holderPath := holderPathFor(file.Name())
@@ -586,10 +592,14 @@ func (lease *Lease) Announce(self Participant) *Announcement {
 // a failed refresh just risks the holder aging past staleAfter and being
 // reaped as if the process had died, which only affects visibility.
 func (announcement *Announcement) Heartbeat() {
+	announcement.heartbeatAt(time.Now().UTC())
+}
+
+func (announcement *Announcement) heartbeatAt(now time.Time) {
 	if announcement == nil || len(announcement.paths) == 0 {
 		return
 	}
-	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: time.Now().UTC()})
+	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: now})
 	if err != nil {
 		return
 	}
