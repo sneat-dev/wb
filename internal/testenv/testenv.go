@@ -302,14 +302,7 @@ func inheritedUserStateRoot() string {
 var (
 	userStateRoot string
 	makeTempDir   = os.MkdirTemp
-	// goEnvironmentValue asks the Go command for one of its settings.
-	goEnvironmentValue = productionGoEnvironmentValue
 )
-
-func productionGoEnvironmentValue(name string) (string, error) {
-	output, err := exec.Command("go", "env", name).Output()
-	return strings.TrimSpace(string(output)), err
-}
 
 // IsolateUserState gives the whole test process a private, empty user: HOME,
 // XDG_CONFIG_HOME and XDG_STATE_HOME point into one fresh temporary root, and
@@ -327,7 +320,9 @@ func productionGoEnvironmentValue(name string) (string, error) {
 // internal/orchestrate and every other package with tests.
 //
 // Two things a test legitimately inherits survive the move. The Go toolchain's
-// caches are pinned to where they already were, and the private home's
+// caches and settings are pinned to where they already were (derived from the
+// environment, the GOENV file and Go's documented defaults, never by running
+// the go command), and the private home's
 // .gitconfig includes the developer's own global Git configuration, so Git
 // keeps the identity and settings it had. That inclusion is deliberate and it
 // is not neutral: the developer's credential helpers and url.insteadOf
@@ -386,20 +381,68 @@ func IsolateUserState() (remove func(), err error) {
 	return func() { _ = os.RemoveAll(root) }, nil
 }
 
-// resolvedGoToolVariables asks the Go command where its caches and settings
-// are, for each variable the environment does not already pin. Without a Go
-// command there is nothing to keep, and nothing is pinned.
+// resolvedGoToolVariables works out where the Go toolchain keeps its caches
+// and settings now, for each variable the environment does not already pin,
+// the way the go command itself does and without running it: the process
+// environment first, then the user's GOENV file, then the documented default
+// (GOENV in the user configuration directory, GOPATH at ~/go, GOMODCACHE at
+// pkg/mod under the first GOPATH entry, GOCACHE at go-build in the user cache
+// directory). It must run before the home moves. A location that cannot be
+// derived is left unpinned rather than guessed.
 func resolvedGoToolVariables() map[string]string {
+	home, _ := os.UserHomeDir()
+	configDir, _ := os.UserConfigDir()
+	cacheDir, _ := os.UserCacheDir()
+	goEnv := os.Getenv("GOENV")
+	if goEnv == "" {
+		goEnv = under(configDir, "go", "env")
+	}
+	saved := goEnvFileValues(goEnv)
+	setting := func(name, fallback string) string {
+		for _, value := range []string{os.Getenv(name), saved[name]} {
+			if value != "" {
+				return value
+			}
+		}
+		return fallback
+	}
+	goPath := setting("GOPATH", under(home, "go"))
+	firstGoPath, _, _ := strings.Cut(goPath, string(os.PathListSeparator))
+	resolved := map[string]string{
+		"GOENV":      goEnv,
+		"GOPATH":     goPath,
+		"GOMODCACHE": setting("GOMODCACHE", under(firstGoPath, "pkg", "mod")),
+		"GOCACHE":    setting("GOCACHE", under(cacheDir, "go-build")),
+	}
 	pinned := map[string]string{}
 	for _, name := range goToolVariables {
-		if os.Getenv(name) != "" {
-			continue
-		}
-		if value, err := goEnvironmentValue(name); err == nil && value != "" {
+		if value := resolved[name]; value != "" && os.Getenv(name) == "" {
 			pinned[name] = value
 		}
 	}
 	return pinned
+}
+
+// under joins elements below base, or is empty when there is no base to be
+// under: a location that could not be resolved has no children.
+func under(base string, elements ...string) string {
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{base}, elements...)...)
+}
+
+// goEnvFileValues reads the settings `go env -w` saved in a GOENV file, one
+// NAME=value per line. A file that is missing or unreadable saves nothing.
+func goEnvFileValues(path string) map[string]string {
+	values := map[string]string{}
+	content, _ := os.ReadFile(path)
+	for _, line := range strings.Split(string(content), "\n") {
+		if name, value, found := strings.Cut(strings.TrimSpace(line), "="); found {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 // globalGitConfigFiles are the user-level Git configuration files that exist

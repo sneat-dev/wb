@@ -14,10 +14,9 @@ import (
 // whatever IsolateUserState changes is restored when the test ends.
 func ambientUser(t *testing.T) (home string) {
 	t.Helper()
-	previousRoot, previousGoEnv := userStateRoot, goEnvironmentValue
-	t.Cleanup(func() { userStateRoot, goEnvironmentValue = previousRoot, previousGoEnv })
+	previousRoot := userStateRoot
+	t.Cleanup(func() { userStateRoot = previousRoot })
 	userStateRoot = ""
-	goEnvironmentValue = func(name string) (string, error) { return "/go-settings/" + name, nil }
 	home = t.TempDir()
 	config := filepath.Join(home, ".config")
 	if err := os.MkdirAll(filepath.Join(config, "git"), 0o700); err != nil {
@@ -43,18 +42,24 @@ func ambientUser(t *testing.T) (home string) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
 	t.Setenv("WB_HOME", filepath.Join(home, "projects", ".wb"))
 	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(home, "projects"))
+	// No Go setting is pinned by the environment: every one is derived.
 	for _, name := range goToolVariables {
-		t.Setenv(name, os.Getenv(name))
+		t.Setenv(name, "")
 	}
+	t.Setenv("XDG_CACHE_HOME", "")
 	return home
 }
 
 //nolint:paralleltest // rewrites the process environment that selects the user.
 func TestIsolateUserStateMovesEveryUserLocationUnderOnePrivateRoot(t *testing.T) {
 	home := ambientUser(t)
-	t.Setenv("GOCACHE", "")
 	pinnedModules := filepath.Join(home, "already-pinned-modules")
 	t.Setenv("GOMODCACHE", pinnedModules)
+	ambientCache, cacheErr := os.UserCacheDir()
+	ambientConfig, configErr := os.UserConfigDir()
+	if cacheErr != nil || configErr != nil {
+		t.Fatalf("ambient user directories: %v, %v", cacheErr, configErr)
+	}
 
 	remove, err := IsolateUserState()
 	if err != nil {
@@ -84,8 +89,17 @@ func TestIsolateUserStateMovesEveryUserLocationUnderOnePrivateRoot(t *testing.T)
 			t.Fatalf("private .gitconfig = %q, want it to include %s", included, path)
 		}
 	}
-	if got := os.Getenv("GOCACHE"); got != "/go-settings/GOCACHE" {
-		t.Fatalf("GOCACHE = %q, want it pinned to where the Go command keeps it, or a build under the private home starts from an empty cache", got)
+	// The Go toolchain stays where the ambient user had it: the cache at its
+	// documented default, GOPATH and GOENV under the ambient home, or a build
+	// under the private home would start from an empty cache.
+	if got := os.Getenv("GOCACHE"); got != filepath.Join(ambientCache, "go-build") {
+		t.Fatalf("GOCACHE = %q, want go-build under the ambient cache directory %q", got, ambientCache)
+	}
+	if got := os.Getenv("GOPATH"); got != filepath.Join(home, "go") {
+		t.Fatalf("GOPATH = %q, want the ambient default %q", got, filepath.Join(home, "go"))
+	}
+	if got := os.Getenv("GOENV"); got != filepath.Join(ambientConfig, "go", "env") {
+		t.Fatalf("GOENV = %q, want the ambient settings file under %q", got, ambientConfig)
 	}
 	remove()
 	if _, err := os.Stat(userStateRoot); !os.IsNotExist(err) {
@@ -94,7 +108,7 @@ func TestIsolateUserStateMovesEveryUserLocationUnderOnePrivateRoot(t *testing.T)
 }
 
 //nolint:paralleltest // rewrites the process environment that selects the user.
-func TestIsolateUserStateWorksWithoutAGoCommandOrGitConfiguration(t *testing.T) {
+func TestIsolateUserStateWorksWithoutGitConfiguration(t *testing.T) {
 	home := ambientUser(t)
 	for _, path := range []string{filepath.Join(home, ".gitconfig"), filepath.Join(home, ".config", "git", "config")} {
 		if err := os.Remove(path); err != nil {
@@ -102,8 +116,6 @@ func TestIsolateUserStateWorksWithoutAGoCommandOrGitConfiguration(t *testing.T) 
 		}
 	}
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("GOCACHE", "")
-	goEnvironmentValue = func(string) (string, error) { return "", errors.New("go: command not found") }
 
 	remove, err := IsolateUserState()
 	if err != nil {
@@ -112,9 +124,6 @@ func TestIsolateUserStateWorksWithoutAGoCommandOrGitConfiguration(t *testing.T) 
 	t.Cleanup(remove)
 	if violations := UserStateViolations(); len(violations) != 0 {
 		t.Fatalf("isolated process can still reach real user state: %v", violations)
-	}
-	if value := os.Getenv("GOCACHE"); value != "" {
-		t.Fatalf("GOCACHE = %q with no Go command to ask", value)
 	}
 	isolatedHome, _ := os.UserHomeDir()
 	if content, err := os.ReadFile(filepath.Join(isolatedHome, ".gitconfig")); err != nil || len(content) != 0 {
@@ -265,4 +274,45 @@ func mustMakeDirectory(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// `go env -w` saves settings in the GOENV file, and the go command reads them
+// from there. A saved GOPATH moves the module cache with it; the environment
+// still wins over the file.
+//
+//nolint:paralleltest // rewrites the process environment that selects the user.
+func TestGoSettingsSavedInTheGoEnvFileAreKeptWhereTheyPoint(t *testing.T) {
+	home := ambientUser(t)
+	goEnv := filepath.Join(home, "saved-go-env")
+	saved := "GOPATH=" + filepath.Join(home, "gopath-one") + string(os.PathListSeparator) + filepath.Join(home, "gopath-two") +
+		"\nGOCACHE=" + filepath.Join(home, "saved-cache") + "\nnot a setting\n"
+	if err := os.WriteFile(goEnv, []byte(saved), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goEnv)
+
+	pinned := resolvedGoToolVariables()
+	want := map[string]string{
+		"GOPATH":     filepath.Join(home, "gopath-one") + string(os.PathListSeparator) + filepath.Join(home, "gopath-two"),
+		"GOMODCACHE": filepath.Join(home, "gopath-one", "pkg", "mod"),
+		"GOCACHE":    filepath.Join(home, "saved-cache"),
+	}
+	if len(pinned) != len(want) {
+		t.Fatalf("pinned = %v, want exactly %v (GOENV is already in the environment)", pinned, want)
+	}
+	for name, value := range want {
+		if pinned[name] != value {
+			t.Fatalf("%s = %q, want %q", name, pinned[name], value)
+		}
+	}
+}
+
+func TestALocationThatCannotBeResolvedHasNothingUnderIt(t *testing.T) {
+	t.Parallel()
+	if got := under("", "go", "env"); got != "" {
+		t.Fatalf("under an unresolved base = %q, want nothing", got)
+	}
+	if got, want := under("base", "go", "env"), filepath.Join("base", "go", "env"); got != want {
+		t.Fatalf("under = %q, want %q", got, want)
+	}
 }

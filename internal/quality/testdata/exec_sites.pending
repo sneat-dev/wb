@@ -61,7 +61,7 @@ internal/sessionparkcourier/ssh.go	1	task-8
 internal/streams/execports.go	1	task-15
 internal/streamsync/execports.go	1	task-15
 internal/syncreport/validate.go	1	task-8
-internal/testenv/testenv.go	3	task-15
+internal/testenv/testenv.go	2	task-15
 internal/worktrees/branches_quarantine.go	1	task-18
 internal/worktrees/clone_migrate.go	4	task-18
 internal/worktrees/git_capability_darwin.go	1	task-18
