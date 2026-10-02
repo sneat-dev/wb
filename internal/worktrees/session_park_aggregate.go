@@ -67,6 +67,10 @@ func closeParkedSessionMembers(members []parkedSessionCaptureMember) {
 // evidence immediately before persistence, while the journal locks prevent
 // cooperating WB custody writers from crossing the capture/persistence gap.
 func CaptureParkedSessionAggregate(ctx context.Context, projectsRoot string, listed []ListResult, source session.Record, persist func([]sessionpark.Worktree) error) error {
+	return captureParkedSessionAggregateBeforeCapture(ctx, projectsRoot, listed, source, persist, nil)
+}
+
+func captureParkedSessionAggregateBeforeCapture(ctx context.Context, projectsRoot string, listed []ListResult, source session.Record, persist func([]sessionpark.Worktree) error, observe func(*parkedSessionCaptureMember)) error {
 	if persist == nil {
 		return fmt.Errorf("parked session aggregate requires a persistence callback")
 	}
@@ -93,6 +97,9 @@ func CaptureParkedSessionAggregate(ctx context.Context, projectsRoot string, lis
 		}
 	}
 	for index := range members {
+		if observe != nil {
+			observe(&members[index])
+		}
 		if err := members[index].capture(ctx, projectsRoot, source); err != nil {
 			return fmt.Errorf("capture parked worktree %s: %w", members[index].listed.WorktreeDir, err)
 		}
