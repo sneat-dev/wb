@@ -13,41 +13,6 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func TestSessionReceiveRepositoryFromRemoteIsStrict(t *testing.T) {
-	t.Parallel()
-	local := filepath.Join(t.TempDir(), "remotes", "acme", "app.git")
-	tests := []struct {
-		remote string
-		want   string
-		ok     bool
-	}{
-		{remote: "git@github.com:acme/app.git", want: "acme/app", ok: true},
-		{remote: "ssh://github.com/acme/app.git", want: "acme/app", ok: true},
-		{remote: "ssh://git@github.com/acme/app.git", want: "acme/app", ok: true},
-		{remote: "https://github.com/acme/app.git", want: "acme/app", ok: true},
-		{remote: local, want: "acme/app", ok: true},
-		{remote: "ssh://git:secret@github.com/acme/app.git"},
-		{remote: "https://user:secret@github.com/acme/app.git"},
-		{remote: "relative/acme/app.git"},
-		{remote: "https://github.com/prefix/acme/app.git"},
-		{remote: "https://github.com/acme/../app.git"},
-		{remote: "-option-like"},
-		{remote: "https://github.com/acme/app.git?token=secret"},
-	}
-	for _, test := range tests {
-		t.Run(test.remote, func(t *testing.T) {
-			t.Parallel()
-			got, err := sessionReceiveRepositoryFromRemote(test.remote)
-			if test.ok && (err != nil || got != test.want) {
-				t.Fatalf("repository = %q, err = %v, want %q", got, err, test.want)
-			}
-			if !test.ok && err == nil {
-				t.Fatalf("repository = %q, want strict refusal", got)
-			}
-		})
-	}
-}
-
 func TestReceiveSessionBundleSecurelyClonesMissingCanonicalRepository(t *testing.T) {
 	fixture := newSessionReceiveFixture(t)
 	if err := os.RemoveAll(fixture.canonical); err != nil {

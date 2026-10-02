@@ -249,14 +249,6 @@ func inventoryRetiredNamespace(ctx context.Context, sweep branchSweepOptions, ge
 	return BranchListOutcome{Host: result.Host, GeneratedAt: result.GeneratedAt, Repository: result.Repository, Org: result.Org, Branch: result.Branch, Base: result.Base, Scope: result.Scope, Entries: result.Entries, Diagnostics: result.Diagnostics, Totals: result.Totals, ElapsedMS: result.ElapsedMS, RetiredRefs: result.RetiredRefs, RetiredBranches: result.RetiredBranches, RetiredTags: result.RetiredTags, RetiredTagNames: result.RetiredTagNames, RetiredRemoteUnavailable: result.RetiredRemoteUnavailable}, nil
 }
 
-// decorateBranchCommits reads metadata for one repository's selected refs in
-// one Git process. Retired list output has the same author/title fields as the
-// normal disposition path without turning a fleet count into one process per
-// ref.
-func decorateBranchCommits(ctx context.Context, repositoryPath string, entries []BranchEntry) {
-	branchInventoryService().DecorateBranchCommits(ctx, repositoryPath, entries)
-}
-
 func branchEvidenceHost() string { return branchInventoryService().BranchEvidenceHost() }
 
 func applyListDisplayFilters(entries []BranchEntry, sweep branchSweepOptions) []BranchEntry {
@@ -293,41 +285,6 @@ func countRetiredBranches(ctx context.Context, sweep branchSweepOptions) (map[st
 	return branchInventoryService().CountRetiredBranches(ctx, sweep.branchInventorySweep())
 }
 
-func inspectRepositoryBranchesWithHeartbeat(
-	ctx context.Context,
-	repository discover.Repo,
-	sweep branchSweepOptions,
-	inUse map[string]string,
-	index, total int,
-	interval time.Duration,
-	inspect branchRepositoryInspection,
-) ([]BranchEntry, string) {
-	adapt := func(ctx context.Context, repo worktreebranches.Repository, _ worktreebranches.InventorySweep, inUse map[string]string) ([]BranchEntry, string) {
-		return inspect(ctx, repository, sweep, inUse)
-	}
-	return branchInventoryService().InspectRepositoryBranchesWithHeartbeat(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), inUse, index, total, interval, adapt)
-}
-
-func selectBranchRepositories(repositories []discover.Repo, repositorySlug, org string) ([]discover.Repo, error) {
-	leaf := make([]worktreebranches.Repository, 0, len(repositories))
-	for _, repository := range repositories {
-		leaf = append(leaf, branchInventoryRepository(repository))
-	}
-	selected, err := worktreebranches.SelectBranchRepositories(leaf, repositorySlug, org)
-	if err != nil {
-		return nil, err
-	}
-	bySlug := make(map[string]discover.Repo, len(repositories))
-	for _, repository := range repositories {
-		bySlug[repository.Slug()] = repository
-	}
-	result := make([]discover.Repo, 0, len(selected))
-	for _, repository := range selected {
-		result = append(result, bySlug[repository.Slug])
-	}
-	return result, nil
-}
-
 // branchInUseKey identifies one repository/branch pair claimed live by a WB
 // task, keyed exactly as ListResult reports it.
 func branchInUseKey(repository, branch string) string {
@@ -341,17 +298,6 @@ func branchInUseKey(repository, branch string) string {
 // never disagree about what WB owns.
 func branchInUseIndex(ctx context.Context, projectsRoot, filter string) (map[string]string, string) {
 	return branchInventoryService().BranchInUseIndex(ctx, projectsRoot, filter)
-}
-
-// inspectRepositoryBranches classifies every branch in one repository. A
-// fetch failure for the exact target yields unreadable for the whole
-// repository rather than aborting the sweep.
-func inspectRepositoryBranches(ctx context.Context, repository discover.Repo, sweep branchSweepOptions, inUse map[string]string) ([]BranchEntry, string) {
-	return branchInventoryService().InspectRepositoryBranches(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), inUse)
-}
-
-func decorateBranchCommit(ctx context.Context, repositoryPath string, entry *BranchEntry) {
-	branchInventoryService().DecorateBranchCommit(ctx, repositoryPath, entry)
 }
 
 func isRetiredBranch(branch string) bool {
@@ -371,33 +317,6 @@ func checkedOutLocalBranches(ctx context.Context, repositoryPath string) (map[st
 // branchRef is one enumerated ref before classification.
 type branchRef = worktreebranches.BranchRef
 
-func listLocalRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	return branchInventoryService().ListLocalRefs(ctx, repositoryPath)
-}
-
-func listRemoteRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	return branchInventoryService().ListRemoteRefs(ctx, repositoryPath)
-}
-
-func listRetiredRemoteRefs(ctx context.Context, repositoryPath string) ([]branchRef, string) {
-	return branchInventoryService().ListRetiredRemoteRefs(ctx, repositoryPath)
-}
-
-// listRetiredTags keeps remote tag inspection separate from local tags. It
-// uses ls-remote for remote scope so branch inventory never writes fetched
-// tags into the caller's local tag namespace.
-func listRetiredTags(ctx context.Context, repositoryPath string, remote, metadata bool) ([]branchRef, string) {
-	return branchInventoryService().ListRetiredTags(ctx, repositoryPath, remote, metadata)
-}
-
-func listRefs(ctx context.Context, repositoryPath, refPrefix, namePrefix string) ([]branchRef, string) {
-	return branchInventoryService().ListRefs(ctx, repositoryPath, refPrefix, namePrefix)
-}
-
-func classifyBranch(ctx context.Context, repository discover.Repo, sweep branchSweepOptions, ref branchRef, scope string, targetSHA, canonicalHEAD string, inUse map[string]string, checkedOut map[string]bool, pullRequestCache map[string][]githubPullRequest) BranchEntry {
-	return branchInventoryService().ClassifyBranch(ctx, branchInventoryRepository(repository), sweep.branchInventorySweep(), ref, scope, targetSHA, canonicalHEAD, inUse, checkedOut, pullRequestCache)
-}
-
 // classifyAttestedReceipt verifies an operator-supplied --absorbed-by pointer
 // for one candidate branch, reusing worktree cleanup's exact
 // attested-absorption proof (attestedAbsorbedReceipt) rather than a second
@@ -414,29 +333,4 @@ func shortSHA(sha string) string {
 
 func isProtectedBranch(branch, base, canonicalHEAD string) bool {
 	return worktreebranches.IsProtectedBranch(branch, base, canonicalHEAD)
-}
-
-func protectedEvidence(branch, base, canonicalHEAD string) string {
-	return worktreebranches.ProtectedEvidence(branch, base, canonicalHEAD)
-}
-
-// classifyLandingReceipt tries to prove, on evidence, that a non-ancestor
-// branch's work is in the target: GitHub's commit-to-pull-request index must
-// name a merged pull request into the exact base whose merge commit is
-// contained in the fetched target, and the local three-way proof must show the
-// branch adds nothing to the landing commit or the target. Each failing check
-// names itself, and every failure leaves the branch in its patch-evidence
-// disposition — a branch never becomes eligible because a check could not be
-// run. See #req:receipted-requires-a-proved-landing and
-// #req:receipted-is-opt-in-and-fails-closed.
-func classifyLandingReceipt(ctx context.Context, repository discover.Repo, ref branchRef, base, targetSHA string, cache map[string][]githubPullRequest) (*PullRequest, string) {
-	return branchInventoryService().ClassifyLandingReceipt(ctx, branchInventoryRepository(repository), ref, base, targetSHA, cache)
-}
-
-// classifyAbsorbedOrUnique implements the absorbed/unique split. absorbed is
-// true when git cherry reports zero unique patches, or when the branch tree
-// is identical to the target tree; both are patch-id/content evidence only,
-// never a landing receipt. See #req:absorbed-is-report-only.
-func classifyAbsorbedOrUnique(ctx context.Context, repositoryPath, targetSHA, branchSHA string) (absorbed bool, evidence string, uniqueCount int, err error) {
-	return branchInventoryService().ClassifyAbsorbedOrUnique(ctx, repositoryPath, targetSHA, branchSHA)
 }

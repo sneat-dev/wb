@@ -2,7 +2,6 @@ package worktrees
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -356,13 +355,4 @@ func writeQuarantineReportInjected(path string, outcome BranchQuarantineOutcome,
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))
-}
-
-func QuarantineManifestDigest(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:]), nil
 }

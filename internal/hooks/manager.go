@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
-	unix "github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 

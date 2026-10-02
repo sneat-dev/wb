@@ -4280,14 +4280,6 @@ func githubPullRequests(ctx context.Context, worktree, repository, head string) 
 func githubPullRequestsForCommit(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, bool, error) {
 	return landingReceiptService().GitHubPullRequestsForCommit(ctx, worktree, repository, head)
 }
-func githubPullRequestsForBranchWithExecute(ctx context.Context, worktree, repository, branch, base string,
-	execute func(context.Context, string, ...string) githubobserver.CommandResponse) ([]githubPullRequest, error) {
-	return landingReceiptService().GitHubPullRequestsForBranchWithExecute(ctx, worktree, repository, branch, base,
-		func(ctx context.Context, path string, args ...string) worktreelanding.GitHubCommand {
-			result := execute(ctx, path, args...)
-			return worktreelanding.GitHubCommand{Stdout: result.Stdout, Stderr: result.Stderr, Err: result.Err}
-		})
-}
 func exactDeletedTargetDefaultBranchReceipt(ctx context.Context, worktree, repository, recordedTarget, defaultBase, head string) (*PullRequest, error) {
 	return landingReceiptService().ExactDeletedTargetDefaultBranchReceipt(ctx, worktree, repository, recordedTarget, defaultBase, head)
 }
@@ -4313,15 +4305,6 @@ func attestedAbsorbedReceipt(ctx context.Context, worktree, repository, slug, he
 
 type pullRequestHeadMismatchError = worktreelanding.PullRequestHeadMismatchError
 
-func resolveAbsorbedByPullRequestWithGet(ctx context.Context, worktree, slug, base string, number int,
-	get func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error)) (string, *PullRequest, string, error) {
-	return landingReceiptService().ResolveAbsorbedByPullRequestWithGet(ctx, worktree, slug, base, number,
-		func(ctx context.Context, request worktreelanding.GitHubGetRequest) ([]byte, error) {
-			response, err := get(ctx, githubobserver.GetRequest{Dir: request.Dir, Repository: request.Repository,
-				Target: request.Target, Endpoint: request.Endpoint, FreshWindow: 0})
-			return response.Body, err
-		})
-}
 func absorbingPullRequest(pullRequests []githubPullRequest, base string) *PullRequest {
 	return landingReceiptService().AbsorbingPullRequest(pullRequests, base)
 }
@@ -4330,9 +4313,6 @@ func contentAbsorbed(ctx context.Context, repository, head, landingSHA, target s
 }
 func contentContained(ctx context.Context, repository, head, commit string) (bool, error) {
 	return landingReceiptService().ContentContained(ctx, repository, head, commit)
-}
-func mergeResultTree(ctx context.Context, repository, ours, theirs string) (string, bool, error) {
-	return landingReceiptService().MergeResultTree(ctx, repository, ours, theirs)
 }
 func commitTree(ctx context.Context, repository, revision string) (string, error) {
 	return worktreeproof.CommitTree(ctx, repository, revision, git)

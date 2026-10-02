@@ -1295,11 +1295,3 @@ func verifyHeldSessionReceiveCheckoutWithQuery(ctx context.Context, worktreePath
 	}
 	return nil
 }
-
-func sessionReceiveRepositoryFromRemote(remote string) (string, error) {
-	parsed, err := gitremote.Parse(remote)
-	if err != nil {
-		return "", err
-	}
-	return parsed.Identity.Repository, nil
-}

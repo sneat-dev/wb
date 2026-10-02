@@ -49,16 +49,6 @@ type ParkedLocalCustody struct {
 	beforeAttachAppend func(*os.File)
 }
 
-// AttachParkedLocalSuccessor locks every member journal in stable path order,
-// validates the complete Git/claim/latest-owner barrier, and only then appends
-// the same prepared successor to every member. Explicit event IDs make a
-// partial I/O failure repairable by the same launcher attempt.
-func AttachParkedLocalSuccessor(ctx context.Context, options ParkedLocalSuccessorOptions) error {
-	return withParkedLocalResumeCustody(ctx, options.ProjectsRoot, options.Bundle, options.AttemptID, func(custody *ParkedLocalCustody) error {
-		return custody.Attach(ctx, options.Successor, options.AttemptID, options.AttemptIndex)
-	})
-}
-
 // WithParkedLocalResumeCustody holds every exact worktree descriptor and
 // journal lock across local aggregate preparation, launcher readiness, member
 // attachment, and source finalization. The callback therefore cannot launch

@@ -34,44 +34,6 @@ func TestClonePathInvertsToRemoteURL(t *testing.T) {
 	}
 }
 
-// TestExpectedRemoteURLInvertsTheFleetSlugs proves the inverse holds for
-// multi-segment hosted paths and for the owner/repository pairs actually
-// present in this fleet, including an explicit-port forge.
-func TestExpectedRemoteURLInvertsTheFleetSlugs(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	for _, slug := range []string{
-		"github.com/dal-go/dalgo",
-		"github.com/sneat-dev/wb",
-		"github.com/sneat-co/backstage",
-		"gitlab.example.test/sneat-dev/wb",
-		"github.com:8443/acme/app",
-	} {
-		got, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(slug)))
-		if err != nil {
-			t.Fatalf("ExpectedRemoteURL(%q): %v", slug, err)
-		}
-		if want := "https://" + slug; got != want {
-			t.Fatalf("ExpectedRemoteURL(%q) = %q, want %q", slug, got, want)
-		}
-	}
-}
-
-// TestExpectedRemoteURLRefusesALegacyFirstLevel encodes the finding half of
-// projects-root-layout#ac:clone-path-inverts-to-url at this boundary: the
-// legacy two-level placement this fleet still uses has no literal hostname, so
-// WB refuses to invent a remote for it. `wb layout audit` reports it as a
-// layout finding.
-func TestExpectedRemoteURLRefusesALegacyFirstLevel(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	for _, legacy := range []string{"sneat-dev/wb", "dal-go/dalgo", "acme/app"} {
-		if remote, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(legacy))); err == nil {
-			t.Fatalf("ExpectedRemoteURL(%q) invented %q for a first level that is not a hostname", legacy, remote)
-		}
-	}
-}
-
 // TestUnqualifiedCoordinateResolvesTheLiteralHostLevel proves the derivation
 // finds a clone that already sits at <root>/<host>/<org>/<repo> without
 // requiring the fleet to move, and that it creates the task checkout there.

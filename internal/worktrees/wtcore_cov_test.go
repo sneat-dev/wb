@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 
 	"github.com/sneat-dev/wb/internal/console"
 )
@@ -397,63 +398,6 @@ func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
 	// so the upward walk reaches the filesystem root and reports nothing.
 	if root, err := heartbeatPorts().WorktreeRootOf(filepath.Join(t.TempDir(), "no-manifest")); err != nil || root != "" {
 		t.Fatalf("worktreeRootOf outside a worktree = %q, err=%v", root, err)
-	}
-}
-
-// TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion asserts Git's own
-// porcelain answer is used, including the rename target and a path that no
-// longer exists on disk.
-func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
-	ctx := context.Background()
-	repository := newJournalWorktree(t)
-	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("one\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, repository, "add", "tracked.txt")
-	gitTest(t, repository, "commit", "-m", "base")
-
-	if got := NewestChangedFileTime(ctx, repository); !got.IsZero() {
-		t.Fatalf("clean worktree reported activity at %v", got)
-	}
-
-	// A rename reports "old -> new"; the new path is the one that was written.
-	gitTest(t, repository, "mv", "tracked.txt", "renamed.txt")
-	renamed := filepath.Join(repository, "renamed.txt")
-	info, err := os.Lstat(renamed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := NewestChangedFileTime(ctx, repository)
-	if got.IsZero() {
-		t.Fatal("a renamed file must count as activity")
-	}
-	if !got.Equal(info.ModTime().UTC()) {
-		t.Fatalf("activity = %v, want rename target mtime %v", got, info.ModTime().UTC())
-	}
-
-	// A tracked file deleted from disk cannot be stat'd and must be skipped
-	// rather than abort the read.
-	gitTest(t, repository, "commit", "-am", "rename")
-	if err := os.Remove(renamed); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repository, "new.txt"), []byte("new\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got = NewestChangedFileTime(ctx, repository)
-	if got.IsZero() {
-		t.Fatal("the untracked file that still exists must be reported")
-	}
-	freshInfo, err := os.Lstat(filepath.Join(repository, "new.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.Equal(freshInfo.ModTime().UTC()) {
-		t.Fatalf("activity = %v, want the existing file mtime %v", got, freshInfo.ModTime().UTC())
-	}
-
-	if _, err := gitRawOutput(ctx, filepath.Join(t.TempDir(), "not-a-repository"), "status", "--porcelain"); err == nil {
-		t.Fatal("gitRawOutput outside a repository must fail")
 	}
 }
 

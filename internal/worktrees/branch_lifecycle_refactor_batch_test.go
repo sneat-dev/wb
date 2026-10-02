@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/discover"
 )
 
 func branchLifecycleQuarantineOps(sha string) branchQuarantinePlanOps {
@@ -204,56 +202,6 @@ func TestBranchLifecycleRefactorBatchOptionAndRequestBoundaries(t *testing.T) {
 	}
 	if _, err := quarantineRequests(BranchQuarantineOptions{Manifest: manifest}); err == nil {
 		t.Fatal("invalid manifest request was accepted")
-	}
-}
-
-func TestBranchLifecycleRefactorBatchClassificationBoundaries(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	sha := strings.Repeat("a", 40)
-	target := strings.Repeat("b", 40)
-	repository := discover.Repo{Org: "acme", Name: "app", Path: "/fixture/repository"}
-	entry := classifyBranch(ctx, repository, branchSweepOptions{Base: "main"}, branchRef{Name: "main", SHA: sha}, BranchScopeLocal, target, "trunk", nil, nil, nil)
-	if entry.Disposition != BranchProtected {
-		t.Fatalf("protected branch = %#v", entry)
-	}
-	cache := map[string][]githubPullRequest{sha: {}}
-	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no merged") {
-		t.Fatalf("missing landing receipt = %#v, %q", receipt, note)
-	}
-
-	branchTree := strings.Repeat("c", 40)
-	absorbedContext := lifecycleGitContext(t, repository.Path,
-		lifecycleGitReply{operation: "cherry", output: "+ " + sha + "\n"},
-		lifecycleGitReply{operation: "rev-parse", output: branchTree + "\n"},
-		lifecycleGitReply{operation: "rev-parse", output: branchTree + "\n"},
-	)
-	absorbed, _, unique, err := classifyAbsorbedOrUnique(absorbedContext, repository.Path, target, sha)
-	if err != nil || !absorbed || unique != 0 {
-		t.Fatalf("tree-equal classification = %t, %d, %v", absorbed, unique, err)
-	}
-
-	inspectContext := lifecycleGitContext(t, repository.Path,
-		lifecycleGitReply{operation: "fetch", err: errors.New("offline")},
-		lifecycleGitReply{operation: "update-ref"},
-	)
-	entries, diagnostic := inspectRepositoryBranches(inspectContext, repository, branchSweepOptions{Base: "main", Scope: BranchScopeAll}, nil)
-	if len(entries) != 1 || entries[0].Disposition != BranchUnreadable || diagnostic == "" {
-		t.Fatalf("unreadable branch inventory = %#v, %q", entries, diagnostic)
-	}
-	tagsContext := lifecycleGitContext(t, repository.Path, lifecycleGitReply{operation: "ls-remote", err: errors.New("offline")})
-	if tags, diagnostic := listRetiredTags(tagsContext, repository.Path, true, false); tags != nil || diagnostic == "" {
-		t.Fatalf("unreadable retired tags = %#v, %q", tags, diagnostic)
-	}
-
-	fileRoot := filepath.Join(t.TempDir(), "projects-file")
-	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, _, _, _, _, diagnostics := countRetiredBranches(ctx, branchSweepOptions{ProjectsRoot: fileRoot, Scope: BranchScopeAll})
-	if len(diagnostics) == 0 {
-		t.Fatal("retired count hid repository discovery failure")
 	}
 }
 

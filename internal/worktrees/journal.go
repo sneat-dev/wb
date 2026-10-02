@@ -127,10 +127,6 @@ func openJournalDirectory(worktree string, create bool) (*os.File, error) {
 	return worktreejournal.OpenJournalDirectory(worktree, create)
 }
 
-func openJournalComponent(parentFD int, name string, create bool) (int, error) {
-	return worktreejournal.OpenJournalComponent(parentFD, name, create)
-}
-
 // openJournalSubdirectory opens prompts/ or worklog/ below the journal root.
 func openJournalSubdirectory(worktree, name string, create bool) (*os.File, error) {
 	return worktreejournal.OpenJournalSubdirectory(worktree, name, create)
