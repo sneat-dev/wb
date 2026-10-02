@@ -110,7 +110,7 @@ func TestLogSentinelNeverReachesAnAnonymousResponse(t *testing.T) {
 	t.Parallel()
 	path := plantedLog(t)
 	const ownerCookie = "the-owner"
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: path, Owner: func(request *http.Request) bool {
+	handler := NewHandler(Options{Version: "test", LogPath: path, Owner: func(request *http.Request) bool {
 		cookie, err := request.Cookie("session")
 		return err == nil && cookie.Value == ownerCookie
 	}})

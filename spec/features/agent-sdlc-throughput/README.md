@@ -358,7 +358,7 @@ The loopback HTTP dashboard remains read-only. (Amended 2026-10-01:
 [cockpit-actions](../cockpit-actions/README.md) adds a second,
 owner-session-authenticated entry on the loopback listener that admits typed
 actions only, never an argument vector; the owner-token RPC described next is
-unchanged, and the existing dashboard stays read-only until it is retired.) Operation mutations use
+unchanged, and the former operations dashboard was read-only until it was retired on 2026-10-02.) Operation mutations use
 ConnectRPC on a separate mode-0600 Unix socket and require the private lifecycle
 owner token, which is not passed in process arguments or operation receipts.
 Raw command execution remains disabled by default even for an authenticated
@@ -624,8 +624,9 @@ The dashboard surface is `https://sneat.work/bench/dashboard`, implemented in
 contracts in delivery order.
 
 `wb dashboard` opens that hosted cross-machine view in the platform browser.
-`wb dashboard --local` starts or reuses the current machine's loopback daemon
-and opens its local view. Non-interactive and `--format=json` invocations return
+`wb dashboard --local` (deprecated 2026-10-02: the local operations pages are
+retired and `wb cockpit` replaces them; cockpit#req:legacy-dashboard-retired)
+starts or reuses the current machine's loopback daemon and opens its Cockpit. Non-interactive and `--format=json` invocations return
 the resolved URL without launching a browser, so agents and scripts can discover
 the same surface without a desktop side effect.
 

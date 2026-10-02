@@ -138,6 +138,7 @@ github.com/sneat-dev/wb/internal/quality.FindCampaignTestNameMatches
 github.com/sneat-dev/wb/internal/quality.FindClockSeamViolations
 github.com/sneat-dev/wb/internal/quality.FindExecSiteMatches
 github.com/sneat-dev/wb/internal/quality.FindInlineWriteSequences
+github.com/sneat-dev/wb/internal/quality.FindNativeTestSelectionProblems
 github.com/sneat-dev/wb/internal/quality.FindUnitTierMatches
 github.com/sneat-dev/wb/internal/quality.FormatCampaignTestNamesPending
 github.com/sneat-dev/wb/internal/quality.FormatExecSitesPending
@@ -146,6 +147,7 @@ github.com/sneat-dev/wb/internal/quality.InlineWriteSequenceViolation.String
 github.com/sneat-dev/wb/internal/quality.ParseUnitTierAllow
 github.com/sneat-dev/wb/internal/quality.ScanExecWriteFileCallSites
 github.com/sneat-dev/wb/internal/quality.UnitTierMatch.String
+github.com/sneat-dev/wb/internal/quality.ValidateNativeWorkflowSelector
 github.com/sneat-dev/wb/internal/quality.buildConstraintRequiresE2E
 github.com/sneat-dev/wb/internal/quality.callArgIsOSArgsZero
 github.com/sneat-dev/wb/internal/quality.callArgsMentionAppendFlag
@@ -178,7 +180,10 @@ github.com/sneat-dev/wb/internal/quality.formatPendingList
 github.com/sneat-dev/wb/internal/quality.functionCreatesAndWritesContentIgnoringPublish
 github.com/sneat-dev/wb/internal/quality.functionHasInlineWriteSequence
 github.com/sneat-dev/wb/internal/quality.functionRenameOnlyOrAppendOnly
+github.com/sneat-dev/wb/internal/quality.hasNativeHelperCaller
+github.com/sneat-dev/wb/internal/quality.hasNativeHelperMarker
 github.com/sneat-dev/wb/internal/quality.isExecWriteFileExecutableMode
+github.com/sneat-dev/wb/internal/quality.isNativeTestFunction
 github.com/sneat-dev/wb/internal/quality.literalGitArg
 github.com/sneat-dev/wb/internal/quality.qualifiedFuncName
 github.com/sneat-dev/wb/internal/quality.receiverTypeName
@@ -188,9 +193,11 @@ github.com/sneat-dev/wb/internal/quality.scanExecSiteFile
 github.com/sneat-dev/wb/internal/quality.scanExecWriteFileFile
 github.com/sneat-dev/wb/internal/quality.scanUnitTierFile
 github.com/sneat-dev/wb/internal/quality.stripImportQuotes
+github.com/sneat-dev/wb/internal/quality.testImportName
 github.com/sneat-dev/wb/internal/quality.timeLocalName
 github.com/sneat-dev/wb/internal/quality.unitTierPackageAliases
 github.com/sneat-dev/wb/internal/quality.unitTierSkipDir
+github.com/sneat-dev/wb/internal/quality.walkGoTestFiles
 github.com/sneat-dev/wb/internal/quality.walkNonTestFunctionDecls
 
 # == A2. Hosted Workbench service: api/githubapp and hub, consumed outside this module ==
@@ -342,6 +349,3 @@ github.com/sneat-dev/wb/internal/worktrees.parkedSessionWorkLogSnapshotWithReads
 github.com/sneat-dev/wb/cmd/wb.daemonSupervisorRecordsStartLog
 github.com/sneat-dev/wb/internal/repopath.Address.String
 github.com/sneat-dev/wb/internal/worktrees.platformGitFilesystemCapabilityConfines
-
-# == internal/dashboard: removed by a separate change ==
-github.com/sneat-dev/wb/internal/dashboard.BuildOverview

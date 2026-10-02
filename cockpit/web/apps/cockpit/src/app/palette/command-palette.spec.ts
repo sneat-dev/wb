@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing'
 import { Router, provideRouter } from '@angular/router'
 import { FETCH, FleetStore, hrefOf } from '@cockpit/fleet-data'
 import { agent, fleetDocument, repository, worktree } from '@cockpit/fleet-data/testing'
+import { NOW } from '../pages/test-harness'
 import { ShellState } from '../shell/shell-state'
 import { CommandPalette, revealSelected, scrollIntoList } from './command-palette'
 import { RECENTS_KEY, RECENTS_STORAGE } from './recents'
@@ -35,7 +36,7 @@ describe('CommandPalette', () => {
     const store = TestBed.inject(FleetStore)
     store.loaded.set(true)
     store.document.set(fleet())
-    store.now.set(Date.parse('2026-10-01T10:05:00Z'))
+    store.now.set(NOW)
     navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true)
     const shell = TestBed.inject(ShellState)
     const fixture = TestBed.createComponent(CommandPalette)

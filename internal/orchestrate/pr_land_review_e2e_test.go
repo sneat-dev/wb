@@ -25,7 +25,7 @@ import (
 // to date), still lands: the advance is proved, not a foreign change.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandFileReviewSurvivesOnlyAWBUpdateBranchMerge(t *testing.T) {
+func TestE2ELandFileReviewSurvivesOnlyAWBUpdateBranchMerge(t *testing.T) {
 	// "feature" (no slash) matches the fixture's fake update-branch script,
 	// which republishes the merge onto a hardcoded "refs/heads/feature"
 	// when no "head-ref" state override is written (see pr_land_test.go's

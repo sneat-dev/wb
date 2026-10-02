@@ -44,7 +44,7 @@ record the confirmation. Never challenge the same instruction twice.
   → `wb-ci`
 - Branch hygiene: merged, stale, or leftover branches → `wb-branches`
 - A library and the consumers that must change with it → `wb-streams`
-- The local operations API/dashboard → `wb-daemon`
+- The local operations API/Cockpit → `wb-daemon`
 - Installing or updating the `wb` binary itself → `wb-install`
 - Reusable, repeatable fleet-wide changes → `wb-run`
 - Cross-repo dependency-release campaigns → `wb-dependency-campaign`

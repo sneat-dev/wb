@@ -10,7 +10,8 @@ from git history after a regeneration.
 The 2026-10-02 review took the baseline from 378 entries (385 findings on main,
 because seven `internal/testenv` findings were never recorded) to 261: 124
 unreachable functions were deleted or moved out of production code, and the
-rest are the categories below.
+rest are the categories below. Since then the retired dashboard's one entry
+left and seven native-test selection analysers arrived from main, for 267.
 
 ## How to decide a new unreachable function
 
@@ -24,7 +25,7 @@ rest are the categories below.
 4. Scheduled for wiring by a live spec or plan: category A3, and name the task.
 5. Otherwise delete it.
 
-## A1. Test support, by design (150 entries)
+## A1. Test support, by design (157 entries)
 
 * 72: `internal/gitcli/gitclitest`, `internal/runner/runnertest`,
   `internal/sessiontransport/transporttest`, `internal/testenv`,
@@ -134,7 +135,3 @@ cannot see that call.
 Per-OS test probes (2): `internal/worktrees.platformGitFilesystemCapabilityConfines`
 and `cmd/wb.daemonSupervisorRecordsStartLog` have one definition per platform
 and are read only by tests.
-
-## internal/dashboard (1 entry)
-
-`dashboard.BuildOverview` is being removed by a separate change.

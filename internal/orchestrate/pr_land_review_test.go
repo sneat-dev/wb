@@ -372,7 +372,7 @@ func TestLandReviewStaleRefusedBeforeAutoMergeIsArmed(t *testing.T) {
 	}
 }
 
-// TestLandFileReviewSurvivesOnlyAWBUpdateBranchMerge moved to
+// TestE2ELandFileReviewSurvivesOnlyAWBUpdateBranchMerge moved to
 // pr_land_review_e2e_test.go (spec/plans/coverage-to-100 task-17): its own
 // doc comment already said the review-stale proof "needs a real local
 // checkout... to run git merge-tree/ancestor checks against", and that

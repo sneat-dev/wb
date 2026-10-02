@@ -1,6 +1,6 @@
 ---
 name: wb-daemon
-description: Serve and inspect WB's local operations API and web dashboard. Use when reviewing worktree activity and governed command cost, or when publishing a loopback WB service through an authenticated Cloudflare Tunnel.
+description: Serve and inspect WB's local operations API and Cockpit web interface. Use when reviewing worktree activity and governed command cost, or when publishing a loopback WB service through an authenticated Cloudflare Tunnel.
 ---
 
 # WB daemon
@@ -11,9 +11,12 @@ Open the hosted cross-machine dashboard in the platform browser:
 wb dashboard
 ```
 
-Use `wb dashboard --local` to start or reuse this machine's daemon and open its
-loopback view. `wb dashboard --format=json` and non-interactive invocations
-return the resolved URL without launching a browser.
+This machine's own web interface is Cockpit (`wb cockpit`, below); the old
+local operations pages (`/`, `/metrics`, `/coverage` and `/api/v1/overview`) are
+retired. `wb dashboard --local` is deprecated: it starts or reuses this
+machine's daemon and opens Cockpit without signing in. Run
+`wb dashboard --format=json`, or any non-interactive invocation, to get the
+resolved URL without launching a browser.
 
 Find Cockpit's address, or open it. Agents run the JSON form:
 
@@ -72,7 +75,7 @@ exports over HTTP or SSH), `session_move.targets.<machine>.http` (`url`, `token_
 `wb_path`) for each machine's route, and `remote.publish.interval`, `.agents` and `.metrics` for the opt-in
 periodic publish. The architecture, trust rule, cadences and budgets are in `docs/cockpit.md`.
 
-Start and inspect the local read-only API and embedded dashboard:
+Start and inspect the local read-only API and Cockpit:
 
 ```sh
 wb daemon start
@@ -174,7 +177,7 @@ The raw policy applies only to `wb daemon operation submit`. Normal `wb run
 The default URL is `http://127.0.0.1:8766`. Keep the daemon on loopback. To
 reach it from another registered machine, route that local endpoint through a
 Cloudflare Tunnel protected by Cloudflare Access service authentication.
-`/api/v1/health` and `/api/v1/overview` answer only a request whose `Host`
+`/` and `/api/v1/health` answer only a request whose `Host`
 names a loopback host (421 `misdirected_request` otherwise), so have the tunnel
 send one (cloudflared: `httpHostHeader: 127.0.0.1:8766`).
 
@@ -187,7 +190,7 @@ lifecycle transition keeps the same lock inode and atomically records its owner
 PID in a sidecar while holding a kernel lock; process death releases the kernel
 lock without losing or partially rewriting the recovery evidence.
 
-The dashboard stays on read-only loopback HTTP. Mutating operation RPCs prefer
+The loopback listener (Cockpit and the read-only API) stays on HTTP. Mutating operation RPCs prefer
 a separate mode-0600 Unix socket plus the private lifecycle owner token.
 Sandbox-denied socket calls use the authenticated owner-only project-root file
 bridge without moving execution outside the sandbox. Windows builds expose the
@@ -205,8 +208,8 @@ There is no remote mutation endpoint. Normal jobs are leased only to compatible
 registered workers over the protected local Connect RPC transport. The queue
 persists bounded output and command digests and rejects environment overrides.
 Reusing an idempotency key
-with different cwd, argv, environment, or CPU units is rejected. Use the
-dashboard and `/api/v1/*` read models for machine, worktree, and
+with different cwd, argv, environment, or CPU units is rejected. Use
+Cockpit and the `/api/v1/*` read models for machine, worktree, and
 governed-command visibility.
 
 `GET /api/v1/log` (the tail of the daemon's runtime log) is file content and is

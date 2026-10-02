@@ -28,7 +28,7 @@ func TestDaemonLogIsServedToTheOwnerSessionAndToNobodyElse(t *testing.T) {
 	f := newFixture(t, nil)
 	cookie := f.login()
 	handler := dashboard.NewHandler(dashboard.Options{
-		ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath,
+		Version: "test", LogPath: logPath,
 		Mounts: f.server.Mounts(), Owner: f.server.IsOwner,
 	})
 	get := func(c call) *httptest.ResponseRecorder {

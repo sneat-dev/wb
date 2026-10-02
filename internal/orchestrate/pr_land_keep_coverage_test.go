@@ -83,12 +83,12 @@ func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 	}
 }
 
-// TestOrchCovCommitsBetweenAndPatchIdentityDescribeOneCommit,
-// TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit,
-// TestOrchCovMapLandedCommitsPairsKeptSourcesByPatchIdentity,
-// TestOrchCovMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate,
+// TestE2ECommitsBetweenAndPatchIdentityDescribeOneCommit,
+// TestE2EPatchIdentityHasNoIdentityForAMergeCommit,
+// TestE2EMapLandedCommitsPairsKeptSourcesByPatchIdentity,
+// TestE2EMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate,
 // TestOrchCovRewriteBranchForKeptCommits* and
-// TestOrchCovLandKeepingCommitsRewritesThePublishedBranch moved to
+// TestE2ELandKeepingCommitsRewritesThePublishedBranch moved to
 // pr_land_keep_e2e_test.go (spec/plans/coverage-to-100 task-17): each calls
 // a function that now runs real git through orchestrateGit/orchestrateRunner
 // (internal/runner), which task-24's runtime guard blocks outside the e2e

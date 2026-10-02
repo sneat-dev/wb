@@ -32,12 +32,12 @@ func addLandWorktree(t *testing.T, fixture *landFixture, branch string) string {
 	return dir
 }
 
-// TestLandFastForwardsACleanWorktreeAfterUpdateBranch is required test (a):
+// TestE2ELandFastForwardsACleanWorktreeAfterUpdateBranch is required test (a):
 // a clean local worktree checked out on the PR branch ends at the updated
 // head after `pr land` calls update-branch, and its upstream still resolves.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandFastForwardsACleanWorktreeAfterUpdateBranch(t *testing.T) {
+func TestE2ELandFastForwardsACleanWorktreeAfterUpdateBranch(t *testing.T) {
 	fixture := newLandFixture(t, "feature")
 	worktree := addLandWorktree(t, fixture, "feature")
 	advanceLandTarget(t, fixture)
@@ -65,12 +65,12 @@ func TestLandFastForwardsACleanWorktreeAfterUpdateBranch(t *testing.T) {
 	}
 }
 
-// TestLandLeavesADirtyWorktreeUntouched is required test (b): a dirty
+// TestE2ELandLeavesADirtyWorktreeUntouched is required test (b): a dirty
 // worktree is left exactly as it was, the note says why, and the landing
 // still succeeds.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandLeavesADirtyWorktreeUntouched(t *testing.T) {
+func TestE2ELandLeavesADirtyWorktreeUntouched(t *testing.T) {
 	fixture := newLandFixture(t, "feature")
 	worktree := addLandWorktree(t, fixture, "feature")
 	dirtyFile := filepath.Join(worktree, "dirty.txt")
@@ -100,11 +100,11 @@ func TestLandLeavesADirtyWorktreeUntouched(t *testing.T) {
 	}
 }
 
-// TestLandLeavesADivergedWorktreeUntouched is required test (c): a worktree
+// TestE2ELandLeavesADivergedWorktreeUntouched is required test (c): a worktree
 // with a local commit the remote does not have is left untouched and noted.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandLeavesADivergedWorktreeUntouched(t *testing.T) {
+func TestE2ELandLeavesADivergedWorktreeUntouched(t *testing.T) {
 	fixture := newLandFixture(t, "feature")
 	worktree := addLandWorktree(t, fixture, "feature")
 	writeEngineFile(t, filepath.Join(worktree, "extra.txt"), "local only\n")
@@ -129,11 +129,11 @@ func TestLandLeavesADivergedWorktreeUntouched(t *testing.T) {
 	}
 }
 
-// TestLandDoesNotErrorWithNoWorktreeForTheBranch is required test (d): no
+// TestE2ELandDoesNotErrorWithNoWorktreeForTheBranch is required test (d): no
 // worktree holds the branch, so there is no error and no note.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestLandDoesNotErrorWithNoWorktreeForTheBranch(t *testing.T) {
+func TestE2ELandDoesNotErrorWithNoWorktreeForTheBranch(t *testing.T) {
 	fixture := newLandFixture(t, "feature")
 	advanceLandTarget(t, fixture)
 
@@ -149,13 +149,13 @@ func TestLandDoesNotErrorWithNoWorktreeForTheBranch(t *testing.T) {
 	}
 }
 
-// TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch is required test
+// TestE2EFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch is required test
 // (e): a fetched head that differs from the updated head is not merged and
 // is noted. It exercises fastForwardWorktreeToUpdatedHead directly, with a
 // deliberately wrong updatedHead, rather than through the full `pr land`
 // fixture — the mismatch is trivial to construct this way and the assertion
 // is exactly the same code path.
-func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
+func TestE2EFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
@@ -185,7 +185,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 	}
 }
 
-// TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier
+// TestE2EFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailure
 // covers the same function's fast-forward-failed note: the mismatch and
 // ancestor checks above are both bypassed (a matching updatedHead and a
 // Fake ancestor check that reports no divergence), but canonical's real
@@ -194,7 +194,7 @@ func TestFastForwardWorktreeToUpdatedHeadNotesAMismatchedFetch(t *testing.T) {
 // `git merge --ff-only` this function issues fails for real.
 //
 //nolint:paralleltest // calls a fixture helper (newLandFixture) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailureUnitTier(t *testing.T) {
+func TestE2EFastForwardWorktreeToUpdatedHeadNotesAFastForwardFailure(t *testing.T) {
 	fixture := newLandFixture(t, "feature/ff-fail", "go.mod")
 	writeEngineFile(t, filepath.Join(fixture.canonical, "diverged.txt"), "local only\n")
 	runEngineGit(t, fixture.canonical, "add", "-A")

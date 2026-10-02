@@ -554,8 +554,8 @@ func newDaemonServeCmd(inv *invocation, deps daemonDependencies) *cobra.Command 
 	var listenAddress, stateFile string
 	var quiet, managedStartFlag bool
 	command := &cobra.Command{
-		Use: "serve", Short: "Serve the read-only dashboard and API on a loopback address",
-		Long: `Serve WB's embedded operations dashboard and versioned read-only API.
+		Use: "serve", Short: "Serve Cockpit and the read-only API on a loopback address",
+		Long: `Serve Cockpit (WB's web interface, at /cockpit/; the root redirects there) and the versioned read-only API.
 
 The listener is loopback-only. Publish it to registered machines through a
 protected Cloudflare Tunnel or another authenticated reverse proxy; do not bind
@@ -565,7 +565,7 @@ only through the separately authenticated local transport.
 When ~/.config/wb/wb.yaml has a hub: section, the same listener also serves the
 bench hub API under /v0/workbench/ and the embedded bench dashboard under
 /workbench/, on the DALgo store engine that section names. Without a hub: section
-nothing changes, and the dashboard needs no sign-in because only this machine
+nothing changes, and the bench dashboard needs no sign-in because only this machine
 can reach the loopback address it is bound to.
 
 With hub.github.token_file set, a poller reads every repository this machine
@@ -2561,12 +2561,12 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	// A hub write is the owner's alone: the same session check the log uses.
 	mount.authorizeOwnerWith(cockpitServer.IsOwner)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
-		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
+		Home: cockpit.PagePrefix, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
 		Mounts: cockpitServer.MountsWith(mount.handlers()), Hub: mount.hubHealth(), LogPath: logPath,
 		// The log is file content: only Cockpit's owner session reads it
 		// (cockpit#req:daemon-log-is-owner-only).
-		Owner: cockpitServer.IsOwner, Logf: fleetOptions.Logf,
+		Owner: cockpitServer.IsOwner,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
