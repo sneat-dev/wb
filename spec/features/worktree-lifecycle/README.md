@@ -214,6 +214,45 @@ MUST be a supported integration path. A local-only merge is `awaiting_push`
 and ineligible. An existing remote source branch MUST still point to the exact
 local head.
 
+#### REQ: cleanup-target-selection
+
+The target a head is judged against MUST be chosen per repository, and the plan
+MUST say which target it was whenever that is not the base recorded when the
+worktree was created.
+
+- An operator-supplied `--base <branch>` MUST be the exact origin target the
+  head is judged against. The recorded base MUST still be reported, MUST NOT
+  replace it, and no other branch may be substituted: a branch origin does not
+  have MUST be an error. A `--base` left at its default MUST remain only the
+  fallback for a worktree with no recorded base.
+- Otherwise the recorded base is the target. When origin no longer has it (an
+  integration branch that landed and was deleted), or it is still on origin and
+  its own tip is an ancestor of the freshly fetched default branch (a task
+  stacked on another task's branch), the head MUST be judged against the
+  repository's freshly fetched default branch, and MUST be eligible only when
+  it is a plain Git ancestor of that exact SHA. A recorded base that is still
+  on origin and has not landed in the default branch MUST remain the target.
+- A recorded base origin no longer has MUST NOT make the worktree a malformed
+  candidate. The task MUST stay visible to list, end, abort, gc and cleanup,
+  with the refusal as its reason. Evidence that could not be read (a failed
+  fetch, an unreachable GitHub index) MUST still fail closed as a diagnostic
+  scoped to that task.
+- `--absorbed-by` MUST be verified against the target actually judged, so a
+  pull request or merge commit into the default branch that contains the head
+  is accepted for a task whose recorded base is not the default branch.
+- Every refusal that compares a head against a target MUST name the ref and SHA
+  it compared against, and MUST distinguish a source branch that is pushed and
+  merely unmerged from one that is not on origin.
+
+#### REQ: stacked-task-cleanup-order
+
+One cleanup run that retires both a task and the tasks stacked on its branches
+MUST finish every stacked task before it starts the task it is stacked on, in
+serial and concurrent applies alike, because retiring the base deletes the
+branch a stacked task's proof may still need. The order MUST be derived from
+the recorded bases within one repository, and a dependency the records cannot
+order MUST NOT drop a task from the plan or make one wait on itself.
+
 #### REQ: resumable-interrupted-operation-lock
 
 A killed operation leaves its task lock behind, because no deferred release
@@ -570,7 +609,7 @@ without the opt-in performs no remote access at all.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:absorbed-source-pr-reconciliation, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction, worktree-lifecycle#req:explicit-layout-relocation
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:cleanup-target-selection, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:absorbed-source-pr-reconciliation, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction, worktree-lifecycle#req:explicit-layout-relocation
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -596,6 +635,26 @@ non-empty ones remain blocking backlog; a terminal task leaves no namespace
 directory behind and an operation whose namespace is retired underneath it
 refuses instead of writing where nothing can reach; and apply writes durable evidence. Hosted PR metadata
 MAY be supplied by a deterministic test double.
+
+### AC: landed-integration-branch-tasks-are-retired
+
+**Requirements:** worktree-lifecycle#req:cleanup-target-selection, worktree-lifecycle#req:stacked-task-cleanup-order, worktree-lifecycle#req:exact-remote-target-evidence
+
+**Given** a real bare remote, an integration branch that was merged into the
+default branch by a merge commit and then deleted on origin, a task recorded
+against that integration branch, and a second task stacked on another task's
+branch, all pushed and all contained in the default branch
+**When** an operator lists, garbage-collects, plans and applies cleanup of
+those tasks, with and without `--base` and `--absorbed-by`
+**Then** every verb still sees each task; the plan marks each eligible and
+names the proof, for example `contained in origin/main at <sha>, via recorded
+base cockpit-ux (absent)`; `--base main` and the merge commit or pull request
+number given to `--absorbed-by` are accepted; naming the stacked task's own
+recorded base explicitly is refused with that ref and SHA; a task whose head is
+not in the default branch stays in the plan, ineligible, with the target ref
+and SHA it was compared against; a GitHub outage is reported as a diagnostic
+for that task and plans nothing; and one apply retires a stacked task before
+the task it is stacked on.
 
 ### AC: mixed-layout-relocation-preserves-active-identity
 
