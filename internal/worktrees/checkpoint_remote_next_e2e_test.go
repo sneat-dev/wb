@@ -13,7 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
-func TestRemoteCheckpointNextRefusesNativePushWithoutCheckout(t *testing.T) {
+func TestE2ERemoteCheckpointNextRefusesNativePushWithoutCheckout(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "missing-checkout")
@@ -27,7 +27,7 @@ func TestRemoteCheckpointNextRefusesNativePushWithoutCheckout(t *testing.T) {
 }
 
 //nolint:paralleltest // The existing fixture sets process-wide Git/WB environment.
-func TestRemoteCheckpointNextRefusesRefRemovedAfterNativeFetch(t *testing.T) {
+func TestE2ERemoteCheckpointNextRefusesRefRemovedAfterNativeFetch(t *testing.T) {
 	fixture, worktree, _ := newSessionCheckpointFixture(t, "checkpoint-next-removed")
 	before := gitTestOutput(t, worktree, "rev-parse", "HEAD")
 	pushed, err := PushRemoteCheckpoint(context.Background(), PushRemoteCheckpointOptions{Root: worktree, Task: "checkpoint-next-removed", HeadSHA: before})
