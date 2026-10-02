@@ -44,7 +44,7 @@ assert_scope pull_request "$base" "$example_docs" refs/pull/1/merge $'required=f
 tsv=$(commit_paths internal/worktrees/domain_map.tsv)
 assert_scope pull_request "$base" "$tsv" refs/pull/1/merge $'required=false\ncontract_required=false'
 
-for path in internal/worktrees/retire.go internal/worktrees/retire.s \
+for path in config.json internal/worktrees/retire.go internal/worktrees/retire.s \
   internal/worktrees/retire.syso internal/worktrees/retire.c testdata/root.json \
   go.mod go.sum go.work go.work.sum \
   .github/workflows/go-ci.yml .github/scripts/ci-reuse-select.sh \
@@ -101,5 +101,52 @@ assert_scope push "$rename_base" "$renamed" refs/heads/main $'required=true\ncon
 assert_scope push 0000000000000000000000000000000000000000 "$pushed" refs/heads/main $'required=true\ncontract_required=false'
 assert_scope push "$target" "$pushed" refs/tags/v1.0.0 $'required=true\ncontract_required=false'
 assert_scope workflow_dispatch '' "$pushed" refs/heads/main $'required=true\ncontract_required=false'
+
+
+# Opaque package assets and explicit Markdown embeds are runtime inputs.
+git checkout -q -B asset-base "$base"
+mkdir -p internal/assets
+printf 'package assets\n//go:embed content/*.md\n' > internal/assets/embed.go
+git add .
+git commit -qm asset-base
+asset_base=$(git rev-parse HEAD)
+for path in internal/assets/logo.svg internal/assets/config.json internal/assets/content/readme.md; do
+  git checkout -q -B asset-case "$asset_base"
+  mkdir -p "$(dirname "$path")"
+  touch "$path"
+  git add .
+  git commit -qm asset-case
+  asset_head=$(git rev-parse HEAD)
+  assert_scope pull_request "$asset_base" "$asset_head" refs/pull/1/merge $'required=true\ncontract_required=false'
+done
+git checkout -q -B asset-case "$asset_base"
+touch internal/assets/README.md
+git add .
+git commit -qm package-prose
+asset_head=$(git rev-parse HEAD)
+assert_scope pull_request "$asset_base" "$asset_head" refs/pull/1/merge $'required=false\ncontract_required=false'
+
+
+# Root-package assets are owned too; root prose needs an embed match.
+git checkout -q -B root-asset-base "$base"
+printf 'package main\n//go:embed README.md\n' > main.go
+git add .
+git commit -qm root-asset-base
+root_asset_base=$(git rev-parse HEAD)
+for path in assets/input.txt README.md; do
+  git checkout -q -B root-asset-case "$root_asset_base"
+  mkdir -p "$(dirname "$path")"
+  touch "$path"
+  git add .
+  git commit -qm root-asset-case
+  root_asset_head=$(git rev-parse HEAD)
+  assert_scope pull_request "$root_asset_base" "$root_asset_head" refs/pull/1/merge $'required=true\ncontract_required=false'
+done
+git checkout -q -B root-asset-case "$root_asset_base"
+touch NOTES.md
+git add .
+git commit -qm root-prose
+root_asset_head=$(git rev-parse HEAD)
+assert_scope pull_request "$root_asset_base" "$root_asset_head" refs/pull/1/merge $'required=false\ncontract_required=false'
 
 echo 'go-scope tests passed'

@@ -78,3 +78,17 @@ Collect the last 20–30 Go-relevant completed exact-head runs as a starting bas
 Compare one change at a time on representative core-only, daemon-only and combined changes, with warm and cold caches. Preserve full discovered test membership, unchanged global floor and ratchets, E2E pass/fail requirements, race scope and exact-source profile identities. Initial acceptance: at least 20 successful Go-relevant observations, observed p95 commit-to-required-gate under ten minutes, and no rise in timeout/flake/retry rate; report queue time separately. Twenty observations provide an initial empirical percentile, not strong tail confidence; keep collecting thereafter. A long single test, unsharded remainder, or profile merge becoming the tail falsifies the claim that distributing current shards alone is enough and directs the next focused optimization.
 
 Review status: independently reviewed by the coordinator and a separate peer reviewer. This is a recommendation, not an approved implementation plan. No proposed optimization has been implemented or benchmarked. Gather performance samples from naturally occurring CI runs rather than launching twenty extra full-suite benchmarks.
+
+## Implemented CI scope policy (2026-10-02)
+
+The approved follow-up now scopes per-change coverage to changed packages and
+their transitive reverse dependents from both revision graphs, including default
+and native-tag test imports. Baseline and head measure an identical logical
+selection, with new/deleted packages handled at their existing revision. Full
+nightly coverage retains the 94% floor and publishes the baseline and standard
+summary; selected profiles do not represent repository totals. Main may reuse an
+exact trusted PR receipt. See the approved scope update in
+`spec/plans/coverage-to-100/README.md` and `coverage --affected-packages` help.
+This is an implementation policy, not a measured speedup; the historical timings
+above remain historical evidence and dependency-heavy changes may still select
+most packages.

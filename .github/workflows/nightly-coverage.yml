@@ -1,21 +1,8 @@
 name: Nightly coverage
 
-# The full merged-coverage backstop.
-#
-# `Go CI`'s coverage job gates every pull request on the merged statement
-# threshold, and a merged total cannot be computed from a subset — so that gate
-# is what forces the whole suite to run on every revision. wb accounts for
-# roughly 82% of the fleet's CI test wall-clock as a result.
-#
-# This workflow exists so that gate can be relaxed on the pull-request path
-# without losing the floor: the merged total is still proved daily against
-# main, and a regression surfaces within 24 hours instead of at merge time.
-#
-# It deliberately duplicates only the threshold. Shard configuration and the
-# process-isolated package list stay in the repository-owned .wb/quality.yaml,
-# which `wb coverage` reads, so this file and go-ci.yml cannot drift on them.
-# The threshold below must stay in step with the `--minimum` in
-# .github/workflows/go-ci.yml.
+# Full-module coverage is the daily repository-wide floor and artifact producer.
+# Pull-request coverage uses a selected scope; its profile cannot establish a
+# repository-wide percentage or serve as a full-module baseline.
 
 on:
   schedule:
@@ -34,6 +21,7 @@ concurrency:
 jobs:
   coverage:
     name: Full merged coverage (main)
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Matches go-ci.yml's coverage budget: internal/orchestrate joined the
     # sharded package list in #578 (it was over 15 minutes unsharded), and
@@ -43,6 +31,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Resolve measured revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -79,3 +73,33 @@ jobs:
           # Kept longer than go-ci's copy: this is the series a coverage trend
           # is read from, and the pull-request profiles are transient.
           retention-days: 30
+
+      - name: Publish full-module per-package coverage baseline
+        run: go run ./cmd/wb coverage baseline profile.cov --module . --sha "${{ steps.revision.outputs.sha }}" --include-e2e --out coverage-baseline.json
+
+      - name: Upload full-module coverage baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wb-coverage-baseline
+          path: coverage-baseline.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish full-module coverage summary
+        run: >-
+          go run ./cmd/wb coverage summary profile.cov
+          --module .
+          --repo "${{ github.repository }}"
+          --sha "${{ steps.revision.outputs.sha }}"
+          --ref refs/heads/main
+          --workflow-run-id "${{ github.run_id }}"
+          --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          --out coverage-summary.json
+
+      - name: Upload full-module coverage summary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wb-coverage-summary
+          path: coverage-summary.json
+          if-no-files-found: error
+          retention-days: 90

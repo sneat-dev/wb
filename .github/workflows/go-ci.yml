@@ -230,12 +230,11 @@ jobs:
           install-mode: goinstall
 
   coverage:
-    name: Tests and coverage (8 shards)
+    name: Tests and scoped coverage
     needs: [release-eligibility, validation-reuse, go-scope]
-    # This job is the per-change coverage ratchet's one and only baseline
-    # producer (spec/plans/coverage-to-100/README.md task-3(b)). It runs on
-    # every Go-relevant push even when other jobs reuse exact PR validation.
-    if: needs.go-scope.outputs.required == 'true'
+    if: >-
+      needs.go-scope.outputs.required == 'true' &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -264,65 +263,25 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Fetch coverage baseline for the merge base
-        if: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
+      - name: Test changed packages and affected dependents with coverage ratchets
         env:
-          GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # --commit filters server-side by exact commit, so an old merge
-          # base is still found precisely instead of falling out of a
-          # branch listing's default recency window; --status success is
-          # deliberately not required, since a baseline can exist even when
-          # some unrelated job on that run later failed.
-          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow go-ci.yml \
-            --commit "$BASE_SHA" --json databaseId --jq '.[0].databaseId' || true)
-          if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
-            gh run download "$RUN_ID" --repo "${{ github.repository }}" --name wb-coverage-baseline --dir . || true
+          target="$BASE_SHA"
+          if [ "$EVENT_NAME" != pull_request ]; then
+            target="$PUSH_BEFORE_SHA"
+            if [ -z "$target" ] || [[ "$target" =~ ^0+$ ]]; then
+              target=$(git rev-parse HEAD^)
+            fi
           fi
-          if [ ! -f coverage-baseline.json ]; then
-            echo "no published baseline artifact for merge base $BASE_SHA; wb coverage --changed will measure it directly, bounded by --baseline-timeout"
-          fi
-      - name: Test with merged coverage threshold
-        # PR #773 integrates work accumulated before these cross-branch
-        # ratchets were enforced. Accept its recorded debt once, while still
-        # running the complete test suite and repository coverage floor.
-        if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
-        run: >-
-          go run ./cmd/wb coverage .
-          --include-e2e
-          --coverage-profile profile.cov
-          --report-dir coverage-diagnostics
-          --minimum=94
-          --format json
-          --non-interactive
-          --timeout 35m
-      - name: Test with the per-change coverage ratchet
-        if: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        # --baseline-timeout and --timeout bound two runs that can both
-        # execute in the worst case (no published baseline artifact, so the
-        # fallback measures the merge base, then the PR head is measured):
-        # 15m + 20m = 35m, leaving 10m of this job's 45-minute
-        # timeout-minutes for checkout, setup-go, the audit step above and
-        # the diagnostics upload below (review-696 also-fix #3: 20m + 20m
-        # left only 5m of headroom, so a slow shard could have the job
-        # killed by GitHub instead of the ratchet failing loudly).
-        run: >-
-          go run ./cmd/wb coverage .
-          --changed
-          --target "$BASE_SHA"
-          --baseline-file coverage-baseline.json
-          --baseline-timeout 15m
-          --timeout 20m
-          --include-e2e
-          --coverage-profile profile.cov
-          --report-dir coverage-diagnostics
-          --minimum=94
-          --format json
-          --non-interactive
+          go run ./cmd/wb coverage . \
+            --changed --affected-packages --target "$target" \
+            --baseline-timeout 15m --timeout 20m --include-e2e \
+            --coverage-profile profile.cov --report-dir coverage-diagnostics \
+            --format json --non-interactive
       - name: wb ci audit --strict against the PR base branch
         if: ${{ (success() || failure()) && github.event_name == 'pull_request' }}
         env:
@@ -348,39 +307,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-go-coverage
-          path: profile.cov
+          path: |
+            profile.cov
+            coverage-diagnostics/coverage-ratchet.json
           if-no-files-found: error
           retention-days: 14
-      - name: Publish per-package coverage baseline
-        if: ${{ github.event_name == 'push' }}
-        run: go run ./cmd/wb coverage baseline profile.cov --module . --sha "${{ github.sha }}" --include-e2e --out coverage-baseline.json
-      - name: Upload coverage baseline artifact
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wb-coverage-baseline
-          path: coverage-baseline.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Publish coverage summary
-        if: ${{ github.event_name == 'push' }}
-        run: >-
-          go run ./cmd/wb coverage summary profile.cov
-          --module .
-          --repo "${{ github.repository }}"
-          --sha "${{ github.sha }}"
-          --ref "${{ github.ref }}"
-          --workflow-run-id "${{ github.run_id }}"
-          --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          --out coverage-summary.json
-      - name: Upload coverage summary artifact
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wb-coverage-summary
-          path: coverage-summary.json
-          if-no-files-found: error
-          retention-days: 90
 
   race:
     name: Race tests
