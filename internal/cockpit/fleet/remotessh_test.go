@@ -865,7 +865,13 @@ func TestHTTPFailureFallsBackToSSH(t *testing.T) {
 			address, requests = hub.server.URL, func() int { return len(hub.seen()) }
 		}
 		runner := &fakeSSH{answer: exporting(t, full, only)}
-		snapshotter, _ := bothRoutes(t, address, runner, 200*time.Millisecond)
+		// Only the hub that never answers is waited for, and briefly; the others
+		// answer at once, and a loaded machine is given the time to connect.
+		timeout := 30 * time.Second
+		if name == "a timeout" {
+			timeout = time.Second
+		}
+		snapshotter, _ := bothRoutes(t, address, runner, timeout)
 		refreshAndSettle(t, snapshotter)
 		pollAndSettle(t, snapshotter)
 		document := snapshotter.Document()

@@ -942,12 +942,15 @@ func TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines(t *testing
 	snapshotter, clock = newSnapshotter(sources.collectors(), func(options *Options) {
 		options.Sampler = filledSampler(t, &countingSource{}, 2)
 		options.Workers = 1
-		// The fingerprint is read during a pass, once for each repository, and the
-		// document is published after each one (the clock moves, so the pass's
-		// publication rate lets it): what a reader is served between the two
-		// repositories is the document of a pass that is still running.
+		// The fingerprint is read during a pass, once for each repository. What a
+		// publication made between the two repositories says (it is made here, so
+		// the test does not depend on when the pass makes its own) is the document
+		// of a pass that is still running.
 		options.Fingerprint = func(string) (string, error) {
 			clock.advance(time.Second)
+			snapshotter.mu.Lock()
+			snapshotter.publishLocked()
+			snapshotter.mu.Unlock()
 			if document := snapshotter.Document(); document.WarmingUp && document.RepositoriesScanned == 1 {
 				warmingDuringThePass.Store(true)
 			}
