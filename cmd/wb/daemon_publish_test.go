@@ -294,3 +294,42 @@ func TestAFailedPublishDoesNotUseUpTheHardwareNote(t *testing.T) {
 		t.Fatalf("the note was shown after a success: %v %q", err, third)
 	}
 }
+
+// TestRemotePublishSaysThatHardwareIsIncludedWithoutAProgressWriter: what the
+// first publish must say does not depend on whether it shows progress. With no
+// progress writer the note, and a publish that had to leave the optional fields
+// out, are said on stderr, once; with neither a progress writer nor a stderr
+// nothing is said and the note is not used up.
+func TestRemotePublishSaysThatHardwareIsIncludedWithoutAProgressWriter(t *testing.T) {
+	t.Parallel()
+	provider := &capturingProvider{}
+	opened := 0
+	deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
+	deps.configPath = cockpitConfigFile(t, "remote:\n  repo: acme/wb-state\n  machine: mac\n")()
+	// Neither writer: the publish is made and says nothing.
+	var out bytes.Buffer
+	if err := runRemotePublishWithProgress(deps, t.TempDir(), "", 1, false, true, &out, nil, &invocation{}); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	deps.stderr = &stderr
+	if err := runRemotePublishWithProgress(deps, t.TempDir(), "", 1, false, true, &out, nil, &invocation{}); err != nil {
+		t.Fatal(err)
+	}
+	if said := stderr.String(); strings.Count(said, "\n") != 1 || !strings.Contains(said, "os, arch, cpu_count and boot_time") {
+		t.Fatalf("with no progress writer the first publish said %q on stderr, want the note once", said)
+	}
+	stderr.Reset()
+	if err := runRemotePublishWithProgress(deps, t.TempDir(), "", 1, false, true, &out, nil, &invocation{}); err != nil || stderr.Len() != 0 {
+		t.Fatalf("the note was repeated: %v %q", err, stderr.String())
+	}
+	// A publish that had to leave the optional fields out says so there too.
+	refusing := publishDeps(&capturingProvider{errs: []error{refusedWith400{}}}, func() (string, error) { return "alice", nil }, &opened)
+	refusing.configPath, refusing.stderr = deps.configPath, &stderr
+	if err := runRemotePublishWithProgress(refusing, t.TempDir(), "", 1, false, true, &out, nil, &invocation{}); err != nil || !strings.Contains(stderr.String(), "published without them") {
+		t.Fatalf("a publish without the optional fields: %v, stderr %q", err, stderr.String())
+	}
+	if defaultRemoteDeps().stderr != os.Stderr {
+		t.Fatal("the command's own dependencies have no stderr")
+	}
+}

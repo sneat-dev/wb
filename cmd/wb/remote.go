@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,6 +25,11 @@ type remoteDeps struct {
 	// progressHeartbeat is a test seam. Production always uses the universal
 	// ten-second progress contract.
 	progressHeartbeat time.Duration
+	// stderr is where a publish says what it must say whether or not it shows
+	// progress (the one-time note that the snapshot now carries the machine's
+	// hardware facts, a publish that had to leave the optional fields out); nil
+	// discards.
+	stderr io.Writer
 }
 
 func defaultRemoteDeps() remoteDeps {
@@ -32,6 +39,7 @@ func defaultRemoteDeps() remoteDeps {
 		open:              openRemote,
 		now:               func() time.Time { return time.Now().UTC() },
 		progressHeartbeat: universalProgressHeartbeat,
+		stderr:            os.Stderr,
 	}
 }
 

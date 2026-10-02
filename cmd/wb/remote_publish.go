@@ -77,9 +77,15 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		_, err = out.Write(data)
 		return err
 	}
+	// What a publish must say does not depend on whether it shows progress: a
+	// caller with no progress writer is told on stderr.
+	notes := progressOut
+	if notes == nil {
+		notes = deps.stderr
+	}
 	marker := ""
-	if progressOut != nil {
-		marker = noteHardware(deps.configPath, progressOut)
+	if notes != nil {
+		marker = noteHardware(deps.configPath, notes)
 	}
 	progress.phase("publishing snapshot")
 	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, deps.now())
@@ -89,8 +95,8 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	}
 	report.Location = result.Location
 	recordHardwareNoted(marker)
-	if diagnostic != nil && progressOut != nil {
-		_, _ = fmt.Fprintf(progressOut, "wb: %v\n", diagnostic)
+	if diagnostic != nil && notes != nil {
+		_, _ = fmt.Fprintf(notes, "wb: %v\n", diagnostic)
 	}
 	progress.finish(fmt.Sprintf("published %d repositories and %d worktrees", report.RepositoriesScanned, report.Worktrees))
 	if jsonOut {
@@ -115,7 +121,9 @@ func publishIdentity(cfg remotestate.Config, login string, now time.Time) remote
 }
 
 // hardwareNote is the one line the first real publish prints after the machine's
-// hardware facts joined the snapshot.
+// hardware facts joined the snapshot: on stderr, by hand or from `wb sync`,
+// with or without a progress writer, and in the daemon's log when the first
+// publish that sends them is the periodic one.
 const hardwareNote = "wb: this publish also includes this machine's os, arch, cpu_count and boot_time (new in this version); agents and metrics are never sent by hand\n"
 
 // noteHardware prints hardwareNote unless it was printed on an earlier
