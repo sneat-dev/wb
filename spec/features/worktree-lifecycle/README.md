@@ -223,8 +223,12 @@ worktree was created.
 - An operator-supplied `--base <branch>` MUST be the exact origin target the
   head is judged against. The recorded base MUST still be reported, MUST NOT
   replace it, and no other branch may be substituted: a branch origin does not
-  have MUST be an error. A `--base` left at its default MUST remain only the
-  fallback for a worktree with no recorded base.
+  have MUST be an error. This holds when the named branch is the recorded
+  base itself: neither the default branch nor the target of a merged pull
+  request for the head may then be judged in its place. A head the named
+  branch contains MUST be reported with that branch and SHA as its proof. A
+  `--base` left at its default MUST remain only the fallback for a worktree
+  with no recorded base.
 - Otherwise the recorded base is the target. When origin no longer has it (an
   integration branch that landed and was deleted), or it is still on origin and
   its own tip is an ancestor of the freshly fetched default branch (a task
@@ -232,6 +236,14 @@ worktree was created.
   repository's freshly fetched default branch, and MUST be eligible only when
   it is a plain Git ancestor of that exact SHA. A recorded base that is still
   on origin and has not landed in the default branch MUST remain the target.
+- With an absent recorded base the default branch is the judged target for
+  every other proof as well, not only for ancestry: a rebase-merged pull
+  request, a discovered or operator-named absorbed receipt, and
+  `--allow-residue` landing evidence MAY prove the candidate against the
+  default branch exactly as they would for a task recorded against it. Each
+  still requires the merge or landing commit it names to be an ancestor of the
+  freshly fetched default-branch SHA, and none is accepted on GitHub metadata
+  alone.
 - A recorded base origin no longer has MUST NOT make the worktree a malformed
   candidate. The task MUST stay visible to list, end, abort, gc and cleanup,
   with the refusal as its reason. Evidence that could not be read (a failed
@@ -252,6 +264,12 @@ serial and concurrent applies alike, because retiring the base deletes the
 branch a stacked task's proof may still need. The order MUST be derived from
 the recorded bases within one repository, and a dependency the records cannot
 order MUST NOT drop a task from the plan or make one wait on itself.
+
+A task whose branch is the recorded base of a listed candidate that is not
+eligible MUST NOT be retired in that run, locally or on origin, and neither
+MUST a task whose stacked task failed to apply in that run: deleting the base
+branch would strand unlanded work and close its pull request. The held task
+MUST be reported with the dependant named, and the hold MUST climb a stack.
 
 #### REQ: resumable-interrupted-operation-lock
 
@@ -653,8 +671,10 @@ number given to `--absorbed-by` are accepted; naming the stacked task's own
 recorded base explicitly is refused with that ref and SHA; a task whose head is
 not in the default branch stays in the plan, ineligible, with the target ref
 and SHA it was compared against; a GitHub outage is reported as a diagnostic
-for that task and plans nothing; and one apply retires a stacked task before
-the task it is stacked on.
+for that task and plans nothing; one apply retires a stacked task before the
+task it is stacked on; a base whose stacked task is refused, or failed to
+apply, is held with that task named; and an explicit base equal to the
+recorded one is not replaced by a merged pull request's target.
 
 ### AC: mixed-layout-relocation-preserves-active-identity
 

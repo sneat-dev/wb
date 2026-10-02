@@ -219,7 +219,9 @@ names the target that proved the work whenever it is not the recorded base
   base never hides the task from `list`, `end`, `abort`, or `gc`.
 - **You name `--base <branch>`.** That is then the exact origin target, and
   nothing else: the recorded base is only reported (`recorded_base`), no other
-  branch is substituted, and a branch origin does not have is an error.
+  branch is substituted, and a branch origin does not have is an error. The
+  plan line then reads `contained in origin/<branch> at <sha>, the base named
+  with --base`.
 
 ```sh
 wb worktree cleanup <task>                    # recorded base, or the default branch as above
@@ -292,6 +294,12 @@ is WB being correct rather than WB being stuck:
   the named target does not contain it. Merge it, or check that the target
   named is the one you meant (Trap 3). `; recorded base <branch> is absent`
   says the default branch was judged because the recorded base is gone.
+- `held: branch <b> is the recorded base of <task> (<repo>), which is not
+  eligible: ...` — another listed task is recorded against this task's branch
+  and cannot be retired yet. Retiring the base would delete that branch and
+  close any pull request into it, so the base waits; resolve the named task.
+  `held: <task> is stacked on a branch of <base> and was not retired in this
+  run` is the same hold when the stacked task failed during apply.
 - `branch still has an open pull request: <url>` — close or merge the PR first.
 - `worktree has local changes` — uncommitted work. WB never removes it.
 - `coordinated task blocked by <repository>` — one repository in a

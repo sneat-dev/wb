@@ -295,10 +295,18 @@ func productionGoEnvironmentValue(name string) (string, error) {
 // post-apply claim release, which read the developer's real wb.yaml and
 // released a real claim in the fleet's state repository.
 //
+// Only the packages whose TestMain calls this are isolated: cmd/wb,
+// internal/hooks, internal/lifecyclehooks and internal/hostload. Not yet
+// isolated, and still reading the developer's own home: internal/worktrees,
+// internal/orchestrate and every other package with tests.
+//
 // Two things a test legitimately inherits survive the move. The Go toolchain's
 // caches are pinned to where they already were, and the private home's
 // .gitconfig includes the developer's own global Git configuration, so Git
-// keeps the identity and settings it had.
+// keeps the identity and settings it had. That inclusion is deliberate and it
+// is not neutral: the developer's credential helpers and url.insteadOf
+// rewrites stay live, so a test that reaches a real remote does so with real
+// credentials.
 func IsolateUserState() (remove func(), err error) {
 	pinned := resolvedGoToolVariables()
 	gitConfigs := globalGitConfigFiles()
