@@ -2,8 +2,10 @@ package fleet
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -247,27 +249,89 @@ func exportMetrics(response MetricsResponse) *EnvelopeMetrics {
 // published document and the sampler, without running anything. It reads memory
 // only.
 func (s *Snapshotter) Export(metricsOnly bool) Envelope {
-	envelope, _, _, _ := s.buildExport(metricsOnly)
+	s.mu.RLock()
+	document := s.doc
+	s.mu.RUnlock()
+	now := s.now()
+	answer := sanitizeMetrics(s.metricsAnswerFor(localMachineID(s.machine)), now)
+	envelope, _ := NewEnvelope(document, MetricsResponse{Route: answer.Route, Samples: answer.Samples, Reason: answer.Reason}, now, metricsOnly)
 	return envelope
 }
 
-// buildExport builds the envelope and returns with it what it left out and the
-// versions of the document and of the metrics it was built from.
-func (s *Snapshotter) buildExport(metricsOnly bool) (envelope Envelope, drops ExportDrops, documentVersion int, metricsVersion uint64) {
-	s.mu.RLock()
-	document, documentVersion := s.doc, s.publishes
-	s.mu.RUnlock()
-	now := s.now()
-	local := s.metricsAnswerFor(localMachineID(s.machine))
-	answer := sanitizeMetrics(local, now)
-	envelope, drops = NewEnvelope(document, MetricsResponse{Route: answer.Route, Samples: answer.Samples, Reason: answer.Reason}, now, metricsOnly)
-	return envelope, drops, documentVersion, local.Version
+// The scopes of the fleet route's "scope" query parameter, which the export
+// verb reads this machine with (cockpit-views#req:cockpit-export-verb): own is
+// the document with this machine's own entries only, exactly the fleet of its
+// export, and machine the same with no entry but this machine's own machine
+// entry, which is all a metrics-only export needs of it. Neither is a read of
+// the other machines, so neither is demand for them. Any other value, and none,
+// is the whole document.
+const (
+	scopeQuery   = "scope"
+	ScopeOwn     = "own"
+	ScopeMachine = "machine"
+)
+
+// ExportDropsHeader is the response header of a scoped read that says how many
+// of this machine's entries the daemon left out of it, by kind: four numbers,
+// repositories, worktrees, pull requests and agents. It holds numbers only.
+const ExportDropsHeader = "X-Wb-Cockpit-Export-Dropped"
+
+// Header is the drops as ExportDropsHeader carries them.
+func (d ExportDrops) Header() string {
+	return fmt.Sprintf("%d,%d,%d,%d", d.Repositories, d.Worktrees, d.PullRequests, d.Agents)
 }
 
-// exportCache holds the export prepared for serving, one for each of its two
-// shapes, with the versions it was built from.
+// Plus is the drops of two passes over the same entries.
+func (d ExportDrops) Plus(other ExportDrops) ExportDrops {
+	return ExportDrops{
+		Repositories: d.Repositories + other.Repositories, Worktrees: d.Worktrees + other.Worktrees,
+		PullRequests: d.PullRequests + other.PullRequests, Agents: d.Agents + other.Agents,
+	}
+}
+
+// ParseExportDrops reads an ExportDropsHeader value. Anything but four counts
+// within the document's range is no drops at all: a daemon that sends none (an
+// older one) left nothing out of its answer.
+func ParseExportDrops(header string) ExportDrops {
+	parts := strings.Split(header, ",")
+	if len(parts) != 4 {
+		return ExportDrops{}
+	}
+	var counts [4]int
+	for index, part := range parts {
+		count, err := strconv.Atoi(part)
+		if err != nil || count < 0 || count > maxCount {
+			return ExportDrops{}
+		}
+		counts[index] = count
+	}
+	return ExportDrops{Repositories: counts[0], Worktrees: counts[1], PullRequests: counts[2], Agents: counts[3]}
+}
+
+// ownFleet is this machine's own entries of one published document, prepared
+// once for that document: the fleet half of its export.
+type ownFleet struct {
+	// version is the publication it was built from.
+	version  int
+	document Document
+	drops    ExportDrops
+	// body is document as JSON. invalid says it does not pass the envelope's own
+	// rules (its machine entry breaks one: no other entry can, they were left out).
+	body    json.RawMessage
+	invalid bool
+	// scoped is the bodies of the fleet route's two scopes (own, machine), each
+	// prepared when it is first asked for; it is guarded by the cache's mu.
+	scoped [2]*cockpit.Payload
+}
+
+// exportCache holds the export prepared for serving: the fleet half, built once
+// for each published document, and the envelope in each of its two shapes with
+// the versions it was built from. The metrics history moves every few seconds
+// and the document seldom, so the two halves are kept apart: a new sample costs
+// the encoding of the metrics, never the validation and encoding of the fleet.
 type exportCache struct {
 	mu      sync.Mutex
+	fleet   *ownFleet
 	entries [2]cachedExport
 	logged  ExportDrops
 }
@@ -280,31 +344,115 @@ type cachedExport struct {
 	failure         string
 }
 
-// exportVersions is the versions the export would be built from now.
-func (s *Snapshotter) exportVersions() (documentVersion int, metricsVersion uint64, warming bool) {
+// ownFleetNow is the fleet half for the published document, from the cache when
+// it was built for that publication. It reads memory only. What it leaves out
+// is logged, as numbers, when it changes.
+func (s *Snapshotter) ownFleetNow() *ownFleet {
 	s.mu.RLock()
-	documentVersion, warming = s.publishes, s.doc.WarmingUp
+	document, version := s.doc, s.publishes
 	s.mu.RUnlock()
-	return documentVersion, s.metricsAnswerFor(localMachineID(s.machine)).Version, warming
+	s.exports.mu.Lock()
+	held := s.exports.fleet
+	s.exports.mu.Unlock()
+	if held != nil && held.version == version {
+		return held
+	}
+	now := s.now()
+	built := &ownFleet{version: version}
+	built.document, built.drops = ownEntries(document, now)
+	// The document types cannot fail to marshal.
+	built.body, _ = json.Marshal(built.document)
+	whole := Envelope{SchemaVersion: ExportSchemaVersion, ExportedAt: now.UTC(), Fleet: &built.document, Metrics: &EnvelopeMetrics{Route: RouteNone, Samples: []machinemetrics.Sample{}, Reason: ReasonNoSource}}
+	built.invalid = whole.Validate(false, now) != nil
+	s.exports.mu.Lock()
+	defer s.exports.mu.Unlock()
+	if s.exports.fleet == nil || s.exports.fleet.version <= version {
+		s.exports.fleet = built
+	}
+	if built.drops != s.exports.logged {
+		s.exports.logged = built.drops
+		s.logf("cockpit fleet: this machine's export leaves out %d entries its rules refuse (repositories %d, worktrees %d, pull requests %d, agents %d)",
+			built.drops.Total(), built.drops.Repositories, built.drops.Worktrees, built.drops.PullRequests, built.drops.Agents)
+	}
+	return built
+}
+
+// scopedPayload is the body of the fleet route for scope (ScopeOwn or
+// ScopeMachine), prepared on the first request for it after a publication.
+func (s *Snapshotter) scopedPayload(own *ownFleet, scope string) cockpit.Payload {
+	slot := 0
+	if scope == ScopeMachine {
+		slot = 1
+	}
+	s.exports.mu.Lock()
+	held := own.scoped[slot]
+	s.exports.mu.Unlock()
+	if held != nil {
+		return *held
+	}
+	body := slices.Clone([]byte(own.body))
+	if scope == ScopeMachine {
+		bare := own.document
+		bare.Repositories, bare.Worktrees, bare.PullRequests, bare.Agents = []Repository{}, []Worktree{}, []PullRequest{}, []Agent{}
+		// The document types cannot fail to marshal.
+		body, _ = json.Marshal(bare)
+	}
+	// Two requests that raced build the same bytes; the later store is harmless.
+	payload := cockpit.NewPayload(append(body, '\n'), s.compress)
+	s.exports.mu.Lock()
+	defer s.exports.mu.Unlock()
+	own.scoped[slot] = &payload
+	return payload
+}
+
+// metricsVersion is the version of this machine's own metrics history, read
+// without copying it.
+func (s *Snapshotter) metricsVersion() uint64 {
+	if s.sampler == nil {
+		return 0
+	}
+	return s.sampler.Version()
+}
+
+// splicedEnvelope is Envelope with its fleet already encoded: the same fields
+// with the same names in the same order, so its encoding is an Envelope's (a
+// test holds the two together).
+type splicedEnvelope struct {
+	SchemaVersion int              `json:"schema_version"`
+	Machine       string           `json:"machine"`
+	ExportedAt    time.Time        `json:"exported_at"`
+	Fleet         json.RawMessage  `json:"fleet,omitempty"`
+	Metrics       *EnvelopeMetrics `json:"metrics,omitempty"`
+	Dropped       int              `json:"dropped,omitempty"`
 }
 
 // ExportPayload is this machine's export prepared for the hub route
 // (cockpit-views#req:hub-export-route): the envelope encoded, compressed and
 // tagged once for each version of the published document and of the metrics
-// history, so a request copies bytes. failure is empty, or ErrorWarmingUp for a
+// history, so a request copies bytes; and of its two halves only the one that
+// moved is encoded again (the fleet half is validated and encoded once for each
+// published document, ownFleetNow). failure is empty, or ErrorWarmingUp for a
 // full export while the first pass has not ended (a partial fleet must not
 // replace what a reader holds), or ErrorExportFailed when the envelope would
-// not pass its own rules or its size bound. It reads memory only. What the
-// export leaves out is logged, as numbers, when it changes.
+// not pass its own rules or its size bound. It reads memory only.
 func (s *Snapshotter) ExportPayload(metricsOnly bool) (payload cockpit.Payload, failure string) {
 	slot := 0
 	if metricsOnly {
 		slot = 1
 	}
-	documentVersion, metricsVersion, warming := s.exportVersions()
+	s.mu.RLock()
+	documentVersion, warming, machine := s.publishes, s.doc.WarmingUp, ""
+	for _, entry := range s.doc.Machines {
+		if entry.Route == RouteLocal {
+			machine = entry.Machine
+			break
+		}
+	}
+	s.mu.RUnlock()
 	if warming && !metricsOnly {
 		return cockpit.Payload{}, ErrorWarmingUp
 	}
+	metricsVersion := s.metricsVersion()
 	s.exports.mu.Lock()
 	held := s.exports.entries[slot]
 	s.exports.mu.Unlock()
@@ -312,11 +460,25 @@ func (s *Snapshotter) ExportPayload(metricsOnly bool) (payload cockpit.Payload, 
 	if held.built && held.metricsVersion == metricsVersion && (metricsOnly || held.documentVersion == documentVersion) {
 		return held.payload, held.failure
 	}
-	envelope, drops, documentVersion, metricsVersion := s.buildExport(metricsOnly)
-	built := cachedExport{built: true, documentVersion: documentVersion, metricsVersion: metricsVersion}
+	now := s.now()
+	local := s.metricsAnswerFor(localMachineID(s.machine))
+	answer := sanitizeMetrics(local, now)
+	envelope := splicedEnvelope{
+		SchemaVersion: ExportSchemaVersion, Machine: machine, ExportedAt: now.UTC(),
+		Metrics: exportMetrics(MetricsResponse{Route: answer.Route, Samples: answer.Samples, Reason: answer.Reason}),
+	}
+	built := cachedExport{built: true, documentVersion: documentVersion, metricsVersion: local.Version}
+	invalid := false
+	if !metricsOnly {
+		fleet := s.ownFleetNow()
+		envelope.Fleet, envelope.Dropped, built.documentVersion, invalid = fleet.body, fleet.drops.Total(), fleet.version, fleet.invalid
+	}
+	// The metrics half is held to the envelope's rules here, the fleet half was
+	// when it was built.
+	metricsHalf := Envelope{SchemaVersion: envelope.SchemaVersion, Machine: envelope.Machine, ExportedAt: envelope.ExportedAt, Metrics: envelope.Metrics}
 	// The envelope types cannot fail to marshal.
 	body, _ := json.Marshal(envelope)
-	if len(body) >= MaxEnvelopeBytes || envelope.Validate(metricsOnly, envelope.ExportedAt) != nil {
+	if invalid || len(body) >= MaxEnvelopeBytes || metricsHalf.Validate(true, now) != nil {
 		built.failure = ErrorExportFailed
 	} else {
 		built.payload = cockpit.NewPayload(append(body, '\n'), s.compress)
@@ -324,10 +486,5 @@ func (s *Snapshotter) ExportPayload(metricsOnly bool) (payload cockpit.Payload, 
 	s.exports.mu.Lock()
 	defer s.exports.mu.Unlock()
 	s.exports.entries[slot] = built
-	if !metricsOnly && drops != s.exports.logged {
-		s.exports.logged = drops
-		s.logf("cockpit fleet: this machine's export leaves out %d entries its rules refuse (repositories %d, worktrees %d, pull requests %d, agents %d)",
-			drops.Total(), drops.Repositories, drops.Worktrees, drops.PullRequests, drops.Agents)
-	}
 	return built.payload, built.failure
 }

@@ -37,9 +37,22 @@ func Register(server *cockpit.Server, snapshotter *Snapshotter) {
 // compressor either. A read by a reader on this machine (not by the export verb,
 // and not by the hosted page) is recorded as demand for the other machines'
 // entries; nothing is fetched on the request.
+//
+// With the "scope" query parameter it answers this machine's part alone (see
+// ScopeOwn and ScopeMachine), prepared once for each published document, with
+// what it left out in ExportDropsHeader. That is how the export verb reads a
+// machine whose document also shows many other machines: such a read is never
+// demand for them.
 func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Request, from demand) {
-	s.fleetRead(from)
-	cockpit.ServePayload(writer, request, s.Payload())
+	scope := request.URL.Query().Get(scopeQuery)
+	if scope != ScopeOwn && scope != ScopeMachine {
+		s.fleetRead(from)
+		cockpit.ServePayload(writer, request, s.Payload())
+		return
+	}
+	own := s.ownFleetNow()
+	writer.Header().Set(ExportDropsHeader, own.drops.Header())
+	cockpit.ServePayload(writer, request, s.scopedPayload(own, scope))
 }
 
 // serveBranches answers the branches of the repository named by the

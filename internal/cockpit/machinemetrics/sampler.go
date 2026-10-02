@@ -217,6 +217,15 @@ func (s *Sampler) isUnsupported() bool {
 	return s.unsupported
 }
 
+// Version is the version a Snapshot taken now would carry, read without copying
+// the buffer: a caller that holds what it prepared from a snapshot asks this to
+// learn whether that is still current.
+func (s *Sampler) Version() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
+}
+
 // Snapshot returns a copy of the buffer, oldest first, so its last element is
 // the latest sample. It reads memory only and never touches the source.
 func (s *Sampler) Snapshot() Snapshot {

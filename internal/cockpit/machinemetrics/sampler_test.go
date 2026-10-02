@@ -224,3 +224,22 @@ func TestUnsupportedSourceReportsUnsupported(t *testing.T) {
 		t.Errorf("unsupported source = %v", err)
 	}
 }
+
+// TestVersionIsTheSnapshotsVersionWithoutACopy: a reader that only wants to know
+// whether what it prepared is still current asks Version, which is the version
+// a snapshot carries, at every state of the sampler.
+func TestVersionIsTheSnapshotsVersionWithoutACopy(t *testing.T) {
+	t.Parallel()
+	clock := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	sampler := New(Options{Source: &scriptSource{clock: &clock}, Now: func() time.Time { return clock }})
+	if sampler.Version() != sampler.Snapshot().Version {
+		t.Fatal("the versions differ before any sample")
+	}
+	for range 3 {
+		before := sampler.Version()
+		sampler.sampleOnce()
+		if got := sampler.Version(); got == before || got != sampler.Snapshot().Version {
+			t.Fatalf("after a sample the version = %d (was %d), the snapshot's %d", got, before, sampler.Snapshot().Version)
+		}
+	}
+}

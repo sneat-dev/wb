@@ -1224,7 +1224,17 @@ this machine's running daemon from the daemon record, and reads that daemon's fl
 document (with the request header `X-Wb-Cockpit-Export`, so that the read is not taken for a
 person looking, REQ:remote-exporter-transports) and machine-metrics (the latest sample and the history) over the daemon's
 loopback transport as the `anonymous-local` principal, the same read any local browser
-tab makes. It prints the export envelope `{schema_version, machine, exported_at, fleet,
+tab makes. It asks the daemon for this machine's part of the document alone, with the fleet route's
+`scope` query parameter: `scope=own` is the document with this machine's own entries only (exactly
+the `fleet` of its export, prepared once for each published document) and `scope=machine` the same
+with no entry but this machine's own machine entry, which is all the `--metrics-only` export reads
+of the fleet. A machine whose daemon shows many other machines therefore never fails its own export
+on the size of entries it does not export, and a metrics-only export, which another machine may run
+every 30 seconds, does not fetch and decode the fleet. A scoped read is never demand for the other
+machines, whoever makes it; the response header `X-Wb-Cockpit-Export-Dropped` carries the four
+counts of what the daemon left out of it (repositories, worktrees, pull requests, agents), numbers
+only; any other value of `scope`, and a daemon that does not know the parameter, answer the whole
+document, which the verb reads as before, within the same bound. It prints the export envelope `{schema_version, machine, exported_at, fleet,
 metrics}` to stdout, bounded at 8 MiB, containing only the anonymous-readable metadata
 set of [cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only. The flag
 `--metrics-only` omits `fleet`. When no daemon is running, or the daemon refuses an
@@ -1233,8 +1243,13 @@ reason (an unreadable or unsupported daemon record, a daemon that answers an err
 this binary does not understand, an envelope that fails its own validation), it prints
 `{schema_version, error}` with `error` `daemon_not_running`, `export_refused` or
 `export_failed` and exits with the findings code 1, and starts nothing; the text is fixed and
-carries no path, no error text of a dependency and no response body. The recorded address is
-dialled exactly, and only `127.0.0.1`, `::1` and `localhost` are accepted. The verb writes
+carries no path, no error text of a dependency and no response body. `daemon_not_running` is a
+connection that could not be made; a daemon that accepts the connection and does not answer within
+the verb's 10 seconds, a read that is cancelled and a request that cannot be made are
+`export_failed`. The recorded address is
+dialled exactly, and only `127.0.0.1`, `::1` and `localhost` are accepted, with a port that is a
+port number: a record that names anything else is `export_failed`, exit code 1, never a crash (exit
+code 2 would be read by a remote daemon as a wb that has no such verb). The verb writes
 nothing, and records no heartbeat or invoked-command marker. A daemon is "running" when its
 recorded process is alive and, where the platform can observe it, started when the record says
 (a recycled process id is `daemon_not_running`); on macOS liveness is asked of launchd with
@@ -1379,7 +1394,10 @@ until the daemon's first pass has ended (the metrics-only shape is served meanwh
 `{"error":"export_failed"}` when the envelope would not pass its own rules or its size bound. The
 envelope is built and validated once for each version of the daemon's published document and of its
 metrics history, and served by the shared writer with gzip and a strong ETag, so a request copies
-bytes. Every answer of the route, the envelope and a 304 included, carries `Cache-Control: no-store`. Each credential may make a burst of 5 requests and then one a second; over that the answer is
+bytes. Its two halves are prepared apart: the fleet half is validated and encoded once for each
+published document, and a new metrics sample (every 10 seconds) costs the encoding of the metrics
+and the compression of the body, never the fleet's validation again; a reader learns whether the
+metrics moved from the sampler's version, without copying the history. Every answer of the route, the envelope and a 304 included, carries `Cache-Control: no-store`. Each credential may make a burst of 5 requests and then one a second; over that the answer is
 status 429.
 
 #### REQ: remote-http-fetch
@@ -2866,9 +2884,9 @@ Then each exits with code 1 printing `{schema_version, error}` with `daemon_not_
 **Requirements:** cockpit-views#req:cockpit-export-verb
 
 Scenario: A running daemon
-Given a running daemon with worktrees, agents, pull requests and 360 samples
+Given a running daemon with worktrees, agents, pull requests and 360 samples, and another whose document is over the verb's bound because of the other machines it shows
 When `wb cockpit export --format json` and then with `--metrics-only` are run
-Then the first prints one envelope with `fleet` and `metrics` within 8 MiB whose fields all belong to the anonymous-readable metadata set, the second omits `fleet`, and neither contains a path, origin URL, free text or process data
+Then the first prints one envelope with `fleet` and `metrics` within 8 MiB whose fields all belong to the anonymous-readable metadata set, the second omits `fleet`, and neither contains a path, origin URL, free text or process data; the first read this machine's own entries only (`scope=own`) and the second its machine entry only (`scope=machine`); the daemon that shows many other machines is exported like any other; and a daemon that does not know the scope is read as before
 
 ### AC: non-loopback-metrics-request-is-refused
 
