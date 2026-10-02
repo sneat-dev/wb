@@ -2,7 +2,8 @@ import { expect, type Page } from '@playwright/test'
 import type { FleetDocument } from '@cockpit/fleet-data'
 // The fixtures of Home's states are the fleets the application is photographed against; the stubbed suite serves them too.
 // eslint-disable-next-line @nx/enforce-module-boundaries
-import { homeStates } from '../../cockpit/src/app/pages/home/home-fixtures'
+import { SNAPSHOT, homeStates } from '../../cockpit/src/app/pages/home/home-fixtures'
+import { asOfNow } from './as-of-now'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 
 // What the stubbed end-to-end tests share: a fleet document and the stubs of the
@@ -115,7 +116,7 @@ export async function stubBusy(page: Page, principal: 'anonymous-local' | 'owner
   const requests: string[] = []
   page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}${new URL(request.url()).search}`))
   const routes = document.machines.filter((machine) => machine.route !== 'local').map((machine) => ({ machine_id: machine.id, ssh: { host: 'secret-host.example', user: 'secretuser', wb_path: '/opt/secret/wb' } }))
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...document, snapshot_at: new Date().toISOString() }, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...asOfNow(document, SNAPSHOT), snapshot_at: new Date().toISOString() }, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) =>
     route.fulfill({
       json: {
