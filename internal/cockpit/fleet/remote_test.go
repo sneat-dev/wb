@@ -784,6 +784,12 @@ func TestStartRunsTheBackgroundReadsUntilItIsStopped(t *testing.T) {
 	if exporter.count() != 2 {
 		t.Fatalf("exports after one interval = %d, want 2", exporter.count())
 	}
+	// The local loop takes a tick only once its first pass has ended, and with it
+	// that pass's closing publication. Without this wait the stop could cancel a
+	// first pass that was still running: the exports' own publications are held
+	// back at the in-pass rate, and a cancelled pass publishes nothing when it
+	// ends, so the document would not show the machine.
+	refresh <- clock.Now()
 	stop()
 	if stopped != 1 || len(steps) != 1 || steps[0] != remoteStep {
 		t.Errorf("the loop's ticker: stopped %d times, steps %v", stopped, steps)
