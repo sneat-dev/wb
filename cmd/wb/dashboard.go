@@ -28,7 +28,8 @@ type dashboardOpenResult struct {
 
 type dashboardCommandDependencies struct {
 	open func(string) error
-	// localURL also returns a non-fatal warning (sneat-dev/wb#622 review
+	// localURL is the address the local daemon listens at; the command opens
+	// Cockpit under it. It also returns a non-fatal warning (sneat-dev/wb#622 review
 	// round 3, item M1): an implicit Start that found a live, healthy,
 	// supervised daemon under a different binary than this invocation's own
 	// returns that daemon with a warning rather than an error (review round
@@ -44,18 +45,24 @@ func defaultDashboardCommandDependencies() dashboardCommandDependencies {
 			if err != nil {
 				return "", "", err
 			}
-			return localCockpitURL(result.State.Listen), result.Warning, nil
+			address := result.State.Listen
+			if address == "" {
+				address = daemonDefaultListen
+			}
+			return (&url.URL{Scheme: "http", Host: address, Path: "/"}).String(), result.Warning, nil
 		},
 	}
 }
 
-// localCockpitURL is the plain Cockpit address of a daemon that listens on
-// listen (the default address when the state recorded none).
-func localCockpitURL(listen string) string {
-	if listen == "" {
-		listen = daemonDefaultListen
+// localCockpitURL is the plain Cockpit address under base, the address the
+// daemon's listener answers at.
+func localCockpitURL(base string) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("daemon address %q: %w", base, err)
 	}
-	return (&url.URL{Scheme: "http", Host: listen, Path: cockpit.PagePrefix}).String()
+	parsed.Path = cockpit.PagePrefix
+	return parsed.String(), nil
 }
 
 func newDashboardCmd(inv *invocation) *cobra.Command {
@@ -87,6 +94,9 @@ func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDepen
 				}
 				if warning != "" {
 					_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", warning)
+				}
+				if target, err = localCockpitURL(target); err != nil {
+					return err
 				}
 				scope = "local"
 			}

@@ -88,7 +88,7 @@ func TestDashboardLocalStartsDaemonAndOpensItsURL(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if root != wantRoot || opened != "http://127.0.0.1:9000/" {
+	if root != wantRoot || opened != "http://127.0.0.1:9000/cockpit/" {
 		t.Fatalf("root = %q, opened = %q, want root = %q", root, opened, wantRoot)
 	}
 }
@@ -166,11 +166,32 @@ func TestDashboardHasNoFlagForTheRetiredPages(t *testing.T) {
 }
 
 func TestLocalCockpitURLIsTheCockpitMountOfTheDaemonAddress(t *testing.T) {
-	if got, want := localCockpitURL("127.0.0.1:9000"), "http://127.0.0.1:9000/cockpit/"; got != want {
-		t.Errorf("recorded listen = %q, want %q", got, want)
+	t.Parallel()
+	for _, base := range []string{"http://127.0.0.1:9000/", "http://127.0.0.1:9000/cockpit/"} {
+		got, err := localCockpitURL(base)
+		if want := "http://127.0.0.1:9000/cockpit/"; err != nil || got != want {
+			t.Errorf("localCockpitURL(%q) = %q, %v, want %q", base, got, err, want)
+		}
 	}
-	if got, want := localCockpitURL(""), "http://"+daemonDefaultListen+"/cockpit/"; got != want {
-		t.Errorf("default listen = %q, want %q", got, want)
+	if got, err := localCockpitURL("http://%zz/"); err == nil || got != "" {
+		t.Errorf("an address that does not parse = %q, %v, want an error and no address", got, err)
+	}
+}
+
+func TestDashboardLocalRefusesADaemonAddressThatDoesNotParse(t *testing.T) {
+	t.Parallel()
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "http://%zz/", "", nil
+		},
+	})
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--local"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "daemon address") {
+		t.Fatalf("Execute() error = %v, want a daemon address error", err)
 	}
 }
 
