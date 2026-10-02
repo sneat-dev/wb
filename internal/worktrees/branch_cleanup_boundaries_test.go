@@ -58,7 +58,7 @@ func TestBranchCleanupReportFilesystemFailuresAreReturned(t *testing.T) {
 	if _, err := copyFileSHA256Injected(missing, filepath.Join(root, "copy"), nil); err == nil {
 		t.Fatal("copy reported a digest for a missing source")
 	}
-	if err := syncFile(missing); err == nil {
+	if err := syncDirectory(missing); err == nil {
 		t.Fatal("missing file synced")
 	}
 	if err := syncDirectory(missing); err == nil {

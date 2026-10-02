@@ -35,6 +35,10 @@ type Queued struct {
 
 func (dispatcher Dispatcher) Status(limit int) (Status, error) {
 	dispatcher = dispatcher.defaults()
+	return dispatcher.statusWithSnapshots(limit, dispatcher.queueSnapshot, dispatcher.quarantineSnapshot, dispatcher.unseenFailureCount)
+}
+
+func (dispatcher Dispatcher) statusWithSnapshots(limit int, queue func() ([]Queued, []Queued, []string, error), quarantine func(int) (int, []string, error), unseen func() (int, error)) (Status, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -56,16 +60,16 @@ func (dispatcher Dispatcher) Status(limit int) (Status, error) {
 	if err != nil {
 		status.Findings = append(status.Findings, "read worker health: "+err.Error())
 	}
-	status.UnseenFailures, err = dispatcher.unseenFailureCount()
+	status.UnseenFailures, err = unseen()
 	if err != nil {
 		status.Findings = append(status.Findings, "read unseen failures: "+err.Error())
 	}
 	var queueFindings []string
-	if status.Pending, status.Running, queueFindings, err = dispatcher.queueSnapshot(); err != nil {
+	if status.Pending, status.Running, queueFindings, err = queue(); err != nil {
 		return status, err
 	}
 	status.Findings = append(status.Findings, queueFindings...)
-	status.Quarantined, queueFindings, err = dispatcher.quarantineSnapshot(20)
+	status.Quarantined, queueFindings, err = quarantine(20)
 	if err != nil {
 		return status, err
 	}

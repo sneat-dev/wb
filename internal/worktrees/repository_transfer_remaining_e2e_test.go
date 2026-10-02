@@ -149,7 +149,7 @@ func TestE2ERepositoryTransferRefusesUnpublishedDestinationRefs(t *testing.T) {
 		//nolint:paralleltest // cases mutate and restore the same destination Git refs.
 		t.Run(tc.name, func(t *testing.T) {
 			gitTest(t, fixture.destination, tc.add...)
-			if reason := disposableDestinationReason(context.Background(), fixture.destination, options, head); !strings.Contains(reason, tc.want) {
+			if reason := disposableDestinationReason(context.Background(), fixture.destination, options, head, gitRawOutput); !strings.Contains(reason, tc.want) {
 				t.Fatalf("unpublished %s destination refusal = %q", tc.name, reason)
 			}
 			plan, err := RelocateRepository(context.Background(), options)

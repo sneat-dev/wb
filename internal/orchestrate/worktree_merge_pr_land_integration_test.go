@@ -546,7 +546,8 @@ func TestLandWorktreeMergePullRequestChecksPendingKeepsAutoMergeArmed(t *testing
 	gh.writeState(t, "check-conclusion-status", "in_progress")
 
 	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
-	options.Timeout = 200 * time.Millisecond
+	// Only the check wait is short; Timeout stays generous for git and gh.
+	options.WaitSlice = 200 * time.Millisecond
 	pending, err := ResumeWorktreeMerge(context.Background(), options)
 	if err == nil || pending.Status != WorktreeMergeChecksPending {
 		t.Fatalf("pending checks did not stop at checks_pending: receipt=%+v err=%v", pending, err)

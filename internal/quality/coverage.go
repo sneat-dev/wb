@@ -162,12 +162,16 @@ func coverageProfilePath(retain string) (path string, remove bool, err error) {
 // reach the scratch reservation's create/close failure branches
 // deterministically.
 func coverageProfilePathInjected(retain string, inj *filewrite.Injector) (path string, remove bool, err error) {
+	return coverageProfilePathWithAbs(retain, inj, filepath.Abs)
+}
+
+func coverageProfilePathWithAbs(retain string, inj *filewrite.Injector, absolute func(string) (string, error)) (path string, remove bool, err error) {
 	if retain != "" {
-		absolute, err := filepath.Abs(retain)
+		resolved, err := absolute(retain)
 		if err != nil {
 			return "", false, err
 		}
-		return absolute, false, nil
+		return resolved, false, nil
 	}
 	path, err = filewrite.CreateScratch("", "wb-coverage-*.out", 0, nil, inj)
 	if err != nil {
@@ -205,6 +209,10 @@ func NewCoverageReport(repositories []RepositoryCoverage) CoverageReport {
 }
 
 func goModules(root string) ([]string, error) {
+	return goModulesWithAbs(root, filepath.Abs)
+}
+
+func goModulesWithAbs(root string, absolute func(string) (string, error)) ([]string, error) {
 	workspacePath := filepath.Join(root, "go.work")
 	workspace, err := os.ReadFile(workspacePath)
 	if err == nil {
@@ -218,7 +226,7 @@ func goModules(root string) ([]string, error) {
 			if !filepath.IsAbs(module) {
 				module = filepath.Join(root, module)
 			}
-			module, absErr := filepath.Abs(module)
+			module, absErr := absolute(module)
 			if absErr != nil {
 				return nil, fmt.Errorf("resolve go.work use %q: %w", use.Path, absErr)
 			}

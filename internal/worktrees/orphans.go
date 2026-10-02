@@ -184,6 +184,17 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 	sort.Slice(report.Residue, func(i, j int) bool { return report.Residue[i].Path < report.Residue[j].Path })
 	report.Totals.Residue = len(report.Residue)
 
+	finalizeOrphanReport(&report, families)
+	return report, nil
+}
+
+type canonicalClone struct {
+	path       string
+	repository string
+}
+
+// finalizeOrphanReport applies one deterministic ordering and summary to the discovered inventory.
+func finalizeOrphanReport(report *OrphanReport, families map[string][]OrphanWorktree) {
 	for root, worktrees := range families {
 		sort.Slice(worktrees, func(i, j int) bool {
 			if worktrees[i].EffortID != worktrees[j].EffortID {
@@ -211,12 +222,6 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 		return report.Families[i].RootEffort < report.Families[j].RootEffort
 	})
 	report.Totals.Families = len(report.Families)
-	return report, nil
-}
-
-type canonicalClone struct {
-	path       string
-	repository string
 }
 
 // discoverCanonicalClones finds <projects-root>/<owner>/<repository>/.git. It
@@ -513,6 +518,11 @@ func Backfill(ctx context.Context, options BackfillOptions) ([]BackfillResult, e
 	if err != nil {
 		return nil, err
 	}
+	return backfillOrphanReport(ctx, report, options.Apply, ReconstructManifest), nil
+}
+
+// backfillOrphanReport adopts the observed inventory; reconstruction still rereads native evidence.
+func backfillOrphanReport(ctx context.Context, report OrphanReport, apply bool, reconstruct func(context.Context, string) (Manifest, error)) []BackfillResult {
 	var results []BackfillResult
 	for _, family := range report.Families {
 		for _, worktree := range family.Worktrees {
@@ -526,10 +536,10 @@ func Backfill(ctx context.Context, options BackfillOptions) ([]BackfillResult, e
 			case worktree.Missing:
 				result.Action = BackfillSkipped
 				result.Reason = "working tree is gone; git worktree prune would clear the registration"
-			case !options.Apply:
+			case !apply:
 				result.Action = BackfillWouldWrite
 			default:
-				manifest, writeErr := ReconstructManifest(ctx, worktree.Path)
+				manifest, writeErr := reconstruct(ctx, worktree.Path)
 				if writeErr != nil {
 					result.Action = BackfillSkipped
 					result.Reason = writeErr.Error()
@@ -541,5 +551,5 @@ func Backfill(ctx context.Context, options BackfillOptions) ([]BackfillResult, e
 			results = append(results, result)
 		}
 	}
-	return results, nil
+	return results
 }

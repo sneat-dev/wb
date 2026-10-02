@@ -387,9 +387,6 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 		groups = append(groups, group)
 	}
 	sort.Slice(groups, func(i, j int) bool {
-		if groups[i].Dependency == groups[j].Dependency {
-			return groups[i].Classification < groups[j].Classification
-		}
 		return groups[i].Dependency < groups[j].Dependency
 	})
 	return groups

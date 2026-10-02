@@ -1221,9 +1221,7 @@ func simpleGovernedRewrite(command, wbExecutable string) (string, bool) {
 
 	commandWords := words
 	if hadCdPrefix {
-		if len(words) < 2 {
-			return "", false
-		}
+		// parseSpliceCandidate sets hadCdPrefix only after exactly cd + directory.
 		commandWords = words[2:]
 	}
 

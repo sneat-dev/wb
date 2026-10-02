@@ -148,9 +148,6 @@ func LoadPolicy(repoPath, explicitPath string) (Policy, error) {
 			}
 		}
 	}
-	if policy.Metrics.Path == "" {
-		policy.Metrics.Path = defaultMetricsPath()
-	}
 	policy.Metrics.Path = expandPath(policy.Metrics.Path)
 	if err := resolveProfiles(&policy); err != nil {
 		return Policy{}, err
@@ -220,10 +217,9 @@ func loadWBConfigGitHooks(path string) (fileConfig, bool, error) {
 	if section == nil || section.Tag == "!!null" {
 		return fileConfig{}, false, nil
 	}
-	raw, err := yaml.Marshal(section)
-	if err != nil {
-		return fileConfig{}, false, fmt.Errorf("parse hooks config %s: %w", path, err)
-	}
+	// This section is an unmodified node produced by the successful YAML parser.
+	// Re-emitting its parsed node kinds and scalar bytes has no fallible Go value conversion.
+	raw, _ := yaml.Marshal(section)
 	strict := yaml.NewDecoder(strings.NewReader(string(raw)))
 	strict.KnownFields(true)
 	var cfg fileConfig

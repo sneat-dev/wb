@@ -71,7 +71,7 @@ func TestDaemonLogIsServedToTheOwnerSessionAndToNobodyElse(t *testing.T) {
 		"an empty session cookie":                 {cookie: &http.Cookie{Name: cookie.Name, Value: ""}},
 		"a session cookie named for another port": {cookie: otherPort},
 		"the session on a foreign host":           {cookie: cookie, host: "attacker.example:8766"},
-		"the session on another loopback address": {cookie: cookie, host: "127.0.0.2:8766"},
+		"the session on a non-loopback address":   {cookie: cookie, host: "128.0.0.1:8766"},
 		"the session with no host":                {cookie: cookie, host: "[bad"},
 		"the session from the hosted origin":      {cookie: cookie, headers: []string{"Origin", hostedOrigin}},
 		"the session from a foreign origin":       {cookie: cookie, headers: []string{"Origin", "https://attacker.example"}},
@@ -138,7 +138,8 @@ func TestALocalReaderIsOnALoopbackHostWithTheCanonicalOriginOrNone(t *testing.T)
 		"the null origin":          {testHost, []string{"Origin", "null"}, false},
 		"two origins":              {testHost, []string{"Origin", testOrigin, "Origin", testOrigin}, false},
 		"a foreign host":           {"attacker.example:8766", nil, false},
-		"another loopback address": {"127.0.0.2:8766", nil, false},
+		"a non-loopback address":   {"128.0.0.1:8766", nil, false},
+		"another loopback address": {"127.0.0.2:8766", nil, true},
 	} {
 		request := httptest.NewRequest(http.MethodGet, APIPrefix+"session", nil)
 		request.Host = test.host

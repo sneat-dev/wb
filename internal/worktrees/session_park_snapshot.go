@@ -42,6 +42,10 @@ func parkedRemoteBranchTip(ctx context.Context, canonical *canonicalRepository, 
 	if err != nil {
 		return "", err
 	}
+	return parseParkedRemoteBranchTip(raw, branch)
+}
+
+func parseParkedRemoteBranchTip(raw []byte, branch string) (string, error) {
 	line := strings.TrimSpace(string(raw))
 	if line == "" {
 		return "", nil

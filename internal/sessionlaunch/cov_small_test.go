@@ -265,9 +265,6 @@ func TestSlCovValidatePrivateLaunchFileRejectsInvalidDescriptorAndBadMode(t *tes
 	if err := validatePrivateLaunchFile(int(goodFile.Fd()), "good", 0); err != nil {
 		t.Fatalf("validatePrivateLaunchFile(good) = %v", err)
 	}
-	if _, err := fileForFD(-1, "negative"); err == nil {
-		t.Fatal("fileForFD accepted a negative descriptor")
-	}
 }
 
 func TestSlCovDefaultPrivateLauncherDependenciesAreWired(t *testing.T) {

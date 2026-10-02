@@ -568,6 +568,19 @@ func TestIPv6CanonicalOriginIsBracketed(t *testing.T) {
 	}
 }
 
+// TestACanonicalOriginOnAnotherLoopbackAddressIsTheOneTheDaemonListensOn: a
+// daemon on 127.0.0.2 mints its login on that address, and the session works
+// there with that origin.
+func TestACanonicalOriginOnAnotherLoopbackAddressIsTheOneTheDaemonListensOn(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, func(options *Options) { options.CanonicalHost = CanonicalHost("127.0.0.2:8766") })
+	cookie := f.do(call{host: "127.0.0.2:8766", target: LoginPath + "?code=" + f.mint()}).Result().Cookies()[0]
+	recorder := f.do(call{method: http.MethodPost, host: "127.0.0.2:8766", target: LogoutPath, cookie: cookie, headers: []string{"Origin", "http://127.0.0.2:8766", "Content-Type", "application/json"}})
+	if cookie.Name != "wb_cockpit_session_8766" || recorder.Code != http.StatusNoContent {
+		t.Fatalf("cookie %q, logout = %d", cookie.Name, recorder.Code)
+	}
+}
+
 func TestHostedOriginIsDerivedFromTheURLNotItsSpelling(t *testing.T) {
 	t.Parallel()
 	for raw, want := range map[string]string{

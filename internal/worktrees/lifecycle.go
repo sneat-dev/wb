@@ -787,6 +787,9 @@ type cleanupTaskHandle struct {
 	worktrees     *os.File
 	task          *os.File
 	lock          operationLock
+	// Observations are invocation-owned and run only after native authority checks.
+	afterArtifactAuthorization func(*os.File)
+	afterArtifactMove          func()
 }
 
 type cleanupLifecycleArtifactHandle struct {
@@ -823,15 +826,13 @@ func prepareCleanupLifecycleArtifacts(
 			return nil, "", nil, fmt.Errorf("open cleanup lifecycle artifact %s: %w", artifact.Path, err)
 		}
 		directory := os.NewFile(uintptr(fd), "wb-cleanup-lifecycle-artifact")
-		if directory == nil {
-			_ = unix.Close(fd)
-			closeCleanupLifecycleArtifacts(handles)
-			return nil, "", nil, fmt.Errorf("wrap cleanup lifecycle artifact %s", artifact.Path)
-		}
 		if !directoryStillMatches(artifact.Path, directory) {
 			_ = directory.Close()
 			closeCleanupLifecycleArtifacts(handles)
 			return nil, "", nil, fmt.Errorf("cleanup lifecycle artifact path changed: %s", artifact.Path)
+		}
+		if task.afterArtifactAuthorization != nil {
+			task.afterArtifactAuthorization(directory)
 		}
 		empty, err := directoryEmpty(directory)
 		if err != nil || !empty {
@@ -879,7 +880,7 @@ func archiveCleanupLifecycleArtifacts(
 			}
 			return fmt.Errorf("cleanup lifecycle artifact %s became non-empty at retirement boundary; retained as explicit cleanup backlog", artifact.Path)
 		}
-		moved, err := moveExpectedDirectoryNoReplace(task.task, handle.name, archive, handle.name, handle.directory, nil)
+		moved, err := moveExpectedDirectoryNoReplace(task.task, handle.name, archive, handle.name, handle.directory, nil, task.afterArtifactMove)
 		if err != nil {
 			if moved != nil {
 				_ = moved.Close()
@@ -1312,6 +1313,10 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 // does not descend through repositories, so a task checkout can never be
 // discovered as another canonical clone.
 func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot, filter string) ([]wbhome.Layout, []ListDiagnostic) {
+	return discoverCanonicalLocalWorktreeLayoutsWithReadDir(ctx, projectsRoot, filter, os.ReadDir)
+}
+
+func discoverCanonicalLocalWorktreeLayoutsWithReadDir(ctx context.Context, projectsRoot, filter string, readDir func(string) ([]os.DirEntry, error)) ([]wbhome.Layout, []ListDiagnostic) {
 	// Owner directories are read through the literal host level when the
 	// first-level entry is a forge hostname, and taken directly otherwise, so
 	// the legacy {owner}/{repository} placement stays discoverable in place.
@@ -1329,7 +1334,7 @@ func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot, fi
 	}
 	for _, owner := range owners {
 		ownerPath := owner.Path
-		repositories, readErr := os.ReadDir(ownerPath)
+		repositories, readErr := readDir(ownerPath)
 		if readErr != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", "", ownerPath, fmt.Sprintf("read canonical owner directory: %v", readErr)))
 			continue
@@ -2412,23 +2417,29 @@ func inspectLifecycleArtifact(ctx context.Context, worktreesRoot, task, path str
 		artifact.Reason = "cannot open reserved WB stage without following links: " + err.Error()
 		return artifact, true
 	}
+	return inspectOpenedLifecycleArtifact(ctx, path, artifact, directory), true
+}
+
+// inspectOpenedLifecycleArtifact consumes the retained no-follow stage handle.
+// Failed enumeration remains explicit backlog evidence, never an empty stage.
+func inspectOpenedLifecycleArtifact(ctx context.Context, path string, artifact LifecycleArtifact, directory *os.File) LifecycleArtifact {
 	empty, emptyErr := directoryEmpty(directory)
 	_ = directory.Close()
 	if emptyErr != nil {
 		artifact.Reason = "cannot inspect reserved WB stage contents: " + emptyErr.Error()
-		return artifact, true
+		return artifact
 	}
 	if !empty {
 		artifact.Reason = "reserved WB stage is non-empty and requires audited recovery before task cleanup"
 		if repository, err := OriginSlug(ctx, path); err == nil {
 			artifact.Repository = repository
 		}
-		return artifact, true
+		return artifact
 	}
 	artifact.Eligible = true
 	artifact.Disposition = "archive_empty_stage"
 	artifact.Reason = "recognized empty WB-owned stage will be descriptor-safely archived on apply"
-	return artifact, true
+	return artifact
 }
 
 func lifecycleArtifactName(name string) (kind, state string, recognized bool) {
@@ -2552,6 +2563,10 @@ type cleanupRun struct {
 // time platform capability before anything mutates. It is Cleanup's first
 // step: every step after it reads normalized options and a resolved home.
 func newCleanupRun(ctx context.Context, options CleanupOptions) (*cleanupRun, error) {
+	return newCleanupRunWithCapability(ctx, options, requireGitFilesystemCapability)
+}
+
+func newCleanupRunWithCapability(ctx context.Context, options CleanupOptions, capability func() error) (*cleanupRun, error) {
 	normalized, err := normalizeCleanupOptions(options)
 	if err != nil {
 		return nil, err
@@ -2597,7 +2612,7 @@ func newCleanupRun(ctx context.Context, options CleanupOptions) (*cleanupRun, er
 	// The report is a mutation too. Probe the platform capability before
 	// creating its default directory or making any other apply-time change.
 	if normalized.Apply {
-		if err := requireGitFilesystemCapability(); err != nil {
+		if err := capability(); err != nil {
 			return nil, err
 		}
 	}
@@ -3344,6 +3359,10 @@ func taskSelectionMatches(tasks map[string]bool, task string) bool {
 // names the source effort. A single resume can have several member namespaces,
 // so all exact manifest matches are returned for one audited cleanup pass.
 func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]string, error) {
+	return resolveLogicalCleanupTasksWithReadDir(layouts, tasks, os.ReadDir)
+}
+
+func resolveLogicalCleanupTasksWithReadDir(layouts []wbhome.Layout, tasks []string, readDir func(string) ([]os.DirEntry, error)) ([]string, error) {
 	if len(tasks) == 0 {
 		return tasks, nil
 	}
@@ -3352,7 +3371,7 @@ func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]stri
 	for _, logical := range tasks {
 		matches := make([]string, 0)
 		for _, layout := range layouts {
-			entries, err := os.ReadDir(layout.WorktreesRoot)
+			entries, err := readDir(layout.WorktreesRoot)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
@@ -3381,7 +3400,7 @@ func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]stri
 					}
 					continue
 				}
-				owners, readErr := os.ReadDir(taskRoot)
+				owners, readErr := readDir(taskRoot)
 				if readErr != nil {
 					if errors.Is(readErr, os.ErrNotExist) {
 						continue
@@ -3393,7 +3412,7 @@ func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]stri
 					if !owner.IsDir() || strings.HasPrefix(owner.Name(), ".") {
 						continue
 					}
-					repositories, readErr := os.ReadDir(filepath.Join(taskRoot, owner.Name()))
+					repositories, readErr := readDir(filepath.Join(taskRoot, owner.Name()))
 					if readErr != nil {
 						if errors.Is(readErr, os.ErrNotExist) {
 							continue
@@ -4746,17 +4765,21 @@ func interruptedTaskLockPID(file *os.File, task string) (int, error) {
 const SecureCleanupGitHelperArgument = "--wb-internal-cleanup-git"
 
 func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalRepository, worktreeParent, worktreeDirectory *os.File, worktreeParentPath, worktreePath string, gitArgs ...string) error {
+	return runSecureCleanupGitHelperWithExecutables(ctx, canonical, worktreeParent, worktreeDirectory, worktreeParentPath, worktreePath, os.Executable, trustedGitExecutable, gitArgs...)
+}
+
+func runSecureCleanupGitHelperWithExecutables(ctx context.Context, canonical *canonicalRepository, worktreeParent, worktreeDirectory *os.File, worktreeParentPath, worktreePath string, resolveExecutable, resolveGit func() (string, error), gitArgs ...string) error {
 	if canonical == nil || canonical.root == nil || canonical.common == nil {
 		return fmt.Errorf("cleanup canonical repository descriptor is unavailable")
 	}
 	if err := canonical.authorizeForGit(); err != nil {
 		return fmt.Errorf("canonical repository path changed before Git operation: %w", err)
 	}
-	executable, err := os.Executable()
+	executable, err := secureHelperExecutable(resolveExecutable, "cleanup Git")
 	if err != nil {
-		return fmt.Errorf("locate WB cleanup Git helper: %w", err)
+		return err
 	}
-	gitExecutable, err := trustedGitExecutable()
+	gitExecutable, err := resolveGit()
 	if err != nil {
 		return err
 	}

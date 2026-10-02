@@ -46,6 +46,10 @@ import (
 // environment: it mutates shared process state and only restores it on
 // this test's own Cleanup.
 func Isolate(t testing.TB) {
+	isolateEnvironment(t, os.Unsetenv, os.Setenv)
+}
+
+func isolateEnvironment(t testing.TB, unset func(string) error, set func(string, string) error) {
 	t.Helper()
 	// Route through t.Setenv first so the standard library marks this test
 	// (and any test that already called t.Parallel) as ineligible for
@@ -59,11 +63,11 @@ func Isolate(t testing.TB) {
 			continue
 		}
 		original := value
-		if err := os.Unsetenv(name); err != nil {
+		if err := unset(name); err != nil {
 			t.Fatalf("testenv.Isolate: unsetenv %s: %v", name, err)
 		}
 		t.Cleanup(func() {
-			if err := os.Setenv(name, original); err != nil {
+			if err := set(name, original); err != nil {
 				t.Errorf("testenv.Isolate: restore %s: %v", name, err)
 			}
 		})

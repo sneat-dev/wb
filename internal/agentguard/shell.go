@@ -49,10 +49,6 @@ type shellReader struct {
 	word     strings.Builder
 	hasWord  bool
 
-	// pendingRedirect is set once a redirection operator has been read, so
-	// the next word is recorded as its target rather than as an argument.
-	pendingRedirect bool
-
 	// heredocDelimiters queues the terminators of heredocs opened on the
 	// current line; their bodies begin after the next newline.
 	heredocDelimiters []string
@@ -102,7 +98,7 @@ func (r *shellReader) read() []segment {
 			// beginning with #"). `echo a#b` is one word, and
 			// `# use wb pr land; never gh pr merge` is not a command
 			// (wb#500 fifth review, false refusal 1).
-			if r.hasWord || r.pendingRedirect {
+			if r.hasWord {
 				r.word.WriteByte(character)
 				r.hasWord = true
 				r.index++
@@ -212,10 +208,8 @@ func (r *shellReader) readOutputRedirect() {
 		r.hasWord = false
 	}
 	r.endWord()
-	r.pendingRedirect = true
 	r.skipSpaces()
 	target := r.readRawWord()
-	r.pendingRedirect = false
 	if target != "" {
 		r.current.RedirectTargets = append(r.current.RedirectTargets, target)
 	}
@@ -343,10 +337,6 @@ func (r *shellReader) endWord() {
 	word := r.word.String()
 	r.word.Reset()
 	r.hasWord = false
-	if r.pendingRedirect {
-		r.current.RedirectTargets = append(r.current.RedirectTargets, word)
-		return
-	}
 	r.current.Words = append(r.current.Words, word)
 }
 

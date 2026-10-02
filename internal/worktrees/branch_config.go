@@ -269,6 +269,27 @@ type branchNamingOptions struct {
 	Base              string
 }
 
+// normalizeBranchNamingOptions retains legacy nonempty Go API values while
+// preserving the meaningful explicit empty CLI prefix and rejecting an empty
+// chosen branch. Branch selection precedes each caller's remaining validation.
+func normalizeBranchNamingOptions(options branchNamingOptions) (branchNamingOptions, error) {
+	branchProvided := options.ExactBranch != ""
+	prefixProvided := options.CLIPrefix != ""
+	options.ExactBranch = strings.TrimSpace(options.ExactBranch)
+	options.ExactBranchChosen = options.ExactBranchChosen || branchProvided
+	options.CLIPrefixChosen = options.CLIPrefixChosen || prefixProvided
+	if options.CLIPrefixChosen && strings.TrimSpace(options.CLIPrefix) != options.CLIPrefix {
+		return branchNamingOptions{}, fmt.Errorf("branch prefix must not have surrounding whitespace")
+	}
+	if options.ExactBranchChosen && options.CLIPrefixChosen {
+		return branchNamingOptions{}, fmt.Errorf("--branch and --branch-prefix cannot be used together")
+	}
+	if options.ExactBranchChosen && options.ExactBranch == "" {
+		return branchNamingOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
+	}
+	return options, nil
+}
+
 func deriveBranchName(ctx context.Context, options branchNamingOptions) (string, error) {
 	if options.ExactBranchChosen && options.CLIPrefixChosen {
 		return "", fmt.Errorf("--branch and --branch-prefix cannot be used together")
@@ -313,15 +334,13 @@ func validateDerivedBranch(branch, base string) (string, error) {
 // target-base object. A clean canonical checkout may intentionally be on a
 // different branch, so its filesystem is never policy authority here.
 func configuredBranchPrefix(ctx context.Context, canonical *canonicalRepository, baseRevision string) (string, error) {
-	globalPath, err := defaultWorktreesConfigPath()
+	global, found, globalPath, err := configuredUserWorktreesConfig()
 	if err != nil {
 		return "", err
 	}
 	prefix := ""
-	if config, found, err := loadBranchConfigFile(globalPath); err != nil {
-		return "", err
-	} else if found && config.Worktrees.BranchPrefix != nil {
-		prefix = *config.Worktrees.BranchPrefix
+	if found && global.Worktrees.BranchPrefix != nil {
+		prefix = *global.Worktrees.BranchPrefix
 	}
 	if canonical == nil || !isGitObjectID(baseRevision) {
 		return "", fmt.Errorf("branch policy requires a fetched canonical target-base revision")
@@ -419,6 +438,10 @@ func appendConfiguredSharedWorktreesLayout(layouts []wbhome.Layout) ([]wbhome.La
 }
 
 func resolveSharedWorktreesRoot(value string) (string, error) {
+	return resolveSharedWorktreesRootWithAbsolute(value, filepath.Abs)
+}
+
+func resolveSharedWorktreesRootWithAbsolute(value string, absolutePath func(string) (string, error)) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("must not be empty")
@@ -437,7 +460,7 @@ func resolveSharedWorktreesRoot(value string) (string, error) {
 	if !filepath.IsAbs(value) {
 		return "", fmt.Errorf("must be an absolute path (or begin with ~/)")
 	}
-	absolute, err := filepath.Abs(value)
+	absolute, err := absolutePath(value)
 	if err != nil {
 		return "", err
 	}
@@ -445,7 +468,11 @@ func resolveSharedWorktreesRoot(value string) (string, error) {
 }
 
 func resolvePlacementPath(path string) (string, error) {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+	return resolvePlacementPathWithResolver(path, filepath.EvalSymlinks)
+}
+
+func resolvePlacementPathWithResolver(path string, resolve func(string) (string, error)) (string, error) {
+	if resolved, err := resolve(path); err == nil {
 		return filepath.Clean(resolved), nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -454,7 +481,7 @@ func resolvePlacementPath(path string) (string, error) {
 	if parent == path {
 		return path, nil
 	}
-	resolvedParent, err := resolvePlacementPath(parent)
+	resolvedParent, err := resolvePlacementPathWithResolver(parent, resolve)
 	if err != nil {
 		return "", err
 	}
@@ -473,12 +500,21 @@ func defaultWorktreesConfigPath() (string, error) {
 }
 
 func loadBranchConfigFile(path string) (branchConfigFile, bool, error) {
+	return loadBranchConfigFileObserved(path, nil)
+}
+
+// loadBranchConfigFileObserved keeps native path inspection and reads intact.
+// Observation is scoped to one call and occurs only after a successful stage.
+func loadBranchConfigFileObserved(path string, observe func(stage, resolved string)) (branchConfigFile, bool, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return branchConfigFile{}, false, nil
 	}
 	if err != nil {
 		return branchConfigFile{}, false, fmt.Errorf("resolve worktrees config %s: %w", path, err)
+	}
+	if observe != nil {
+		observe("resolved", resolved)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
@@ -489,6 +525,9 @@ func loadBranchConfigFile(path string) (branchConfigFile, bool, error) {
 	}
 	if info.Size() > maxBranchConfigSize {
 		return branchConfigFile{}, false, fmt.Errorf("worktrees config %s exceeds %d-byte limit", path, maxBranchConfigSize)
+	}
+	if observe != nil {
+		observe("inspected", resolved)
 	}
 	contents, err := os.ReadFile(resolved)
 	if err != nil {
@@ -508,32 +547,48 @@ func repositoryBranchConfigAt(ctx context.Context, canonical *canonicalRepositor
 	if err != nil {
 		return nil, false, fmt.Errorf("inspect repository worktrees policy at %s: %w", revision, err)
 	}
+	objectID, found, err := repositoryPolicyEntry(revision, entryBytes)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	sizeBytes, err := gitCanonicalPolicyBytes(ctx, canonical, "cat-file", "-s", objectID)
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect repository worktrees policy blob size at %s: %w", revision, err)
+	}
+	if err := validateRepositoryPolicyBlobSize(revision, sizeBytes); err != nil {
+		return nil, false, err
+	}
+	contents, err := gitCanonicalPolicyBytes(ctx, canonical, "show", objectID)
+	if err != nil {
+		return nil, false, fmt.Errorf("read repository worktrees policy blob at %s: %w", revision, err)
+	}
+	return contents, true, nil
+}
+
+// repositoryPolicyEntry admits only the fixed policy path and regular blobs.
+func repositoryPolicyEntry(revision string, entryBytes []byte) (string, bool, error) {
 	entry := strings.TrimSpace(string(entryBytes))
 	if entry == "" {
-		return nil, false, nil
+		return "", false, nil
 	}
 	metadata, path, found := strings.Cut(entry, "\t")
 	fields := strings.Fields(metadata)
 	if !found || path != ".wb/worktrees.yaml" || len(fields) != 3 || fields[1] != "blob" ||
 		(fields[0] != "100644" && fields[0] != "100755") || !isGitObjectID(fields[2]) {
-		return nil, false, fmt.Errorf("repository worktrees policy at %s must be a regular blob, not %q", revision, entry)
+		return "", false, fmt.Errorf("repository worktrees policy at %s must be a regular blob, not %q", revision, entry)
 	}
-	sizeBytes, err := gitCanonicalPolicyBytes(ctx, canonical, "cat-file", "-s", fields[2])
-	if err != nil {
-		return nil, false, fmt.Errorf("inspect repository worktrees policy blob size at %s: %w", revision, err)
-	}
+	return fields[2], true, nil
+}
+
+func validateRepositoryPolicyBlobSize(revision string, sizeBytes []byte) error {
 	size, err := strconv.ParseInt(strings.TrimSpace(string(sizeBytes)), 10, 64)
 	if err != nil || size < 0 {
-		return nil, false, fmt.Errorf("parse repository worktrees policy blob size at %s: %q", revision, strings.TrimSpace(string(sizeBytes)))
+		return fmt.Errorf("parse repository worktrees policy blob size at %s: %q", revision, strings.TrimSpace(string(sizeBytes)))
 	}
 	if size > maxBranchConfigSize {
-		return nil, false, fmt.Errorf("repository worktrees policy blob at %s exceeds %d-byte limit", revision, maxBranchConfigSize)
+		return fmt.Errorf("repository worktrees policy blob at %s exceeds %d-byte limit", revision, maxBranchConfigSize)
 	}
-	contents, err := gitCanonicalPolicyBytes(ctx, canonical, "show", fields[2])
-	if err != nil {
-		return nil, false, fmt.Errorf("read repository worktrees policy blob at %s: %w", revision, err)
-	}
-	return contents, true, nil
+	return nil
 }
 
 func parseBranchConfig(path string, contents []byte) (branchConfigFile, bool, error) {

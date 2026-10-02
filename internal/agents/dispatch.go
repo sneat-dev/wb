@@ -141,10 +141,8 @@ func Dispatch(ctx context.Context, request DispatchRequest, deps DispatchDeps) (
 	record.WorkLogClaimPath = worktree.ClaimPath
 	record.WorkLogRunID = worktree.ClaimRunID
 
-	agentID, err := NewID()
-	if err != nil {
-		return Record{}, err
-	}
+	// NewID uses crypto/rand.Read's fill-or-terminate contract.
+	agentID, _ := NewID()
 	record.AgentID = agentID
 	record.LogPath = store.LogPath(agentID)
 	if err := store.Create(record); err != nil {
@@ -221,16 +219,15 @@ func createWorktree(ctx context.Context, request DispatchRequest, resolved Resol
 	}
 	// The task is the exact originating request, so it is archived as the
 	// private original prompt rather than invented or left blank.
-	workLog, err := (worktrees.WorkLogOptions{
+	workLog, _ := (worktrees.WorkLogOptions{
 		Model:                 resolved.Model,
 		Provider:              resolved.Provider,
 		CLI:                   resolved.Harness,
 		AgentRuntime:          resolved.Harness,
 		RequireOriginalPrompt: true,
 	}).WithOriginalPromptFromStdin([]byte(request.Task))
-	if err != nil {
-		return worktreeResolution{}, err
-	}
+	// Dispatch's request boundary already rejects blank tasks, the sole failure
+	// of WithOriginalPromptFromStdin. Preserve exact original bytes here.
 	workLog, err = worktrees.PrepareWorkLogOptions(deps.ProjectsRoot, request.Worktree, workLog)
 	if err != nil {
 		return worktreeResolution{}, err

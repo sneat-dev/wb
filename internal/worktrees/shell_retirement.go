@@ -64,6 +64,11 @@ func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireS
 	if err != nil {
 		return RetireShellsOutcome{}, err
 	}
+	return retireResolvedTaskShells(ctx, options, resolution)
+}
+
+// retireResolvedTaskShells keeps the resolved read inventory fixed throughout the sweep.
+func retireResolvedTaskShells(ctx context.Context, options RetireShellsOptions, resolution wbhome.Resolution) (RetireShellsOutcome, error) {
 	seenRoots := map[string]bool{}
 	var results []RetiredShell
 	for _, layout := range resolution.Read {
@@ -150,7 +155,22 @@ func inspectTaskShell(worktreesRoot, task string) RetiredShell {
 // already reclaimed and holds that exact lock itself — lockHeldByThisCall
 // tells the check to treat that one expected `.lock` as ignorable residue
 // rather than mistaking its own lock for someone else's live operation.
+type shellInspectionPhase string
+
+const (
+	shellAfterTaskEnumeration        shellInspectionPhase = "after_task_enumeration"
+	shellBeforeOwnerInspection       shellInspectionPhase = "before_owner_inspection"
+	shellAfterOwnerEnumeration       shellInspectionPhase = "after_owner_enumeration"
+	shellBeforeRepositoryEnumeration shellInspectionPhase = "before_repository_enumeration"
+)
+
+type shellInspectionObserver func(shellInspectionPhase, string)
+
 func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, string) {
+	return taskShellIsEmptyObserved(taskPath, task, lockHeldByThisCall, nil)
+}
+
+func taskShellIsEmptyObserved(taskPath, task string, lockHeldByThisCall bool, observe shellInspectionObserver) (bool, string) {
 	taskInfo, err := os.Lstat(taskPath)
 	if err != nil {
 		return false, fmt.Sprintf("stat task directory: %v", err)
@@ -164,6 +184,9 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 		return false, fmt.Sprintf("read task directory: %v", err)
 	}
 
+	if observe != nil {
+		observe(shellAfterTaskEnumeration, taskPath)
+	}
 	var ownerDirs []string
 	for _, entry := range entries {
 		name := entry.Name()
@@ -200,6 +223,9 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 	}
 
 	for _, owner := range ownerDirs {
+		if observe != nil {
+			observe(shellBeforeOwnerInspection, filepath.Join(taskPath, owner))
+		}
 		empty, err := ownerDirectoryIsProvablyEmpty(filepath.Join(taskPath, owner))
 		if err != nil {
 			return false, fmt.Sprintf("inspect %s/%s: %v", task, owner, err)
@@ -220,6 +246,10 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 // repository directory that still holds something, most importantly a real
 // `.git` — is conservatively "not empty" so it is left untouched.
 func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
+	return ownerDirectoryIsProvablyEmptyObserved(ownerPath, nil)
+}
+
+func ownerDirectoryIsProvablyEmptyObserved(ownerPath string, observe shellInspectionObserver) (bool, error) {
 	info, err := os.Lstat(ownerPath)
 	if err != nil {
 		return false, err
@@ -231,6 +261,9 @@ func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if observe != nil {
+		observe(shellAfterOwnerEnumeration, ownerPath)
+	}
 	for _, entry := range entries {
 		repositoryPath := filepath.Join(ownerPath, entry.Name())
 		repositoryInfo, err := os.Lstat(repositoryPath)
@@ -239,6 +272,9 @@ func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
 		}
 		if repositoryInfo.Mode()&os.ModeSymlink != 0 || !repositoryInfo.IsDir() {
 			return false, nil
+		}
+		if observe != nil {
+			observe(shellBeforeRepositoryEnumeration, repositoryPath)
 		}
 		children, err := os.ReadDir(repositoryPath)
 		if err != nil {

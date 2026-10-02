@@ -15,7 +15,11 @@ func isNoSuchProcess(err error) bool { return errors.Is(err, syscall.ESRCH) }
 
 // terminateOwner signals one detached owner's process group.
 func terminateOwner(pid int, signal syscall.Signal) error {
-	err := signalProcessGroup(pid, signal)
+	return terminateOwnerWithSignal(pid, signal, signalProcessGroup)
+}
+
+func terminateOwnerWithSignal(pid int, signal syscall.Signal, send func(int, syscall.Signal) error) error {
+	err := send(pid, signal)
 	if err == nil || isNoSuchProcess(err) {
 		return nil
 	}

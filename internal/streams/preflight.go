@@ -153,7 +153,11 @@ func checkHooks(input PreflightInput, check HooksChecker) PreflightFinding {
 // declaring the same name make every later link and bump ambiguous, and the
 // ambiguity is invisible until a consumer resolves the wrong one.
 func collectNpmPackageNames(input PreflightInput) ([]string, PreflightFinding) {
-	manifests, err := npmPackageManifests(input.Path)
+	return collectNpmPackageNamesWithRead(input, os.ReadFile)
+}
+
+func collectNpmPackageNamesWithRead(input PreflightInput, read func(string) ([]byte, error)) ([]string, PreflightFinding) {
+	manifests, err := npmPackageManifestsWithRead(input.Path, read)
 	if err != nil {
 		return nil, PreflightFinding{Repository: input.Repository, Check: CheckNpmProviderIdentity, Status: PreflightUnknown, Detail: err.Error()}
 	}
@@ -166,7 +170,7 @@ func collectNpmPackageNames(input PreflightInput) ([]string, PreflightFinding) {
 		if manifest.Root && manifest.Workspace != "." {
 			continue
 		}
-		contents, err := os.ReadFile(filepath.Join(input.Path, filepath.FromSlash(manifest.Path)))
+		contents, err := read(filepath.Join(input.Path, filepath.FromSlash(manifest.Path)))
 		if err != nil {
 			return nil, PreflightFinding{Repository: input.Repository, Check: CheckNpmProviderIdentity, Status: PreflightUnknown, Detail: err.Error()}
 		}
@@ -303,6 +307,10 @@ type npmPackageManifest struct {
 // repository. This follows the canonical dependency discovery's full-tree
 // model while retaining local-link's deliberate `libs/**` publication scope.
 func npmPackageManifests(root string) ([]npmPackageManifest, error) {
+	return npmPackageManifestsWithRead(root, os.ReadFile)
+}
+
+func npmPackageManifestsWithRead(root string, read func(string) ([]byte, error)) ([]npmPackageManifest, error) {
 	workspaceRoots := map[string]bool{".": true}
 	var packagePaths []string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -320,10 +328,8 @@ func npmPackageManifests(root string) ([]npmPackageManifest, error) {
 		if entry.Name() != "package.json" && entry.Name() != "pnpm-workspace.yaml" {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir children share the root coordinate and volume.
+		relative, _ := filepath.Rel(root, path)
 		relative = filepath.ToSlash(relative)
 		if entry.Name() != "package.json" {
 			workspaceRoots[filepath.ToSlash(filepath.Dir(relative))] = true
@@ -336,7 +342,7 @@ func npmPackageManifests(root string) ([]npmPackageManifest, error) {
 		return nil, fmt.Errorf("scan npm manifests in %s: %w", root, err)
 	}
 	for _, path := range packagePaths {
-		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		contents, err := read(filepath.Join(root, filepath.FromSlash(path)))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
@@ -353,10 +359,9 @@ func npmPackageManifests(root string) ([]npmPackageManifest, error) {
 	var manifests []npmPackageManifest
 	for _, path := range packagePaths {
 		workspace := owningNpmWorkspace(path, workspaceRoots)
-		relative, err := filepath.Rel(filepath.FromSlash(workspace), filepath.FromSlash(path))
-		if err != nil {
-			return nil, fmt.Errorf("resolve npm workspace for %s: %w", path, err)
-		}
+		// Both coordinates are relative WalkDir descendants; workspace is
+		// an ancestor selected from those descendants or the literal dot.
+		relative, _ := filepath.Rel(filepath.FromSlash(workspace), filepath.FromSlash(path))
 		relative = filepath.ToSlash(relative)
 		rootManifest := relative == "package.json"
 		if !rootManifest && !strings.HasPrefix(relative, "libs/") {

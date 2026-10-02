@@ -1618,19 +1618,7 @@ internal/quality::TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfil
 internal/quality::TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfile/unparsable profile fails	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/quality::TestDqCovCoverWithOptionsRetainsProfileAndRejectsInvalidProfile/valid profile retained in place	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/quality::TestDqCovCoverageProfilePathRetainsOrCreatesTemp	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/quality::TestDqCovDiscoverGoTestsFiltersAndReportsFailure	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovGoListPackagesHandlesEveryListingShape	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/quality::TestDqCovLoadValidationCacheMissesEveryWeakenedRecord/invalid json	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/quality::TestDqCovRunShardedCoverageOptionsRejectsBadPlans	kept serial because a nested subtest must stay serial: #1
-internal/quality::TestDqCovRunShardedCoverageOptionsRejectsBadPlans/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures	kept serial because a nested subtest must stay serial: incompatible shard profiles
-internal/quality::TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures/incompatible shard profiles	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures/unwritable diagnostics directory	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/quality::TestDqCovRunShardedCoverageWithDiagnosticsDelegates	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/quality::TestDqCovRunShardedVerificationFailsWithoutTemporaryRoot	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/quality::TestDqCovValidationCacheDirHonorsOverride	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/quality::TestDqCovVerifyWithOptionsSkipsSpecInsideGoAndNodeLoops	kept serial because a nested subtest must stay serial: node project with a missing script
@@ -2711,7 +2699,6 @@ internal/worktrees::TestPurgeTerminalArtefactsNeverFollowsOrRemovesForeignShapes
 internal/worktrees::TestPurgeTerminalArtefactsRemovesEmptyStageAndInertLock	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestPushRemoteCheckpointIsForceUpdatable	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestPushRemoteCheckpointNeverTouchesRefsHeads	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/worktrees::TestPushRemoteCheckpointRejectsAnUnresolvedCommit	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestQuarantineManifestRequiresExactIdentityAndReason	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestReadingAnOldVersionClaimStillDecodes	serial pending case-by-case review (sneat-dev/wb#623 baseline)

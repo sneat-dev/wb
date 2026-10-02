@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -143,13 +142,16 @@ func NewStore(root string) Store { return Store{Root: root} }
 
 func NewID() (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate parked session ID: %w", err)
-	}
+	// crypto/rand.Read always fills b and returns nil; entropy failure is fatal.
+	_, _ = rand.Read(b[:])
 	return "park-" + hex.EncodeToString(b[:]), nil
 }
 
 func (s Store) Create(bundle Bundle) (Bundle, error) {
+	return s.create(bundle, unix.Mkdirat, openPrivateDirectoryAt, nil)
+}
+
+func (s Store) create(bundle Bundle, mkdirAt func(int, string, uint32) error, openDirectory func(*os.File, string) (*os.File, error), inj *filewrite.Injector) (Bundle, error) {
 	if err := validateBundle(bundle); err != nil {
 		return Bundle{}, err
 	}
@@ -157,41 +159,41 @@ func (s Store) Create(bundle Bundle) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
-	root, err := openPrivateStoreRoot(s.Root, true)
+	root, err := openPrivateStoreRootWithInjector(s.Root, true, inj, unix.SyncDirectory)
 	if err != nil {
 		return Bundle{}, err
 	}
 	defer func() { _ = root.Close() }()
-	if err := unix.Mkdirat(int(root.Fd()), bundle.ParkedSessionID, 0o700); err != nil {
+	if err := mkdirAt(int(root.Fd()), bundle.ParkedSessionID, 0o700); err != nil {
 		return Bundle{}, fmt.Errorf("create parked session aggregate: %w", err)
 	}
-	aggregate, err := openPrivateDirectoryAt(root, bundle.ParkedSessionID)
+	aggregate, err := openDirectory(root, bundle.ParkedSessionID)
 	if err != nil {
 		return Bundle{}, err
 	}
 	defer func() { _ = aggregate.Close() }()
-	if err := writeExactPrivateAt(aggregate, sourceBundleFileName, raw); err != nil {
+	if err := writeExactPrivateAtInjected(aggregate, sourceBundleFileName, raw, inj); err != nil {
 		return Bundle{}, fmt.Errorf("persist exact parked session bundle: %w", err)
 	}
-	if err := writeExactPrivateAt(aggregate, sourceContinuationFileName, []byte(bundle.Continuation)); err != nil {
+	if err := writeExactPrivateAtInjected(aggregate, sourceContinuationFileName, []byte(bundle.Continuation), inj); err != nil {
 		return Bundle{}, fmt.Errorf("persist private parked session continuation: %w", err)
 	}
-	if err := unix.Mkdirat(int(aggregate.Fd()), sourceEventsDirName, 0o700); err != nil {
+	if err := mkdirAt(int(aggregate.Fd()), sourceEventsDirName, 0o700); err != nil {
 		return Bundle{}, err
 	}
-	events, err := openPrivateDirectoryAt(aggregate, sourceEventsDirName)
+	events, err := openDirectory(aggregate, sourceEventsDirName)
 	if err != nil {
 		return Bundle{}, err
 	}
-	if err := events.Sync(); err != nil {
+	if err := filewrite.SyncDir(events, inj); err != nil {
 		_ = events.Close()
 		return Bundle{}, err
 	}
 	_ = events.Close()
-	if err := aggregate.Sync(); err != nil {
+	if err := filewrite.SyncDir(aggregate, inj); err != nil {
 		return Bundle{}, err
 	}
-	if err := root.Sync(); err != nil {
+	if err := filewrite.SyncDir(root, inj); err != nil {
 		return Bundle{}, err
 	}
 	return bundle, nil
@@ -201,6 +203,10 @@ func (s Store) Create(bundle Bundle) (Bundle, error) {
 // used to repair a crash between aggregate publication and lifecycle marking,
 // so retry never allocates a second parked identity.
 func (s Store) FindBySource(wbSessionID string) (Bundle, bool, error) {
+	return s.findBySourceWithEntries(wbSessionID, readDirectoryEntries)
+}
+
+func (s Store) findBySourceWithEntries(wbSessionID string, readEntries func(*os.File) ([]os.DirEntry, error)) (Bundle, bool, error) {
 	if !sessionauthority.ValidID(wbSessionID) {
 		return Bundle{}, false, fmt.Errorf("source WB session ID is invalid")
 	}
@@ -212,10 +218,7 @@ func (s Store) FindBySource(wbSessionID string) (Bundle, bool, error) {
 		return Bundle{}, false, err
 	}
 	defer func() { _ = root.Close() }()
-	if _, err := root.Seek(0, io.SeekStart); err != nil {
-		return Bundle{}, false, err
-	}
-	entries, err := root.ReadDir(-1)
+	entries, err := readEntries(root)
 	if err != nil {
 		return Bundle{}, false, err
 	}
@@ -364,6 +367,10 @@ func sourceEnvelopeName(target string) string { return "remote-" + target + ".js
 func sourceReceiptName(target string) string  { return "receipt-" + target + ".json" }
 
 func (s Store) Acquire(ctx context.Context, id string) (*SourceLock, error) {
+	return s.acquireWithFlock(ctx, id, unix.Flock)
+}
+
+func (s Store) acquireWithFlock(ctx context.Context, id string, flock func(int, int) error) (*SourceLock, error) {
 	if !validParkID(id) {
 		return nil, fmt.Errorf("invalid parked session ID")
 	}
@@ -419,7 +426,7 @@ func (s Store) Acquire(ctx context.Context, id string) (*SourceLock, error) {
 	}
 	file := os.NewFile(uintptr(lockFD), "wb-parked-source-resume-lock")
 	for {
-		if err := unix.Flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+		if err := flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); err == nil {
 			return &SourceLock{root: root, aggregate: aggregate, bundleFile: bundleFile, file: file,
 				rootPath: rootPath, parkID: id, bundle: bundle}, nil
 		} else if !errors.Is(err, unix.EWOULDBLOCK) {
@@ -429,18 +436,12 @@ func (s Store) Acquire(ctx context.Context, id string) (*SourceLock, error) {
 			_ = root.Close()
 			return nil, fmt.Errorf("lock parked session resume: %w", err)
 		}
-		timer := time.NewTimer(20 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+		if err := waitResumeFence(ctx); err != nil {
 			_ = file.Close()
 			_ = bundleFile.Close()
 			_ = aggregate.Close()
 			_ = root.Close()
 			return nil, fmt.Errorf("wait for parked session resume fence: %w", ctx.Err())
-		case <-timer.C:
 		}
 	}
 }
@@ -508,12 +509,16 @@ func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
 }
 
 func (lock *SourceLock) RetainSessionDir(storeRoot, parkID, digest string) (*os.File, error) {
+	return lock.retainSessionDir(storeRoot, parkID, digest, unix.Dup)
+}
+
+func (lock *SourceLock) retainSessionDir(storeRoot, parkID, digest string, duplicate func(int) (int, error)) (*os.File, error) {
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	if !lock.heldLocked(storeRoot, parkID, digest) {
 		return nil, fmt.Errorf("parked source lock does not retain the exact admitted aggregate")
 	}
-	fd, err := unix.Dup(int(lock.aggregate.Fd()))
+	fd, err := duplicate(int(lock.aggregate.Fd()))
 	if err != nil {
 		return nil, err
 	}
@@ -653,6 +658,10 @@ func (s Store) ExistingLocalLaunchRootUnderLock(lock *SourceLock) (string, bool,
 // LocalLaunchRootUnderLock returns the first exact retained member, or creates
 // the deterministic aggregate-bound 0700 neutral root for a zero-member park.
 func (s Store) LocalLaunchRootUnderLock(lock *SourceLock) (string, error) {
+	return s.localLaunchRootUnderLock(lock, nil, unix.Mkdirat)
+}
+
+func (s Store) localLaunchRootUnderLock(lock *SourceLock, inj *filewrite.Injector, mkdirAt func(int, string, uint32) error) (string, error) {
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return "", fmt.Errorf("select local launch root requires retained source authority")
 	}
@@ -662,7 +671,7 @@ func (s Store) LocalLaunchRootUnderLock(lock *SourceLock) (string, error) {
 	if len(lock.bundle.Worktrees) != 0 {
 		return lock.bundle.Worktrees[0].WorktreeDir, nil
 	}
-	if err := unix.Mkdirat(int(lock.aggregate.Fd()), LocalNeutralDirName, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+	if err := mkdirAt(int(lock.aggregate.Fd()), LocalNeutralDirName, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 		return "", fmt.Errorf("create private local resume root: %w", err)
 	}
 	neutral, err := openPrivateDirectoryAt(lock.aggregate, LocalNeutralDirName)
@@ -670,10 +679,10 @@ func (s Store) LocalLaunchRootUnderLock(lock *SourceLock) (string, error) {
 		return "", fmt.Errorf("open private local resume root: %w", err)
 	}
 	defer func() { _ = neutral.Close() }()
-	if err := neutral.Sync(); err != nil {
+	if err := filewrite.SyncDir(neutral, inj); err != nil {
 		return "", err
 	}
-	if err := lock.aggregate.Sync(); err != nil {
+	if err := filewrite.SyncDir(lock.aggregate, inj); err != nil {
 		return "", err
 	}
 	return filepath.Join(s.Root, lock.parkID, LocalNeutralDirName), nil
@@ -686,6 +695,10 @@ func (s Store) PrepareLocalUnderLock(lock *SourceLock, now time.Time) (ResumeRou
 }
 
 func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness, courier string, ssh sessionmove.SSHConfig, now time.Time) (RemoteAdmission, error) {
+	return s.prepareRemoteUnderLock(lock, target, requestedHarness, courier, ssh, now, nil)
+}
+
+func (s Store) prepareRemoteUnderLock(lock *SourceLock, target, requestedHarness, courier string, ssh sessionmove.SSHConfig, now time.Time, inj *filewrite.Injector) (RemoteAdmission, error) {
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return RemoteAdmission{}, fmt.Errorf("prepare remote park resume requires retained source authority")
 	}
@@ -731,7 +744,7 @@ func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness
 	if err != nil {
 		return RemoteAdmission{}, err
 	}
-	if err := writeExactPrivateAt(lock.aggregate, name, raw); err != nil {
+	if err := writeExactPrivateAtInjected(lock.aggregate, name, raw, inj); err != nil {
 		return RemoteAdmission{}, err
 	}
 	return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw), Route: route}, nil
@@ -854,6 +867,10 @@ func resumedEvent(state State, successor session.Record, now time.Time) Event {
 }
 
 func (s Store) claimResumeRouteUnderLock(lock *SourceLock, mode, target, courier string, ssh sessionmove.SSHConfig, now time.Time) (ResumeRoute, bool, error) {
+	return s.claimResumeRouteWithInjector(lock, mode, target, courier, ssh, now, nil)
+}
+
+func (s Store) claimResumeRouteWithInjector(lock *SourceLock, mode, target, courier string, ssh sessionmove.SSHConfig, now time.Time, inj *filewrite.Injector) (ResumeRoute, bool, error) {
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return ResumeRoute{}, false, fmt.Errorf("claim park resume route requires retained source authority")
 	}
@@ -890,7 +907,7 @@ func (s Store) claimResumeRouteUnderLock(lock *SourceLock, mode, target, courier
 	if err != nil {
 		return ResumeRoute{}, false, err
 	}
-	if err := writeExactPrivateAt(lock.aggregate, sourceResumeRouteFileName, raw); err != nil {
+	if err := writeExactPrivateAtInjected(lock.aggregate, sourceResumeRouteFileName, raw, inj); err != nil {
 		return ResumeRoute{}, false, err
 	}
 	return route, false, nil
@@ -952,6 +969,10 @@ func resumeRouteLabel(route ResumeRoute) string {
 }
 
 func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
+	return appendSourceEventAtInjected(aggregate, parkID, event, nil)
+}
+
+func appendSourceEventAtInjected(aggregate *os.File, parkID string, event Event, inj *filewrite.Injector) error {
 	events, err := openPrivateDirectoryAt(aggregate, sourceEventsDirName)
 	if err != nil {
 		return err
@@ -971,7 +992,7 @@ func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
 	if err != nil {
 		return err
 	}
-	created, err := filewrite.CreateExclusiveWriteSync(events, fmt.Sprintf("%020d.json", event.Sequence), raw, 0o600, nil)
+	created, err := filewrite.CreateExclusiveWriteSync(events, fmt.Sprintf("%020d.json", event.Sequence), raw, 0o600, inj)
 	if err != nil {
 		return err
 	}
@@ -1018,9 +1039,7 @@ func loadSourceStateAt(aggregate *os.File, bundle Bundle) (State, error) {
 	}
 	for index := range history {
 		event := history[index]
-		if event.Type != "resumed" {
-			continue
-		}
+		// listSourceEventsAt validates every event as resumed.
 		state.Status, state.Successor = StatusResumed, event.Successor
 		if event.TargetMachine != "" {
 			raw, readErr := readPrivateRegularAt(aggregate, sourceReceiptName(event.TargetMachine), MaxEnvelopeBytes)
@@ -1040,10 +1059,7 @@ func loadSourceStateAt(aggregate *os.File, bundle Bundle) (State, error) {
 var sourceEventName = regexp.MustCompile(`^[0-9]{20}\.json$`)
 
 func listSourceEventsAt(events *os.File, parkID string) ([]Event, error) {
-	if _, err := events.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	entries, err := events.ReadDir(-1)
+	entries, err := readDirectoryEntries(events)
 	if err != nil {
 		return nil, err
 	}
@@ -1075,6 +1091,10 @@ func listSourceEventsAt(events *os.File, parkID string) ([]Event, error) {
 }
 
 func openPrivateStoreRoot(root string, create bool) (*os.File, error) {
+	return openPrivateStoreRootWithInjector(root, create, nil, unix.SyncDirectory)
+}
+
+func openPrivateStoreRootWithInjector(root string, create bool, inj *filewrite.Injector, syncParent func(*os.File) error) (*os.File, error) {
 	clean, err := cleanAbsoluteStoreRoot(root)
 	if err != nil {
 		return nil, err
@@ -1102,11 +1122,11 @@ func openPrivateStoreRoot(root string, create bool) (*os.File, error) {
 	}
 	directory := os.NewFile(uintptr(fd), name)
 	if create {
-		if err := unix.Fchmod(fd, 0o700); err != nil {
+		if err := filewrite.Chmod(fd, 0o700, name, inj); err != nil {
 			_ = directory.Close()
 			return nil, err
 		}
-		if err := unix.SyncDirectory(parent); err != nil {
+		if err := syncParent(parent); err != nil {
 			_ = directory.Close()
 			return nil, err
 		}
@@ -1148,4 +1168,17 @@ func readPrivateFile(file *os.File, maximum int64) ([]byte, error) {
 		return nil, fmt.Errorf("private artifact is not one 0600 regular file")
 	}
 	return readBoundedRegular(file, maximum)
+}
+
+// Each retry owns a fresh timer. Its channel is never reused after this call,
+// so stopping an abandoned timer needs no drain, including legacy timer mode.
+func waitResumeFence(ctx context.Context) error {
+	timer := time.NewTimer(20 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

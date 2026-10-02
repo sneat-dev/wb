@@ -18,11 +18,12 @@ import (
 // Hooks are deterministic failure-injection seams at durable boundaries.
 // Production callers leave them empty.
 type Hooks struct {
-	AfterLock      func() error
-	AfterReceipt   func() error
-	AfterAddress   func() error
-	AfterSeal      func() error
-	AfterCompleted func() error
+	AfterLock             func() error
+	AfterReceipt          func() error
+	AfterAddressPublished func() error
+	AfterAddress          func() error
+	AfterSeal             func() error
+	AfterCompleted        func() error
 }
 
 // Options supplies an already delivered receipt and the exact source
@@ -86,9 +87,8 @@ func Acknowledge(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	if state.Request != options.Request {
-		return result, fmt.Errorf("%w: retained source request differs from acknowledgement", sessionmove.ErrHandoffConflict)
-	}
+	// ReadmitUnderLock and LoadUnderLock bind this request to the same exact
+	// digest already matched against options.Request above.
 	ensureSourceOffer := options.EnsureSourceOffer
 	if ensureSourceOffer == nil {
 		ensureSourceOffer = worktrees.EnsureExternalSourceOfferEvidence
@@ -137,6 +137,9 @@ func Acknowledge(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return result, err
 	}
+	if err := runHook("after successor address publication", options.Hooks.AfterAddressPublished); err != nil {
+		return result, err
+	}
 	corroboratedAddress, err := options.Store.LoadSuccessorAddressUnderLock(lock, options.Request.HandoffID, options.RequestDigest)
 	if err != nil {
 		return result, fmt.Errorf("corroborate immutable successor address before source seal: %w", err)
@@ -176,9 +179,6 @@ func Acknowledge(ctx context.Context, options Options) (Result, error) {
 	completedReplay := hasPhase(state, sessionmove.PhaseCompleted)
 	if !completedReplay {
 		completedAt := workLog.SealedAt.UTC()
-		if completedAt.IsZero() {
-			completedAt = now(options).UTC()
-		}
 		if _, err := options.Store.AppendEventUnderLock(lock, options.Request.HandoffID, options.RequestDigest,
 			sessionmove.HandoffEvent{Phase: sessionmove.PhaseCompleted, At: completedAt}); err != nil {
 			return result, fmt.Errorf("record source completed phase: %w", err)

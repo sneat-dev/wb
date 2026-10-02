@@ -82,6 +82,10 @@ func RecoverRetiredStages(ctx context.Context, options RetiredStageRecoveryOptio
 	if err != nil {
 		return RetiredStageRecoveryOutcome{}, err
 	}
+	return recoverRetiredStagesResolved(ctx, options, resolution, nil)
+}
+
+func recoverRetiredStagesResolved(ctx context.Context, options RetiredStageRecoveryOptions, resolution wbhome.Resolution, inj *filewrite.Injector) (RetiredStageRecoveryOutcome, error) {
 	seenRoots := map[string]bool{}
 	results := make([]RetiredStageRecoveryResult, 0)
 	for _, layout := range resolution.Read {
@@ -123,7 +127,7 @@ func RecoverRetiredStages(ctx context.Context, options RetiredStageRecoveryOptio
 	if len(results) > 0 {
 		outcome.ReceiptPath = retiredStageReceiptPath(resolution.Write.Home, results)
 		if options.Apply {
-			if err := writeRetiredStageReceipt(outcome.ReceiptPath, outcome); err != nil {
+			if err := writeRetiredStageReceiptInjected(outcome.ReceiptPath, outcome, inj); err != nil {
 				return outcome, err
 			}
 		}
@@ -137,6 +141,10 @@ func RecoverRetiredStages(ctx context.Context, options RetiredStageRecoveryOptio
 }
 
 func inspectRetiredStage(ctx context.Context, root, task, path, name string) RetiredStageRecoveryResult {
+	return inspectRetiredStageWithHooks(ctx, root, task, path, name, retiredStageRecoveryHooks{})
+}
+
+func inspectRetiredStageWithHooks(ctx context.Context, root, task, path, name string, hooks retiredStageRecoveryHooks) RetiredStageRecoveryResult {
 	result := RetiredStageRecoveryResult{WorktreesRoot: root, Task: task, Path: path, Stage: name,
 		Disposition: "unclassified_retired_stage", Reason: "stage is preserved until this explicit audited recovery runs"}
 	info, err := os.Lstat(path)
@@ -148,18 +156,27 @@ func inspectRetiredStage(ctx context.Context, root, task, path, name string) Ret
 		result.Reason = "retired stage is a symlink or not a no-follow directory; ambiguous evidence is preserved"
 		return result
 	}
+	if hooks.afterStageStat != nil {
+		hooks.afterStageStat()
+	}
 	directory, err := openAbsoluteDirectoryNoFollow(path, false)
 	if err != nil {
 		result.Reason = "cannot open retired stage without following links: " + err.Error()
 		return result
 	}
 	defer func() { _ = directory.Close() }()
+	if hooks.afterStageOpen != nil {
+		hooks.afterStageOpen(directory)
+	}
 	var identity unix.Stat_t
 	if err := unix.Fstat(int(directory.Fd()), &identity); err != nil {
 		result.Reason = "cannot inspect retired stage identity: " + err.Error()
 		return result
 	}
 	result.StageDevice, result.StageInode = uint64(identity.Dev), uint64(identity.Ino)
+	if hooks.beforeInventory != nil {
+		hooks.beforeInventory()
+	}
 	inventory, err := inventoryStage(path)
 	if err != nil {
 		result.Reason = "cannot inventory retired stage without following links: " + err.Error()
@@ -204,6 +221,10 @@ func stageContentIsDurable(ctx context.Context, path, head string, ambiguous boo
 }
 
 func inventoryStage(path string) (stageContentInventory, error) {
+	return inventoryStageObserved(path, nil)
+}
+
+func inventoryStageObserved(path string, before func(string, string)) (stageContentInventory, error) {
 	hash := sha256.New()
 	var inventory stageContentInventory
 	err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
@@ -213,9 +234,10 @@ func inventoryStage(path string) (stageContentInventory, error) {
 		if current == path {
 			return nil
 		}
-		relative, err := filepath.Rel(path, current)
-		if err != nil {
-			return err
+		// WalkDir joins descendants to this same root, preserving volume and rootedness.
+		relative, _ := filepath.Rel(path, current)
+		if before != nil {
+			before(current, "info")
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -225,6 +247,9 @@ func inventoryStage(path string) (stageContentInventory, error) {
 		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%d\x00", filepath.ToSlash(relative), mode.String(), info.Size())
 		switch {
 		case mode&os.ModeSymlink != 0:
+			if before != nil {
+				before(current, "symlink")
+			}
 			target, err := os.Readlink(current)
 			if err != nil {
 				return err
@@ -234,6 +259,9 @@ func inventoryStage(path string) (stageContentInventory, error) {
 			inventory.Symlinks++
 			inventory.Ambiguous = true
 		case mode.IsRegular():
+			if before != nil {
+				before(current, "content")
+			}
 			contents, err := os.ReadFile(current)
 			if err != nil {
 				return err
@@ -280,6 +308,8 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 // Hooks are used only at filesystem boundaries to prove that a changed
 // entry or failed lock retirement leaves the original evidence untouched.
 type retiredStageRecoveryHooks struct {
+	afterStageStat      func()
+	beforeInventory     func()
 	afterLock           func(*cleanupTaskHandle)
 	afterStageOpen      func(*os.File)
 	beforeIdentityCheck func(*os.File)
@@ -394,25 +424,14 @@ func applyRetiredStageRecoveryWithHooks(home string, result *RetiredStageRecover
 	result.Reason = "content preserved in a private deterministic recovery archive"
 }
 
-func writeRetiredStageReceipt(path string, outcome RetiredStageRecoveryOutcome) error {
-	return writeRetiredStageReceiptInjected(path, outcome, nil)
-}
-
-// writeRetiredStageReceiptInjected is writeRetiredStageReceipt's test seam
-// (task-9 PR-3): every production call site reaches it only through
-// writeRetiredStageReceipt, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged; a test passes its own Injector
-// directly to reach a write or rename failure branch deterministically.
-// The original call site never called Sync -- WriteFile alone -- so this
-// preserves that.
+// writeRetiredStageReceiptInjected retains the original WriteFile then Rename publication
+// sequence; a nil injector uses the native production boundaries.
 func writeRetiredStageReceiptInjected(path string, outcome RetiredStageRecoveryOutcome, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create private stage recovery receipt directory: %w", err)
 	}
-	contents, err := json.MarshalIndent(outcome, "", "  ")
-	if err != nil {
-		return err
-	}
+	// This closed DTO contains only primitives and slices of primitive structs.
+	contents, _ := json.MarshalIndent(outcome, "", "  ")
 	contents = append(contents, '\n')
 	tmp := path + ".tmp"
 	if err := filewrite.WriteFile(tmp, contents, 0o600, inj); err != nil {

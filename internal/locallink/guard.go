@@ -87,6 +87,10 @@ func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
 // and its go.mod is present in HEAD. Everything else fails closed as a local
 // dependency link.
 func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, error) {
+	return unpublishedGoWorkEntriesWithEval(worktree, entries, filepath.EvalSymlinks)
+}
+
+func unpublishedGoWorkEntriesWithEval(worktree string, entries []string, eval func(string) (string, error)) ([]string, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -108,7 +112,7 @@ func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, erro
 	if !unchanged {
 		return entries, nil
 	}
-	realRoot, err := filepath.EvalSymlinks(worktree)
+	realRoot, err := eval(worktree)
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree %s: %w", worktree, err)
 	}
@@ -118,16 +122,13 @@ func unpublishedGoWorkEntries(worktree string, entries []string) ([]string, erro
 			unpublished = append(unpublished, entry)
 			continue
 		}
-		moduleDir, err := filepath.EvalSymlinks(filepath.Join(worktree, filepath.FromSlash(entry)))
+		moduleDir, err := eval(filepath.Join(worktree, filepath.FromSlash(entry)))
 		if err != nil || !pathWithin(realRoot, moduleDir) {
 			unpublished = append(unpublished, entry)
 			continue
 		}
-		rel, err := filepath.Rel(realRoot, moduleDir)
-		if err != nil {
-			unpublished = append(unpublished, entry)
-			continue
-		}
+		// pathWithin just proved this identical, purely lexical Rel call succeeds.
+		rel, _ := filepath.Rel(realRoot, moduleDir)
 		goMod := filepath.ToSlash(filepath.Join(rel, "go.mod"))
 		goModPath := filepath.Join(moduleDir, "go.mod")
 		goModInfo, err := os.Lstat(goModPath)

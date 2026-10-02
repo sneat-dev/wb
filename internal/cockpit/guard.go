@@ -23,13 +23,16 @@ const (
 var apiRoot = strings.TrimSuffix(APIPrefix, "/")
 
 // CanonicalHost picks the one loopback name Cockpit's session cookie is
-// scoped to from the daemon's listen address: "::1" when the listener is the
-// IPv6 loopback address, otherwise "127.0.0.1" (including a listener named
-// "localhost", or an address that does not parse).
+// scoped to from the daemon's listen address: the address the daemon listens
+// on when that is a loopback IP literal (127.0.0.2, ::1, ...), written in its
+// shortest form, otherwise "127.0.0.1" (a listener named "localhost", or an
+// address that does not parse or is not loopback). A page is therefore
+// served on the address the daemon really has, and every other loopback name
+// redirects to it.
 func CanonicalHost(listenAddress string) string {
 	host, _, err := net.SplitHostPort(listenAddress)
-	if ip := net.ParseIP(host); err == nil && ip != nil && ip.Equal(net.IPv6loopback) {
-		return "::1"
+	if ip := net.ParseIP(host); err == nil && ip != nil && ip.IsLoopback() {
+		return ip.String()
 	}
 	return "127.0.0.1"
 }

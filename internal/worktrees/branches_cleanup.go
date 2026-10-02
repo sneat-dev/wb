@@ -268,7 +268,7 @@ func archiveReviewedBranch(ctx context.Context, reportDir, repositoryPath string
 	return archiveReviewedBranchWithIO(ctx, reportDir, repositoryPath, result, reviewedBranchArchiveIO{
 		mkdirAll: os.MkdirAll, mkdirTemp: os.MkdirTemp, chmod: os.Chmod,
 		syncAncestors: syncDirectoryAndAncestors, syncDirectory: syncDirectory,
-		syncFile: syncFile, git: git, fileSHA256: fileSHA256,
+		syncFile: syncDirectory, git: git, fileSHA256: fileSHA256,
 		copyFileSHA256: copyFileSHA256, writeDurableFile: writeDurableFile,
 		now: time.Now,
 	})
@@ -606,13 +606,17 @@ func writeBranchCleanupReport(reportDir string, options BranchCleanupOptions, no
 // directly to reach writeDurableFileInjected's or Rename's failure branch
 // deterministically.
 func writeBranchCleanupReportInjected(reportDir string, options BranchCleanupOptions, now time.Time, results []BranchCleanupResult, inj *filewrite.Injector) (string, error) {
+	return writeBranchCleanupReportWithSync(reportDir, options, now, results, inj, syncDirectoryAndAncestors, syncDirectory)
+}
+
+func writeBranchCleanupReportWithSync(reportDir string, options BranchCleanupOptions, now time.Time, results []BranchCleanupResult, inj *filewrite.Injector, syncAncestors, syncFinal func(string) error) (string, error) {
 	if err := rejectSymlinkAncestors(reportDir); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create branch cleanup report directory: %w", err)
 	}
-	if err := syncDirectoryAndAncestors(reportDir); err != nil {
+	if err := syncAncestors(reportDir); err != nil {
 		return "", err
 	}
 	report := branchCleanupReport{
@@ -632,7 +636,7 @@ func writeBranchCleanupReportInjected(reportDir string, options BranchCleanupOpt
 	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return "", fmt.Errorf("activate branch cleanup report: %w", err)
 	}
-	if err := syncDirectory(reportDir); err != nil {
+	if err := syncFinal(reportDir); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -769,19 +773,6 @@ func writeDurableFileInjected(path string, content []byte, mode os.FileMode, inj
 	return closeErr
 }
 
-func syncFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
-}
-
 func syncDirectoryAndAncestors(path string) error {
 	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
 		if err := syncDirectory(current); err != nil {
@@ -795,9 +786,16 @@ func syncDirectoryAndAncestors(path string) error {
 }
 
 func syncDirectory(path string) error {
+	return syncDirectoryWithObservation(path, nil)
+}
+
+func syncDirectoryWithObservation(path string, beforeSync func(*os.File)) error {
 	directory, err := os.Open(path)
 	if err != nil {
 		return err
+	}
+	if beforeSync != nil {
+		beforeSync(directory)
 	}
 	syncErr := directory.Sync()
 	closeErr := directory.Close()

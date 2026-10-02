@@ -846,7 +846,8 @@ func TestLandWorktreeMergePullRequestDeferredValidationRecordsFindingOnceAcrossT
 	// pending. Nothing has resolved yet, so no finding of any kind may be
 	// recorded on this receipt.
 	pendingOptions := wmEngineLandOptions(fixture, receipt.ReceiptPath)
-	pendingOptions.Timeout = 200 * time.Millisecond
+	// Only the check wait is short; Timeout stays generous for git and gh.
+	pendingOptions.WaitSlice = 200 * time.Millisecond
 	pending, err := ResumeWorktreeMerge(context.Background(), pendingOptions)
 	if err == nil || pending.Status != WorktreeMergeChecksPending {
 		t.Fatalf("first resume slice did not stop at checks_pending: receipt=%+v err=%v", pending, err)

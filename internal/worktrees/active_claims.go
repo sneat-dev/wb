@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -105,19 +106,44 @@ func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, 
 // returned to ListActiveClaimSummaries/ListRegisteredPullRequestBindings'
 // own caller, exactly as it did before this extraction.
 func walkActiveWorkLogClaims(home string, visit func(claims *os.File, claimID string, claim workLogClaim)) error {
+	return walkActiveWorkLogClaimsWithReader(home, visit, readActiveDirectoryEntries)
+}
+
+// readActiveDirectoryEntries enumerates the held directory in lexical order.
+// Unlike lazy DirEntry.Info inspection, metadata errors other than a vanished
+// entry abort the walk, so failed identity checks cannot yield a partial inventory.
+func readActiveDirectoryEntries(directory *os.File) ([]os.DirEntry, error) {
+	// Readdir obtains FileInfo through descriptor-relative fstatat in Go 1.27.
+	// ReadDir's lazy DirEntry.Info would resolve this handle's diagnostic name.
+	infos, err := directory.Readdir(-1)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]os.DirEntry, len(infos))
+	for i, info := range infos {
+		entries[i] = fs.FileInfoToDirEntry(info)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
+}
+
+func walkActiveWorkLogClaimsWithReader(home string, visit func(claims *os.File, claimID string, claim workLogClaim), readDir func(*os.File) ([]os.DirEntry, error)) error {
 	worklogsRoot := filepath.Join(home, "worklogs")
-	efforts, err := os.ReadDir(worklogsRoot)
+	worklogs, err := openDirectDirectoryNoFollow(worklogsRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	worklogs, err := openDirectDirectoryNoFollow(worklogsRoot)
+	defer func() { _ = worklogs.Close() }()
+	efforts, err := readDir(worklogs)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	defer func() { _ = worklogs.Close() }()
 	for _, effort := range efforts {
 		if !safeActiveDirectoryEntry(effort) || !validSafeSegment(effort.Name()) {
 			continue
@@ -134,8 +160,7 @@ func walkActiveWorkLogClaims(home string, visit func(claims *os.File, claimID st
 		if openErr != nil {
 			return openErr
 		}
-		runsRoot := filepath.Join(worklogsRoot, effort.Name(), "runs")
-		runs, readErr := os.ReadDir(runsRoot)
+		runs, readErr := readDir(runsDir)
 		if errors.Is(readErr, os.ErrNotExist) {
 			_ = runsDir.Close()
 			continue
@@ -148,12 +173,10 @@ func walkActiveWorkLogClaims(home string, visit func(claims *os.File, claimID st
 			if !safeActiveDirectoryEntry(run) || !validSafeSegment(run.Name()) {
 				continue
 			}
-			runRoot := filepath.Join(runsRoot, run.Name())
 			runDir, runErr := openPrivateChild(runsDir, run.Name(), false)
 			if runErr != nil {
 				continue
 			}
-			claimsRoot := filepath.Join(runRoot, "claims")
 			claims, claimsErr := openPrivateChild(runDir, "claims", false)
 			if errors.Is(claimsErr, os.ErrNotExist) {
 				_ = runDir.Close()
@@ -164,7 +187,7 @@ func walkActiveWorkLogClaims(home string, visit func(claims *os.File, claimID st
 				_ = runsDir.Close()
 				return claimsErr
 			}
-			claimEntries, entriesErr := os.ReadDir(claimsRoot)
+			claimEntries, entriesErr := readDir(claims)
 			if entriesErr != nil {
 				_ = claims.Close()
 				_ = runDir.Close()

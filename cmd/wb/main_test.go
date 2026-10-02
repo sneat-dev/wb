@@ -50,6 +50,11 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
 		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
 	}
+	// Drop the agent harness's own exports (AI_AGENT, CLAUDE_CODE_*,
+	// CLAUDE_PID, ...) too. testenv.IsolateProcess below removes only
+	// WB_AGENT_*, and a harness's session variables alone make a work-log
+	// claim register the real harness process above this binary as its owner.
+	testenv.IsolateHarnessProcess()
 	// Isolate the whole test binary from ambient ownership/session-identity
 	// state before any test runs: this binary is a subprocess of whichever
 	// agent is operating the shell that launched `go test`, and its

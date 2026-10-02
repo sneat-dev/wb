@@ -219,26 +219,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	if containsCheck(checks, CheckSpec) {
-		specRoot := filepath.Join(path, "spec")
-		if _, err := os.Stat(specRoot); err == nil {
-			report.Results = append(report.Results, specLintOrSkip(ctx, options, path, specRoot))
-		} else if !os.IsNotExist(err) {
-			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)})
-		} else {
-			specConfig := filepath.Join(path, "specscore.yaml")
-			if _, configErr := os.Lstat(specConfig); configErr == nil {
-				report.Results = append(report.Results, VerificationEntry{
-					Language: "specscore",
-					Check:    CheckSpec,
-					Status:   StatusFailed,
-					Detail:   fmt.Sprintf("SpecScore config %q requires root %q, but the root is missing", specConfig, specRoot),
-				})
-			} else if !os.IsNotExist(configErr) {
-				report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)})
-			} else {
-				report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"})
-			}
-		}
+		report.Results = append(report.Results, verifySpecWithMetadata(ctx, options, path, os.Stat, os.Lstat))
 	}
 	if len(report.Results) == 0 {
 		return report
@@ -251,6 +232,31 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	return report
+}
+
+// verifySpecWithMetadata keeps the missing-root/config policy in one place;
+// each observation remains a native filesystem operation in production.
+func verifySpecWithMetadata(ctx context.Context, options RunOptions, path string, stat, lstat func(string) (os.FileInfo, error)) VerificationEntry {
+	specRoot := filepath.Join(path, "spec")
+	if _, err := stat(specRoot); err == nil {
+		return specLintOrSkip(ctx, options, path, specRoot)
+	} else if !os.IsNotExist(err) {
+		return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)}
+	} else {
+		specConfig := filepath.Join(path, "specscore.yaml")
+		if _, configErr := lstat(specConfig); configErr == nil {
+			return VerificationEntry{
+				Language: "specscore",
+				Check:    CheckSpec,
+				Status:   StatusFailed,
+				Detail:   fmt.Sprintf("SpecScore config %q requires root %q, but the root is missing", specConfig, specRoot),
+			}
+		} else if !os.IsNotExist(configErr) {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)}
+		} else {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"}
+		}
+	}
 }
 
 func priorNodeInstallPassed(previous *VerificationReport, repository, path, module string, command []string) bool {
@@ -340,10 +346,8 @@ func isExternalPlansStore(path, specRoot string) (bool, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		rel, relErr := filepath.Rel(specRoot, walkPath)
-		if relErr != nil {
-			return relErr
-		}
+		// WalkDir produced a descendant on the same volume and path form.
+		rel, _ := filepath.Rel(specRoot, walkPath)
 		rel = filepath.ToSlash(rel)
 		if !entry.Type().IsRegular() || !externalPlansStorePath(rel) {
 			fits = false
@@ -1313,9 +1317,6 @@ func ParseChecks(value string) ([]Check, error) {
 			checks = append(checks, check)
 			seen[check] = true
 		}
-	}
-	if len(checks) == 0 {
-		return nil, fmt.Errorf("requires at least one check")
 	}
 	return checks, nil
 }

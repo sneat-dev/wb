@@ -303,20 +303,20 @@ func TestCockpitExportAcceptsAProcessOfTheRecordedGeneration(t *testing.T) {
 	}
 }
 
-// TestCockpitExportDialsOnlyTheRecordedLoopbackAddress: a record naming any
-// other address, 127.0.0.2 included, is a failed export and no request is made.
+// TestCockpitExportDialsOnlyTheRecordedLoopbackAddress: a record naming an
+// address the shared loopback rule refuses is a failed export and no request is made.
 func TestCockpitExportDialsOnlyTheRecordedLoopbackAddress(t *testing.T) {
 	t.Parallel()
 	fake := newFakeCockpitDaemon(t)
 	_, port, _ := net.SplitHostPort(fake.listen())
-	for _, listen := range []string{"127.0.0.2:" + port, "203.0.113.9:8766", "0.0.0.0:" + port, "not-an-address", "[::ffff:127.0.0.1]:" + port, "localhost2:" + port} {
+	for _, listen := range []string{"128.0.0.1:" + port, "203.0.113.9:8766", "0.0.0.0:" + port, "not-an-address", "localhost2:" + port} {
 		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(listen), true, true)))
 		requireTypedExportFailure(t, stdout, err, "export_failed", listen)
 	}
 	if got := fake.paths(); len(got) != 0 {
 		t.Errorf("requests = %v, want none", got)
 	}
-	for listen, want := range map[string]string{"127.0.0.1:8766": "127.0.0.1:8766", "[::1]:8766": "[::1]:8766", "localhost:8766": "localhost:8766"} {
+	for listen, want := range map[string]string{"127.0.0.1:8766": "127.0.0.1:8766", "[::1]:8766": "[::1]:8766", "localhost:8766": "localhost:8766", "127.0.0.2:8766": "127.0.0.2:8766", "[0:0:0:0:0:0:0:1]:8766": "[0:0:0:0:0:0:0:1]:8766"} {
 		base, ok := cockpitLoopbackBase(listen)
 		if !ok || base.Host != want || base.Scheme != "http" {
 			t.Errorf("base for %s = %v %v", listen, base, ok)

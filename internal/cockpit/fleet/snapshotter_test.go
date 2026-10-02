@@ -191,10 +191,15 @@ func TestRefreshFailsWhenTheRepositoriesCannotBeListed(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
 	sources.repoErr = errBoom
+	// The other machines' read publishes in the background, and the repositories
+	// it knows of would join the document when it lands: this test is about the
+	// local listing, so no other machine reports.
+	sources.remote = nil
 	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
 	if err := snapshotter.Refresh(t.Context()); !errors.Is(err, errBoom) || !strings.Contains(err.Error(), "list repositories") {
 		t.Fatalf("refresh = %v", err)
 	}
+	snapshotter.side.Wait()
 	if document := snapshotter.Document(); document.WarmingUp || document.Error != ErrorRepositoriesUnreadable || len(document.Repositories) != 0 {
 		t.Errorf("after a failed first scan: warming %v, error %q, %d repositories; want the warm-up ended in the error state", document.WarmingUp, document.Error, len(document.Repositories))
 	}
@@ -368,6 +373,12 @@ type countingWorktrees struct {
 	mu            sync.Mutex
 	running, peak int
 	read          int
+	// meet is how many reads must be under way at once before any returns, and
+	// met is closed when that many are: the overlap is by rendezvous, never by
+	// the time a read takes.
+	meet int
+	met  chan struct{}
+	once sync.Once
 }
 
 func (c *countingWorktrees) Worktrees(context.Context, discover.Repo) ([]LinkedWorktree, error) {
@@ -375,8 +386,11 @@ func (c *countingWorktrees) Worktrees(context.Context, discover.Repo) ([]LinkedW
 	c.running++
 	c.peak = max(c.peak, c.running)
 	c.read++
+	if c.running == c.meet {
+		c.once.Do(func() { close(c.met) })
+	}
 	c.mu.Unlock()
-	time.Sleep(5 * time.Millisecond)
+	<-c.met
 	c.mu.Lock()
 	c.running--
 	c.mu.Unlock()
@@ -388,7 +402,7 @@ func (c *countingWorktrees) Worktrees(context.Context, discover.Repo) ([]LinkedW
 func TestRepositoriesAreReadWithBoundedParallelism(t *testing.T) {
 	t.Parallel()
 	const repositories, workers = 12, 3
-	counter := &countingWorktrees{}
+	counter := &countingWorktrees{meet: workers, met: make(chan struct{})}
 	sources := &fakeSources{}
 	for index := range repositories {
 		sources.repos = append(sources.repos, discover.Repo{Org: "acme", Name: "repo" + string(rune('a'+index)), Path: t.TempDir()})
@@ -399,8 +413,8 @@ func TestRepositoriesAreReadWithBoundedParallelism(t *testing.T) {
 	if err := snapshotter.Refresh(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if counter.read != repositories || counter.peak > workers || counter.peak < 2 {
-		t.Errorf("read %d of %d repositories with a peak of %d at once, want at most %d", counter.read, repositories, counter.peak, workers)
+	if counter.read != repositories || counter.peak != workers {
+		t.Errorf("read %d of %d repositories with a peak of %d at once, want %d", counter.read, repositories, counter.peak, workers)
 	}
 }
 

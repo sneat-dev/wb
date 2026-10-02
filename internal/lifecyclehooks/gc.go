@@ -37,6 +37,10 @@ type receiptRecord struct {
 }
 
 func (dispatcher Dispatcher) GC(options GCOptions) (GCReport, error) {
+	return dispatcher.gcWithRewrite(options, rewriteReceiptRecords)
+}
+
+func (dispatcher Dispatcher) gcWithRewrite(options GCOptions, rewrite func(string, []receiptRecord) error) (GCReport, error) {
 	dispatcher = dispatcher.defaults()
 	if err := dispatcher.ensureState(); err != nil {
 		return GCReport{}, err
@@ -99,7 +103,7 @@ func (dispatcher Dispatcher) GC(options GCOptions) (GCReport, error) {
 	if !options.Apply || len(report.Candidates) == 0 {
 		return report, nil
 	}
-	if err := rewriteReceiptRecords(dispatcher.ReceiptPath, records); err != nil {
+	if err := rewrite(dispatcher.ReceiptPath, records); err != nil {
 		return report, err
 	}
 	for _, record := range records {
