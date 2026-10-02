@@ -67,11 +67,6 @@ const (
 	CheckStreamConcurrency   = "stream-pr-concurrency"
 )
 
-// PreflightChecks is the declared plan, in run order.
-func PreflightChecks() []string {
-	return []string{CheckHooks, CheckNpmProviderIdentity, CheckRedMain, CheckStreamConcurrency}
-}
-
 // PreflightInput is one member's coordinates for the readiness checks.
 type PreflightInput struct {
 	Repository string
@@ -300,14 +295,6 @@ type npmPackageManifest struct {
 	Path      string
 	Workspace string
 	Root      bool
-}
-
-// npmPackageManifests lists workspace-root manifests and publishable
-// `libs/**/package.json` manifests across every independent workspace in a
-// repository. This follows the canonical dependency discovery's full-tree
-// model while retaining local-link's deliberate `libs/**` publication scope.
-func npmPackageManifests(root string) ([]npmPackageManifest, error) {
-	return npmPackageManifestsWithRead(root, os.ReadFile)
 }
 
 func npmPackageManifestsWithRead(root string, read func(string) ([]byte, error)) ([]npmPackageManifest, error) {

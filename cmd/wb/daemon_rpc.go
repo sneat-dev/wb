@@ -44,17 +44,6 @@ func authenticatedDaemonHandler(token string, next http.Handler) http.Handler {
 	})
 }
 
-func newDaemonOperationClient(root, token string) (daemonv1connect.DaemonServiceClient, error) {
-	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("daemon lifecycle state has no authentication token")
-	}
-	client, err := daemonLocalHTTPClient(root, token)
-	if err != nil {
-		return nil, err
-	}
-	return daemonv1connect.NewDaemonServiceClient(client, daemonRPCBaseURL), nil
-}
-
 func daemonOperationClient(ctx context.Context, deps daemonDependencies, root string, progress io.Writer) (daemonv1connect.DaemonServiceClient, error) {
 	controller := newDaemonController(deps, root)
 	result, err := controller.Start(ctx, daemonDefaultListen)

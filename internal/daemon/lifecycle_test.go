@@ -10,9 +10,9 @@ import (
 func TestQueueOwnershipSurvivesVersionHandoff(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 6, 0, 0, 0, time.UTC)
-	old := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb-old", SHA256: "old", Version: "0.96.6"}, "old-owner", now)
+	old := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb-old", SHA256: "old", Version: "0.96.6"}, "old-owner", "", "", now)
 	old.MarkReady(101, now)
-	next := NewStarting(&old, old.Listen, Provenance{Executable: "/wb-new", SHA256: "new", Version: "0.96.7"}, "new-owner", now.Add(time.Minute))
+	next := NewStartingAt(&old, old.Listen, Provenance{Executable: "/wb-new", SHA256: "new", Version: "0.96.7"}, "new-owner", "", "", now.Add(time.Minute))
 	if next.Queue.Generation != 2 {
 		t.Fatalf("generation = %d, want 2", next.Queue.Generation)
 	}
@@ -27,7 +27,7 @@ func TestQueueOwnershipSurvivesVersionHandoff(t *testing.T) {
 func TestStoreRoundTripIsPrivateAndAtomic(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "runtime", "daemon-state.json")
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb", SHA256: "digest", Version: "0.96.6"}, "owner", time.Now())
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb", SHA256: "digest", Version: "0.96.6"}, "owner", "", "", time.Now())
 	store := Store{Path: path}
 	if err := store.Save(state); err != nil {
 		t.Fatal(err)

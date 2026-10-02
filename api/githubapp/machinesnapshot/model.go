@@ -4,8 +4,6 @@ package machinesnapshot
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -434,20 +432,6 @@ func validateIdentity(name, value string) error {
 
 // ValidateIdentity applies the hosted login and machine identifier contract.
 func ValidateIdentity(value string) error { return validateIdentity("identity", value) }
-
-// SnapshotKey derives the stable flat document ID for one login/machine pair.
-// The delimiter prevents ambiguous concatenation and the hash keeps identity
-// text from altering a storage hierarchy.
-func SnapshotKey(login, machine string) (string, error) {
-	if err := validateIdentity("login", login); err != nil {
-		return "", err
-	}
-	if err := validateIdentity("machine", machine); err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(login + "\x00" + machine))
-	return "machine_" + hex.EncodeToString(sum[:]), nil
-}
 
 func printable(value string) bool {
 	if !utf8.ValidString(value) {

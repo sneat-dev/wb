@@ -143,7 +143,7 @@ var PendingMigrationExemptions = map[string]string{
 	// call-based detector). PR-1 migrated this shape for sessionpark only.
 	// Every entry this category used to list is now migrated: PR-7's
 	// session-and-lifecycle sites (landed upstream while this PR-8 branch
-	// was in flight) and PR-8's ExecNode.Link/copyBuiltPackageContents
+	// was in flight) and PR-8's ExecNode.Link/copyBuiltPackageContentsInjected
 	// (this commit) both route through internal/filewrite now.
 
 	// Category D (round 2): create-only scratch/name-reservation temp

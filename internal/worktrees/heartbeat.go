@@ -19,9 +19,6 @@ func HeartbeatAt(worktree string) time.Time   { return heartbeatPorts().Heartbea
 func LastActivity(ctx context.Context, result ListResult) time.Time {
 	return heartbeatPorts().LastActivity(ctx, worktreeclaims.ActivitySnapshot{WorktreeDir: result.WorktreeDir, LastCommit: result.LastCommit, Owners: toClaimOwnerViews(result.Owners)})
 }
-func NewestChangedFileTime(ctx context.Context, worktree string) time.Time {
-	return heartbeatPorts().NewestChangedFileTime(ctx, worktree)
-}
 
 func gitRawOutput(ctx context.Context, worktree string, args ...string) (string, error) {
 	return heartbeatPorts().GitRawOutput(ctx, worktree, args...)

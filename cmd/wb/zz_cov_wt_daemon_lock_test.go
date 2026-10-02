@@ -132,7 +132,7 @@ func TestCwWtDaemonLifecycleLockHappyPathAndOwners(t *testing.T) {
 	unsafeDeps.alive = func(int) bool { return false }
 	unsafeController.deps = unsafeDeps
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, unsafeController.root)}).Save(
-		daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", deps.now())); err != nil {
+		daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "t", "", "", deps.now())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := unsafeController.lifecycleLock(); err == nil || !strings.Contains(err.Error(), "recovery is unsafe") {
@@ -340,7 +340,7 @@ func TestCwWtDaemonStableLifecycleState(t *testing.T) {
 	}
 
 	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
-	ready := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", deps.now())
+	ready := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "t", "", "", deps.now())
 	ready.MarkReady(4242, deps.now())
 	if err := store.Save(ready); err != nil {
 		t.Fatal(err)
@@ -431,7 +431,7 @@ func TestCwWtDaemonRecoverLifecycleLockBranches(t *testing.T) {
 	unsafeController.deps = unsafeDeps
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, unsafeRoot), "", 0o600)
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, unsafeRoot), "pid=999999\n", 0o600)
-	unsafeReady := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", unsafeDeps.now())
+	unsafeReady := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "t", "", "", unsafeDeps.now())
 	unsafeReady.MarkReady(4242, unsafeDeps.now())
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, unsafeRoot)}).Save(unsafeReady); err != nil {
 		t.Fatal(err)
@@ -449,7 +449,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	graceController.deps = graceDeps
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, graceRoot), "", 0o600)
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, graceRoot), "pid=999999\n", 0o600)
-	starting := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", graceDeps.now())
+	starting := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "t", "", "", graceDeps.now())
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, graceRoot)}).Save(starting); err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", apiDeps.now().Add(-time.Hour))
+	old := daemon.NewStartingAt(nil, "127.0.0.1:0", provenance, "t", "", "", apiDeps.now().Add(-time.Hour))
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, apiRoot)}).Save(old); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	interrupted := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", interruptedDeps.now().Add(-time.Hour))
+	interrupted := daemon.NewStartingAt(nil, "127.0.0.1:0", provenance, "t", "", "", interruptedDeps.now().Add(-time.Hour))
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, interruptedRoot)}).Save(interrupted); err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	foreignController.deps = foreignDeps
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, foreignRoot), "", 0o600)
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, foreignRoot), "pid=999999\n", 0o600)
-	foreign := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{Executable: "/somewhere/else"}, "t", foreignDeps.now().Add(-time.Hour))
+	foreign := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{Executable: "/somewhere/else"}, "t", "", "", foreignDeps.now().Add(-time.Hour))
 	foreign.PID = 4242
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, foreignRoot)}).Save(foreign); err != nil {
 		t.Fatal(err)
@@ -528,7 +528,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unhealthy := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", unhealthyDeps.now().Add(-time.Hour))
+	unhealthy := daemon.NewStartingAt(nil, "127.0.0.1:0", provenance, "t", "", "", unhealthyDeps.now().Add(-time.Hour))
 	unhealthy.PID = 4242
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, unhealthyRoot)}).Save(unhealthy); err != nil {
 		t.Fatal(err)
@@ -549,7 +549,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	healthy := daemon.NewStarting(nil, "127.0.0.1:0", provenance, "t", healthyDeps.now().Add(-time.Hour))
+	healthy := daemon.NewStartingAt(nil, "127.0.0.1:0", provenance, "t", "", "", healthyDeps.now().Add(-time.Hour))
 	healthy.PID = 4242
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, healthyRoot)}).Save(healthy); err != nil {
 		t.Fatal(err)
@@ -568,7 +568,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	drainController.deps = drainDeps
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, drainRoot), "", 0o600)
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, drainRoot), "pid=999999\n", 0o600)
-	draining := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", drainDeps.now())
+	draining := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "t", "", "", drainDeps.now())
 	draining.Status = daemon.StatusDraining
 	draining.PID = 4242
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, drainRoot)}).Save(draining); err != nil {
@@ -590,7 +590,7 @@ func TestCwWtDaemonRecoverStartingAndDraining(t *testing.T) {
 	oddController.deps = oddDeps
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleLockPath, oddRoot), "", 0o600)
 	cwWtWriteDaemonFile(t, mustDaemonPath(t, daemonLifecycleOwnerPath, oddRoot), "pid=999999\n", 0o600)
-	odd := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "t", oddDeps.now())
+	odd := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "t", "", "", oddDeps.now())
 	odd.Status = "sideways"
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, oddRoot)}).Save(odd); err != nil {
 		t.Fatal(err)

@@ -78,7 +78,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	// Stop over a dead recorded process reconciles the state to stopped.
 	deadDeps := deps
 	deadDeps.alive = func(int) bool { return false }
-	dead := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{}, "t", deps.now())
+	dead := daemon.NewStartingAt(nil, daemonDefaultListen, daemon.Provenance{}, "t", "", "", deps.now())
 	dead.MarkReady(4242, deps.now())
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(dead); err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 	refuseDeps := deps
 	refuseDeps.alive = func(pid int) bool { return pid == 4242 }
 	refuseDeps.stop = func(int, daemon.Supervisor, string) error { return errors.New("cwTt: cannot signal") }
-	refused := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{}, "t", deps.now())
+	refused := daemon.NewStartingAt(nil, daemonDefaultListen, daemon.Provenance{}, "t", "", "", deps.now())
 	refused.MarkReady(4242, deps.now())
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(refused); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestCwWtDaemonControllerStartAndStopErrors(t *testing.T) {
 func TestCwWtDaemonControllerStartHandsOffDifferentBinary(t *testing.T) {
 	root, _, deps := cwWtLockFixture(t)
 	// A ready daemon from a different binary is drained and replaced.
-	foreign := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "/somewhere/else/wb", Version: "old"}, "t", deps.now())
+	foreign := daemon.NewStartingAt(nil, daemonDefaultListen, daemon.Provenance{Executable: "/somewhere/else/wb", Version: "old"}, "t", "", "", deps.now())
 	foreign.MarkReady(4242, deps.now())
 	if err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Save(foreign); err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestCwWtDaemonManagedServeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := mustDaemonPath(t, daemonStatePath, root)
-	starting := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", deps.now())
+	starting := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", "", "", deps.now())
 	if err := (daemon.Store{Path: statePath}).Save(starting); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestCwWtDaemonManagedServeRefusesSupersededOwnership(t *testing.T) {
 	statePath := mustDaemonPath(t, daemonStatePath, root)
 	// A ready state is not a starting state, so the managed start is refused
 	// before the listener is even considered.
-	ready := daemon.NewStarting(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", deps.now())
+	ready := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", "", "", deps.now())
 	ready.MarkReady(1, deps.now())
 	if err := (daemon.Store{Path: statePath}).Save(ready); err != nil {
 		t.Fatal(err)

@@ -1891,22 +1891,6 @@ func CanonicalRepositoryPathForURL(projectsRoot, repository, cloneURL string) (s
 	return repopath.ClonePathForURL(root, address.Org, address.Repo, cloneURL)
 }
 
-// ExpectedRemoteURL derives the remote URL a canonical clone path under
-// projectsRoot corresponds to: <root>/github.com/dal-go/dalgo becomes
-// https://github.com/dal-go/dalgo.
-//
-// It is pure path arithmetic. No WB configuration and no repository remote is
-// read, so the answer exists before a clone does and cannot be changed by a
-// rewritten origin. A path whose first level is not a literal forge hostname
-// has no such remote and is refused rather than guessed.
-func ExpectedRemoteURL(projectsRoot, canonicalPath string) (string, error) {
-	root, err := absoluteProjectsRoot(projectsRoot)
-	if err != nil {
-		return "", err
-	}
-	return repopath.RemoteURLForLocalPath(root, canonicalPath)
-}
-
 // canonicalRepositoryPath resolves one repository coordinate to the canonical
 // clone path below projectsRoot. A host-qualified coordinate names its path
 // directly; an unqualified {owner}/{name} coordinate resolves to the clone that
@@ -1914,20 +1898,6 @@ func ExpectedRemoteURL(projectsRoot, canonicalPath string) (string, error) {
 // operable in place. See resolveCanonicalClone.
 func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, canonical string, err error) {
 	return worktreelayout.CanonicalRepositoryPath(projectsRoot, repository)
-}
-
-// resolveCanonicalClone returns the canonical clone address for one repository
-// coordinate.
-//
-// A host-qualified coordinate names its path directly. An unqualified
-// {owner}/{name} coordinate resolves to an existing clone, preferring the
-// literal host level and falling back to the legacy two-level placement. When
-// neither exists the legacy path is predicted, because an unqualified
-// coordinate carries no host: a host is knowable only from an existing clone or
-// from a clone URL, and inventing one would place a repository on a forge
-// nobody named.
-func resolveCanonicalClone(projectsRoot string, address repopath.Address) (repopath.Address, error) {
-	return worktreelayout.ResolveCanonicalClone(projectsRoot, address)
 }
 
 // synchronizeCanonical validates that canonical is an ordinary clone and

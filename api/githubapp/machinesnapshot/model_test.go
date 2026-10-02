@@ -108,21 +108,6 @@ func TestSnapshotValidateBoundsHostedSchema(t *testing.T) {
 	}
 }
 
-func TestSnapshotKeyIsStableFlatAndValidatesIdentity(t *testing.T) {
-	t.Parallel()
-	first, err := SnapshotKey("alice", "laptop")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := SnapshotKey("alice", "laptop")
-	if err != nil || first != second || !strings.HasPrefix(first, "machine_") || strings.Contains(first, "alice") {
-		t.Fatalf("keys = %q/%q, err = %v", first, second, err)
-	}
-	if _, err := SnapshotKey("../alice", "laptop"); !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatalf("invalid identity err = %v", err)
-	}
-}
-
 func validSnapshot(at time.Time) Snapshot {
 	return Snapshot{
 		SchemaVersion: SchemaVersion, Login: "alice", Machine: "laptop", PublishedAt: at,
