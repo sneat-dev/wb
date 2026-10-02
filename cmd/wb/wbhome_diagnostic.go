@@ -38,7 +38,7 @@ func hookExecutionCommand(commandID string) bool {
 // including the hook-management verbs that can actually remove a stale pin,
 // still reports the ignored value.
 func warnIgnoredWBHome(inv *invocation, cmd *cobra.Command) {
-	if hookExecutionCommand(persistentCommandID(cmd)) {
+	if hookExecutionCommand(persistentCommandID(cmd)) || machineReadableOutput(cmd) {
 		return
 	}
 	diagnostic, err := wbhome.IgnoredHomeEnvDiagnostic(inv.projectsRoot)
@@ -46,4 +46,18 @@ func warnIgnoredWBHome(inv *invocation, cmd *cobra.Command) {
 		return
 	}
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning:", diagnostic)
+}
+
+// machineReadableOutput reports whether the invocation asked for JSON, through
+// either `--format json` or a boolean `--json`. The diagnostic goes to stderr,
+// but a caller that asked for JSON is a program: it must see no prose from WB
+// on any stream.
+func machineReadableOutput(cmd *cobra.Command) bool {
+	if format := cmd.Flags().Lookup("format"); format != nil && strings.EqualFold(strings.TrimSpace(format.Value.String()), "json") {
+		return true
+	}
+	if asJSON := cmd.Flags().Lookup("json"); asJSON != nil && asJSON.Value.String() == "true" {
+		return true
+	}
+	return false
 }
