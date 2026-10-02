@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -258,11 +259,19 @@ func runCleanupApply(
 	if workers > len(entries) {
 		workers = len(entries)
 	}
+	// A task whose stacked leaf was not retired in this run is not retired
+	// either: its branch is still the recorded base of work that is still here.
+	applyUnlessHeld := func(index int) {
+		if errs[index] = heldByUnretiredLeaf(entries, errs, index); errs[index] != nil {
+			return
+		}
+		release := acquireRepositoryWriteLocks(locks, entries[index].repositories)
+		errs[index] = apply(entries[index])
+		release()
+	}
 	if workers < 2 || stopOnFirstError {
 		for index := range entries {
-			release := acquireRepositoryWriteLocks(locks, entries[index].repositories)
-			errs[index] = apply(entries[index])
-			release()
+			applyUnlessHeld(index)
 			if errs[index] != nil && stopOnFirstError {
 				break
 			}
@@ -293,15 +302,25 @@ func runCleanupApply(
 				for _, earlier := range entries[index].after {
 					<-done[earlier]
 				}
-				release := acquireRepositoryWriteLocks(locks, entries[index].repositories)
-				errs[index] = apply(entries[index])
-				release()
+				applyUnlessHeld(index)
 				close(done[index])
 			}
 		}()
 	}
 	wait.Wait()
 	return errs
+}
+
+// heldByUnretiredLeaf is the refusal for a task whose stacked leaf failed to
+// apply, or was itself held, earlier in this run. It names the leaf.
+func heldByUnretiredLeaf(entries []cleanupApplyEntry, errs []error, index int) error {
+	for _, earlier := range entries[index].after {
+		if errs[earlier] != nil {
+			return fmt.Errorf("held: %s is stacked on a branch of %s and was not retired in this run: %w",
+				entries[earlier].selection.Task, entries[index].selection.Task, errs[earlier])
+		}
+	}
+	return nil
 }
 
 // cleanupTaskApplicationPorts keep the task lock and artifact custody here

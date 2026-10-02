@@ -90,6 +90,7 @@ func TestE2ECleanupRetiresATaskWhoseIntegrationBranchLandedAndWasDeleted(t *test
 	mainHead := remoteBranchForTest(t, fixture.canonical, "main")
 	now := time.Date(2026, time.October, 2, 12, 0, 0, 0, time.UTC)
 	wantProof := "contained in origin/main at " + shortSHA(mainHead) + ", via recorded base cockpit-ux (absent)"
+	wantExplicitProof := "contained in origin/main at " + shortSHA(mainHead) + ", the base named with --base (recorded base cockpit-ux)"
 
 	// Every verb that discovers a task offline must still see this one. The
 	// pruned origin/cockpit-ux ref used to turn it into a malformed candidate.
@@ -133,6 +134,20 @@ func TestE2ECleanupRetiresATaskWhoseIntegrationBranchLandedAndWasDeleted(t *test
 		if !explicit && (plan.IntegrationProof != wantProof || plan.RecordedBaseState != worktreelanding.RecordedBaseAbsent || plan.TargetRejection != "") {
 			t.Fatalf("%s: proof = %q, state = %q, rejection = %q; want %q", name, plan.IntegrationProof, plan.RecordedBaseState, plan.TargetRejection, wantProof)
 		}
+		if explicit && plan.IntegrationProof != wantExplicitProof {
+			t.Fatalf("%s: proof = %q, want %q", name, plan.IntegrationProof, wantExplicitProof)
+		}
+	}
+	// The fleet form names the explicit target on every candidate too.
+	swept, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, AllMerged: true, Base: "main", ExplicitBase: true,
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(swept.Results) != 1 || !swept.Results[0].Eligible || swept.Results[0].IntegrationProof != wantExplicitProof {
+		t.Fatalf("--all-merged --base main = %#v, want proof %q", swept, wantExplicitProof)
 	}
 
 	// --absorbed-by names the merge commit that carried the integration branch
@@ -365,5 +380,51 @@ func TestE2EAbsentRecordedBaseKeepsAGitHubOutageADiagnostic(t *testing.T) {
 	// planned, and the failure is reported for this task alone.
 	if len(planned.Results) != 0 || !strings.Contains(fmt.Sprint(planned.Diagnostics), "commit index unavailable") {
 		t.Fatalf("cleanup during a commit-index outage = %#v", planned)
+	}
+}
+
+// An explicit base is the target and nothing else, even when it is the very
+// base that was recorded: a pull request that merged the exact head into
+// another branch must not move the judgement there.
+//
+//nolint:paralleltest // newGitFixture configures process-wide Git and WB fixture state.
+func TestE2EExplicitBaseIsNotReplacedByAMergedPullRequestIntoAnotherBranch(t *testing.T) {
+	const task = "explicit-stale-target"
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "stale-target", "main")
+	gitTest(t, fixture.canonical, "push", "origin", "stale-target")
+	result := createTaskOnBase(t, fixture, task, "stale-target")
+	head := commitAndPushTaskWork(t, result, "feature.txt")
+	scratch := integrationScratch(t, fixture)
+	gitTest(t, scratch, "merge", "--no-ff", "origin/"+result.Branch, "-m", "merge feature into main")
+	gitTest(t, scratch, "push", "origin", "main")
+	gitTest(t, fixture.canonical, "fetch", "origin")
+	staleHead := remoteBranchForTest(t, fixture.canonical, "stale-target")
+	mergedAt := time.Date(2026, time.October, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	now := func() time.Time { return mergedAt.Add(48 * time.Hour) }
+
+	// Left to the recorded base, the pull request into main moves the target.
+	recovered, err := Cleanup(context.Background(), CleanupOptions{ProjectsRoot: fixture.projectsRoot, Task: task, Base: "main", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered.Results) != 1 || !recovered.Results[0].Eligible || recovered.Results[0].Base != "main" || recovered.Results[0].RecordedBase != "stale-target" {
+		t.Fatalf("cleanup against the recorded base = %#v", recovered)
+	}
+
+	explicit, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Base: "stale-target", ExplicitBase: true, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(explicit.Results) != 1 {
+		t.Fatalf("explicit recorded base = %#v", explicit)
+	}
+	plan := explicit.Results[0]
+	if plan.Eligible || plan.IntegratedAtOrigin || plan.Base != "stale-target" || plan.RecordedBase != "" || plan.RemoteTargetSHA != staleHead ||
+		!strings.Contains(plan.Reason, "is not integrated into the exact origin target origin/stale-target at "+shortSHA(staleHead)) {
+		t.Fatalf("explicit recorded base was replaced or accepted: %#v", plan)
 	}
 }

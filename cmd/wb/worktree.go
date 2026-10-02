@@ -2155,9 +2155,17 @@ either way (integration_proof in JSON, in parentheses in text):
     stays in the plan with the reason; it is never dropped as malformed.
   - --base <branch> given explicitly is the exact origin target the head is
     judged against, and nothing else: the recorded base is only reported
-    (recorded_base), no other branch is substituted, and a branch origin does
-    not have is an error. Left at its default, --base is only the fallback
-    for a worktree with no recorded base.
+    (recorded_base), no other branch is substituted (not the default branch,
+    and not the target of a merged pull request), and a branch origin does
+    not have is an error. A head that branch contains is reported as
+    "contained in origin/<branch> at <sha>, the base named with --base".
+    Left at its default, --base is only the fallback for a worktree with no
+    recorded base.
+
+A task whose branch is the recorded base of another listed task that is not
+eligible, or whose stacked task failed to apply in this run, is held: retiring
+it would delete the branch that other work, and any pull request into it,
+still stands on. The refusal names the dependant.
 
 Every refusal that compares against a target names the ref and SHA it used.
 --apply removes worktrees and exact local branch refs; --remote additionally

@@ -2804,6 +2804,7 @@ func (run *cleanupRun) buildResults() error {
 	blockArtifactTasks(results, run.listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, run.recognizedWorktreesRoots)
+	holdBasesOfIneligibleDependants(results)
 	run.outcome = CleanupOutcome{Results: results, Diagnostics: run.listed.Diagnostics, Artifacts: run.listed.Artifacts,
 		Purged: run.listed.Purged, Quarantined: run.backlogQuarantine, Recovery: run.recovery,
 		ResolvedTasks: append([]string(nil), run.normalized.Tasks...)}
@@ -3942,7 +3943,10 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 			// head. The freshly fetched replacement still passes every ordinary
 			// containment and tree check below; unrelated or ambiguous PRs grant
 			// no cleanup authority.
-			if !integratedIntoRecordedTarget && i.result.MergedPullRequest == nil && i.result.RecordedBase == "" {
+			//
+			// A base the operator named is the target and nothing else, so no
+			// pull request may substitute another one for it.
+			if !integratedIntoRecordedTarget && i.result.MergedPullRequest == nil && i.result.RecordedBase == "" && !i.policy.explicitBase {
 				if recoveredBase, ok := mergedPullRequestTarget(i.ctx, pullRequests, i.head, i.base); ok {
 					i.result.RemoteTargetSHA, err = fetchRemoteTargetHead(i.ctx, i.canonical, recoveredBase)
 					if err != nil {
@@ -3956,28 +3960,9 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 		}
 		i.base = integrationBase
 		i.result.Base = i.base
-		containedAtOrigin, containedErr := isAncestor(i.ctx, i.canonical, i.head, i.result.RemoteTargetSHA)
+		containedAtOrigin, containedErr := i.judgeContainment(i.defaultTargetPorts())
 		if containedErr != nil {
 			return containedErr
-		}
-		if !containedAtOrigin && i.result.RecordedBase == "" && !i.policy.explicitBase {
-			// A task stacked on another task's branch, or on an integration
-			// branch that is still on origin: once that base has itself landed
-			// in the default branch, the default branch is where the work is.
-			// Both facts are plain ancestry against the exact fetched default
-			// head. The lookup is an additional proof, so failing to make it
-			// leaves the candidate exactly as unproven as it was.
-			if target, targetErr := worktreelanding.ResolveDefaultTarget(i.ctx, i.defaultTargetPorts(), i.head, i.base, i.result.RemoteTargetSHA); targetErr == nil && target != nil && target.Contained {
-				containedAtOrigin = true
-				i.result.RecordedBase, i.result.RecordedBaseState = i.base, target.RecordedBaseState
-				i.base, i.result.Base, i.result.RemoteTargetSHA = target.Target, target.Target, target.TargetSHA
-			}
-		}
-		if containedAtOrigin && i.result.RecordedBaseState != "" {
-			i.result.IntegrationProof = worktreelanding.DefaultTarget{
-				Target: i.base, TargetSHA: i.result.RemoteTargetSHA,
-				RecordedBase: i.result.RecordedBase, RecordedBaseState: i.result.RecordedBaseState,
-			}.Proof()
 		}
 		i.result.IntegratedAtOrigin = containedAtOrigin || recoveredByDefaultReceipt || recoveredByRetiredPrepareCandidate
 		// LocallyMerged historically described the remote-tracking ref. Once an
@@ -4059,6 +4044,41 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 		}
 	}
 	return nil
+}
+
+// judgeContainment answers whether the head is a plain Git ancestor of the
+// target being judged, and is the one place another target may take the
+// recorded base's place on ancestry alone.
+//
+// A task stacked on another task's branch, or on an integration branch that is
+// still on origin: once that base has itself landed in the default branch, the
+// default branch is where the work is, and the head is proved only if the
+// default branch contains it. An explicit base is never replaced. Whenever the
+// target that proved the head is not simply the recorded base, the result says
+// which target it was.
+func (i *lifecycleInspection) judgeContainment(ports worktreelanding.DefaultTargetPorts) (bool, error) {
+	contained, err := ports.IsAncestor(i.ctx, i.head, i.result.RemoteTargetSHA)
+	if err != nil {
+		return false, err
+	}
+	if !contained && i.result.RecordedBase == "" && !i.policy.explicitBase {
+		if target := worktreelanding.ProvenDefaultTarget(i.ctx, ports, i.head, i.base, i.result.RemoteTargetSHA); target != nil {
+			contained = true
+			i.result.RecordedBase, i.result.RecordedBaseState = i.base, target.RecordedBaseState
+			i.base, i.result.Base, i.result.RemoteTargetSHA = target.Target, target.Target, target.TargetSHA
+		}
+	}
+	switch {
+	case !contained:
+	case i.policy.explicitBase:
+		i.result.IntegrationProof = worktreelanding.ExplicitTargetProof(i.base, i.result.RemoteTargetSHA, i.result.RecordedBase)
+	case i.result.RecordedBaseState != "":
+		i.result.IntegrationProof = worktreelanding.DefaultTarget{
+			Target: i.base, TargetSHA: i.result.RemoteTargetSHA,
+			RecordedBase: i.result.RecordedBase, RecordedBaseState: i.result.RecordedBaseState,
+		}.Proof()
+	}
+	return contained, nil
 }
 
 // defaultTargetPorts binds the default-branch proof to this candidate's
@@ -4560,6 +4580,40 @@ func blockUnsafeTasks(results []CleanupResult) {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by " + reasonByTask[results[index].Task]
 		}
+	}
+}
+
+// holdBasesOfIneligibleDependants keeps a task whose branch is the recorded
+// base of a listed candidate that is not eligible. Retiring it would delete
+// that branch, locally and on origin, while work recorded against it has not
+// landed, and GitHub closes a pull request whose base branch is deleted. The
+// base is held for this run and the refusal names the dependant. A held base
+// is itself not eligible, so the hold climbs a stack, and the usual rule that
+// one ineligible repository holds its whole coordinated task still applies.
+func holdBasesOfIneligibleDependants(results []CleanupResult) {
+	for held := true; held; {
+		held = false
+		for _, dependant := range results {
+			if dependant.Eligible || dependant.BacklogID != "" {
+				continue
+			}
+			base := dependant.RecordedBase
+			if base == "" {
+				base = dependant.Base
+			}
+			for index := range results {
+				candidate := &results[index]
+				if !candidate.Eligible || candidate.BacklogID != "" ||
+					cleanupBranchKey(candidate.CanonicalDir, candidate.Branch) != cleanupBranchKey(dependant.CanonicalDir, base) {
+					continue
+				}
+				candidate.Eligible = false
+				candidate.Reason = "held: branch " + candidate.Branch + " is the recorded base of " + dependant.Task +
+					" (" + dependant.Repository + "), which is not eligible: " + dependant.Reason
+				held = true
+			}
+		}
+		blockUnsafeTasks(results)
 	}
 }
 

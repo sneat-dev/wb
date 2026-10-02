@@ -104,3 +104,27 @@ func NotIntegratedReason(head, base, targetSHA, branch, remoteHead string) strin
 	}
 	return reason + " (awaiting push)"
 }
+
+// ProvenDefaultTarget is the default branch standing in for recordedBase only
+// when it is proved to contain head. Everything short of that proof is nil: the
+// default branch cannot stand in, it does not contain the head, or an
+// observation failed. It is an additional proof a caller may try after the
+// recorded base said no, so there is no error to return: not proved is not
+// proved, whatever the reason.
+func ProvenDefaultTarget(ctx context.Context, ports DefaultTargetPorts, head, recordedBase, recordedBaseSHA string) *DefaultTarget {
+	target, err := ResolveDefaultTarget(ctx, ports, head, recordedBase, recordedBaseSHA)
+	if err != nil || target == nil || !target.Contained {
+		return nil
+	}
+	return target
+}
+
+// ExplicitTargetProof names the operator-supplied target that proved a head,
+// and the recorded base it was judged instead of when they differ.
+func ExplicitTargetProof(target, targetSHA, recordedBase string) string {
+	proof := "contained in origin/" + target + " at " + shortSHA(targetSHA) + ", the base named with --base"
+	if recordedBase != "" && recordedBase != target {
+		proof += " (recorded base " + recordedBase + ")"
+	}
+	return proof
+}

@@ -172,3 +172,61 @@ func TestNotIntegratedReasonNamesTheTargetAndThePushState(t *testing.T) {
 		t.Fatalf("refusal without a fetched target = %q, want %q", got, want)
 	}
 }
+
+// The line that decides whether work may be deleted: a default branch that
+// could stand in but does not contain the head proves nothing.
+func TestProvenDefaultTargetRequiresTheHeadToBeContained(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("origin unreachable")
+	for _, test := range []struct {
+		name   string
+		origin *fakeOrigin
+		base   string
+		proven bool
+	}{
+		{name: "stacked base landed and head contained", base: stackedBaseSHA, proven: true, origin: &fakeOrigin{
+			defaultBranch: "main", heads: map[string]string{"main": mainSHA},
+			ancestors: map[string]bool{stackedBaseSHA + "<" + mainSHA: true, taskHead + "<" + mainSHA: true},
+		}},
+		{name: "absent base and head contained", proven: true, origin: &fakeOrigin{
+			defaultBranch: "main", heads: map[string]string{"main": mainSHA},
+			ancestors: map[string]bool{taskHead + "<" + mainSHA: true},
+		}},
+		{name: "stacked base landed but head not contained", base: stackedBaseSHA, origin: &fakeOrigin{
+			defaultBranch: "main", heads: map[string]string{"main": mainSHA},
+			ancestors: map[string]bool{stackedBaseSHA + "<" + mainSHA: true},
+		}},
+		{name: "absent base and head not contained", origin: &fakeOrigin{
+			defaultBranch: "main", heads: map[string]string{"main": mainSHA},
+		}},
+		{name: "live base has not landed", base: stackedBaseSHA, origin: &fakeOrigin{
+			defaultBranch: "main", heads: map[string]string{"main": mainSHA},
+			ancestors: map[string]bool{taskHead + "<" + mainSHA: true},
+		}},
+		{name: "default branch fetch failed", origin: &fakeOrigin{defaultBranch: "main", fetchErr: boom}},
+		{name: "default branch unknown", origin: &fakeOrigin{defaultErr: boom}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			target := ProvenDefaultTarget(context.Background(), test.origin.ports(), taskHead, "recorded-base", test.base)
+			if (target != nil) != test.proven {
+				t.Fatalf("proven target = %#v, want proven=%t", target, test.proven)
+			}
+			if target != nil && (!target.Contained || target.Target != "main" || target.TargetSHA != mainSHA) {
+				t.Fatalf("proven target = %#v", target)
+			}
+		})
+	}
+}
+
+func TestExplicitTargetProofNamesTheTargetAndADifferentRecordedBase(t *testing.T) {
+	t.Parallel()
+	if got, want := ExplicitTargetProof("main", mainSHA, "cockpit-ux"), "contained in origin/main at aaaaaaaaaaaa, the base named with --base (recorded base cockpit-ux)"; got != want {
+		t.Fatalf("proof = %q, want %q", got, want)
+	}
+	for _, recorded := range []string{"", "main"} {
+		if got, want := ExplicitTargetProof("main", mainSHA, recorded), "contained in origin/main at aaaaaaaaaaaa, the base named with --base"; got != want {
+			t.Fatalf("proof with recorded base %q = %q, want %q", recorded, got, want)
+		}
+	}
+}

@@ -97,6 +97,35 @@ func TestWorktreeCleanupTreatsOnlyANamedBaseAsTheExplicitTarget(t *testing.T) {
 	}
 }
 
+// The help promises that the plan names the target that proved the work. With
+// --base that is the branch the operator named, on every candidate of a sweep.
+//
+//nolint:paralleltest // swaps the package-level cleanup engine and claim release.
+func TestWorktreeCleanupSweepWithANamedBasePrintsThatTargetOnEveryLine(t *testing.T) {
+	const proof = "contained in origin/release at 0123456789ab, the base named with --base"
+	requested, _ := stubCleanupEngine(t, worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{
+		{ListResult: worktrees.ListResult{Task: "fixture-one", Repository: "acme/app", IntegrationProof: proof}, Eligible: true},
+		{ListResult: worktrees.ListResult{Task: "fixture-two", Repository: "acme/lib", IntegrationProof: proof + " (recorded base integration)"}, Eligible: true},
+	}})
+	command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"--all-merged", "--base", "release"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*requested) != 1 || !(*requested)[0].AllMerged || !(*requested)[0].ExplicitBase || (*requested)[0].Base != "release" {
+		t.Fatalf("cleanup options = %#v", *requested)
+	}
+	want := "would remove fixture-one acme/app (" + proof + ")\n" +
+		"would remove fixture-two acme/lib (" + proof + " (recorded base integration))\n" +
+		"2 eligible; dry-run only, pass --apply to remove\n"
+	if stdout.String() != want {
+		t.Fatalf("sweep output = %q, want %q", stdout.String(), want)
+	}
+}
+
 func TestWorktreeCleanupReportNamesTheTargetThatProvedTheWork(t *testing.T) {
 	t.Parallel()
 	const proof = "contained in origin/main at 0123456789ab, via recorded base integration (absent)"
