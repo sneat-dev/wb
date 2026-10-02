@@ -52,6 +52,19 @@ points `remote:` at `http://<listen>`; `remote.url` accepts plain `http://`
 only for loopback hosts. Restarting is a no-op because the credential on disk
 is resolved through the same bearer path a request takes.
 
+That fixed identity lets a local reader list metadata; it does not let a
+caller write. `POST /v0/workbench/coverage`, `POST /v0/workbench/metrics` and
+the installation `connect` and `authorize` routes answer 401 unless the request
+carries the owner's credential: either `Authorization: Bearer <token>` with
+the machine credential above (any machine the owner enrolled, never a peer
+credential), or the Cockpit owner session a browser gets from `wb cockpit`. A
+script that posted to those routes with no header must now send the bearer:
+
+```sh
+curl -H "Authorization: Bearer $(cat ~/.config/wb/credentials/hub-local-<machine>.token)" \
+  -H 'Content-Type: application/json' -d @metric.json http://127.0.0.1:8766/v0/workbench/metrics
+```
+
 ### Store engines
 
 - `memory` — dalgo2memory on the strict Firestore profile. Nothing survives a
