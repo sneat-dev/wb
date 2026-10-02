@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 // cleanupMemberRecheck keeps the read-only proof shared by locked task
@@ -234,7 +235,7 @@ type cleanupApplyMemberPorts struct {
 	PreflightWorkLog  func(string, string, string) error
 	RecoverLegacy     func(context.Context, string, string, ListResult, func() error) error
 	SealSupersession  func(string, string, string, *SupersessionReceipt) error
-	SealCleanup       func(string, string, string) error
+	SealCleanup       func(string, string, string, *worktreeclaims.LandedEvidence) error
 	NewBacklog        func(string, ListResult, string) lifecycleBacklogRecord
 	Persist           func(string, *lifecycleBacklogRecord, string) error
 	ValidateRecovered func(bool, *cleanupTaskHandle) error
@@ -277,4 +278,43 @@ func productionCleanupApplyMemberPorts() cleanupApplyMemberPorts {
 		RemoveParent:  (*cleanupWorktreeHandle).removeEmptyParent,
 		RemoveAdopted: removeAdoptedRegistration,
 	}
+}
+
+// cleanupLandedEvidence is the proof that the work at an eligible cleanup
+// candidate's head is on its target, nil when the checks that made it eligible
+// do not prove that: a candidate cleaned for a deleted integration target's
+// acknowledgement, one removed past residual commits, or a detached checkout.
+// The landed commit is the one on the target that carries the work: the squash,
+// merge or integration commit when one absorbed it, else the head itself.
+func cleanupLandedEvidence(entry ListResult) *worktreeclaims.LandedEvidence {
+	if !entry.IntegratedAtOrigin || entry.Detached || entry.RetiredPrepareCandidateAcknowledgementPath != "" {
+		return nil
+	}
+	evidence := worktreeclaims.LandedEvidence{Target: entry.Base, LandedSHA: entry.HeadSHA, Proof: worktreeclaims.LandedProofContained}
+	if entry.MergedPullRequest != nil {
+		evidence.PullRequest = entry.MergedPullRequest.Number
+		evidence.Proof = worktreeclaims.LandedProofMergedPullRequest
+	}
+	switch {
+	case entry.AbsorbedAtOrigin:
+		evidence.Proof = worktreeclaims.LandedProofAbsorbed
+		evidence.LandedSHA = entry.AbsorbedBySHA
+		if evidence.LandedSHA == "" {
+			// An acknowledged absorption names no single commit: the target
+			// that was proved to contain the sources is the landing.
+			evidence.LandedSHA = entry.RemoteTargetSHA
+		}
+	case entry.RebaseMergedAtOrigin:
+		// The head is not on the target: the pull request's merge commit, the
+		// last of the replayed commits, is.
+		evidence.Proof = worktreeclaims.LandedProofRebaseMerged
+		evidence.LandedSHA = ""
+		if entry.MergedPullRequest != nil {
+			evidence.LandedSHA = entry.MergedPullRequest.MergeSHA
+		}
+	}
+	if !worktreeclaims.ValidLandedEvidence(&evidence) {
+		return nil
+	}
+	return &evidence
 }
