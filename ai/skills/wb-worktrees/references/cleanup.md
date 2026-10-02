@@ -289,6 +289,17 @@ source branch with force-with-lease, then remove a clean unlocked worktree and
 its exact local branch. See [lifecycle.md](lifecycle.md) for the full
 disposition contract, and for `wb worktree rename` recycling.
 
+Cleanup itself seals one of two dispositions, from what it proved and not from
+the verb that called it. A worktree whose branch has commits of its own that
+cleanup proved are on the target is sealed `landed`, with a `landed` object in
+the terminal record and its outbox receipt: `target`, `landed_sha`, `proof`
+(`contained`, `merged_pull_request`, `rebase_merged` or `absorbed`) and the
+`pull_request` number when known. Everything else it removes (a worktree that
+never committed, a detached review checkout, a `wb/integration/` merge
+candidate) is sealed `removed`. A claim `wb worktree log finalize --apply`
+already sealed keeps that terminal. Records sealed by an older `wb` are not
+rewritten.
+
 ## Finish the sweep
 
 A sweep is done when a re-run reports nothing, not when the first pass exits:
