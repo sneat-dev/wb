@@ -89,6 +89,9 @@ type DeadcodeOptions struct {
 	// Platforms lists the GOOS values to analyse. A function is reported only
 	// when it is unreachable on all of them.
 	Platforms []string
+	// ToolDirectory is the parent directory the analyzer is installed under;
+	// empty means the operating system's temporary directory.
+	ToolDirectory string
 	// GoCommand is the go tool used to install the pinned analyzer; empty
 	// means "go".
 	GoCommand string
@@ -171,7 +174,7 @@ func Deadcode(ctx context.Context, repositoryPath string, options DeadcodeOption
 	tool := options.Tool
 	platforms := options.Platforms
 	if len(tool) == 0 {
-		binary, cleanup, err := installDeadcodeTool(runContext, repositoryPath, options.GoCommand)
+		binary, cleanup, err := installDeadcodeTool(runContext, repositoryPath, options.GoCommand, options.ToolDirectory)
 		if err != nil {
 			return DeadcodeReport{}, err
 		}
@@ -403,11 +406,11 @@ func intersectDeadcodeFindings(perPlatform [][]DeadcodeFinding) []DeadcodeFindin
 // temporary directory and returns the binary and a cleanup. GOOS and GOARCH
 // are pinned to the host so an ambient cross-compilation setting cannot
 // produce a binary this machine cannot execute.
-func installDeadcodeTool(ctx context.Context, repositoryPath, goCommand string) (string, func(), error) {
+func installDeadcodeTool(ctx context.Context, repositoryPath, goCommand, parent string) (string, func(), error) {
 	if goCommand == "" {
 		goCommand = "go"
 	}
-	directory, err := os.MkdirTemp("", "wb-deadcode-tool-")
+	directory, err := os.MkdirTemp(parent, "wb-deadcode-tool-")
 	if err != nil {
 		return "", nil, fmt.Errorf("create deadcode analyzer directory: %w", err)
 	}

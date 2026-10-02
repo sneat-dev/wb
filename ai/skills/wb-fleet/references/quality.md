@@ -63,6 +63,12 @@ For repeatable repository-owned validation, commit the approved shard plan as
 `go_test.packages`. `wb worktree merge` consumes that policy for candidate
 validation; ad hoc fleet runs continue to require explicit command flags.
 
+On a loaded machine, measure only the packages a diff touches with
+`wb run -- wb coverage . --changed --changed-packages-only --target origin/main`.
+It still names every newly uncovered `file:line` in those packages, and says in
+its output that coverage drift in unrelated packages was not measured: CI's
+full `--changed` run remains the gate.
+
 Choose one verification surface:
 
 - `coverage` measures statement-weighted Go coverage.

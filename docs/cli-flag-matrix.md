@@ -13,7 +13,10 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--baseline-timeout` all apply only to `coverage`, are rejected without
 `--changed`, and are incompatible with `--fleet`, `--resume`, and
 `--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
-`json`.
+`json`. `--changed-packages-only` is the local, opt-in narrowing of
+`--changed`: it requires `--changed` (exit `2` without it), measures only the
+packages the diff touches, and says in its output that unrelated-package drift
+was not measured and CI's full run remains the gate. CI never passes it.
 
 `coverage --include-e2e` measures the default tier and native E2E/contract tests
 separately, then merges their actual coverage profiles. It is disabled by default

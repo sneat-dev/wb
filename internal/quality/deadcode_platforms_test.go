@@ -2,7 +2,6 @@ package quality
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -138,14 +137,12 @@ func TestDeadcodeFailsWhenTheAnalyzerCannotBeInstalled(t *testing.T) {
 	}
 }
 
-func TestInstallDeadcodeToolReportsAnUnusableTemporaryDirectory(t *testing.T) {
-	// Not parallel: it redirects the process temp directory.
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-	t.Setenv("TMP", os.Getenv("TMPDIR"))
-	t.Setenv("TEMP", os.Getenv("TMPDIR"))
-	_, _, err := installDeadcodeTool(context.Background(), t.TempDir(), "")
+func TestInstallDeadcodeToolReportsAnUnusableInstallDirectory(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "missing")
+	_, _, err := installDeadcodeTool(context.Background(), t.TempDir(), "", missing)
 	if err == nil || !strings.Contains(err.Error(), "create deadcode analyzer directory") {
-		t.Fatalf("error = %v, want the temporary directory failure", err)
+		t.Fatalf("error = %v, want the install directory failure", err)
 	}
 }
 

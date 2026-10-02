@@ -49,6 +49,9 @@ type qualityOptions struct {
 	// uncovered-statement count rises against its baseline, or when a changed,
 	// non-moved line is uncovered.
 	changed bool
+	// changedPackagesOnly narrows --changed to the packages the diff touches:
+	// a local mode that leaves unrelated packages unmeasured. CI never sets it.
+	changedPackagesOnly bool
 	// target is the merge-base branch/ref --changed diffs against.
 	target string
 	// baselineFile is the per-package uncovered-count baseline published by
@@ -56,6 +59,9 @@ type qualityOptions struct {
 	// merge base is measured directly instead, bounded by baselineTimeout.
 	baselineFile    string
 	baselineTimeout time.Duration
+	// scopePackages is the package scope --changed-packages-only resolved;
+	// internal state, never a flag.
+	scopePackages []string
 	// allowEmpty lets fleet mode return zero targets instead of erroring.
 	// an empty fleet with no filter publishes an empty-but-valid snapshot;
 	// an unmatched filter is still an error. Quality commands (coverage/verify/check/fleet)
@@ -146,6 +152,7 @@ func newCoverageCmd(inv *invocation) *cobra.Command {
 	command.Flags().BoolVar(&options.includeE2E, "include-e2e", false, "merge native E2E and contract coverage with the default test tier")
 	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
 	command.Flags().BoolVar(&options.changed, "changed", false, "apply the per-change coverage ratchet against --target instead of a plain repository/fleet run")
+	command.Flags().BoolVar(&options.changedPackagesOnly, "changed-packages-only", false, "with --changed, measure only the packages the diff touches; drift in unrelated packages is not measured and CI's full run remains the gate")
 	command.Flags().StringVar(&options.target, "target", "", "merge-base branch or ref for --changed (required with --changed)")
 	command.Flags().StringVar(&options.baselineFile, "baseline-file", "", "per-package uncovered-count baseline JSON for --changed; measures the merge base directly when empty or missing")
 	command.Flags().DurationVar(&options.baselineTimeout, "baseline-timeout", 20*time.Minute, "wall-time budget for measuring the merge base directly when --baseline-file is empty or missing")
@@ -227,6 +234,8 @@ func validateCoverageExecutionOptions(options qualityOptions) error {
 			// silently ignored, so it is a usage error.
 			return &exitError{code: exitUsage, message: fmt.Sprintf("--changed supports --format markdown or json only, not %q", options.format)}
 		}
+	} else if options.changedPackagesOnly {
+		return &exitError{code: exitUsage, message: "--changed-packages-only requires --changed"}
 	} else if options.target != "" {
 		// exitUsage: --target is a flag this PR added, and every ignored or
 		// misused flag this PR added exits 2 (AGENTS.md's ignored-flags

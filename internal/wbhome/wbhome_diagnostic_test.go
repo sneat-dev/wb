@@ -113,6 +113,8 @@ func TestResolveNeverAdoptsWBHomeAsAHome(t *testing.T) {
 // TestIgnoredHomeEnvDiagnosticIsSilentWhenWBHomeNamesTheStateDirectoryInUse
 // keeps the warning for values that differ: a WB_HOME that spells the
 // directory WB uses anyway (even unclean) changes nothing and says nothing.
+//
+//nolint:paralleltest // sets HOME and WB_HOME on the shared process environment
 func TestIgnoredHomeEnvDiagnosticIsSilentWhenWBHomeNamesTheStateDirectoryInUse(t *testing.T) {
 	t.Setenv("HOME", resolvedTempDir(t))
 	t.Setenv(EnvOverride, "")

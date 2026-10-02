@@ -865,6 +865,17 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 
 	profilePath := filepath.Join(worktreeDir, "wb-coverage-baseline.out")
 	runOptions := options
+	if len(options.GoTestPackages) > 0 {
+		// A scoped measurement (wb coverage --changed --changed-packages-only)
+		// measures only the packages that exist at the merge base. A package
+		// the change adds has no baseline entry, which counts as zero.
+		runOptions.GoTestPackages = existingPackagePatterns(worktreeDir, options.GoTestPackages)
+		if len(runOptions.GoTestPackages) == 0 {
+			baseline := BaselineFromProfile(nil, modulePath, sha)
+			baseline.IncludeE2E = options.IncludeE2E
+			return baseline, nil
+		}
+	}
 	runOptions.CoverageProfile = profilePath
 	if runOptions.Timeout <= 0 || runOptions.Timeout > timeout {
 		runOptions.Timeout = timeout
@@ -873,6 +884,7 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	if err != nil {
 		return PackageBaseline{}, err
 	}
+	repoOptions = ScopeShardPolicyToPackages(repoOptions)
 	report := CoverWithOptions(ctx, "merge-base", worktreeDir, repoOptions)
 	if report.Status == StatusFailed {
 		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("measure coverage at merge base %s: %s", sha, report.Error))
