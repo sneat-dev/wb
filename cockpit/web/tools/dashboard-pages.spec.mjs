@@ -83,7 +83,7 @@ const hostileTypes = () => [
 ]
 
 /** Loads a page as the daemon serves it, with the daemon's routes answered by `routes`, and runs the page's script file. */
-async function load(page, routes) {
+async function load(page, routes, contentType = 'application/json') {
   const html = read(`${page}.html`)
   window.history.replaceState({}, '', '/' + (page === 'index' ? '' : page))
   document.documentElement.innerHTML = html.replace(/^<!doctype html>\s*<html[^>]*>/i, '').replace(/<\/html>\s*$/i, '')
@@ -94,7 +94,7 @@ async function load(page, routes) {
     const path = String(input).split('?')[0]
     const answer = routes[String(input)] ?? routes[path]
     if (answer === undefined) return new Response('{}', { status: 404 })
-    return new Response(JSON.stringify(answer), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    return new Response(contentType !== 'application/json' && typeof answer === 'string' ? answer : JSON.stringify(answer), { status: 200, headers: { 'Content-Type': contentType } })
   })
   // The script is the file the page names; nothing else on the page is script.
   const scripts = [...document.querySelectorAll('script')]
@@ -242,6 +242,13 @@ describe('the metrics page with a hostile value in every field of every record',
       await load('metrics', { '/api/v1/health': answer ?? {}, '/api/v1/overview': answer ?? {}, '/v0/workbench/metrics/types': answer, '/v0/workbench/metrics': answer })
       expectNothingInjected()
     }
+    // A daemon with no hub answers the metrics addresses with its index page: no data, and no error.
+    await load('metrics', { '/api/v1/overview': hostileOverview(), '/v0/workbench/metrics/types': '<!doctype html>', '/v0/workbench/metrics': '<!doctype html>' }, 'text/html')
+    expect(document.querySelector('#error').style.display).toBe('none')
+    expect(document.querySelector('#leastCoverageTable').textContent).toBe('No coverage metrics recorded yet.')
+    expect(document.querySelectorAll('#worktreesTable tbody tr').length).toBe(PAYLOADS.length * 2)
+    expect([...document.querySelectorAll('#tabs [data-type]')].map((tab) => tab.dataset.type)).toEqual(['summary', 'test_coverage'])
+    expectNothingInjected()
     // With no route at all the page says so in its own words.
     await load('metrics', {})
     expect(document.querySelector('#leastCoverageTable').textContent).toBe('No coverage metrics recorded yet.')

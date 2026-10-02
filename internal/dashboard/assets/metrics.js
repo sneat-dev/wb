@@ -338,12 +338,25 @@
     }
   }
 
+  /**
+   * The records of an answer, or none when it is not JSON: a daemon with no hub has no metrics routes, and
+   * answers their addresses with its index page.
+   */
+  async function records(res) {
+    if (!res.ok) return null
+    try {
+      return list(await res.json())
+    } catch {
+      return []
+    }
+  }
+
   const DEFAULT_TYPES = [{ type: 'test_coverage', title: 'Test Coverage', dimension_label: 'Package' }]
 
   async function fetchTypes() {
     try {
-      const res = await fetch('/v0/workbench/metrics/types')
-      types = res.ok ? list(await res.json()) : DEFAULT_TYPES
+      const answered = await records(await fetch('/v0/workbench/metrics/types'))
+      types = answered !== null && answered.length ? answered : DEFAULT_TYPES
     } catch {
       types = DEFAULT_TYPES
     }
@@ -356,12 +369,10 @@
       await fetchOverview()
 
       // The coverage metrics are always read: the cards and the summary show them.
-      const covRes = await fetch('/v0/workbench/metrics?type=test_coverage')
-      if (covRes.ok) coverageMetrics = list(await covRes.json())
+      coverageMetrics = (await records(await fetch('/v0/workbench/metrics?type=test_coverage'))) ?? coverageMetrics
 
       if (currentType !== 'summary' && currentType !== 'test_coverage') {
-        const res = await fetch('/v0/workbench/metrics?type=' + encodeURIComponent(currentType))
-        if (res.ok) allMetrics = list(await res.json())
+        allMetrics = (await records(await fetch('/v0/workbench/metrics?type=' + encodeURIComponent(currentType)))) ?? allMetrics
       } else {
         allMetrics = coverageMetrics
       }

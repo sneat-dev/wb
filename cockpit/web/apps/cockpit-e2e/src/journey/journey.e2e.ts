@@ -124,6 +124,71 @@ async function watch(page: Page, expectedStatus?: number) {
   }
 }
 
+/**
+ * The daemon's own dashboard pages, `/` and `/metrics`, in a real browser under the policy the daemon sends
+ * (cockpit#ac:dashboard-pages-create-nothing-from-data): each runs only its script file of the origin, the policy
+ * refuses inline script, nothing violates it, and the page renders. This daemon has no hub, so the metrics
+ * addresses answer with the index page and the metrics page shows its "no data" state, with the machine's worktrees.
+ */
+async function dashboardPagesRunUnderTheStrictPolicy(page: Page, origin: string): Promise<void> {
+  const failed: string[] = []
+  const scripts: string[] = []
+  page.on('requestfailed', (request) => failed.push(`${request.url()} ${request.failure()?.errorText ?? ''}`))
+  page.on('response', (response) => {
+    if (response.request().resourceType() !== 'script') return
+    scripts.push(new URL(response.url()).pathname)
+    if (response.status() !== 200 || !(response.headers()['content-type'] ?? '').startsWith('text/javascript')) failed.push(`${response.status()} ${response.url()}`)
+  })
+  const violationsOn = () => page.evaluate(() => (window as unknown as { __violations: unknown[] }).__violations)
+
+  for (const [path, script] of [
+    ['/', '/dashboard-assets/index.js'],
+    ['/metrics', '/dashboard-assets/metrics.js'],
+  ] as const) {
+    scripts.length = 0
+    const response = await page.goto(`${origin}${path}`)
+    expect(response?.status(), path).toBe(200)
+    const policy = response?.headers()['content-security-policy'] ?? ''
+    const scriptSource = policy.split(';').map((directive) => directive.trim()).find((directive) => directive.startsWith('script-src'))
+    expect(scriptSource, `${path}: ${policy}`).toBe("script-src 'self'")
+    expect(policy, path).toContain("object-src 'none'")
+    // The page has one script, a file of the origin, and no inline one.
+    expect(await page.evaluate(() => [...document.scripts].map((element) => [element.getAttribute('src'), element.textContent])), path).toEqual([[script, '']])
+
+    if (path === '/') {
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('WB operations')
+      // The script ran: the cards and the two tables are filled from the overview, and there is no error.
+      await expect(page.locator('#worktrees')).not.toHaveText('—')
+      await expect(page.locator('#worktreeTable')).toContainText('journey-one')
+      await expect(page.locator('#worktreeTable')).toContainText('journey-two')
+      await expect(page.locator('#kindTable')).not.toBeEmpty()
+      await expect(page.locator('#updated')).toContainText('Updated')
+    } else {
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('WB Metrics')
+      await expect(page.locator('#updated')).toContainText('Updated at')
+      await expect(page.locator('#summaryView')).toBeVisible()
+      await expect(page.locator('#tabs [data-type]')).toHaveText(['📊 Summary', 'Test Coverage'])
+      await expect(page.locator('#leastCoverageTable')).toHaveText('No coverage metrics recorded yet.')
+      await expect(page.locator('#mostActiveTable')).toHaveText('No repository activity recorded yet.')
+      await expect(page.locator('#worktreesTable')).toContainText('journey-one')
+      await expect(page.locator('#worktreesTable')).toContainText('journey-two')
+      await expect(page.locator('#kpiActiveWt')).not.toHaveText('—')
+      // A tab and the filter work: their listeners were attached by the script file, not by inline handlers.
+      await page.locator('#tabs [data-type="test_coverage"]').click()
+      await expect(page.locator('#tableView')).toBeVisible()
+      await expect(page.locator('#tableContainer')).toHaveText('No repositories found for metric: test_coverage.')
+      await page.locator('#tabs [data-type="summary"]').click()
+      await page.locator('#filter').fill('journey-two')
+      await expect(page.locator('#worktreesTable')).toContainText('journey-two')
+      await expect(page.locator('#worktreesTable')).not.toContainText('journey-one')
+    }
+    await expect(page.locator('#error')).toBeHidden()
+    expect(scripts, path).toEqual([script])
+    expect(await violationsOn(), path).toEqual([])
+  }
+  expect(failed).toEqual([])
+}
+
 test.describe.configure({ mode: 'serial' })
 
 test.beforeAll(() => {
@@ -270,6 +335,9 @@ test('wb cockpit starts its own daemon and the whole journey works on the real c
   const anonymousSession = await (await page.request.get(`${origin}/api/v1/cockpit/session`)).json()
   expect(anonymousSession.principal).not.toBe('owner')
   expect(anonymousSession.machine_routes).toBeUndefined()
+
+  // The daemon's own pages on the same origin run only their script files, under a policy with no inline script.
+  await dashboardPagesRunUnderTheStrictPolicy(page, origin)
 
   await expectClean()
   expect(failures).toEqual([])
