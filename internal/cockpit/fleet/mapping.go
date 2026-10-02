@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/json"
 	"net/url"
 	"regexp"
 	"slices"
@@ -548,6 +549,13 @@ type remoteView struct {
 	// published one, by machine id.
 	samples map[string]machinemetrics.Sample
 	named   map[string][]publishedMachine
+	// machinesCut is the number of usable machine entries left out at
+	// maxCachedMachines. bytes is the encoded size of everything the view
+	// contributes to the document and machineBytes that of its machine entries
+	// alone, which the document's size guard counts.
+	machinesCut  int
+	bytes        int
+	machineBytes int
 }
 
 // publishedMachine is a published-store machine entry's id and the login it was
@@ -568,35 +576,66 @@ type publishedMachine struct {
 // subjects, task summaries, head SHAs, owners, attention text and login are not
 // read, so they cannot reach the document. Every entry is cached and observed
 // at its snapshot's publish time.
+//
+// A published snapshot is another machine's data, as an export is, and is held
+// to the bounds an export is held to (the helpers are the export decoder's and
+// mapLive's own): a publish time before 2000 makes the snapshot unusable and
+// one in the future is taken as now, a last activity is never later than its
+// snapshot, a version that is not one is dropped, a pull request number is
+// within maxCount, and at most maxLiveRepositories, maxLiveWorktrees,
+// maxLivePullRequests and agentCap entries of one machine are kept, the rest
+// counted in its export_dropped (and agents_truncated). At most
+// maxCachedMachines machines are kept, the newest publications first.
 func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, now time.Time) remoteView {
 	var view remoteView
+	var usable []remotestate.Snapshot
 	for _, entry := range entries {
 		snapshot := entry.Snapshot
 		// With no login to compare, the machine's name alone could be another
 		// machine's, so the projects root (compared here, never emitted) must
 		// be this machine's too.
 		own := snapshot.Machine == local && ((login != "" && snapshot.Login == login) || (login == "" && projectsRoot != "" && snapshot.ProjectsRoot == projectsRoot))
-		machineName := plainText(snapshot.Machine)
-		unusable := entry.Error != "" || snapshot.PublishedAt.IsZero() || machineName == "" || strings.ContainsAny(snapshot.Machine, `/\`)
-		if own || unusable {
-			continue
+		unusable := entry.Error != "" || snapshot.PublishedAt.IsZero() || snapshot.PublishedAt.Before(earliestBootTime) ||
+			plainText(snapshot.Machine) == "" || strings.ContainsAny(snapshot.Machine, `/\`)
+		if !own && !unusable {
+			usable = append(usable, snapshot)
 		}
+	}
+	if len(usable) > maxCachedMachines {
+		sort.SliceStable(usable, func(i, j int) bool {
+			if !usable[i].PublishedAt.Equal(usable[j].PublishedAt) {
+				return usable[i].PublishedAt.After(usable[j].PublishedAt)
+			}
+			return usable[i].Key() < usable[j].Key()
+		})
+		usable, view.machinesCut = usable[:maxCachedMachines], len(usable)-maxCachedMachines
+	}
+	for _, snapshot := range usable {
+		machineName := plainText(snapshot.Machine)
 		key := snapshot.Key()
-		published := snapshot.PublishedAt
+		published := notAfter(snapshot.PublishedAt, now)
 		machineID := entryID(kindMachine, key)
 		cached := func(id string) Entry {
 			return Entry{ID: id, Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published}
 		}
-		repositoryNames := map[string]bool{}
-		for _, name := range snapshot.KnownRepositories {
-			repositoryNames[name] = true
+		cut := 0
+		// The names in a fixed order, so that what the cap keeps does not change
+		// from one read to the next.
+		var names []string
+		named := map[string]bool{}
+		for _, name := range append(slices.Clone(snapshot.KnownRepositories), worktreeRepositories(snapshot.Worktrees)...) {
+			if !named[name] {
+				named[name] = true
+				names = append(names, name)
+			}
 		}
-		for _, state := range snapshot.Worktrees {
-			repositoryNames[state.Repository] = true
+		sort.Strings(names)
+		if len(names) > maxLiveRepositories {
+			names, cut = names[:maxLiveRepositories], cut+len(names)-maxLiveRepositories
 		}
 		var repositories []Repository
 		repositoryIDs := map[string]string{}
-		for name := range repositoryNames {
+		for _, name := range names {
 			id := entryID(kindRepository, key, name)
 			repositoryIDs[name] = id
 			host, repositoryName := splitForgeName(name)
@@ -604,21 +643,40 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 		}
 		var worktreeViews []Worktree
 		var pullRequests []PullRequest
+		seenWorktrees, seenPulls := map[string]bool{}, map[string]bool{}
 		for _, state := range snapshot.Worktrees {
 			id := entryID(kindWorktree, key, state.Repository, state.Task, state.Branch)
-			worktreeViews = append(worktreeViews, Worktree{
-				Entry: cached(id), Repository: repositoryIDs[state.Repository], Name: plainText(state.Task), Task: plainText(state.Task), Stream: plainText(state.Stream),
-				Branch: plainText(state.Branch), Lifecycle: publishedLifecycle(state.Lifecycle), OwnerState: publishedOwnerState(state.OwnerState), LastActivityAt: state.LastActivityAt,
-			})
-			if pull := state.PullRequest; pull != nil && strings.EqualFold(pull.State, "open") {
-				pullRequests = append(pullRequests, PullRequest{
-					Entry: cached(entryID(kindPR, key, state.Repository, strconv.Itoa(pull.Number))), Repository: repositoryIDs[state.Repository],
-					Worktree: id, Branch: plainText(state.Branch), Number: pull.Number, State: "open", URL: safeHTTPSURL(pull.URL),
+			repositoryID, kept := repositoryIDs[state.Repository]
+			// A worktree a snapshot lists twice has one entry, the first; its pull
+			// request is read from every listing.
+			if !seenWorktrees[id] {
+				if !kept || len(worktreeViews) == maxLiveWorktrees {
+					// A worktree of a repository that was cut, or over the cap.
+					cut++
+					continue
+				}
+				seenWorktrees[id] = true
+				worktreeViews = append(worktreeViews, Worktree{
+					Entry: cached(id), Repository: repositoryID, Name: plainText(state.Task), Task: plainText(state.Task), Stream: plainText(state.Stream),
+					Branch: plainText(state.Branch), Lifecycle: publishedLifecycle(state.Lifecycle), OwnerState: publishedOwnerState(state.OwnerState),
+					LastActivityAt: publishedTime(state.LastActivityAt, published),
 				})
 			}
+			if pull := state.PullRequest; pull != nil && strings.EqualFold(pull.State, "open") && pull.Number > 0 && pull.Number <= maxCount {
+				pullID := entryID(kindPR, key, state.Repository, strconv.Itoa(pull.Number))
+				switch {
+				case seenPulls[pullID]:
+				case len(pullRequests) == maxLivePullRequests:
+					cut++
+				default:
+					seenPulls[pullID] = true
+					pullRequests = append(pullRequests, PullRequest{
+						Entry: cached(pullID), Repository: repositoryID,
+						Worktree: id, Branch: plainText(state.Branch), Number: pull.Number, State: "open", URL: safeHTTPSURL(pull.URL),
+					})
+				}
+			}
 		}
-		worktreeViews = uniqueByID(worktreeViews, func(item Worktree) string { return item.ID })
-		pullRequests = uniqueByID(pullRequests, func(item PullRequest) string { return item.ID })
 		for index := range repositories {
 			repositories[index].WorktreeCount = countWhere(worktreeViews, func(item Worktree) bool { return item.Repository == repositories[index].ID })
 			open := countWhere(pullRequests, func(item PullRequest) bool { return item.Repository == repositories[index].ID })
@@ -639,12 +697,12 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 			view.named[snapshot.Machine] = append(view.named[snapshot.Machine], publishedMachine{id: machineID, login: snapshot.Login})
 		}
 		view.machines = append(view.machines, Machine{
-			Entry: cached(machineID), WBVersion: plainText(snapshot.WBVersion),
+			Entry: cached(machineID), WBVersion: publishedVersion(snapshot.WBVersion),
 			RepositoryCount: len(repositories), WorktreeCount: len(worktreeViews),
 			OS: shortName(snapshot.OS), Arch: shortName(snapshot.Arch), CPUCount: cpuCount(snapshot.CPUCount), BootTime: publishedBootTime(snapshot.BootTime, now),
 			// The cut is carried by the machine it cut, whether the publisher said
 			// so or this reader did, so hiding the machine hides the flag.
-			AgentsTruncated: snapshot.AgentsTruncated || agentsCut,
+			AgentsTruncated: snapshot.AgentsTruncated || agentsCut, ExportDropped: cut,
 		})
 		view.repositories = append(view.repositories, repositories...)
 		view.worktrees = append(view.worktrees, worktreeViews...)
@@ -652,7 +710,52 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 	}
 	view.machines = uniqueByID(view.machines, func(item Machine) string { return item.ID })
 	view.agents = uniqueByID(view.agents, func(item Agent) string { return item.ID })
+	// The document types cannot fail to marshal.
+	machines, _ := json.Marshal(view.machines)
+	rest, _ := json.Marshal([]any{view.repositories, view.worktrees, view.pullRequests, view.agents})
+	view.machineBytes, view.bytes = len(machines), len(machines)+len(rest)
 	return view
+}
+
+// maxCachedMachines is the most machines of the published store the document
+// carries; a store holds one snapshot for each machine of each login.
+const maxCachedMachines = 200
+
+// worktreeRepositories is the repository each published worktree names.
+func worktreeRepositories(states []remotestate.WorktreeState) []string {
+	names := make([]string, 0, len(states))
+	for _, state := range states {
+		names = append(names, state.Repository)
+	}
+	return names
+}
+
+// notAfter is when, or limit when when is later: a time another machine gave is
+// never shown as later than the time it can have been observed at.
+func notAfter(when, limit time.Time) time.Time {
+	if when.After(limit) {
+		return limit
+	}
+	return when
+}
+
+// publishedTime is a time of another machine's snapshot, made fit to show: the
+// zero time when it is before the earliest time a machine may report, and never
+// later than limit.
+func publishedTime(when, limit time.Time) time.Time {
+	if when.Before(earliestBootTime) {
+		return time.Time{}
+	}
+	return notAfter(when, limit)
+}
+
+// publishedVersion is version when it is one by the export decoder's rule, else
+// empty.
+func publishedVersion(version string) string {
+	if versionPattern.MatchString(version) {
+		return version
+	}
+	return ""
 }
 
 // mapRemoteAgents maps the agents another machine published as `cached` entries

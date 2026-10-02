@@ -326,14 +326,16 @@ type Snapshotter struct {
 	// mapper maps an accepted fleet to a machine's entries (mapLive; a test
 	// replaces it). generation counts the documents assembled, so that one
 	// prepared outside the lock is stored only if none was assembled after it.
-	// maxDocument is the size over which the live machines are left out,
-	// leftOut whether they are in the published document, and baseBytes the
-	// size of that document less its live machines' entries.
+	// maxDocument is the size over which the other machines' entries are left
+	// out, leftOut whether the live machines' are out of the published document
+	// and cachedOut whether the published store's are, and baseBytes the size of
+	// that document less the other machines' entries.
 	baseBytes   int
 	mapper      func(key, machineID string, fleet *Document, observed time.Time, dropped int) liveView
 	generation  uint64
 	maxDocument int
 	leftOut     bool
+	cachedOut   bool
 
 	// throughputs scans the terminal records on its own cadence (nil without a
 	// source); throughput is its last block, guarded by mu.
@@ -1312,22 +1314,33 @@ func (s *Snapshotter) publishMaybeLocked() {
 // published one. The caller holds s.mu.
 func (s *Snapshotter) publishLocked() {
 	now := s.now()
-	document, liveBytes, leftOut := s.assemble(now)
-	s.commit(document, s.prepare(document), now, liveBytes, leftOut)
+	document, sizes := s.assemble(now)
+	s.commit(document, s.prepare(document), now, sizes)
+}
+
+// documentSizes is what the size guard decided for one assembled document: the
+// encoded bytes of the live machines' entries and of the published store's
+// entries that are in it, and whether each was left out.
+type documentSizes struct {
+	liveBytes, cachedBytes int
+	leftOut, cachedOut     bool
 }
 
 // commit makes a prepared document the published one and records what the size
-// guard needs for the next: the size of everything but the live machines'
-// entries, and whether they were left out (logged when that changes). The
+// guard needs for the next: the size of everything but the other machines'
+// entries, and whether those were left out (logged when that changes). The
 // caller holds s.mu, and calls it only for the newest document assembled.
-func (s *Snapshotter) commit(document Document, payload cockpit.Payload, now time.Time, liveBytes int, leftOut bool) {
+func (s *Snapshotter) commit(document Document, payload cockpit.Payload, now time.Time, sizes documentSizes) {
 	s.doc, s.payload = document, payload
 	s.lastPublish, s.publishes = now, s.publishes+1
-	s.baseBytes = max(payload.Size()-liveBytes, 0)
-	if leftOut && !s.leftOut {
+	s.baseBytes = max(payload.Size()-sizes.liveBytes-sizes.cachedBytes, 0)
+	if sizes.leftOut && !s.leftOut {
 		s.logf("cockpit fleet: the fleet document would be over %d bytes with the live machines' entries; they are left out (%s) and their published entries shown", s.maxDocument, RemoteErrorExportTooLarge)
 	}
-	s.leftOut = leftOut
+	if sizes.cachedOut && !s.cachedOut {
+		s.logf("cockpit fleet: the fleet document would be over %d bytes with the other machines' published entries; they are left out (%s) and only their machine entries shown", s.maxDocument, RemoteErrorExportTooLarge)
+	}
+	s.leftOut, s.cachedOut = sizes.leftOut, sizes.cachedOut
 }
 
 // publishUnlocked publishes as publishLocked does for a caller that does not
@@ -1343,14 +1356,14 @@ func (s *Snapshotter) publishUnlocked() {
 		s.mu.Unlock()
 		return
 	}
-	document, liveBytes, leftOut := s.assemble(now)
+	document, sizes := s.assemble(now)
 	generation := s.generation
 	s.mu.Unlock()
 	payload := s.prepare(document)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if generation == s.generation {
-		s.commit(document, payload, now, liveBytes, leftOut)
+		s.commit(document, payload, now, sizes)
 	}
 }
 
@@ -1361,19 +1374,28 @@ func (s *Snapshotter) publishUnlocked() {
 // holds s.mu.
 //
 // The size guard is decided here, before anything is encoded, so the document
-// is encoded once: when the size of everything else in the last published
-// document plus the encoded size of the fresh live views is over the bound, the
-// live machines' entries are left out, each such machine is shown by its
-// published entries or a bare entry carrying remote_error export_too_large,
-// and the document counts one more diagnostic. It returns the bytes of the live
-// views it included and whether it left them out.
-func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int, leftOut bool) {
+// is encoded once, and it covers every entry that is another machine's, live or
+// published. When the size of this machine's part of the last published
+// document plus the encoded size of the published store's entries is over the
+// bound, those entries are left out and each published machine is shown by its
+// machine entry alone, carrying remote_error export_too_large. When what is
+// then in the document plus the encoded size of the fresh live views is over
+// the bound, the live machines' entries are left out, each such machine shown
+// by its published entries or a bare entry carrying export_too_large. Each of
+// the two counts one more diagnostic. It returns what the guard decided.
+func (s *Snapshotter) assemble(now time.Time) (assembled Document, sizes documentSizes) {
+	liveBytes := 0
 	for _, key := range s.liveKeys {
 		if machine := s.live[key]; machine.fresh(now, s.remoteInterval()) {
 			liveBytes += machine.viewBytes
 		}
 	}
-	withLive := liveBytes == 0 || s.baseBytes+liveBytes <= s.maxDocument
+	withCached := s.remote.bytes == 0 || s.baseBytes+s.remote.bytes <= s.maxDocument
+	sizes.cachedBytes, sizes.cachedOut = s.remote.bytes, !withCached
+	if !withCached {
+		sizes.cachedBytes = s.remote.machineBytes
+	}
+	withLive := liveBytes == 0 || s.baseBytes+sizes.cachedBytes+liveBytes <= s.maxDocument
 	document := emptyDocument(s.interval)
 	document.WarmingUp, document.SnapshotAt, document.Error = !s.complete, now, s.listError
 	if s.gitOld && document.Error == "" {
@@ -1446,7 +1468,7 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		}
 	}
 	hidden, failures := s.overlayLive(&document, now, withLive, localHosts)
-	s.appendCached(&document, hidden, failures, localHosts)
+	s.appendCached(&document, hidden, failures, localHosts, withCached)
 	sortByName(document.Machines, func(item Machine) string { return item.Machine }, func(item Machine) string { return item.ID })
 	sortByName(document.Repositories, func(item Repository) string { return item.Name }, func(item Repository) string { return item.ID })
 	sortByName(document.Worktrees, func(item Worktree) string { return item.Task }, func(item Worktree) string { return item.ID })
@@ -1456,11 +1478,18 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		// The live machines were left out for the document's size: one diagnostic.
 		document.Diagnostics++
 	}
-	s.generation++
-	if !withLive {
-		return document, 0, true
+	if !withCached {
+		document.Diagnostics++
 	}
-	return document, liveBytes, false
+	if s.remote.machinesCut > 0 {
+		// More machines are published than the document carries: one diagnostic.
+		document.Diagnostics++
+	}
+	s.generation++
+	if sizes.leftOut = !withLive; withLive {
+		sizes.liveBytes = liveBytes
+	}
+	return document, sizes
 }
 
 // sameSample compares two samples by value: a sample holds pointers, which a

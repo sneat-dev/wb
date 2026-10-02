@@ -56,8 +56,9 @@ const (
 	// RemoteErrorWarmingUp says the remote daemon keeps answering that its first
 	// pass has not ended and nothing fresh is held of it.
 	RemoteErrorWarmingUp = "remote_warming_up"
-	// RemoteErrorExportTooLarge says the machine's live entries were left out
-	// because the fleet document would be over its size bound with them.
+	// RemoteErrorExportTooLarge says the machine's entries, live or published,
+	// were left out because the fleet document would be over its size bound with
+	// them.
 	RemoteErrorExportTooLarge = "export_too_large"
 	// RemoteErrorSelfExport says the export read from the configured address is
 	// this machine's own.
@@ -539,10 +540,7 @@ func observedTime(envelope Envelope, received time.Time) time.Time {
 	if envelope.Fleet != nil && !envelope.Fleet.SnapshotAt.IsZero() {
 		observed = envelope.Fleet.SnapshotAt
 	}
-	if observed.After(received) {
-		return received
-	}
-	return observed
+	return notAfter(observed, received)
 }
 
 // mapLive maps an accepted fleet to the entries of the machine configured as
@@ -867,8 +865,20 @@ func (s *Snapshotter) overlayLive(document *Document, now time.Time, withLive bo
 
 // appendCached adds the published-store entries to document, less the machines
 // in hidden, with the failure code of failures on a machine entry it names, and
-// with the pull requests' links rebuilt (relink). The caller holds s.mu.
-func (s *Snapshotter) appendCached(document *Document, hidden map[string]bool, failures map[string]string, localHosts map[string]bool) {
+// with the pull requests' links rebuilt (relink). With withEntries false only
+// the machine entries are added (the document would be over its size bound with
+// the rest), each carrying export_too_large unless it carries a failure of its
+// own. The caller holds s.mu.
+func (s *Snapshotter) appendCached(document *Document, hidden map[string]bool, failures map[string]string, localHosts map[string]bool, withEntries bool) {
+	if !withEntries {
+		for _, machine := range s.remote.machines {
+			if !hidden[machine.ID] {
+				machine.RemoteError = firstNonEmpty(failures[machine.ID], RemoteErrorExportTooLarge)
+				document.Machines = append(document.Machines, machine)
+			}
+		}
+		return
+	}
 	pulls := relink(s.remote.pullRequests, s.remote.repositories, localHosts)
 	if len(hidden) == 0 && len(failures) == 0 {
 		document.Machines = append(document.Machines, s.remote.machines...)

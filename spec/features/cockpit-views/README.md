@@ -779,7 +779,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `boot_time` | time | opt. | daemon / snapshot | as above |
 | `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
 | `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
-| `export_dropped` | int | opt. | the number of that machine's entries its export left out (REQ:cockpit-export-verb) plus those this daemon cut at its caps (REQ:remote-entries-replace-cached); set only by the reader, refused in an export | live-remote only |
+| `export_dropped` | int | opt. | the number of that machine's entries its export left out (REQ:cockpit-export-verb) plus those this daemon cut at its caps (REQ:remote-entries-replace-cached; for a published snapshot, REQ:remote-envelope-is-untrusted); set only by the reader, refused in an export | live-remote and cached |
 | `publish_error` | string, `collect_failed`\|`store_unavailable`\|`publish_failed`\|`optional_fields_dropped` | opt. | the periodic publisher's last diagnostic; absent when healthy and when publishing is off | local only |
 | `agents_truncated` | bool | opt. | that machine's agents were cut, by it, by its publisher or by this daemon's cap; carried by that machine's entry only | live-remote and cached |
 
@@ -1546,6 +1546,21 @@ the exporter's own, so a merger (REQ:remote-entries-replace-cached) re-derives e
 configured machine key and never uses one as received. Its refusal names the rule and the field's
 path and never a value, a time or an error text of the remote.
 
+A published snapshot (the `cached` route) is another machine's data as well, and the mapping that
+reads it is held to the same bounds, by the same code where the rule is the same, with one
+difference: it repairs where the decoder refuses, because a snapshot is read as a whole and one odd
+value must not hide a machine. A publish time before 2000 makes the snapshot unusable and one in the
+future is taken as now, so a clock that is ahead can never make a snapshot look fresh for ever; a
+`last_activity_at` is never later than its snapshot's time and one before 2000 is dropped; a
+`wb_version` that does not match the version pattern is dropped; a pull request whose number is
+not within 1 to 10,000,000 is dropped; at most 2000 repositories, 2000 worktrees, 500 pull
+requests and 200 agents of one machine are kept, the same ones on every read, and what is cut is
+counted in that machine's `export_dropped` (the agents in `agents_truncated`); and at most 200
+published machines are kept, the newest publications, with one diagnostic when more exist. The
+text a machine says about itself, in an export or in a snapshot (a repository, task, stream or
+branch name), is that machine's own text: it is bounded and stripped of control and format
+characters, and the application renders it as text, never as markup.
+
 #### REQ: remote-entries-replace-cached
 
 The accepted entries are merged into the local fleet document as that machine's entries
@@ -1601,8 +1616,10 @@ A machine entry carries `remote_error` when its last attempt failed, one of
 login), `timeout`, `wb_missing`, `wb_too_old` (the remote wb has no `cockpit export`),
 `daemon_not_running`, `export_refused` (the remote daemon refuses anonymous reads),
 `bad_payload`, `remote_warming_up` (the remote daemon's first pass has not ended and no fresh live
-view is held), `export_too_large` (this daemon left the machine's live entries out of a document
-that would be over its size bound; it is set while that holds and is not a failed attempt) or
+view is held), `export_too_large` (this daemon left the machine's entries, live or published, out of a document
+that would be over its size bound: the live entries first, each such machine then shown by its
+published entries, and the published entries too when the document is still over the bound, each
+published machine then shown by its machine entry alone; it is set while that holds and is not a failed attempt) or
 `self_export` (the export read is this machine's own); it is cleared by the next successful full
 export on the preferred transport, never by a metrics-only one. A remote export that prints
 `export_failed` (its own daemon answered badly or could not be read) is shown as `bad_payload`. The `http_*`

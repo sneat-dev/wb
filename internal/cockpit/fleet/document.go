@@ -202,9 +202,10 @@ const ReasonCachedRepository = "cached_repository"
 // live-remote entries, and RemoteError the code of the last failed read of
 // another machine (cockpit-views#req:remote-error-is-visible): one of
 // remoteErrorCodes, never the remote's own text. ExportDropped is the number of
-// that machine's entries its export left out, or this daemon cut at its caps,
-// and AgentsTruncated says its agents were cut. None of the four is ever set
-// on this machine's own entry.
+// that machine's entries its export left out, or this daemon cut at its caps
+// (of a live export and of a published snapshot alike), and AgentsTruncated
+// says its agents were cut. None of the four is ever set on this machine's own
+// entry.
 type Machine struct {
 	Entry
 	WBVersion       string    `json:"wb_version,omitempty"`

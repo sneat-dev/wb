@@ -552,7 +552,8 @@ func TestRemoteEntriesAreEnumOrOmittedAndForgeNamesSplit(t *testing.T) {
 	if repository := names["a.b/c"]; repository.Host != "" {
 		t.Errorf("two segments with a dot = %+v", repository)
 	}
-	if len(view.machines) != 3 || view.machines[0].WBVersion != "v1.2" {
+	// A version that is not one by the export decoder's rule is dropped, not repaired.
+	if len(view.machines) != 3 || view.machines[0].WBVersion != "" {
 		t.Fatalf("machines = %+v, want the hostile-named one kept (sanitised), the empty-named one skipped", view.machines)
 	}
 	for _, machine := range view.machines {
