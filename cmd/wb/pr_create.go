@@ -196,7 +196,7 @@ wb pr create --format json`,
 			if autoMerge && !land {
 				lane = landingLaneGuardRequest(inv, "wb pr create --auto-merge", "", false)
 			}
-			result, createErr := orchestrate.CreatePullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
+			result, createErr := createPullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
 				Worktree: worktreeArg, ProjectsRoot: inv.projectsRoot,
 				Title: title, Body: body, BodyFile: bodyFile, Draft: draft, Base: base,
 				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message, Closes: closesIssues,
@@ -378,3 +378,6 @@ func formatSuggestedIssues(issues []int) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// createPullRequest is the creation seam; see landPullRequest.
+var createPullRequest = orchestrate.CreatePullRequest

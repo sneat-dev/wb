@@ -1541,7 +1541,7 @@ unverified, never assumed published. Run it after every push.`,
 			if len(args) == 1 {
 				path = args[0]
 			}
-			if prePushStdin && pushOnlyDeletesRemoteRefs(command.InOrStdin()) {
+			if prePushStdin && pushOnlyDeletesRemoteRefs(command.InOrStdin(), console.IsTerminal) {
 				// Nothing is sent from this checkout, so nothing about it can
 				// make the push unsafe (sneat-dev/wb#824).
 				return nil
@@ -1629,8 +1629,8 @@ unverified, never assumed published. Run it after every push.`,
 // and every line of it deletes a remote ref. A terminal, an unreadable list and
 // a malformed list all answer false, so the guard then inspects the checkout as
 // it always did.
-func pushOnlyDeletesRemoteRefs(stdin io.Reader) bool {
-	if console.IsTerminal(stdin) {
+func pushOnlyDeletesRemoteRefs(stdin io.Reader, isTerminal func(any) bool) bool {
+	if isTerminal(stdin) {
 		return false
 	}
 	only, err := hooks.OnlyRemoteRefDeletions(stdin)

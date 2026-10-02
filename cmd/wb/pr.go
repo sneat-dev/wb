@@ -151,7 +151,9 @@ automatically with a printed note; a live session is never taken over
 implicitly, no matter how old its heartbeat looks.
 
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
-unverified), 2 a guard refused.`,
+unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
+retirement, cleanup) did not finish: the change is on the base branch, and the
+output names the exact command that finishes it.`,
 		Example: `# Land a green dependency bump, retiring its worktree
 wb pr land sneat-co/sneat-go#1041
 
@@ -196,7 +198,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			}
 			progress.live.update("pr land: local link preflight: " + repository + ": completed")
 			events, streamName := landingEventLog(inv, repository)
-			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
+			result, err := landPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:          repository,
 				PullRequest:         number,
 				ProjectsRoot:        inv.projectsRoot,
@@ -420,3 +422,7 @@ func landingEventLog(inv *invocation, repository string) (streams.EventAppender,
 const fleetEventLogName = ".fleet"
 
 var updatePullRequest = orchestrate.UpdatePullRequest
+
+// landPullRequest is the landing seam: tests drive the verb's exit-code and
+// output mapping with a canned result instead of a live GitHub landing.
+var landPullRequest = orchestrate.LandPullRequest

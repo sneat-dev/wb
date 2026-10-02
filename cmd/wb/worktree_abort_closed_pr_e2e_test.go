@@ -51,7 +51,15 @@ func TestE2EWorktreeAbortClosedPullRequestDiscardsADuplicateAndReportsTheAudit(t
 		t.Fatalf("open pull request: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 
+	// A closed stdout is reported, not swallowed, whichever line it fails on.
+	if code := run(args, &failAtCallWriter{failAt: 1}, &stderr); code == exitOK {
+		t.Fatal("a failed write of the refusal line was swallowed")
+	}
+
 	installClosedPullRequestGH(t, "closed", branch, head)
+	if code := run(args, &failAtCallWriter{failAt: 2}, &stderr); code == exitOK {
+		t.Fatal("a failed write of the closed pull request line was swallowed")
+	}
 	stdout.Reset()
 	stderr.Reset()
 	if code := run(args, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "closed pull request acme/app#6 head "+head) {
