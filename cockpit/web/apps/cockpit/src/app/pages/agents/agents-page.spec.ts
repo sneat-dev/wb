@@ -154,7 +154,7 @@ describe('AgentsPage', () => {
   it('opens the side panel of the selected agent, from a click on the row too', async () => {
     const { root, harness } = await openPage('/agents?sel=s-free', AgentsPage, agentsDocument())
     const panel = root.querySelector('app-side-panel') as HTMLElement
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Agent claude · opus')
+    expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Agent claude · opus')
     expect(text(panel.querySelector('.control'))).toContain('cannot be stopped or messaged from here')
     cell(root, 0, 'State').click()
     await harness.fixture.whenStable()

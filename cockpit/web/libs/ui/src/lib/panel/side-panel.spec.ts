@@ -33,7 +33,7 @@ describe('SidePanel', () => {
     const closed = vi.fn()
     fixture.componentInstance.closed.subscribe(closed)
     await fixture.whenStable()
-    const aside = fixture.nativeElement.querySelector('aside') as HTMLElement
+    const aside = fixture.nativeElement.querySelector('.side-panel') as HTMLElement
     expect(aside.getAttribute('role')).toBe('complementary')
     expect(aside.getAttribute('aria-label')).toBe('Worktree fix-ci')
     expect(aside.hasAttribute('aria-modal')).toBe(false)
@@ -47,15 +47,15 @@ describe('SidePanel', () => {
     const beside = TestBed.createComponent(SidePanel)
     beside.componentRef.setInput('label', 'x')
     await beside.whenStable()
-    expect(document.activeElement).not.toBe(beside.nativeElement.querySelector('aside'))
+    expect(document.activeElement).not.toBe(beside.nativeElement.querySelector('.side-panel'))
     beside.componentInstance.focus()
-    expect(document.activeElement).toBe(beside.nativeElement.querySelector('aside'))
+    expect(document.activeElement).toBe(beside.nativeElement.querySelector('.side-panel'))
     TestBed.resetTestingModule()
     phone(true)
     const sheet = TestBed.createComponent(SidePanel)
     sheet.componentRef.setInput('label', 'x')
     await sheet.whenStable()
-    expect(document.activeElement).toBe(sheet.nativeElement.querySelector('aside'))
+    expect(document.activeElement).toBe(sheet.nativeElement.querySelector('.side-panel'))
   })
 
   it('stops the page behind a sheet from scrolling, and restores it when closed', async () => {
@@ -81,7 +81,7 @@ describe('SidePanel', () => {
     const fixture = TestBed.createComponent(SidePanel)
     fixture.componentRef.setInput('label', 'x')
     await fixture.whenStable()
-    const aside = fixture.nativeElement.querySelector('aside') as HTMLElement
+    const aside = fixture.nativeElement.querySelector('.side-panel') as HTMLElement
     expect(listeners.size).toBe(1)
     listeners.forEach((listener) => listener({ matches: true }))
     await fixture.whenStable()
@@ -109,7 +109,7 @@ describe('SidePanel', () => {
     const standalone = TestBed.createComponent(SidePanel)
     standalone.componentRef.setInput('label', 'Details')
     await standalone.whenStable()
-    const sheet = standalone.nativeElement.querySelector('aside') as HTMLElement
+    const sheet = standalone.nativeElement.querySelector('.side-panel') as HTMLElement
     expect(sheet.getAttribute('role')).toBe('dialog')
     expect(sheet.getAttribute('aria-modal')).toBe('true')
 
@@ -118,7 +118,7 @@ describe('SidePanel', () => {
     const fixture = TestBed.createComponent(Host)
     await fixture.whenStable()
     document.body.append(fixture.nativeElement)
-    const aside = fixture.nativeElement.querySelector('aside') as HTMLElement
+    const aside = fixture.nativeElement.querySelector('.side-panel') as HTMLElement
     const close = aside.querySelector('button.close') as HTMLElement
     const lastOne = aside.querySelector('#inner-b') as HTMLElement
     lastOne.focus()

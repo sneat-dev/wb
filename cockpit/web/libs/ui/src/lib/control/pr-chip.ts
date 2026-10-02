@@ -3,6 +3,9 @@ import { PullRequest, webAddress } from '@cockpit/fleet-data'
 import { RelativeTime } from './relative-time'
 import { StateBadge } from './state-badge'
 
+/** Why the checks passed over total are not a link (REQ:every-number-is-a-link): a fact of one pull request, whose link is its number; the title of their badge. */
+export const CHECKS_NOT_A_LINK = 'Checks passed over total. Not a link: it is a fact of this pull request, whose link is its number'
+
 /**
  * A pull request on one line (REQ:field-tables): its number, its state, how many
  * checks passed, the name of the first failed check (truncated, the full name in
@@ -20,7 +23,7 @@ import { StateBadge } from './state-badge'
       <span class="number">#{{ pullRequest().number }}</span>
     }
     <app-state-badge kind="pr-state" size="small" [value]="pullRequest().state" />
-    <app-state-badge kind="checks" size="small" [value]="checks().value" [label]="checks().label" />
+    <app-state-badge kind="checks" size="small" [value]="checks().value" [label]="checks().label" [hint]="checksHint" />
     @if (failedCheck(); as name) {
       <span class="failed" [attr.title]="name">{{ name }}</span>
     }
@@ -68,6 +71,7 @@ export class PrChip {
 
   protected readonly address = computed(() => webAddress(this.pullRequest().url))
   protected readonly failedCheck = computed(() => (failedOf(this.pullRequest()) ? this.pullRequest().failed_check : undefined))
+  protected readonly checksHint = CHECKS_NOT_A_LINK
   protected readonly checks = computed(() => checksOf(this.pullRequest()))
 }
 

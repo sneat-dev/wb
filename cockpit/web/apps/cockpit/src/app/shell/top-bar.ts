@@ -1,7 +1,7 @@
 import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, inject, viewChild } from '@angular/core'
 import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router'
-import { BADGE_CAP, FleetStore, badgeLabel } from '@cockpit/fleet-data'
+import { AppLink, BADGE_CAP, FleetStore, badgeLabel, chipLink } from '@cockpit/fleet-data'
 import { filter } from 'rxjs'
 import { NEW_TASK_PATH, PAGE_LINKS, PageLink, TabSignal } from '../nav'
 import { modifierLabel } from '../shortcuts/platform'
@@ -13,6 +13,12 @@ import { ShellState } from './shell-state'
 const BADGE_HINT: Record<TabSignal, string> = {
   'needs-you': 'tasks need you',
   running: 'agents running',
+}
+
+/** Where a badge's number opens: the list that produced it (REQ:every-number-is-a-link). */
+const BADGE_LINK: Record<TabSignal, AppLink> = {
+  'needs-you': chipLink('tasks', 'needs-you'),
+  running: chipLink('agents', 'running'),
 }
 
 /** Scrolls the tab strip the least that shows `tab`, both measured from the strip's own left edge. */
@@ -51,11 +57,11 @@ export class TopBar {
     return { 'needs-you': model.homeBadge, running: model.runningAgentCount }
   })
 
-  protected badge(link: PageLink): { count: number; label: string; hint: string; hot: boolean } | undefined {
+  protected badge(link: PageLink): { count: number; label: string; hint: string; hot: boolean; link: AppLink } | undefined {
     const counts = this.counts()
     if (link.signal === undefined || counts === undefined) return undefined
     const count = counts[link.signal]
-    return { count, label: badgeLabel(count), hint: BADGE_HINT[link.signal], hot: count > 0 }
+    return { count, label: badgeLabel(count), hint: BADGE_HINT[link.signal], hot: count > 0, link: BADGE_LINK[link.signal] }
   }
 
   private timer: ReturnType<typeof setTimeout> | undefined

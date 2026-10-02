@@ -20,9 +20,6 @@ importers:
       '@angular/core':
         specifier: 22.1.8
         version: 22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3)
-      '@angular/forms':
-        specifier: 22.1.8
-        version: 22.1.8(@angular/common@22.1.8(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3))(rxjs@7.8.2))(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3))(@angular/platform-browser@22.1.8(@angular/animations@22.1.8(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3)))(@angular/common@22.1.8(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3))(rxjs@7.8.2))(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3)))(rxjs@7.8.2)
       '@angular/platform-browser':
         specifier: 22.1.8
         version: 22.1.8(@angular/animations@22.1.8(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3)))(@angular/common@22.1.8(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3))(rxjs@7.8.2))(@angular/core@22.1.8(@angular/compiler@22.1.8)(rxjs@7.8.2)(zone.js@0.16.3))
@@ -63,6 +60,9 @@ importers:
       '@angular/compiler-cli':
         specifier: 22.1.8
         version: 22.1.8(@angular/compiler@22.1.8)(typescript@6.0.3)
+      '@axe-core/playwright':
+        specifier: 4.13.0
+        version: 4.13.0(playwright-core@1.63.0)
       '@nx/angular':
         specifier: 23.2.1
         version: 23.2.1(30bc4a624168e7a7579e57bb290a4d09)
@@ -343,6 +343,11 @@ packages:
 
   '@asamuzakjp/nwsapi@2.3.9':
     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
+
+  '@axe-core/playwright@4.13.0':
+    resolution: {integrity: sha512-6YLx+kxXu5GJceG4ozFg+33a2EMTdjYwWGloJ3sb9Kta5pp+ZNS53uxGVog5JetIY8s++P5UrtX+cri+u0VAVg==}
+    peerDependencies:
+      playwright-core: '>= 1.0.0'
 
   '@babel/code-frame@7.29.7':
     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
@@ -2586,6 +2591,10 @@ packages:
   asynckit@0.4.0:
     resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
 
+  axe-core@4.13.0:
+    resolution: {integrity: sha512-UzGt8zg7Ny8djbYMhxl2zuEevVa7r2gJjYY5Lwr1xM7+XU2nd6CkIWFTVcCIbAP63vSz71NaVyyuSk9lHKcy0A==}
+    engines: {node: '>=4'}
+
   axios@1.18.1:
     resolution: {integrity: sha512-3nTvFlvpn9Zu/RkHUqtc7/+al4UpRW5az71ap5zccp6e8RAYEzhMTecX8Dz1wWDYrPpUoB1HAQEGEAEvUr7S9g==}
 
@@ -4745,6 +4754,11 @@ snapshots:
 
   '@asamuzakjp/nwsapi@2.3.9': {}
 
+  '@axe-core/playwright@4.13.0(playwright-core@1.63.0)':
+    dependencies:
+      axe-core: 4.13.0
+      playwright-core: 1.63.0
+
   '@babel/code-frame@7.29.7':
     dependencies:
       '@babel/helper-validator-identifier': 7.29.7
@@ -6885,6 +6899,8 @@ snapshots:
   async@3.2.6: {}
 
   asynckit@0.4.0: {}
+
+  axe-core@4.13.0: {}
 
   axios@1.18.1(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0):
     dependencies:

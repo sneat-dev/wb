@@ -67,7 +67,7 @@ describe('TasksPage', () => {
   it('opens the side panel with the worktrees, pull requests and agents of the selected task', async () => {
     const { root } = await openPage('/tasks?chips=multirepo,agent&sel=fix-ci', TasksPage, tasksDocument())
     const panel = root.querySelector('app-side-panel') as HTMLElement
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Task fix-ci')
+    expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Task fix-ci')
     expect(text(panel.querySelector('h2'))).toBe('fix-ci')
     expect(panel.querySelectorAll('[aria-label="Worktrees"] li')).toHaveLength(3)
     expect(panel.querySelectorAll('[aria-label="Pull requests"] li')).toHaveLength(1)

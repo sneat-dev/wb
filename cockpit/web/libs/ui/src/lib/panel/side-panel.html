@@ -1,6 +1,7 @@
-<aside
+<!-- A div with the role, not an <aside>: the sheet is a dialog, which an aside may not be. -->
+<div
   #panel
-  class="panel"
+  class="panel side-panel"
   tabindex="-1"
   [attr.role]="sheet() ? 'dialog' : 'complementary'"
   [attr.aria-modal]="sheet() ? 'true' : null"
@@ -9,4 +10,4 @@
 >
   <button type="button" class="close" aria-label="Close panel" title="Close (Esc)" (click)="closed.emit()"><app-glyph [paths]="cross" /></button>
   <div class="scroll"><ng-content /></div>
-</aside>
+</div>

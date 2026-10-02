@@ -123,6 +123,8 @@ dd {
   display: inline-flex;
   gap: var(--space-1);
   align-items: center;
+  /* A link is a target at least 24 px high (WCAG 2.5.8), as the facts beside it are 28. */
+  min-height: 1.75rem;
 }
 
 pre {

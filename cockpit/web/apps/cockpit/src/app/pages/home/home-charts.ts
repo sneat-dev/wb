@@ -3,6 +3,9 @@ import { ThroughputSeries } from '@cockpit/fleet-data'
 import { ChartView, HorizontalBarsSpec, StackedBarsSpec } from '@cockpit/ui/chart'
 import { spanText } from './home-time'
 
+/** Why no number of the charts is a link (REQ:every-number-is-a-link), as the title of each. */
+export const NOT_A_LINK = 'Not a link: these numbers come from sealed records that have no entries in the fleet document, so no list can reproduce them'
+
 /** "median 15 min · p90 15 h", with whichever of the two the daemon reported; undefined when neither. */
 export function durationCaption(series: Pick<ThroughputSeries, 'medianSeconds' | 'p90Seconds'>): string | undefined {
   const parts = [
@@ -58,7 +61,7 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
   selector: 'app-home-charts',
   imports: [ChartView],
   template: `<div class="charts-grid">
-    <div class="home-card chart-card">
+    <div class="home-card chart-card" [attr.title]="notALink">
       <app-chart [spec]="specs().perDay" [height]="9" />
       <p class="chart-legend">
         @for (entry of specs().perDay.series; track entry.name) {
@@ -66,7 +69,7 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
         }
       </p>
     </div>
-    <div class="home-card chart-card">
+    <div class="home-card chart-card" [attr.title]="notALink">
       <app-chart [spec]="specs().slowest" [height]="9" />
       @if (caption(); as text) {
         <p class="chart-legend">{{ text }}</p>
@@ -80,6 +83,8 @@ export function throughputSpecs(series: ThroughputSeries): { slowest: Horizontal
 })
 export class HomeCharts {
   readonly series = input.required<ThroughputSeries>()
+
+  protected readonly notALink = NOT_A_LINK
 
   protected readonly specs = computed(() => throughputSpecs(this.series()))
   protected readonly caption = computed(() => durationCaption(this.series()))

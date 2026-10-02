@@ -1,13 +1,13 @@
 @if (shell.sheetOpen()) {
   <button type="button" class="overlay-backdrop" tabindex="-1" aria-hidden="true" (click)="shell.closeSheet()"></button>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="shortcut-sheet-title" appOverlayFocus>
-    <header class="sheet-head">
+    <div class="sheet-head">
       <h2 id="shortcut-sheet-title">Keyboard shortcuts</h2>
       <button type="button" class="icon-button" aria-label="Close" data-autofocus (click)="shell.closeSheet()">
         <app-icon name="x" />
       </button>
-    </header>
-    <div class="sheet-body">
+    </div>
+    <div class="sheet-body" role="region" aria-label="Shortcuts" tabindex="0">
       @for (group of groups(); track group.title) {
         <section class="group">
           <h3>{{ group.title }}</h3>

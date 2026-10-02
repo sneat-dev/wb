@@ -156,7 +156,7 @@ describe('MachinesPage', () => {
   it('opens the side panel of the selected machine', async () => {
     const { root } = await open('/machines?sel=mach-vm')
     const panel = root.querySelector('app-side-panel') as HTMLElement
-    expect(panel.querySelector('aside')?.getAttribute('aria-label')).toBe('Machine vm')
+    expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Machine vm')
     expect(text(panel.querySelector('h2'))).toBe('vm')
   })
 

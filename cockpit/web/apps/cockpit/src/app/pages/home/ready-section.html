@@ -25,7 +25,7 @@
               {{ counted(row.repositories.length, 'repository', 'repositories') }}
               ·
               @if (row.checksPassed !== undefined && row.checksTotal !== undefined) {
-                {{ row.checksPassed }}/{{ row.checksTotal }} checks
+                <span title="Checks passed over total. Not a link: it is a fact of one pull request, whose link is its number">{{ row.checksPassed }}/{{ row.checksTotal }} checks</span>
               } @else {
                 checks not reported
               }

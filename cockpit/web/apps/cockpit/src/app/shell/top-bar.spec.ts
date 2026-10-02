@@ -46,20 +46,27 @@ describe('TopBar', () => {
     const fixture = TestBed.createComponent(TopBar)
     await fixture.whenStable()
     const root: HTMLElement = fixture.nativeElement
-    return { fixture, root, store, tab: (name: string) => [...root.querySelectorAll('.tab')].find((tab) => tab.querySelector('span')?.textContent === name) as HTMLElement }
+    // The slot of a tab: its link and, when there is a number, the badge, which is a link of its own beside it.
+    const slot = (name: string) => [...root.querySelectorAll<HTMLElement>('.tab-slot')].find((candidate) => candidate.querySelector('.tab span')?.textContent === name) as HTMLElement
+    return { fixture, root, store, tab: (name: string) => slot(name) }
   }
 
   // cockpit-views#ac:top-bar-shows-tabs-badges-and-freshness
   it('shows the tabs with signal badges only, the search entry, New task, the freshness chip and the session chip', async () => {
     const { root, tab } = await render()
     expect([...root.querySelectorAll('.tab')].map((link) => link.querySelector('span')?.textContent)).toEqual(['Home', 'Tasks', 'Repositories', 'Worktrees', 'Agents', 'Machines'])
-    expect(text(tab('Home').querySelector('.badge'))).toBe('3')
-    expect(tab('Home').querySelector('.badge')?.classList.contains('hot')).toBe(true)
-    expect(text(tab('Agents').querySelector('.badge'))).toBe('1')
-    expect(tab('Agents').querySelector('.badge')?.classList.contains('hot')).toBe(true)
-    expect(root.querySelectorAll('.badge')).toHaveLength(2)
-    expect(text(tab('Home').querySelector('.visually-hidden'))).toBe('tasks need you')
-    expect(text(tab('Agents').querySelector('.visually-hidden'))).toBe('agents running')
+    expect(text(tab('Home').querySelector('a.badge'))).toBe('3')
+    expect(tab('Home').querySelector('a.badge')?.classList.contains('hot')).toBe(true)
+    expect(text(tab('Agents').querySelector('a.badge'))).toBe('1')
+    expect(tab('Agents').querySelector('a.badge')?.classList.contains('hot')).toBe(true)
+    expect(root.querySelectorAll('a.badge')).toHaveLength(2)
+    expect(tab('Home').querySelector('a.badge')?.getAttribute('aria-label')).toBe('3 tasks need you: open them')
+    expect(tab('Agents').querySelector('a.badge')?.getAttribute('aria-label')).toBe('1 agents running: open them')
+    // cockpit-views#ac:every-number-is-a-link: each badge is a link to the list that produced its number, a tab's own link is the page.
+    expect(tab('Home').querySelector('a.badge')?.getAttribute('href')).toBe('/tasks?chips=needs-you')
+    expect(tab('Agents').querySelector('a.badge')?.getAttribute('href')).toBe('/agents?chips=running')
+    expect(tab('Agents').querySelector('a.tab')?.getAttribute('href')).toBe('/agents')
+    expect(tab('Agents').querySelector('a.tab a')).toBeNull()
     expect(root.querySelector('.palette-trigger')?.getAttribute('aria-label')).toBe('Search')
     expect(text(root.querySelector('.new-task'))).toBe('New task')
     expect(root.querySelector('.new-task')?.getAttribute('href')).toBe('/tasks/new')
@@ -78,22 +85,24 @@ describe('TopBar', () => {
       store.document.set(fleetDocument({ worktrees, pull_requests: worktrees.map((tree, index) => pullRequest(`p${index}`, 'r1', tree.id, { number: index + 1, checks_green: false, checks_failed: 1 })) }))
     }
     const at99 = await render(many(99))
-    expect(text(at99.tab('Home').querySelector('.badge'))).toBe('99')
-    expect(at99.tab('Home').querySelector('.badge')?.getAttribute('title')).toBeNull()
+    expect(text(at99.tab('Home').querySelector('a.badge'))).toBe('99')
+    expect(at99.tab('Home').querySelector('a.badge')?.getAttribute('title')).toBeNull()
     const at294 = await render(many(294))
-    expect(text(at294.tab('Home').querySelector('.badge'))).toBe('99+')
-    expect(at294.tab('Home').querySelector('.badge')?.getAttribute('title')).toBe('294')
-    expect(at294.tab('Home').querySelector('.badge')?.classList.contains('hot')).toBe(true)
+    expect(text(at294.tab('Home').querySelector('a.badge'))).toBe('99+')
+    expect(at294.tab('Home').querySelector('a.badge')?.getAttribute('title')).toBe('294')
+    expect(at294.tab('Home').querySelector('a.badge')?.classList.contains('hot')).toBe(true)
+    // The room the tab holds is as wide as the badge: it says the same, hidden from everyone.
+    expect(text(at294.tab('Home').querySelector('.badge-pending'))).toBe('99+')
   })
 
   it('shows a muted zero when there is no signal, and no badge without data', async () => {
     const { root, tab, fixture, store } = await render((store) => store.document.set(fleetDocument({ agents: [], worktrees: [] })))
-    expect(text(tab('Home').querySelector('.badge'))).toBe('0')
-    expect(tab('Home').querySelector('.badge')?.classList.contains('hot')).toBe(false)
+    expect(text(tab('Home').querySelector('a.badge'))).toBe('0')
+    expect(tab('Home').querySelector('a.badge')?.classList.contains('hot')).toBe(false)
     store.loaded.set(false)
     await fixture.whenStable()
     // The two places are held, hidden from everyone, so that the tabs do not move when the numbers arrive.
-    const pending = () => [...root.querySelectorAll('.badge')].filter((badge) => !badge.classList.contains('badge-pending'))
+    const pending = () => [...root.querySelectorAll('a.badge')]
     expect(pending()).toHaveLength(0)
     expect(root.querySelectorAll('.badge-pending[aria-hidden="true"]')).toHaveLength(2)
     store.loaded.set(true)
