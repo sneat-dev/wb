@@ -2,6 +2,7 @@ package hub
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -346,7 +347,10 @@ func (h apiHandler) authorizeInstallationOpener(w http.ResponseWriter, r *http.R
 
 func writeInstallationOpenerPage(w http.ResponseWriter, state, challenge string, inert bool) {
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+	// The page's one script runs by a nonce minted for this response, so
+	// nothing else inline can run on it.
+	nonce := rand.Text()
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -356,7 +360,7 @@ func writeInstallationOpenerPage(w http.ResponseWriter, state, challenge string,
 		_, _ = io.WriteString(w, "<!doctype html><title>GitHub connection unavailable</title><p>Return to Sneat Work and start the GitHub connection again.</p>")
 		return
 	}
-	_, _ = io.WriteString(w, `<!doctype html><title>Connecting GitHub</title><p>Continue in the Sneat Work window.</p><script>(()=>{const state=`+string(stateJSON)+`;const challenge=`+string(challengeJSON)+`;const opener=window.opener;if(!opener)return;opener.postMessage({type:"workbench-github-installation-challenge",state,challenge},"`+installationOpenerOrigin+`");window.addEventListener("message",event=>{if(event.origin!=="`+installationOpenerOrigin+`"||event.source!==opener)return;const data=event.data;if(!data||data.type!=="workbench-github-installation-authorized"||data.challenge!==challenge)return;window.location.reload();});})();</script>`)
+	_, _ = io.WriteString(w, `<!doctype html><title>Connecting GitHub</title><p>Continue in the Sneat Work window.</p><script nonce="`+nonce+`">(()=>{const state=`+string(stateJSON)+`;const challenge=`+string(challengeJSON)+`;const opener=window.opener;if(!opener)return;opener.postMessage({type:"workbench-github-installation-challenge",state,challenge},"`+installationOpenerOrigin+`");window.addEventListener("message",event=>{if(event.origin!=="`+installationOpenerOrigin+`"||event.source!==opener)return;const data=event.data;if(!data||data.type!=="workbench-github-installation-authorized"||data.challenge!==challenge)return;window.location.reload();});})();</script>`)
 }
 
 func (h apiHandler) completeSetup(w http.ResponseWriter, r *http.Request) {
@@ -666,6 +670,11 @@ func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
 	var record StoredRepositoryCoverage
 	if err := decodeRequest(w, r, maxJSONBodyBytes, &record); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_coverage_payload")
+		return
+	}
+	// As for a metric: a closed code, and nothing of the record.
+	if validateCoverageRecord(record) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_coverage_record")
 		return
 	}
 	if err := h.options.Coverage.SaveCoverage(r.Context(), record); err != nil {

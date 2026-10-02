@@ -255,7 +255,7 @@ func TestTailCovOverviewFailsOnCorruptRunTelemetry(t *testing.T) {
 		t.Fatalf("with no log = %d %s", quiet.Code, quiet.Body.String())
 	}
 	// The page shows its own fixed text, never one the server sent.
-	if strings.Contains(indexHTML, "r.json()).message") || !strings.Contains(indexHTML, "the overview is unavailable") {
+	if strings.Contains(indexScript, "r.json()).message") || !strings.Contains(indexScript, "the overview is unavailable") {
 		t.Error("the index page still renders a message from the response")
 	}
 }

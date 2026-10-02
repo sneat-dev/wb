@@ -179,6 +179,8 @@ func NewHandler(options Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.index)
 	mux.HandleFunc("GET /metrics", server.metrics)
+	mux.HandleFunc("GET "+AssetsPrefix+"index.js", script(indexScript))
+	mux.HandleFunc("GET "+AssetsPrefix+"metrics.js", script(metricsScript))
 	mux.HandleFunc("GET /coverage", server.coverageRedirect)
 	mux.HandleFunc("GET /api/v1/health", loopbackOnly(server.health))
 	mux.HandleFunc("GET /api/v1/overview", loopbackOnly(server.overview))
@@ -237,6 +239,20 @@ func (server *service) index(writer http.ResponseWriter, _ *http.Request) {
 func (server *service) metrics(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = writer.Write([]byte(metricsHTML))
+}
+
+// AssetsPrefix is where the dashboard's own script files are served. Each page
+// names its script by this path; there is no other script on a dashboard page.
+const AssetsPrefix = "/dashboard-assets/"
+
+// script serves one of the dashboard's script files. It is revalidated on
+// every load, so a page never runs the script of an older wb.
+func script(source string) http.HandlerFunc {
+	return func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		writer.Header().Set("Cache-Control", "no-cache")
+		_, _ = writer.Write([]byte(source))
+	}
 }
 
 func (server *service) coverageRedirect(writer http.ResponseWriter, request *http.Request) {
@@ -521,12 +537,24 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
+// Policy is the Content-Security-Policy of every response of the dashboard
+// listener that does not set its own.
+const Policy = "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'"
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		// frame-ancestors 'self' / SAMEORIGIN: the dashboard may frame its own
 		// pages (e.g. a wrapper page embedding /workbench/dashboard/ and
 		// /api/v1/log side by side), but no other origin may frame it.
-		writer.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'")
+		//
+		// script-src 'self' with no 'unsafe-inline': a script runs only when it
+		// is a file of this origin. The pages on this origin share one storage
+		// with Cockpit, which holds the owner's session key
+		// (cockpit#req:session-key), so markup injected into any of them must
+		// not be able to run: an inline script, an inline event handler and a
+		// javascript: address are all refused. A mount that needs another
+		// policy sets its own after this one.
+		writer.Header().Set("Content-Security-Policy", Policy)
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "SAMEORIGIN")
