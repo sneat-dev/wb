@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
@@ -153,7 +155,7 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 					}
 					return nil
 				},
-				SealCleanup: func(string, string, string) error {
+				SealCleanup: func(string, string, string, *worktreeclaims.LandedEvidence) error {
 					if tc.fault == "seal cleanup" {
 						return denied
 					}
