@@ -107,7 +107,11 @@ func TestE2EGroupRunnerReturnsAlthoughAHelperOutsideTheGroupHoldsThePipe(t *test
 	err := GroupRunner{}.Run(ctx, "/bin/sh", []string{"-c", "set -m; sleep 30 & echo $!; wait"}, nil, stdout, NewTailBuffer(64))
 	elapsed := time.Since(started)
 	helper := helperOf(t, stdout)
-	survived := syscall.Kill(helper, 0) == nil
+	// A killed helper that nobody has reaped yet still answers signal 0, so
+	// "alive" alone is not proof it left the group: it must also lead a
+	// process group of its own, which is what job control gives it.
+	group, groupErr := syscall.Getpgid(helper)
+	survived := groupErr == nil && group == helper && syscall.Kill(helper, 0) == nil
 	_ = syscall.Kill(helper, syscall.SIGKILL)
 	if err == nil || elapsed > 20*time.Second {
 		t.Fatalf("Run = %v after %s, want a failure within the wait delay", err, elapsed)

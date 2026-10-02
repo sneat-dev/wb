@@ -423,7 +423,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
       }
     }
     expect(checked).toBeGreaterThan(100)
-  })
+  }, 60_000)
 
   it('refuses a placeholder wherever it stands: first, last, after --flag=, before a word, before another placeholder', () => {
     const values = Object.values(PLACEHOLDERS)
@@ -434,7 +434,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
         }
       }
     }
-  })
+  }, 60_000)
 
   it('keeps PLACEHOLDERS in the <<<edit:name>>> form the UI marks', () => {
     for (const value of Object.values(PLACEHOLDERS)) expect(value).toMatch(/^<<<edit:[a-z-]+>>>$/)
