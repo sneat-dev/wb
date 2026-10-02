@@ -136,9 +136,16 @@ function bars(spec: BarsSpec | HorizontalBarsSpec, context: ChartContext, horizo
   }
 }
 
+/** The end of a fitted axis: the tallest stack, rounded up to an even number (and at least 2), so it has a middle tick that is a whole number. */
+function fittedTop(spec: StackedBarsSpec): number {
+  const tallest = Math.max(0, ...spec.bars.map((bar) => spec.series.reduce((total, _series, index) => total + (bar.values[index] ?? 0), 0)))
+  return Math.max(2, Math.ceil(tallest / 2) * 2)
+}
+
 function stacked(spec: StackedBarsSpec, context: ChartContext): ChartConfiguration {
   const { theme } = context
   const options = common(context)
+  const top = spec.fitAxis ? fittedTop(spec) : undefined
   return {
     type: 'bar',
     data: {
@@ -158,7 +165,14 @@ function stacked(spec: StackedBarsSpec, context: ChartContext): ChartConfigurati
       plugins: { ...options.plugins, tooltip: { ...options.plugins?.tooltip, displayColors: true } },
       scales: {
         x: { stacked: true, grid: { display: false }, border: { color: theme.grid }, ticks: { ...tick(theme), autoSkip: true, maxTicksLimit: 8, maxRotation: 0 } },
-        y: { stacked: true, beginAtZero: true, grid: { color: theme.grid }, border: { display: false }, ticks: { ...tick(theme), precision: 0, maxTicksLimit: 5 } },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ...(top === undefined ? {} : { max: top }),
+          grid: { color: theme.grid },
+          border: { display: false },
+          ticks: { ...tick(theme), precision: 0, maxTicksLimit: 5, ...(top === undefined ? {} : { stepSize: top / 2 }) },
+        },
       },
     },
   }
