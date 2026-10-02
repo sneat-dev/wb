@@ -170,20 +170,35 @@ export function remoteErrorText(code: string): string {
       return 'its daemon refuses anonymous reads'
     case 'bad_payload':
       return 'its export was refused as invalid'
+    case 'self_export':
+      return 'the address configured for it leads back to this machine, so its export was refused'
   }
   return 'unknown error'
 }
 
+/** The codes that have no command to copy, each with why (REQ:remote-error-is-visible). */
+const NOTHING_TO_RUN: Readonly<Record<string, string>> = {
+  remote_warming_up: 'nothing to run: it clears when the machine finishes its first scan',
+  export_too_large: 'nothing to run: this daemon left its live entries out to stay under its size bound',
+  self_export: 'nothing to run: fix the address configured for this machine, which leads back here',
+}
+
+/** The codes whose fix is the export to try, through ssh when the machine has an SSH route. */
+const TRY_EXPORT = new Set<string>(['http_unavailable', 'ssh_unavailable', 'auth_failed', 'timeout', 'wb_missing', 'export_refused', 'bad_payload'])
+
 /**
  * The command that fixes (or lets the operator investigate) a `remote_error`:
  * enrolling for a refused HTTP read, starting the daemon, updating wb, and for
- * the others the export to try, through ssh when the machine has an SSH route.
+ * the other known codes the export to try, through ssh when the machine has an
+ * SSH route. A code with nothing to run (`remote_warming_up`, `export_too_large`,
+ * `self_export`) and a code this library does not know give no command, with
+ * the reason.
  */
 export function remoteFix(code: string, ssh: SshRoute | undefined): CopyCommand {
   if (code === 'http_auth_failed') return remoteEnroll()
-  if (code === 'remote_warming_up') return { ok: false, reason: 'nothing to run: it clears when the machine finishes its first scan' }
   const target: CommandTarget = ssh === undefined ? {} : { ssh }
   if (code === 'daemon_not_running') return daemonStart(target)
   if (code === 'wb_too_old') return selfUpdate(target)
-  return cockpitExport(target)
+  if (TRY_EXPORT.has(code)) return cockpitExport(target)
+  return { ok: false, reason: NOTHING_TO_RUN[code] ?? 'unknown error: there is no command to suggest' }
 }

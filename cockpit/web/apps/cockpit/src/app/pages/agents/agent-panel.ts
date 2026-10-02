@@ -1,10 +1,10 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { Agent, FleetModel, FleetStore, PanelCommand, RegistryAction, machineDetailLink, repositoryDetailLink, routeLabel, selectionLink } from '@cockpit/fleet-data'
+import { Agent, FleetModel, FleetStore, PanelCommand, RegistryAction, linkTarget, machineDetailLink, repositoryDetailLink, routeLabel, selectionLink } from '@cockpit/fleet-data'
 import { AgentPanel, buildAgentPanel } from '@cockpit/fleet-data/panel'
 import { ActionSlot, PrChip, StateBadge, UiClock } from '@cockpit/ui/control'
-import { CopyIcon, MachineCell, OwnerStateCell } from '@cockpit/ui/list'
-import { PanelContent } from '@cockpit/ui/panel'
+import { MachineCell, OwnerStateCell } from '@cockpit/ui/list'
+import { PanelContent, PanelFact, PanelState } from '@cockpit/ui/panel'
 import { agentHeadline, agentName } from './agent-text'
 
 /** The agent of an id, with its panel data and the model they were read from. */
@@ -19,13 +19,10 @@ interface Loaded {
  * (REQ:detail-routes-share-the-panel). The header says, in words, what is known (how long it has run, whether it is
  * blocked on you, when it finished); then who it is, the work it is on (task, repository, worktrees, the pull
  * requests of those), the library's Copy commands where a real command exists, and the collapsed Raw data.
- *
- * TODO(ui PanelContent): it has no slot above its facts, so the header and the sections are projected whole and the
- * facts are drawn here; a `[panelHeader]` slot would let `facts` and `related` be used.
  */
 @Component({
   selector: 'app-agent-panel',
-  imports: [RouterLink, PanelContent, StateBadge, PrChip, ActionSlot, CopyIcon, MachineCell, OwnerStateCell],
+  imports: [RouterLink, PanelContent, PanelState, StateBadge, PrChip, ActionSlot, MachineCell, OwnerStateCell],
   templateUrl: './agent-panel.html',
   styleUrl: './agent-panel.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -38,6 +35,7 @@ export class AgentPanelView {
   readonly registry = input<ReadonlyMap<string, readonly RegistryAction[]>>()
 
   protected readonly store = inject(FleetStore)
+  protected readonly target = linkTarget
   private readonly clock = inject(UiClock).now
 
   /** The agent and its panel data; none for an id the document does not list. */
@@ -57,7 +55,19 @@ export class AgentPanelView {
   })
   protected readonly remote = computed(() => (this.data() as Loaded).agent.route !== 'local')
   protected readonly source = computed(() => routeLabel((this.data() as Loaded).agent, this.clock()))
-  protected readonly machineLink = computed(() => machineDetailLink((this.data() as Loaded).agent.machine_id))
+  /** Who the agent is: the facts above the work (REQ:side-panel). */
+  protected readonly facts = computed<PanelFact[]>(() => {
+    const { agent } = this.data() as Loaded
+    const facts: PanelFact[] = [
+      { label: 'Kind', text: agent.kind },
+      { label: 'Runtime', text: agent.runtime ?? 'not reported' },
+      { label: 'Model', text: agent.model ?? 'not reported' },
+      { label: 'Machine', text: agent.machine, link: machineDetailLink(agent.machine_id) },
+    ]
+    if (this.remote()) facts.push({ label: 'Source', text: this.source(), muted: true })
+    facts.push({ label: agent.kind === 'run' ? 'Run id' : 'Session id', text: this.identifier(), copy: true })
+    return facts
+  })
   protected readonly manyMachines = computed(() => this.store.document().machines.length > 1)
 
   /** The tasks of the agent: one task is a link; several mean no single task, and the worktrees are listed with theirs. */
@@ -68,7 +78,7 @@ export class AgentPanelView {
     if (agent.repository === undefined) return undefined
     const slug = model.repositoryName(agent.repository)
     const host = model.document.repositories.find((repository) => repository.id === agent.repository)?.host
-    return { slug, link: repositoryDetailLink(host, slug) }
+    return { slug, link: repositoryDetailLink(host, slug, agent.repository) }
   })
 
   protected readonly worktrees = computed(() => {

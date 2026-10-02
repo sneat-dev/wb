@@ -1,14 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { FleetModel, FleetStore, PanelCommand, RegistryAction, TaskPanel, TaskView, agentDetailLink, agentTitle, isOpenPullRequest, repositoryDetailLink, worktreeDetailLink } from '@cockpit/fleet-data'
-import { PullRequestPanel, buildPullRequestPanel, buildTaskPanel } from '@cockpit/fleet-data/panel'
+import { FleetModel, FleetStore, PanelCommand, RegistryAction, TaskPanel, TaskView, agentDetailLink, agentTitle, linkTarget, repositoryDetailLink, worktreeDetailLink } from '@cockpit/fleet-data'
+import { buildTaskPanel } from '@cockpit/fleet-data/panel'
+import { seenElsewhereOnly, taskReason } from '@cockpit/fleet-data/task-reason'
 import { ActionSlot, PrChip, StateBadge } from '@cockpit/ui/control'
-import { AgeText, MachineCell, OwnerStateCell } from '@cockpit/ui/list'
-import { PanelContent } from '@cockpit/ui/panel'
-import { seenElsewhereOnly, taskReason } from './task-reason'
-
-/** `wb pr create` (commits and pushes) and `wb pr land`, also behind an ssh prefix. */
-const LAND_OR_PUSH = /(^|\s)pr (create|land)(\s|$)/
+import { MachineCell, OwnerStateCell, AgeText } from '@cockpit/ui/list'
+import { PanelContent, PanelFact, PanelState } from '@cockpit/ui/panel'
 
 /** The task of a name, with its panel data and the model they were read from. */
 interface Loaded {
@@ -22,13 +19,10 @@ interface Loaded {
  * this component (REQ:detail-routes-share-the-panel). The header says the state and, in words, why; then the
  * pull requests (each with its action slot), the worktrees, the agents, the library's Copy commands and the
  * collapsed Raw data.
- *
- * TODO(ui PanelContent): it has no slot above its facts, so the state header and the sections below it are
- * projected whole and the facts are drawn here; a `[panelHeader]` slot would let `facts` and `related` be used.
  */
 @Component({
   selector: 'app-task-panel',
-  imports: [RouterLink, PanelContent, StateBadge, PrChip, ActionSlot, AgeText, MachineCell, OwnerStateCell],
+  imports: [RouterLink, PanelContent, PanelState, StateBadge, PrChip, ActionSlot, AgeText, MachineCell, OwnerStateCell],
   templateUrl: './task-panel.html',
   styleUrl: './task-panel.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -39,6 +33,7 @@ export class TaskPanelView {
   readonly page = input(false)
 
   protected readonly store = inject(FleetStore)
+  protected readonly target = linkTarget
   /**
    * What the action registry returned, by target (`worktree:<id>`, `pull_request:<id>`); the page that has the
    * cockpit-actions client passes it. Without it, or without an entry for a target, a slot renders nothing.
@@ -54,7 +49,7 @@ export class TaskPanelView {
 
   protected readonly reason = computed(() => {
     const { task, model } = this.data() as Loaded
-    return taskReason(task, { repositoryName: (id) => model.repositoryName(id), now: this.store.now() })
+    return taskReason(model, task.name) as string
   })
 
   /** The machines whose report decides the task, when none of its entries is on this machine (REQ:task-state, trust rule). */
@@ -74,37 +69,65 @@ export class TaskPanelView {
   /** The repositories of the task's worktrees, each linking to its page. */
   protected readonly repositories = computed(() => {
     const { task, model } = this.data() as Loaded
-    const seen = new Map<string, { slug: string; host: string | undefined }>()
+    const seen = new Map<string, { slug: string; host: string | undefined; id: string }>()
     for (const worktree of task.worktrees) {
       const slug = model.repositoryName(worktree.repository)
       const host = model.document.repositories.find((repository) => repository.id === worktree.repository)?.host
-      seen.set(`${host ?? ''}/${slug}`, { slug, host })
+      seen.set(`${host ?? ''}/${slug}`, {
+        slug,
+        host,
+        id: worktree.repository,
+      })
     }
-    return [...seen.values()].map(({ slug, host }) => ({ slug, link: repositoryDetailLink(host, slug) }))
+    return [...seen.values()].map(({ slug, host, id }) => ({
+      text: slug,
+      link: repositoryDetailLink(host, slug, id),
+    }))
   })
 
   /** The pull requests, each with the repository it is in. */
   protected readonly pullRequests = computed(() => {
     const { view, model } = this.data() as Loaded
-    return view.related.pullRequests.map((pr) => ({ pr, repository: pr.repository === undefined ? undefined : model.repositoryName(pr.repository) }))
+    return view.related.pullRequests.map((pr) => ({
+      pr,
+      repository: pr.repository === undefined ? undefined : model.repositoryName(pr.repository),
+    }))
   })
 
   protected readonly worktrees = computed(() => {
     const { view, model } = this.data() as Loaded
-    return view.related.worktrees.map((worktree) => ({ worktree, repository: model.repositoryName(worktree.repository), link: worktreeDetailLink(worktree.id) }))
+    return view.related.worktrees.map((worktree) => ({
+      worktree,
+      repository: model.repositoryName(worktree.repository),
+      link: worktreeDetailLink(worktree.id),
+    }))
   })
 
-  protected readonly agents = computed(() => (this.data() as Loaded).view.related.agents.map((agent) => ({ agent, title: agentTitle(agent), link: agentDetailLink(agent.id) })))
+  protected readonly agents = computed(() =>
+    (this.data() as Loaded).view.related.agents.map((agent) => ({
+      agent,
+      title: agentTitle(agent),
+      link: agentDetailLink(agent.id),
+    })),
+  )
 
-  /** The library's task commands, then `wb pr land` for each open pull request, each with where it runs. */
-  protected readonly commands = computed<PanelCommand[]>(() => {
-    const { task, view, model } = this.data() as Loaded
-    const land = view.related.pullRequests.filter(isOpenPullRequest).flatMap((pr) => {
-      const panel = buildPullRequestPanel(model, pr.id) as PullRequestPanel
-      // A pull request with no repository has no command to copy.
-      return panel.commands.map((command) => ({ ...command, title: `${command.title} ${panel.summary.repository as string}#${pr.number}` }))
-    })
-    // A task only another machine reports has nothing to land or push from here: its read-only commands stay.
-    return task.stateSource === 'remote' ? [...view.commands, ...land].filter((entry) => !entry.command.ok || !LAND_OR_PUSH.test(entry.command.text)) : [...view.commands, ...land]
+  /** The summary facts above the sections: the repositories and machines of the task, and when it last moved. */
+  protected readonly facts = computed<PanelFact[]>(() => {
+    const { task } = this.data() as Loaded
+    return [
+      { label: 'Repositories', text: '', links: this.repositories() },
+      {
+        label: 'Machines',
+        text: '',
+        machines: task.machines.map((machine) => machine.id),
+      },
+      { label: 'Last activity', text: '—', time: task.lastActivityAt },
+    ]
   })
+
+  /**
+   * The library's task commands (a task that only another machine reports has none that change anything: the
+   * library withholds them), each with where it runs.
+   */
+  protected readonly commands = computed<PanelCommand[]>(() => (this.data() as Loaded).view.commands)
 }

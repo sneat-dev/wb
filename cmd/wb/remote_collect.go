@@ -9,8 +9,10 @@ import (
 )
 
 // collectSnapshot scans the local fleet the way wb fleet status does and
-// lists live task worktrees, then assembles the snapshot to publish.
-func collectSnapshot(projectsRoot, filter string, parallel int, identity remotestate.Snapshot, redaction remotestate.Redaction, progress *remotePublishProgress) (remotestate.Snapshot, error) {
+// lists live task worktrees, then assembles the snapshot to publish. A ctx that
+// ends stops the scan between repositories and returns its error: the daemon's
+// periodic publish bounds one attempt with it.
+func collectSnapshot(ctx context.Context, projectsRoot, filter string, parallel int, identity remotestate.Snapshot, redaction remotestate.Redaction, progress *remotePublishProgress) (remotestate.Snapshot, error) {
 	targets, err := qualityTargets("", projectsRoot, filter, qualityOptions{fleet: true, parallel: parallel, allowEmpty: filter == ""})
 	if err != nil {
 		return remotestate.Snapshot{}, err
@@ -19,6 +21,10 @@ func collectSnapshot(projectsRoot, filter string, parallel int, identity remotes
 	inputs := make([]remotestate.RepositoryInput, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
+		if ctx.Err() != nil {
+			inputs[index] = remotestate.RepositoryInput{Repository: target.repository, Path: target.path, Err: ctx.Err()}
+			return
+		}
 		input := remotestate.RepositoryInput{Repository: target.repository, Path: target.path}
 		if input.Status, input.Err = gitops.Status(target.path); input.Err != nil {
 			inputs[index] = input
@@ -29,13 +35,16 @@ func collectSnapshot(projectsRoot, filter string, parallel int, identity remotes
 		inputs[index] = input
 		progress.repositoryComplete(target.repository, input.Err)
 	})
+	if err := ctx.Err(); err != nil {
+		return remotestate.Snapshot{}, err
+	}
 	// No OwnerState filter: this snapshot is a fleet-audit artifact, and
 	// abandoned worktrees (sessions that exited without cleanup) are exactly
 	// what cross-machine reconciliation needs to see. Filtering to "active"
 	// here made `wb remote publish` under-report worktree counts on any
 	// machine holding orphaned worktrees.
 	progress.phase("inspecting worktrees")
-	wts, err := worktrees.List(context.Background(), worktrees.ListOptions{
+	wts, err := worktrees.List(ctx, worktrees.ListOptions{
 		ProjectsRoot: projectsRoot,
 		Filter:       filter,
 		Progress:     progress.worktree,

@@ -3,8 +3,7 @@ import { otherConsoleErrors, unexplainedViolations, type Violation } from './vio
 
 // Repository content and the code-index panel, in the built application served
 // under the daemon's content security policy, against a stubbed API. Every test
-// ends by checking that no policy violation and no console error occurred,
-// beyond the PrimeUI licence banner this build is known to show.
+// ends by checking that no policy violation and no console error occurred.
 
 const now = new Date().toISOString()
 const alpha = { machine: 'alpha', machine_id: 'mach-alpha', route: 'local', observed_at: now }
@@ -95,8 +94,7 @@ async function watch(page: Page, expectedStatus?: number) {
     const store = window as unknown as { __violations: unknown[] }
     store.__violations = []
     document.addEventListener('securitypolicyviolation', (event) => {
-      const inLicenseBanner = event.composedPath().some((node) => (node as Element).id === 'p-license-host')
-      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI, inLicenseBanner })
+      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI })
     })
   })
   return async () => {

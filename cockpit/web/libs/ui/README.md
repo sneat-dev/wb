@@ -1,17 +1,19 @@
 # ui
 
 Components the Cockpit pages share. Import each from its own entry point, never from the
-`@cockpit/ui` barrel, which also exports the PrimeNG components of the legacy pages:
+`@cockpit/ui` barrel, which holds only the code-index label and panel:
 
 | Entry point | What it holds |
 |---|---|
 | `@cockpit/ui/list` | `ListView` (`<app-list>`), `ListCell`, `ListPanelTemplate`, `ListColumn`, and the cells: `IdentityCell`, `OwnerStateCell`, `PrCell`, `MachineCell`, `CodeIndexCell`, `AgeText`, `RepoName`, `CountLink`, `CopyIcon` |
 | `@cockpit/ui/list-host` | `LIST_SHORTCUTS`, which the application provides once (`{ provide: LIST_SHORTCUTS, useExisting: Shortcuts }` in app.config) |
-| `@cockpit/ui/panel` | `SidePanel`, `PanelContent` with `PanelFact`, `PanelRelated` |
-| `@cockpit/ui/control` | the control surface: state badge, sync badges, PR chip, machine chip, relative time and `UiClock`, copy-command list, action slot |
-| `@cockpit/ui/code-index-label`, `/code-index-panel`, `/route-label`, `/count` | the single components of those names |
+| `@cockpit/ui/panel` | `SidePanel`, `PanelContent` with `PanelFact`, `PanelRelated`, and `PanelState` (the state header of a panel) |
+| `@cockpit/ui/control` | the control surface: state badge, sync badges, PR chip, machine chip, relative time and `UiClock`, copy-command list, action slot, and every `GLYPH_*` (`glyphs.ts`) |
+| `@cockpit/ui/code-index-label`, `/code-index-panel` | the single components of those names |
+| `@cockpit/ui/viewport-mount` | `ViewportMount` (`<app-viewport-mount [load] [inputs]>`): creates a lazily imported component when its place scrolls near the viewport; the place's height is the CSS property `--viewport-slot-height` of its container |
+| `@cockpit/ui/chart` | `ChartView`, the chart specs and `machineMetricSpecs` (CPU, load, memory used, disk free) |
 
-None of `list`, `panel` and `control` uses PrimeNG. Tokens come from `apps/cockpit/src/styles/tokens.css`.
+Tokens come from `apps/cockpit/src/styles/tokens.css`.
 
 ## A list page in about 25 lines
 
@@ -53,12 +55,19 @@ export class WorktreesPage {
 * A column's `value(item)` is its text: the default content of a cell with no template, its `title` while it
   truncates, and what makes it empty. `empty(item)` adds a default that counts as empty (a branch equal to its
   task); a column that is empty for every visible row is hidden, and a fleet of one machine hides Machine.
-  At most 7 columns show: past that the lowest `priority` goes first. `width` is the most a column takes and
+  At most 7 columns show by default (REQ:default-columns-are-few): a column that declares no `priority` is held to
+  that, the lowest first. A page may declare more, each with a `priority`: they all show while the list is wide
+  enough for every `min`, and go in `priority` order as it narrows. `width` is the most a column takes and
   `min` the least it needs: when the list is narrower than the `min`s of its columns (a panel beside it, a tablet,
   a phone) the lowest-`priority` column is hidden, the later one first among equals, until the rest fit; `ALWAYS`
-  (10) columns are never hidden and share the width instead. The list measures itself, so a panel opening hides
-  columns at once; what is hidden is still in the panel. The open-page cell is reserved at the row end.
-* Cells: `app-identity-cell` (strong name, muted secondary, copy icon, the name optionally a link),
+  (10) columns are never hidden and share the width instead. A trailing cell of controls is `chrome: true`: it is
+  not counted toward the 7, its `header` is visually hidden (still its accessible name) and it hides by `priority`
+  like the rest. The list measures itself, so a panel opening hides columns at once; what is hidden is still in
+  the panel. The open-page cell is reserved at the row end. `title: true` makes a header the page's visible title (the
+  section-title type size), for a page with no heading of its own above the list (Machines).
+* Cells: `app-identity-cell` (strong name and, right after it in one row, the muted secondary text, which gives way
+  first, then the copy icon; the name optionally a link; `app-repo-name` does the same for `owner/name`: the owner
+  gives way first, the name is cut only when it alone is wider than the cell),
   `app-owner-state-cell` (owner badge and sync badges), `app-pr-cell` (the control surface's PR chip),
   `app-machine-cell` (its machine chip), `app-code-index-cell`, `app-age` (relative time against the shared
   `UiClock`, exact time in `title`, muted over 30 days), `app-repo-name`, `app-count-link` (a count as a
@@ -66,7 +75,14 @@ export class WorktreesPage {
   (full value to the clipboard, shown on the hovered or focused row and always on touch, one live region for
   the whole list). A row passes no clock down.
 * `extraChips` adds chips the vocabulary cannot list (the Agents `runtime-<name>`); `resolve` finds a row from
-  `sel` when the id is not the row's (the merged Repositories rows); `panelLabel` names the panel.
+  `sel` when the id is not the row's (the merged Repositories rows); `panelLabel` names the panel; `copyValue(item)`
+  says what `c` copies on the focused row (by default the row's name, and for an agent its run or session id);
+  `[listFooter]` projects the page's notes under the rows (a region that takes no space while empty).
+* A detail address whose id is a path segment (`worktreeDetailLink`, `agentDetailLink`, `machineDetailLink`,
+  `repositoryDetailLink`) carries router commands as well as its encoded `path`; bind
+  `[routerLink]="target(link)"` (with `protected readonly target = linkTarget`, from `@cockpit/fleet-data`: a template
+  function, not a pipe, so no pipe machinery reaches the first page) so the router encodes the id once (a string `link.path` would be encoded a second time: `a%252Fb`). A repository
+  whose name is not exactly `owner/name` (GitLab `group/sub/project`) opens by entry id, `/repositories/<id>`.
 * A selection that was open and is gone shows "no longer in the fleet" in the panel and offers close.
 
 ## The panel and the detail page
@@ -75,10 +91,16 @@ export class WorktreesPage {
 content, the action area and the "Copy command" entries, and the collapsed "Raw data" block (rendered, as
 the read model sent it, only once opened). The side panel (`<app-side-panel>`, which `<app-list>` hosts) and
 the detail route are two hosts of one component: `worktree-panel.ts` is the pattern, and `worktree-page.ts`
-renders it with `[page]="true"`.
+renders it with `[page]="true"`; with `[split]="true"` as well, a page at least 60rem wide puts the summary (header, facts, related)
+and what it projects in two columns (the machine page), while the panel and a narrow page stay one.
 
 * The panel renders the control surface's copy-command list from the `commands` input, and its action slot goes
   into the `[panelActions]` projection (a region that takes no space while empty).
+* `[panelHeader]` projects above the facts (also a region that takes no space while empty): the state header of a
+  panel, which is `<app-panel-state [reason]="sentence">` with the state badges projected into it and, optionally,
+  a `[panelNote]` line under the sentence. The task panel and the agent panel have the one header:
+  `<app-panel-content ...><div panelHeader><app-panel-state [reason]="taskReason(model, name)"><app-state-badge .../></app-panel-state></div></app-panel-content>`.
+  A `PanelFact` may hold `links` (several addresses) or `machines` (ids, each as the list's machine cell) instead of `text`.
 * On a phone the panel is a full-screen modal dialog: the focus moves into it, Tab stays inside, the page behind
   does not scroll and the list is inert. Beside the list the focus stays in the list: `j` and `k` keep browsing
   and the panel follows, Enter on the open row (or Tab) moves into the panel, Esc closes it and returns the

@@ -14,6 +14,39 @@
   max-width: 56rem;
 }
 
+/* The two blocks that hold the summary and the projected content are transparent: the one column is unchanged. */
+.aside,
+.main {
+  display: contents;
+}
+
+:host(.split) {
+  container-type: inline-size;
+}
+
+@container (min-width: 60rem) {
+  .content.split {
+    display: grid;
+    grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr);
+    gap: var(--space-4) var(--space-6);
+    align-items: start;
+    max-width: none;
+  }
+
+  .content.split > * {
+    grid-column: 1 / -1;
+  }
+
+  .content.split > .aside,
+  .content.split > .main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    grid-column: auto;
+    min-width: 0;
+  }
+}
+
 .head {
   padding-right: var(--space-6);
 }
@@ -95,6 +128,17 @@ dd {
 pre {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+}
+
+/* What a page projects above the facts takes no space while nothing is projected. */
+.header-slot:not(:has(*)) {
+  display: none;
+}
+
+/* A fact with several values (repositories, machines) wraps them. */
+dd.many {
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
 }
 
 /* The action area is for task 13's slot; it takes no space while nothing is projected into it. */

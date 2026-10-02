@@ -16,7 +16,7 @@ export const ROW_HEIGHT = 32
 export const OVERSCAN = 12
 /** The most rows ever rendered, on however tall a viewport (REQ:bounded-row-elements). */
 export const MAX_RENDERED_ROWS = 80
-/** At most this many columns show by default (REQ:default-columns-are-few). */
+/** At most this many columns show by default (REQ:default-columns-are-few): a column with a declared `priority` may go past it, while the list is wide enough. */
 export const MAX_COLUMNS = 7
 /** The `priority` of a column that is never hidden for lack of room. */
 export const ALWAYS = 10
@@ -45,14 +45,24 @@ export interface ListColumn<T> {
   /** What the header's `title` says. */
   hint?: string
   /**
-   * What the column is worth when room is short (default 5). When more than 7 columns would show, and
-   * when the list is narrower than its columns need (a panel beside it, a narrow window), the lowest
-   * goes first, the later one first among equals. `ALWAYS` (10) is never hidden: it shrinks instead.
+   * What the column is worth when room is short. When the list is narrower than its columns need (a panel
+   * beside it, a narrow window), the lowest goes first, the later one first among equals. `ALWAYS` (10) is never
+   * hidden: it shrinks instead. A column that declares a `priority` may be one of more than 7: it shows while the
+   * list is wide enough for the `min` of every column and goes in this order as it narrows. A column with none
+   * (default 5) is held to the default of at most 7, and goes first when more than 7 would show.
    */
   priority?: number
   /** The least pixels the column needs to be worth showing (default: its `width`); below the sum of these the lowest-priority column is hidden. */
   min?: number
   align?: 'end'
+  /** The header is the page's visible title: the section-title type size, for a page with no separate heading above its list. */
+  title?: boolean
+  /**
+   * A trailing cell of controls (icon links), not a column: it is not counted toward the 7, its header
+   * (`header`, still the name assistive technology reads) is visually hidden, and it hides by `priority`
+   * like the rest when room is short.
+   */
+  chrome?: boolean
 }
 
 /** One quick-filter chip; `id` is a chip of the page's vocabulary. */
@@ -99,17 +109,21 @@ export function toggled(items: readonly string[], item: string): string[] {
 /**
  * The columns to show for `items` (REQ:default-columns-are-few): a column that
  * is empty, or the default, for every row is hidden, and if more than `max`
- * remain the ones with the lowest `priority` go, the later one first among equals.
- * With no rows nothing is hidden, so the header does not change while it waits.
+ * remain (the `chrome` cells are not counted) the ones with the lowest `priority`
+ * go, the later one first among equals, unless they declare a `priority`: those are
+ * left to `fitColumns`, which keeps them while the list is wide enough for all of
+ * them. With no rows nothing is hidden, so the header does not change while it waits.
  */
 export function visibleColumns<T>(columns: readonly ListColumn<T>[], items: readonly T[], max = MAX_COLUMNS): ListColumn<T>[] {
   const shown = columns.filter((column) => items.length === 0 || !items.every((item) => isEmptyCell(column, item)))
+  const counted = shown.filter((column) => column.chrome !== true)
   const dropped = new Set(
-    shown
+    counted
       .map((column, index) => ({ column, index }))
       .sort((a, b) => (a.column.priority ?? 5) - (b.column.priority ?? 5) || b.index - a.index)
-      .slice(0, Math.max(0, shown.length - max))
-      .map((entry) => entry.column),
+      .slice(0, Math.max(0, counted.length - max))
+      .map((entry) => entry.column)
+      .filter((column) => column.priority === undefined),
   )
   return shown.filter((column) => !dropped.has(column))
 }
@@ -145,7 +159,10 @@ export function fitColumns<T>(columns: readonly ListColumn<T>[], width: number):
     if (squeezed) return `minmax(${floored ? `${floorOf(need)}px` : '0'}, ${Math.max(need, 1)}fr)`
     return column.width === 'fill' ? `minmax(${need}px, ${column.grow ?? 1}fr)` : `minmax(${need}px, ${column.width}px)`
   }
-  return { columns: kept, tracks: [...kept.map(track), `${OPEN_CELL_WIDTH}px`].join(' ') }
+  return {
+    columns: kept,
+    tracks: [...kept.map(track), `${OPEN_CELL_WIDTH}px`].join(' '),
+  }
 }
 
 /** The rows `first` to `last` (exclusive) that a window of `height` pixels scrolled by `scrollTop` renders, with the overscan. */

@@ -39,7 +39,7 @@
     <ul class="worktrees">
       @for (worktree of worktrees(); track worktree.id) {
         <li>
-          <a class="task" [routerLink]="worktreeLink(worktree.id).path">{{ worktree.task }}</a>
+          <a class="task" [routerLink]="target(worktreeLink(worktree.id))">{{ worktree.task }}</a>
           @if (worktree.branch !== worktree.task) {
             <span class="branch muted" [attr.title]="worktree.branch">{{ worktree.branch }}</span>
           }

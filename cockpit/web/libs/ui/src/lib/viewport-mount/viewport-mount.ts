@@ -22,12 +22,14 @@ export const VIEWPORT_MARGIN = 200
  * Like `LazyMount`, but the component is requested only when the place it will occupy scrolls near
  * the viewport (an `IntersectionObserver`; where there is none, at once). The place keeps its height
  * until the component is there, so nothing moves when it arrives. Used for the charts, so Chart.js
- * is fetched only by a viewer who scrolls to them.
+ * is fetched only by a viewer who scrolls to them. The place's height is the CSS custom property
+ * `--viewport-slot-height` of whatever contains the mount (none by default), so a page sets it without reaching into this
+ * component's styles.
  */
 @Component({
   selector: 'app-viewport-mount',
-  template: '@if (!shown()) {<div #slot class="home-lazy-slot"></div>}',
-  styles: ':host { display: contents; }',
+  template: '@if (!shown()) {<div #slot class="viewport-slot"></div>}',
+  styles: ':host { display: contents; } .viewport-slot { min-height: var(--viewport-slot-height, 0); }',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ViewportMount {

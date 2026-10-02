@@ -23,8 +23,9 @@ export function compactAge(observedAt: string | undefined, now: number): string 
 /**
  * The machine rule of the lists (the machine cell of `@cockpit/ui/list`), for Home's rows: the name
  * alone for this machine; for another one the name and a single chip.
- * TODO(ui): `machine-cell.ts` is in the list barrel, which is too heavy for Home's scripts; when it
- * has its own light entry point, use `app-machine-cell` and drop this.
+ * Not `app-machine-cell`: even through its own entry point (`@cockpit/ui/machine-cell`) the component adds
+ * about 1.7 kB (317.5 to 319.3 kB, measured 2026-10-02) to Home's first page, which these few lines do not;
+ * use the component here only if Home's budget has the room.
  */
 export function machineWords(view: MachineView, now: number): MachineWords {
   const { machine } = view

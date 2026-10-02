@@ -3,8 +3,7 @@ import { fleet, now, stub, watch } from './support'
 
 // The five pages against a stubbed fleet document and session, in the built
 // application served under the daemon's content security policy. Each test
-// ends by checking that no policy violation and no console error occurred,
-// beyond the PrimeUI licence banner this build is known to show.
+// ends by checking that no policy violation and no console error occurred.
 
 // The shared list (the Worktrees page) has no table: its rows are ARIA rows of a virtual grid.
 const listRows = (page: Page) => page.locator('[role=row][data-index]')

@@ -3,15 +3,11 @@ import { toSignal } from '@angular/core/rxjs-interop'
 import { ActivatedRoute, Router, RouterLink } from '@angular/router'
 import { FleetStore, MergedRepository } from '@cockpit/fleet-data'
 import { LinkResult, ListRow, buildRepositories, codeBrowserLink, parseListQuery, repositoryAgentsLink, repositoryPullRequestsLink, repositoryWorktreesLink } from '@cockpit/fleet-data/list'
-import { Glyph, StateBadge, UiClock } from '@cockpit/ui/control'
-import { ADDRESS_KEYS, ALWAYS, AgeText, CopyIcon, ListCell, ListColumn, ListPanelTemplate, ListView, CountLink, RepoName, effectiveSort } from '@cockpit/ui/list'
+import { GLYPH_CODE, GLYPH_EXTERNAL_LINK, Glyph, StateBadge, UiClock } from '@cockpit/ui/control'
+import { ADDRESS_KEYS, ALWAYS, AgeText, CopyIcon, FitChips, ListCell, ListColumn, ListPanelTemplate, ListView, CountLink, RepoName, effectiveSort } from '@cockpit/ui/list'
 import { MAX_CHIPS, MachineChipView, machineChips } from './repository-machines'
 import { RepositoryPanelView } from './repository-panel'
 import { SORT_PRESETS, SortPreset, activePreset } from './repository-sort'
-
-// TODO(ui library): `@cockpit/ui/control` exports no code or external-link glyph (glyphs.ts is not an entry point), so the two the actions cell needs are drawn here.
-const GLYPH_CODE = ['m8 8-4 4 4 4', 'm16 8 4 4-4 4', 'm13.5 5-3 14']
-const GLYPH_EXTERNAL = ['M14 4h6v6', 'M20 4 10 14', 'M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4']
 
 /** A count cell: not reported (a dash), a quiet zero, or a number that links to the list it counted. */
 interface CountCell {
@@ -41,7 +37,7 @@ const countCell = (value: number | undefined, link: LinkResult): CountCell => ({
  */
 @Component({
   selector: 'app-repositories-page',
-  imports: [RouterLink, ListView, ListCell, ListPanelTemplate, RepoName, CopyIcon, CountLink, StateBadge, AgeText, Glyph, RepositoryPanelView],
+  imports: [RouterLink, FitChips, ListView, ListCell, ListPanelTemplate, RepoName, CopyIcon, CountLink, StateBadge, AgeText, Glyph, RepositoryPanelView],
   templateUrl: './repositories-page.html',
   styleUrl: './repositories-page.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -55,7 +51,7 @@ export class RepositoriesPage {
 
   protected readonly presets = SORT_PRESETS
   protected readonly codeGlyph = GLYPH_CODE
-  protected readonly externalGlyph = GLYPH_EXTERNAL
+  protected readonly externalGlyph = GLYPH_EXTERNAL_LINK
 
   /** The order the list is in, which a header click may have chosen: the address's sort, or the page's default. */
   protected readonly order = computed(() => {
@@ -82,17 +78,21 @@ export class RepositoriesPage {
   /** A `sel` names the entry id of any checkout, not only the one the row is keyed by. */
   protected readonly resolve = (rows: readonly ListRow<MergedRepository>[], sel: string) => rows.find((row) => row.item.checkouts.some((checkout) => checkout.repository.id === sel))
 
-  /** Narrow lists lose Agents and PRs first, then Code index, Worktrees and Branches, Machines and Links; Repository and Last activity stay (the panel has the rest). */
+  /**
+   * Eight columns and an actions cell: all of them while the list is wide enough, and as it narrows (a panel beside it,
+   * a tablet) Agents and PRs go first, then Code index, Worktrees and Branches, Machines and the actions; Repository and
+   * Last activity stay (the panel has the rest).
+   */
   protected readonly columns: ListColumn<MergedRepository>[] = [
     { id: 'repository', header: 'Repository', sort: 'repository', width: 'fill', grow: 4, min: 260, priority: ALWAYS, value: (r) => r.slug },
-    { id: 'machines', header: 'Machines', width: 220, min: 120, priority: 5, value: (r) => r.checkouts.map((checkout) => checkout.machine).join(', '), empty: () => this.store.document().machines.length <= 1 },
+    { id: 'machines', header: 'Machines', width: 220, min: 150, priority: 5, value: (r) => r.checkouts.map((checkout) => checkout.machine).join(', '), empty: () => this.store.document().machines.length <= 1 },
     { id: 'worktrees', header: 'Worktrees', sort: 'worktrees', width: 96, min: 88, priority: 4, align: 'end', value: (r) => String(r.worktreeCount) },
     { id: 'agents', header: 'Agents', width: 80, min: 72, priority: 2, align: 'end', hint: 'Running agents', value: (r) => (r.activeAgentCount ? String(r.activeAgentCount) : '') },
     { id: 'prs', header: 'PRs', width: 64, min: 56, priority: 2, align: 'end', hint: 'Open pull requests', value: (r) => (r.openPullRequestCount ? String(r.openPullRequestCount) : '') },
     { id: 'branches', header: 'Branches', sort: 'branches', width: 110, min: 100, priority: 4, align: 'end', hint: 'Local / remote. These counts do not link: there is no branches list page', value: (r) => this.cellsOf(r).branches },
-    { id: 'index', header: 'Code index', width: 140, min: 124, priority: 3, hint: 'The worst code-index state across machines', value: (r) => r.codeIndex },
+    { id: 'index', header: 'Code index', width: 140, min: 132, priority: 3, hint: 'The worst code-index state across machines', value: (r) => r.codeIndex },
     { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96, priority: ALWAYS },
-    { id: 'links', header: 'Links', width: 84, min: 84, priority: 6, hint: 'Browse the code, open on the host' },
+    { id: 'links', header: 'Links', width: 84, min: 84, priority: 6, chrome: true, hint: 'Browse the code, open on the host' },
   ]
 
   private rowsOf() {

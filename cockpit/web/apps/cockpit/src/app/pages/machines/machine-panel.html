@@ -1,129 +1,53 @@
 @if (data(); as data) {
-  <app-panel-content kind="Machine" [heading]="name()" [commands]="attention().commands" [raw]="data.view.raw" [page]="page()">
-    <section class="state" aria-label="State">
-      <span class="reach">{{ reach() }}</span>
-      @if (data.view.summary.state === 'stale') {
-        <span class="mark stale" title="Older than the freshness window">stale</span>
-      }
-      @if (data.view.summary.outdated) {
-        <span class="mark older" title="Older than the newest WB in the fleet">older WB</span>
-      }
-      <app-state-badge kind="load" size="small" [value]="load()" />
-    </section>
-
-    <dl class="facts">
-      <dt>OS</dt>
-      <dd [class.quiet]="!data.view.summary.machine.os">{{ data.view.summary.machine.os ?? 'not reported' }}</dd>
-      <dt>Architecture</dt>
-      <dd [class.quiet]="!data.view.summary.machine.arch">{{ data.view.summary.machine.arch ?? 'not reported' }}</dd>
-      <dt>CPUs</dt>
-      <dd [class.quiet]="data.view.summary.machine.cpu_count === undefined">{{ data.view.summary.machine.cpu_count ?? 'not reported' }}</dd>
-      <dt>WB version</dt>
-      <dd [class.quiet]="!data.view.summary.machine.wb_version">{{ data.view.summary.machine.wb_version ?? 'not reported' }}</dd>
-      <dt>Uptime</dt>
-      <dd [class.quiet]="uptime() === undefined">{{ uptime() ?? 'not reported' }}</dd>
-      <dt>Reached by</dt>
-      <dd>
-        @if (data.view.summary.machine.route === 'local') {
-          this machine
-        } @else {
-          {{ data.view.summary.machine.transport ?? 'a published snapshot' }}
-          <app-age [at]="data.view.summary.machine.observed_at" />
-        }
-      </dd>
-      @if (data.view.summary.machine.export_dropped; as dropped) {
-        <dt>Left out</dt>
-        <dd>{{ dropped }} {{ dropped === 1 ? 'entry' : 'entries' }} of its export</dd>
-      }
-      @if (truncated()) {
-        <dt>Agents</dt>
-        <dd>The agent list is capped at the first 200 of each machine.</dd>
-      }
-    </dl>
-
-    <section class="block" aria-label="Metrics">
-      <h3>Metrics</h3>
-      <p class="source" [attr.data-source]="metrics().kind">{{ metrics().source }}</p>
-      @if (metrics().reason; as reason) {
-        <p class="quiet">{{ reason }}</p>
-      }
-      @if (metrics().stale) {
-        <p class="quiet">The last read failed; this is the earlier answer.</p>
-      }
-      @if (metrics().latest; as latest) {
-        <dl class="facts latest">
-          <dt>CPU</dt>
-          <dd>{{ latest.cpu }}</dd>
-          <dt>Load (1 min)</dt>
-          <dd>{{ latest.load }}</dd>
-          <dt>Memory</dt>
-          <dd>{{ latest.memory }}</dd>
-          <dt>Disk free</dt>
-          <dd>{{ latest.disk }}</dd>
-        </dl>
-      }
-      @if (metrics().charts) {
-        <div class="charts">
-          <app-viewport-mount [load]="loadCharts" [inputs]="chartInputs()" />
-        </div>
-      }
-    </section>
-
-    @if (attention().notes.length > 0) {
-      <section class="block" aria-label="Needs attention">
-        <h3>Needs attention</h3>
-        <ul class="rows">
-          @for (note of attention().notes; track note.id) {
-            <li>
-              <span class="warning">{{ note.text }}</span>
-              @if (note.reason) {
-                <span class="quiet">{{ note.reason }}</span>
-              }
-            </li>
-          }
-        </ul>
-      </section>
+<app-panel-content kind="Machine" [heading]="name()" [facts]="facts()" [related]="related()" [commands]="attention().commands" [raw]="data.view.raw" [page]="page()" [split]="page()">
+  <app-panel-state panelHeader [reason]="reach()">
+    @if (data.view.summary.state === 'stale') {
+    <span class="mark stale" title="Older than the freshness window">stale</span>
+    } @if (data.view.summary.outdated) {
+    <span class="mark older" title="Older than the newest WB in the fleet">older WB</span>
     }
+    <app-state-badge kind="load" size="small" [value]="load()" />
+  </app-panel-state>
 
-    <section class="block" aria-label="Counts">
-      <h3>On this machine</h3>
-      <dl class="facts">
-        <dt>Repositories</dt>
-        <dd><app-count-link [value]="counts().repositories" [link]="links().repositories" /></dd>
-        <dt>Worktrees</dt>
-        <dd><app-count-link [value]="counts().worktrees" [link]="links().worktrees" /></dd>
-        <dt>Agents</dt>
-        <dd><app-count-link [value]="counts().agents" [link]="links().agents" />&ngsp;<span class="quiet">{{ data.view.summary.runningAgents }} running</span></dd>
-      </dl>
-    </section>
+  <section class="block" aria-label="Metrics">
+    <h3>Metrics</h3>
+    <p class="source" [attr.data-source]="metrics().kind">{{ metrics().source }}</p>
+    @if (metrics().reason; as reason) {
+    <p class="quiet">{{ reason }}</p>
+    } @if (metrics().stale) {
+    <p class="quiet">The last read failed; this is the earlier answer.</p>
+    } @if (metrics().latest; as latest) {
+    <dl class="facts latest">
+      <dt>CPU</dt>
+      <dd>{{ latest.cpu }}</dd>
+      <dt>Load (1 min)</dt>
+      <dd>{{ latest.load }}</dd>
+      <dt>Memory</dt>
+      <dd>{{ latest.memory }}</dd>
+      <dt>Disk free</dt>
+      <dd>{{ latest.disk }}</dd>
+    </dl>
+    } @if (metrics().charts) {
+    <div class="charts">
+      <app-viewport-mount [load]="loadCharts" [inputs]="chartInputs()" />
+    </div>
+    }
+  </section>
 
-    <section class="block" aria-label="Running agents">
-      <h3>Running agents</h3>
-      <ul class="rows">
-        @for (item of agents(); track item.agent.id) {
-          <li>
-            <a [routerLink]="item.link.path" [queryParams]="item.link.query">{{ item.title }}</a>
-            <app-state-badge kind="agent-state" size="small" [value]="item.agent.state" />
-          </li>
-        } @empty {
-          <li class="quiet">None</li>
+  @if (attention().notes.length > 0) {
+  <section class="block" aria-label="Needs attention">
+    <h3>Needs attention</h3>
+    <ul class="rows">
+      @for (note of attention().notes; track note.id) {
+      <li>
+        <span class="warning">{{ note.text }}</span>
+        @if (note.reason) {
+        <span class="quiet">{{ note.reason }}</span>
         }
-      </ul>
-    </section>
-
-    <section class="block" aria-label="Recent worktrees">
-      <h3>Recent worktrees</h3>
-      <ul class="rows">
-        @for (item of worktrees(); track item.worktree.id) {
-          <li>
-            <a [routerLink]="item.link.path" [queryParams]="item.link.query">{{ item.worktree.task }}</a>
-            <span class="quiet">{{ item.repository }}</span>
-            <app-age [at]="item.worktree.last_activity_at" />
-          </li>
-        } @empty {
-          <li class="quiet">None</li>
-        }
-      </ul>
-    </section>
-  </app-panel-content>
+      </li>
+      }
+    </ul>
+  </section>
+  }
+</app-panel-content>
 }

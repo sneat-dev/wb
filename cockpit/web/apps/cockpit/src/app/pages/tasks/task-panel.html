@@ -1,38 +1,22 @@
 @if (data(); as data) {
-  <app-panel-content kind="Task" [heading]="data.task.name" [copyHeading]="true" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
-    <section class="state" aria-label="State">
-      <app-state-badge kind="task" [value]="data.task.state" />
-      <p class="why">{{ reason() }}</p>
-      @if (reportedBy().length > 0) {
-        <p class="source">
-          <span>As reported by</span>
-          @for (machine of reportedBy(); track machine.id) {
-            <app-machine-cell [id]="machine.id" />
-          }
-          <span>(not this machine): nothing to land or push from here.</span>
-        </p>
+  <app-panel-content kind="Task" [heading]="data.task.name" [copyHeading]="true" [facts]="facts()" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
+    <div class="header" panelHeader>
+      <app-panel-state [reason]="reason()">
+        <app-state-badge kind="task" [value]="data.task.state" />
+        @if (reportedBy().length > 0) {
+          <p class="source" panelNote>
+            <span>As reported by</span>
+            @for (machine of reportedBy(); track machine.id) {
+              <app-machine-cell [id]="machine.id" />
+            }
+            <span>(not this machine): nothing to land or push from here.</span>
+          </p>
+        }
+      </app-panel-state>
+      @if (elsewhereOnly() && reportedBy().length === 0) {
+        <p class="note">Every worktree of this task was read from another machine, so unpushed work is not known here.</p>
       }
-    </section>
-    @if (elsewhereOnly() && reportedBy().length === 0) {
-      <p class="note">Every worktree of this task was read from another machine, so unpushed work is not known here.</p>
-    }
-
-    <dl class="facts">
-      <dt>Repositories</dt>
-      <dd class="list">
-        @for (repository of repositories(); track repository.slug) {
-          <a [routerLink]="repository.link.path" [queryParams]="repository.link.query">{{ repository.slug }}</a>
-        }
-      </dd>
-      <dt>Machines</dt>
-      <dd class="list">
-        @for (machine of data.task.machines; track machine.id) {
-          <app-machine-cell [id]="machine.id" />
-        }
-      </dd>
-      <dt>Last activity</dt>
-      <dd><app-age [at]="data.task.lastActivityAt" /></dd>
-    </dl>
+    </div>
 
     <section class="block" aria-label="Pull requests">
       <h3>Pull requests</h3>
@@ -69,7 +53,7 @@
         @for (item of worktrees(); track item.worktree.id) {
           <li class="wt">
             <span class="where">
-              <a class="repo-link" [routerLink]="item.link.path" [attr.title]="item.worktree.branch">{{ item.repository }}</a>
+              <a class="repo-link" [routerLink]="target(item.link)" [attr.title]="item.worktree.branch">{{ item.repository }}</a>
               @if (item.worktree.branch !== data.task.name) {
                 <code class="branch" [attr.title]="item.worktree.branch">{{ item.worktree.branch }}</code>
               }
@@ -96,7 +80,7 @@
       <ul class="rows">
         @for (item of agents(); track item.agent.id) {
           <li class="agent">
-            <a [routerLink]="item.link.path">{{ item.title }}</a>
+            <a [routerLink]="target(item.link)">{{ item.title }}</a>
             <app-state-badge kind="agent-activity" size="small" [value]="item.agent.activity" />
             @if (manyMachines()) {
               <app-machine-cell [id]="item.agent.machine_id" />

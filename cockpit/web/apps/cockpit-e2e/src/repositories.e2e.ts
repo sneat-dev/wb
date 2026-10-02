@@ -184,13 +184,21 @@ test('the browse-code button needs a code browser, and the host button an addres
   await expect(page.getByRole('link', { name: 'Browse the code of sneat-dev/wb' })).toHaveAttribute('href', 'https://code.example.test/github.com/sneat-dev/wb')
 })
 
-test('a machine chip opens the panel at that machine\'s checkout', async ({ page }) => {
+test('a machine chip opens the panel at that machine\'s checkout, and a cell too narrow for every chip says how many it left out', async ({ page }) => {
   await stub(page)
   const expectClean = await watch(page)
   await page.goto('/cockpit/repositories')
-  await listRows(page).first().locator('a.machine').nth(2).click()
-  await expect(page).toHaveURL(/sel=go-a#machine-mach-gamma$/)
-  const section = page.getByRole('complementary').locator('app-repository-machine-section').nth(2)
+  const row = listRows(page).first()
+  // Three machines do not fit the cell: the chips that do are whole, the others are named in a "+n".
+  const note = row.locator('.more.fitted')
+  await expect(note).toBeVisible()
+  await expect(row.locator('a.machine[hidden]')).toHaveCount(1)
+  await expect(note).toHaveText('+1')
+  await expect(note).toHaveAttribute('title', 'gamma')
+  expect(await row.locator('a.machine:not([hidden]) .machine-name').evaluateAll((names) => names.every((name) => name.scrollWidth <= name.clientWidth))).toBe(true)
+  await row.locator('a.machine:not([hidden])').first().click()
+  await expect(page).toHaveURL(/sel=go-a#machine-mach-alpha$/)
+  const section = page.getByRole('complementary').locator('app-repository-machine-section').nth(0)
   await expect(section.locator('details')).toHaveAttribute('open', '')
   await expect(section).toBeInViewport()
   await expectClean()
@@ -214,4 +222,51 @@ test('at 360 px the list does not scroll sideways, and the panel is a sheet that
   await expect(page.locator('app-repository-panel h2')).toBeVisible()
   expect(await fits()).toBe(true)
   await expectClean()
+})
+
+// cockpit-views#ac:columns-are-few-and-uniform-ones-hidden: the seven is a default; the page declares eight columns and an actions cell.
+test('a wide list shows all eight columns and the actions cell, with Agents and PRs, and a narrower one drops the quietest first', async ({ page }) => {
+  await stub(page)
+  const busy = {
+    ...fleet,
+    // A GitLab group/sub/project has no host/owner/name address: it opens by entry id.
+    repositories: [...fleet.repositories.map((repository) => (repository.id === 'go-a' ? { ...repository, active_agent_count: 2 } : repository)), { id: 'gl-1', ...alpha, host: 'gitlab.com', name: 'group/sub/project', default_branch: 'main', worktree_count: 0, last_activity_at: ago(400 * hour) }],
+    pull_requests: [{ id: 'p1', ...alpha, repository: 'go-a', worktree: 'w1', number: 7, state: 'open', checks_total: 4, checks_passed: 4, checks_green: true, mergeable: 'mergeable', checked_at: now }],
+  }
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: busy, headers: { ETag: '"busy"', 'Cache-Control': 'no-cache' } }))
+  const headers = () => page.locator('.head [role=columnheader]:not(.open-cell)').allInnerTexts()
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/cockpit/repositories')
+  await expect(listRows(page)).toHaveCount(4)
+  expect(await headers()).toEqual(['Repository', 'Machines', 'Worktrees', 'Agents', 'PRs', 'Branches', 'Code index', 'Last activity', 'Links'])
+  // The actions header is for assistive technology: it is in the page and is not drawn.
+  const links = page.getByRole('columnheader', { name: 'Links' })
+  await expect(links).toBeAttached()
+  expect(await links.evaluate((header) => header.textContent?.trim() === 'Links' && header.querySelector('.visually-hidden') !== null)).toBe(true)
+  expect(await links.locator('.visually-hidden').evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1)
+  // Beside a panel there is less room: Agents and PRs go first.
+  await listRows(page).first().click()
+  await expect(page.locator('app-side-panel')).toBeVisible()
+  const beside = await headers()
+  expect(beside).not.toContain('Agents')
+  expect(beside).not.toContain('PRs')
+  expect(beside.slice(0, 2)).toEqual(['Repository', 'Machines'])
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.goto('/cockpit/repositories')
+  await expect(listRows(page)).toHaveCount(4)
+  const tablet = await headers()
+  expect(tablet).not.toContain('Agents')
+  expect(tablet).toContain('Last activity')
+
+  // The three-segment name opens by entry id from the row's page button, and from the palette.
+  await page.goto('/cockpit/repositories')
+  await listRows(page).filter({ hasText: 'group/sub/' }).getByRole('link', { name: /^Open group\/sub\/project/ }).click()
+  await expect(page).toHaveURL(/\/cockpit\/repositories\/gl-1$/)
+  await expect(page.getByRole('heading', { level: 2 })).toContainText('group/sub/project')
+  await page.goto('/cockpit/')
+  await page.keyboard.press('Control+k')
+  const dialog = page.getByRole('dialog', { name: 'Search' })
+  await dialog.getByRole('combobox').fill('sub/project')
+  await dialog.getByRole('group', { name: 'Repositories' }).getByRole('option').first().click()
+  await expect(page).toHaveURL(/\/cockpit\/repositories\/gl-1$/)
 })

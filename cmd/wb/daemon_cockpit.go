@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotessh"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
+	"github.com/sneat-dev/wb/internal/remotestate/periodic"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
@@ -95,8 +97,14 @@ func cockpitFleetOptionsWith(projectsRoot, home, configPath string, config wbcon
 		machine = "local"
 	}
 	var remote cockpitfleet.RemoteCollector
+	var publisher cockpitfleet.RemotePublisher
 	if remoteConfig, loadErr := remotestate.LoadConfig(configPath); loadErr == nil {
 		machine = remoteConfig.Machine
+		if every := remoteConfig.Publish.PublishEvery(); every > 0 {
+			deps := defaultRemoteDeps()
+			deps.configPath = configPath
+			publisher = newPeriodicPublisher(deps, remoteConfig, projectsRoot, logf)
+		}
 		if remoteConfig.Provider != "git" {
 			logf("cockpit fleet: other machines are not read from the %s remote provider", remoteConfig.Provider)
 		} else if clonePath, pathErr := remoteStateClonePath(projectsRoot, remoteConfig); pathErr != nil {
@@ -118,6 +126,7 @@ func cockpitFleetOptionsWith(projectsRoot, home, configPath string, config wbcon
 		Sampler: newLocalSampler(projectsRoot, logf, nil), Collectors: withHerdrActivity(local.Collectors(remote)), Interval: config.RefreshInterval,
 		Remotes: targets, Transports: transports, SSHRoutes: sshRoutes,
 		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
+		Publisher:    publisher,
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}
@@ -293,4 +302,33 @@ func (source *machineExportSource) serve(writer http.ResponseWriter, request *ht
 func withHerdrActivity(collectors cockpitfleet.Collectors) cockpitfleet.Collectors {
 	collectors.Activity = cockpitfleet.DefaultHerdrActivity()
 	return collectors
+}
+
+// periodicScanWorkers bounds the repositories one periodic publish scans at
+// once; the daemon shares the machine with the work it reports on, so it reads
+// gently where `wb remote publish` reads eight at a time.
+const periodicScanWorkers = 2
+
+// newPeriodicPublisher is the daemon's periodic remote publisher for a machine
+// whose remote section sets publish.interval (cockpit-views#req:periodic-
+// remote-publish): the same collector, identity and provider as `wb remote
+// publish`, wrapped in the interval, change and backoff policy of package
+// periodic. The GitHub login keying this machine's entry is resolved on the
+// first attempt that needs it and kept.
+func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot string, logf func(string, ...any)) *periodic.Publisher {
+	var login string
+	return periodic.New(periodic.Options{
+		Every: cfg.Publish.PublishEvery(), Agents: cfg.Publish.Agents, Metrics: cfg.Publish.Metrics, Logf: logf, Now: deps.now,
+		Collect: func(ctx context.Context, now time.Time) (remotestate.Snapshot, error) {
+			if login == "" {
+				found, err := deps.login()
+				if err != nil || found == "" {
+					return remotestate.Snapshot{}, errors.New("the GitHub login keying this machine's entry is unavailable (gh auth status)")
+				}
+				login = found
+			}
+			return collectSnapshot(ctx, projectsRoot, "", periodicScanWorkers, publishIdentity(cfg, login, now), cfg.Publish.Unpushed, nil)
+		},
+		Open: func() (remotestate.Provider, error) { return deps.open(cfg, projectsRoot) },
+	})
 }

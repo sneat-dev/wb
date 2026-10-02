@@ -1,54 +1,57 @@
-<article class="content" [class.page]="page()">
+<article class="content" [class.page]="page()" [class.split]="split() && page()">
   <header class="head">
     <p class="kind">{{ kind() }}</p>
     <div class="title">
       <h2 tabindex="-1">{{ heading() }}</h2>
       @if (copyHeading()) {
-        <app-copy-icon [value]="heading()" [label]="'Copy ' + kind().toLowerCase() + ' name'" />
+      <app-copy-icon [value]="heading()" [label]="'Copy ' + kind().toLowerCase() + ' name'" />
       }
     </div>
   </header>
 
-  <dl class="facts">
-    @for (fact of facts(); track fact.label) {
+  <div class="aside">
+    <div class="header-slot"><ng-content select="[panelHeader]" /></div>
+
+    @if (facts().length > 0) {
+    <dl class="facts">
+      @for (fact of facts(); track fact.label) {
       <dt>{{ fact.label }}</dt>
-      <dd [class.muted]="fact.muted" [attr.title]="fact.title ?? null">
-        @if (fact.time !== undefined) {
-          <app-age [at]="fact.time" />
+      <dd [class.muted]="fact.muted" [class.many]="fact.links || fact.machines" [attr.title]="fact.title ?? null">
+        @if (fact.links) { @for (item of fact.links; track $index) {
+        <a [routerLink]="target(item.link)" [queryParams]="item.link.query">{{ item.text }}</a>
+        } } @else if (fact.machines) { @for (machine of fact.machines; track machine) {
+        <app-machine-cell [id]="machine" />
+        } } @else if (fact.time !== undefined) {
+        <app-age [at]="fact.time" />
         } @else if (fact.link) {
-          <a [routerLink]="fact.link.path" [queryParams]="fact.link.query">{{ fact.text }}</a>
-        } @else {
-          {{ fact.text }}
-        }
-        @if (fact.copy && fact.text) {
-          <app-copy-icon [value]="fact.text" [label]="'Copy ' + fact.label.toLowerCase()" />
+        <a [routerLink]="target(fact.link)" [queryParams]="fact.link.query">{{ fact.text }}</a>
+        } @else { {{ fact.text }} } @if (fact.copy && fact.text) {
+        <app-copy-icon [value]="fact.text" [label]="'Copy ' + fact.label.toLowerCase()" />
         }
       </dd>
-    }
-  </dl>
-
-  @for (group of related(); track group.title) {
+      }
+    </dl>
+    } @for (group of related(); track group.title) {
     <section class="block" [attr.aria-label]="group.title">
       <h3>{{ group.title }}</h3>
       <ul class="related">
         @for (item of group.items; track $index) {
-          <li [attr.title]="item.title ?? null">
-            @if (item.link) {
-              <a [routerLink]="item.link.path" [queryParams]="item.link.query">{{ item.text }}</a>
-            } @else if (item.href) {
-              <a [href]="item.href" target="_blank" rel="noopener noreferrer">{{ item.text }} <app-glyph [paths]="open" /></a>
-            } @else {
-              {{ item.text }}
-            }
-          </li>
+        <li [attr.title]="item.title ?? null">
+          @if (item.link) {
+          <a [routerLink]="target(item.link)" [queryParams]="item.link.query">{{ item.text }}</a>
+          } @else if (item.href) {
+          <a [href]="item.href" target="_blank" rel="noopener noreferrer">{{ item.text }} <app-glyph [paths]="open" /></a>
+          } @else { {{ item.text }} }
+        </li>
         } @empty {
-          <li class="muted">None</li>
+        <li class="muted">None</li>
         }
       </ul>
     </section>
-  }
+    }
+  </div>
 
-  <ng-content />
+  <div class="main"><ng-content /></div>
 
   <section class="block actions" aria-label="Actions"><ng-content select="[panelActions]" /></section>
 
@@ -58,7 +61,7 @@
     <details class="raw" (toggle)="rawOpen.set(details.open)" #details>
       <summary>Raw data</summary>
       @if (rawOpen()) {
-        <pre>{{ json() }}</pre>
+      <pre>{{ json() }}</pre>
       }
     </details>
   </section>

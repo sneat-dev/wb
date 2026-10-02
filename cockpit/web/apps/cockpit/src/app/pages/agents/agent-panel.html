@@ -1,38 +1,16 @@
 @if (data(); as data) {
-  <app-panel-content kind="Agent" [heading]="name()" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
-    <section class="state" aria-label="State">
+  <app-panel-content kind="Agent" [heading]="name()" [facts]="facts()" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
+    <app-panel-state panelHeader [reason]="headline()">
       <app-state-badge kind="agent-state" [value]="data.agent.state" />
       @if (data.agent.activity) {
         <app-state-badge kind="agent-activity" [value]="data.agent.activity" />
       } @else {
         <span class="quiet">state not reported</span>
       }
-      <p class="why">{{ headline() }}</p>
       @if (blocked()) {
-        <p class="blocked">Blocked: waiting on you</p>
+        <p class="blocked" panelNote>Blocked: waiting on you</p>
       }
-    </section>
-
-    <dl class="facts">
-      <dt>Kind</dt>
-      <dd>{{ data.agent.kind }}</dd>
-      <dt>Runtime</dt>
-      <dd>{{ data.agent.runtime ?? 'not reported' }}</dd>
-      <dt>Model</dt>
-      <dd>{{ data.agent.model ?? 'not reported' }}</dd>
-      <dt>Machine</dt>
-      <dd>
-        <a [routerLink]="machineLink().path">{{ data.agent.machine }}</a>
-        @if (remote()) {
-          <span class="quiet">{{ source() }}</span>
-        }
-      </dd>
-      <dt>{{ data.agent.kind === 'run' ? 'Run id' : 'Session id' }}</dt>
-      <dd>
-        <code class="identifier">{{ identifier() }}</code>
-        <app-copy-icon [value]="identifier()" [label]="'Copy ' + (data.agent.kind === 'run' ? 'run' : 'session') + ' id'" />
-      </dd>
-    </dl>
+    </app-panel-state>
 
     <section class="block" aria-label="Work">
       <h3>Work</h3>
@@ -48,7 +26,7 @@
         <dt>Repository</dt>
         <dd>
           @if (repository(); as repo) {
-            <a [routerLink]="repo.link.path" [queryParams]="repo.link.query">{{ repo.slug }}</a>
+            <a [routerLink]="target(repo.link)" [queryParams]="repo.link.query">{{ repo.slug }}</a>
           } @else {
             <span class="quiet">not reported</span>
           }

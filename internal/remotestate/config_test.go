@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -268,5 +269,40 @@ func TestStoreIDNamesTheProviderThatOwnsTheStore(t *testing.T) {
 		if got := tc.config.StoreID(); got != tc.want {
 			t.Errorf("%s: StoreID() = %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+func TestLoadConfigPublishIsOptInAndOffByDefault(t *testing.T) {
+	t.Parallel()
+	cfg, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Publish.Interval != 0 || cfg.Publish.PublishEvery() != 0 || cfg.Publish.Agents || cfg.Publish.Metrics {
+		t.Fatalf("a machine that sets nothing must publish nothing by itself: %+v", cfg.Publish)
+	}
+	// A machine that set only the redaction (the way it published by hand) is the same.
+	cfg, err = LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    unpushed: counts\n"))
+	if err != nil || cfg.Publish.PublishEvery() != 0 || cfg.Publish.Agents || cfg.Publish.Metrics || cfg.Publish.Unpushed != RedactUnpushed {
+		t.Fatalf("cfg = %+v, %v", cfg.Publish, err)
+	}
+}
+
+func TestLoadConfigPublishIntervalHasAFiveMinuteMinimum(t *testing.T) {
+	t.Parallel()
+	for interval, want := range map[string]time.Duration{"1m": 5 * time.Minute, "5m": 5 * time.Minute, "10m": 10 * time.Minute, "2h": 2 * time.Hour} {
+		cfg, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    interval: "+interval+"\n    agents: true\n    metrics: true\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Publish.PublishEvery(); got != want || !cfg.Publish.Agents || !cfg.Publish.Metrics {
+			t.Errorf("interval %s: PublishEvery = %s, agents %v metrics %v", interval, got, cfg.Publish.Agents, cfg.Publish.Metrics)
+		}
+	}
+	if _, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    interval: -1m\n")); err == nil || !strings.Contains(err.Error(), "remote.publish.interval") {
+		t.Errorf("a negative interval = %v, want an error naming the key", err)
+	}
+	if _, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    interval: soon\n")); err == nil {
+		t.Error("an unparsable interval was accepted")
 	}
 }

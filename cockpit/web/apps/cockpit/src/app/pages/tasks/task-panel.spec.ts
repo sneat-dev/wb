@@ -53,10 +53,10 @@ describe('TaskPanelView', () => {
 
   it('lists the repositories of the task, each linking to its page, the machines, and the last activity', async () => {
     const root = await render('fix-ci')
-    const links = [...root.querySelectorAll('dl.facts dd.list')[0].querySelectorAll('a')]
+    const links = [...root.querySelectorAll('dl.facts dd.many')[0].querySelectorAll('a')]
     expect(links.map(text)).toEqual(['acme/r1', 'acme/r3', 'acme/r2'])
     expect(links.map((link) => link.getAttribute('href'))).toEqual(['/repositories/github.com/acme/r1', '/repositories/github.com/acme/r3', '/repositories/-/acme/r2'])
-    const machines = text(root.querySelectorAll('dl.facts dd.list')[1])
+    const machines = text(root.querySelectorAll('dl.facts dd.many')[1])
     expect(machines).toContain('alpha')
     expect(machines).toContain('2 d · stale · ssh')
     expect(text(root.querySelector('dl.facts app-age'))).toMatch(/ago|just now/)
@@ -230,6 +230,6 @@ describe('TaskPanelView', () => {
     doc.agents = []
     const root = await render('lost', doc)
     expect(text(root.querySelector('dl.facts a'))).toBe('r-gone')
-    expect(root.querySelector('dl.facts a')?.getAttribute('href')).toBe('/repositories/-/r-gone')
+    expect(root.querySelector('dl.facts a')?.getAttribute('href')).toBe('/repositories/r-gone')
   })
 })

@@ -15,15 +15,9 @@ test('the built shell loads under /cockpit/ with no console errors and no CSP vi
     const store = window as unknown as { __violations: unknown[] }
     store.__violations = []
     document.addEventListener('securitypolicyviolation', (event) => {
-      // The licence banner lives in a closed shadow root, so the event is
-      // retargeted to its host, which is in the composed path.
-      const inLicenseBanner = event
-        .composedPath()
-        .some((node) => (node as Element).id === 'p-license-host')
       store.__violations.push({
         directive: event.violatedDirective,
         blockedURI: event.blockedURI,
-        inLicenseBanner,
       })
     })
   })
@@ -77,6 +71,28 @@ test('the top bar shows the tabs, the signals, the freshness and the session, an
   await expectClean()
 })
 
+// Between a wide window and a phone the bar gives up room in a fixed order (search to its icon, then "New task" to its
+// icon, ...), and the tabs never run under a control: no two of its parts overlap and the page does not scroll sideways.
+test('the top bar fits between 1440 and 769 px wide: no part overlaps another and nothing scrolls sideways', async ({ page }) => {
+  await stub(page)
+  await page.goto('/cockpit/')
+  await expect(page.getByTestId('freshness-chip').filter({ hasText: /updated \d+ s ago/ })).toBeVisible()
+  // Left to right: the brand, the tab strip (its last tab is the one that was clipped), the search entry, "New task", the chip and the session.
+  const parts = ['.brand', '.tabs', '.palette-trigger', '.new-task', 'app-freshness-chip .chip', '.session']
+  const boxOf = async (selector: string) => (await page.locator(`app-top-bar ${selector}`).boundingBox()) as { x: number; width: number }
+  for (const width of [1440, 1330, 1200, 1100, 1024, 900, 800, 769]) {
+    await page.setViewportSize({ width, height: 800 })
+    const boxes = await Promise.all(parts.map(boxOf))
+    for (let index = 1; index < parts.length; index++) {
+      expect(boxes[index].x, `${parts[index]} starts after ${parts[index - 1]} ends, at ${width}`).toBeGreaterThanOrEqual(boxes[index - 1].x + boxes[index - 1].width)
+    }
+    const lastTab = await boxOf('.tab >> nth=-1')
+    expect(lastTab.x + lastTab.width, `the last tab is inside the strip, at ${width}`).toBeLessThanOrEqual(boxes[1].x + boxes[1].width + 0.5)
+    expect(boxes[5].x + boxes[5].width, `the session chip is inside the window, at ${width}`).toBeLessThanOrEqual(width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `no sideways scroll at ${width}`).toBe(true)
+  }
+})
+
 test('the palette opens with Control+K, groups what matches and opens the highlighted result with Enter', async ({ page }) => {
   await stub(page)
   const expectClean = await watch(page)
@@ -92,8 +108,8 @@ test('the palette opens with Control+K, groups what matches and opens the highli
   const dialog = page.getByRole('dialog', { name: 'Search' })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('combobox')).toBeFocused()
-  // Opening it needed no request.
-  expect(requestsBefore).toEqual([])
+  // Opening it needed no request (Home's machine strip polls the metrics every 10 seconds, whatever the palette does).
+  expect(requestsBefore.filter((url) => !url.includes('/machine-metrics'))).toEqual([])
 
   await dialog.getByRole('combobox').fill('cli')
   await expect(dialog.getByRole('group').first()).toBeVisible()

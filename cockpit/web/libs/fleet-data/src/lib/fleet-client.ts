@@ -1,14 +1,9 @@
 import { Injectable, InjectionToken, inject } from '@angular/core'
 import {
   AGENT_ACTIVITIES,
-  BRANCHES_PATH,
-  BranchesResponse,
   FLEET_PATH,
   FleetDocument,
-  MACHINE_METRICS_PATH,
   MERGEABLE_STATES,
-  MachineMetrics,
-  README_PATH,
   SCHEMA_VERSION,
   SESSION_PATH,
   Session,
@@ -266,38 +261,8 @@ export class FleetClient {
     return { kind: 'changed', document: cleaned.document, dropped: cleaned.dropped, etag: response.headers.get('ETag') ?? '', digest: digestOf(text) }
   }
 
-  /** The branches of one repository checkout, read lazily when a repository page or panel opens. */
-  async readBranches(repository: string): Promise<BranchesResponse> {
-    const response = await this.fetcher(`${BRANCHES_PATH}?repository=${encodeURIComponent(repository)}`, {
-      headers: { Accept: 'application/json' },
-      credentials: 'same-origin',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-    if (!response.ok) throw new FleetRequestError(response.status)
-    const body: unknown = await response.json().catch(() => null)
-    const branches = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['branches'] : undefined
-    if (!Array.isArray(branches)) throw new FleetFormatError()
-    return body as BranchesResponse
-  }
-
-  /**
-   * The samples of one machine: local history, live remote, one cached sample, or none.
-   * `signal` cancels the read (the poller does when it stops): the request is aborted and the
-   * returned promise rejects with the signal's abort error; the request timeout still applies.
-   */
-  async readMachineMetrics(machine: string, signal?: AbortSignal): Promise<MachineMetrics> {
-    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-    const response = await this.fetcher(`${MACHINE_METRICS_PATH}?machine=${encodeURIComponent(machine)}`, {
-      headers: { Accept: 'application/json' },
-      credentials: 'same-origin',
-      signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
-    })
-    if (!response.ok) throw new FleetRequestError(response.status)
-    const body: unknown = await response.json().catch(() => null)
-    const samples = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['samples'] : undefined
-    if (!Array.isArray(samples)) throw new FleetFormatError()
-    return body as MachineMetrics
-  }
+  // The three reads that only some pages make (branches, a machine's metrics, a README) are functions of the fetch in
+  // `@cockpit/fleet-data/lazy-client`, which a page imports with `import()`, so the first page does not carry them.
 
   async readSession(): Promise<Session> {
     const response = await this.fetcher(SESSION_PATH, {
@@ -307,23 +272,5 @@ export class FleetClient {
     })
     if (!response.ok) throw new FleetRequestError(response.status)
     return (await response.json()) as Session
-  }
-
-  /**
-   * Reads a repository's README as Markdown text: the owner-only route, so
-   * callers ask only with an owner session. The text is untrusted.
-   */
-  async readReadme(repository: string): Promise<string> {
-    const response = await this.fetcher(`${README_PATH}?repository=${encodeURIComponent(repository)}`, {
-      headers: { Accept: 'text/markdown' },
-      credentials: 'same-origin',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-    if (!response.ok) {
-      const body: unknown = await response.json().catch(() => null)
-      const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['error'] : undefined
-      throw new ReadmeRequestError(response.status, typeof code === 'string' ? code : '')
-    }
-    return response.text()
   }
 }

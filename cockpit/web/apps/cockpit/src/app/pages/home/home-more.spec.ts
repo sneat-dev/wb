@@ -19,7 +19,7 @@ async function render(document = fleet(), dropped = 0) {
   await vi.waitFor(async () => {
     await fixture.whenStable()
     const root: HTMLElement = fixture.nativeElement
-    if (root.querySelector('.home-lazy-slot') !== null) throw new Error('the charts have not arrived')
+    if (root.querySelector('.viewport-slot') !== null) throw new Error('the charts have not arrived')
   })
   return { fixture, root: fixture.nativeElement as HTMLElement, create }
 }

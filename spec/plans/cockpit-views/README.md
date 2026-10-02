@@ -135,7 +135,7 @@ Verification (all must pass before the task is complete): targeted `wb run -- go
 **Id:** task-5
 **Verifies:** cockpit-views#ac:periodic-publish-runs-after-a-local-scan, cockpit-views#ac:remote-snapshot-carries-optional-agents-and-metrics, cockpit-views#ac:remote-agents-are-capped
 **Depends-On:** 4
-**Status:** planning
+**Status:** complete
 
 Nothing publishes `os`, `arch`, `cpu_count` or `boot_time` yet (task 1 added the optional `remotestate.Snapshot` fields and the mapping only), and the hub conversion (`internal/remotestate/hub/conversion.go`) and `api/githubapp/machinesnapshot.Snapshot` drop or refuse them: the cached half of `machine-entries-carry-hardware-and-no-metrics` is proven only at the mapping level until this task fills them in a publisher and in the hub model. Publish this machine's snapshot from the daemon after a successful local scan by the existing `wb remote publish` path, only when `remote.publish.interval` is set (opt-in, minimum 5 minutes), retrying at the next interval and never delaying the local snapshot. Publish agents (at most 200) only with `remote.publish.agents: true` and metrics only with `remote.publish.metrics: true`; a publisher refused with 400 by an older hub retries once without the optional fields and records a diagnostic. Add the optional `agents`, `metrics` and machine hardware fields to `remotestate.Snapshot` without changing `schema_version`, prove an older decoder ignores them, and extend the hub provider's snapshot model (`api/githubapp/machinesnapshot.Snapshot`, decoded with unknown fields refused) in this task to accept and store them. Show another machine's agents in the fleet document as `cached` with the snapshot's age and serve its snapshot sample as the `cached` source of the metrics route. Update `spec/features/remote-state/README.md` behaviour is already specified; this task implements it. Which remote store is the shared one is an open question and does not block.
 
@@ -245,7 +245,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-15
 **Verifies:** cockpit-views#ac:tasks-list-aggregates-worktrees, cockpit-views#ac:task-detail-shows-its-entities, cockpit-views#ac:worktree-identity-cell, cockpit-views#ac:worktrees-columns-and-badges, cockpit-views#ac:worktrees-quick-filters, cockpit-views#ac:default-sorts
 **Depends-On:** 12, 13
-**Status:** planning
+**Status:** complete
 
 Build the Tasks page (state badge column, chips) with the task panel and `/tasks/detail?task=<name>`, and the Worktrees page (identity cell, conditional Branch column, sync badges for this machine, chips including `safe` and `look`) with its panel. Place the action slots and the "Copy command" lists for worktree, task, pull request and branch (the commands of REQ:copy-the-command). These pages do not edit the routes, tabs or shared fixtures.
 
@@ -311,7 +311,10 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 - Which remote store is the fleet's shared one (the Mac reads the git store, the VM
   publishes to its own hub) is undecided; periodic publish uses what each machine has
   configured, as the fallback for machines without an SSH route.
-- The PrimeUI licence key is a pending founder decision outside this plan.
+- The published metrics sample can be up to 6 hours old on an idle machine (the keepalive
+  publishes it; the digest ignores it): follow-up, not built. A reader shows its age, and one older
+  than 24 hours is not served; whether an idle machine should republish its sample more often is
+  undecided.
 - Whether Stop and Reply for hand-started sessions should be built on herdr prompts is
   undecided.
 - Whether the owner process liveness of every local worktree is cheap enough for the

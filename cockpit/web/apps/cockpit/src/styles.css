@@ -153,7 +153,7 @@
   text-align: center;
 }
 
-/* A table that needs no component library: Home's tables, until Home is rebuilt. Same look as the PrimeNG tables. */
+/* A table that needs no component library: Home's tables, until Home is rebuilt. */
 .plain-table {
   width: 100%;
   border-collapse: separate;

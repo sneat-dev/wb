@@ -828,7 +828,13 @@ func (s *Snapshotter) appendCached(document *Document, hidden map[string]bool, f
 		document.Repositories = append(document.Repositories, s.remote.repositories...)
 		document.Worktrees = append(document.Worktrees, s.remote.worktrees...)
 		document.PullRequests = append(document.PullRequests, pulls...)
+		document.Agents = append(document.Agents, s.remote.agents...)
 		return
+	}
+	for _, agent := range s.remote.agents {
+		if !hidden[agent.MachineID] {
+			document.Agents = append(document.Agents, agent)
+		}
 	}
 	for _, machine := range s.remote.machines {
 		if hidden[machine.ID] {

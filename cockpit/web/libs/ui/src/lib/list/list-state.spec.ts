@@ -96,14 +96,30 @@ describe('visibleColumns', () => {
     expect(visibleColumns([column('a', { empty: () => true })], []).map((c) => c.id)).toEqual(['a'])
   })
 
-  it('shows at most seven, dropping the lowest keep first and the later one among equals', () => {
+  // cockpit-views#ac:columns-are-few-and-uniform-ones-hidden
+  it('shows at most seven by default, dropping the lowest keep first and the later one among equals', () => {
     expect(MAX_COLUMNS).toBe(7)
     const columns = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((id) => column(id))
     expect(visibleColumns(columns, [1]).map((c) => c.id)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
-    const kept = [column('a'), column('b', { priority: 1 }), column('c', { priority: 1 }), column('d'), column('e')]
-    expect(visibleColumns(kept, [1], 3).map((c) => c.id)).toEqual(['a', 'd', 'e'])
-    expect(visibleColumns(kept, [1], 4).map((c) => c.id)).toEqual(['a', 'b', 'd', 'e'])
-    expect(visibleColumns([column('a', { priority: 9 }), column('b')], [1], 1).map((c) => c.id)).toEqual(['a'])
+    // A column that declares no priority is held to the cap; the one that declares 9 stays.
+    expect(visibleColumns([column('a', { priority: 9 }), column('b'), column('c')], [1], 1).map((c) => c.id)).toEqual(['a'])
+    // The cap drops b (1) and then the later of the equal ones, e; b declared a priority, so it is left to fitColumns.
+    const mixed = [column('a'), column('b', { priority: 1 }), column('c'), column('d'), column('e')]
+    expect(visibleColumns(mixed, [1], 3).map((c) => c.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  // cockpit-views#ac:columns-are-few-and-uniform-ones-hidden
+  it('lets columns that declare a priority go past seven, for fitColumns to hide as the list narrows, and does not count a chrome cell', () => {
+    const declared = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((id, index) => column(id, { priority: index + 1 }))
+    expect(visibleColumns(declared, [1]).map((c) => c.id)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'])
+    // Eight undeclared columns and an actions cell: the cap holds the eight to seven, and the cell is the eighth thing shown.
+    const plain = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((id) => column(id))
+    const withChrome = [...plain, column('links', { chrome: true })]
+    expect(visibleColumns(withChrome, [1]).map((c) => c.id)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'links'])
+    // A page that declares priorities shows all of them while the list is wide enough, and the lowest go as it narrows.
+    const wide = declared.map((c) => ({ ...c, width: 100, min: 100 }))
+    expect(fitColumns(visibleColumns(wide, [1]), 1000).columns.map((c) => c.id)).toHaveLength(8)
+    expect(fitColumns(visibleColumns(wide, [1]), 600).columns.map((c) => c.id)).toEqual(['d', 'e', 'f', 'g', 'h'])
   })
 })
 

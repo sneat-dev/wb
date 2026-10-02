@@ -18,7 +18,7 @@ const DAY = 24 * 60 * 60 * 1000
 const ago = (days: number) => new Date(NOW - days * DAY).toISOString()
 
 const COLUMNS: ListColumn<Worktree>[] = [
-  { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 3, min: 100, value: (w) => w.task },
+  { id: 'worktree', header: 'Worktree', title: true, sort: 'worktree', width: 'fill', grow: 3, min: 100, value: (w) => w.task },
   { id: 'branch', header: 'Branch', width: 'fill', value: (w) => w.branch, empty: (w) => w.branch === w.task, priority: 1, hint: 'The branch' },
   { id: 'machine', header: 'Machine', sort: 'machine', width: 90, priority: 2, align: 'end', value: (w) => w.machine },
   { id: 'activity', header: 'Last activity', sort: 'activity', width: 100 },
@@ -80,7 +80,22 @@ class PlainHost {
   protected readonly columns = COLUMNS
 }
 
-type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost
+const FOOTER_COLUMNS: ListColumn<Worktree>[] = [...COLUMNS, { id: 'links', header: 'Links', width: 40, chrome: true }]
+
+/** A page that tells the list what `c` copies, adds notes under the rows and has an actions cell. */
+@Component({
+  imports: [ListView, ListCell],
+  template: `<app-list page="worktrees" [columns]="columns" [copyValue]="copyValue">
+    <ng-template appCell="worktree" let-w><a class="task" href="/somewhere">{{ w.task }}</a></ng-template>
+    <p listFooter class="page-note">showing the first 200</p>
+  </app-list>`,
+})
+class FooterHost {
+  protected readonly columns = FOOTER_COLUMNS
+  protected readonly copyValue = (w: Worktree) => `id:${w.id}`
+}
+
+type AHost = typeof Host | typeof NoPanelHost | typeof PlainHost | typeof PrefixHost | typeof FooterHost
 
 function documentOf(): FleetDocument {
   return fleetDocument({
@@ -213,6 +228,8 @@ describe('ListView', () => {
     expect(columns.map((header) => header.getAttribute('aria-sort'))).toEqual(['none', null, 'none', 'descending'])
     expect(columns[1].getAttribute('title')).toBe('The branch')
     expect(columns[2].classList.contains('end')).toBe(true)
+    // A `title` header is the page's visible title; the others are not.
+    expect(columns.map((header) => header.classList.contains('title'))).toEqual([true, false, false, false])
     // The tracks: a fill column is minmax(min, grow fr), a fixed one takes up to its width, and the open-page cell is reserved.
     const grid = (page.root.querySelector('.viewport') as HTMLElement).style.getPropertyValue('--cols')
     expect(grid).toBe('minmax(100px, 3fr) minmax(0px, 1fr) minmax(90px, 90px) minmax(100px, 100px) 32px')
@@ -634,6 +651,20 @@ describe('ListView', () => {
     keydown(page.viewport, 'c')
     await vi.waitFor(() => expect(text(page.root.querySelector('section > [role=status]'))).toBe('Copy failed'))
     expect(page.root.querySelectorAll('.row [role=status]')).toHaveLength(0)
+  })
+
+  // The page may say what c copies, and may put notes under the rows (the Agents page).
+  it('copies what the page says with c, shows the page\'s notes under the rows, and draws an actions cell\'s header for assistive technology only', async () => {
+    const copy = vi.fn(async () => true)
+    const page = await open('/list', { copy, host: FooterHost })
+    page.viewport.focus()
+    keydown(page.viewport, 'c')
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledWith('id:w2'))
+    await vi.waitFor(() => expect(text(page.root.querySelector('section > [role=status]'))).toBe('Copied id:w2'))
+    expect(text(page.root.querySelector('.footer .page-note'))).toBe('showing the first 200')
+    const links = headers(page.root).find((header) => text(header) === 'Links') as HTMLElement
+    expect(links.querySelector('.visually-hidden')?.textContent).toBe('Links')
+    expect(links.querySelector('button')).toBeNull()
   })
 
   it('stops at the first and last row, and leaves keys that are not its own alone', async () => {

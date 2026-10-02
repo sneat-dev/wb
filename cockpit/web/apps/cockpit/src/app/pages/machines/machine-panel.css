@@ -3,21 +3,6 @@
   min-width: 0;
 }
 
-.state {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-3);
-  align-items: center;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-sunken);
-}
-
-.reach {
-  font-weight: var(--fw-semibold);
-}
-
 .mark {
   padding: 0 6px;
   border: 1px solid var(--idle-border);
@@ -104,15 +89,12 @@ p {
 
 /* The charts' place keeps the height they will take (one column in a narrow panel, two in a wide page), so they arrive without moving anything. */
 .charts {
+  --viewport-slot-height: 44rem;
   container-type: inline-size;
 }
 
-.charts ::ng-deep .home-lazy-slot {
-  height: 44rem;
-}
-
 @container (min-width: 40rem) {
-  .charts ::ng-deep .home-lazy-slot {
-    height: 22rem;
+  .charts {
+    --viewport-slot-height: 22rem;
   }
 }

@@ -45,7 +45,7 @@ describe('RepositoryDetailPage', () => {
     expect(root.querySelector('.back a')?.getAttribute('href')).toBe('/repositories')
     expect(fetcher).not.toHaveBeenCalled()
     await settle(harness.fixture, () => root.querySelectorAll('.skeleton').length === 3)
-    expect(fetcher).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
     expect((fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/api/v1/cockpit/branches?repository=r1')
     release(new Response(JSON.stringify({ branches: [{ id: 'b1', machine: 'alpha', machine_id: 'mach-alpha', route: 'local', repository: 'r1', name: 'main', scope: 'local' }] })))
     await settle(harness.fixture, () => root.querySelector('.branches .branch-name') !== null)

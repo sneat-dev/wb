@@ -73,6 +73,24 @@ func sentinelSources() *fakeSources {
 	// The machine's hardware facts are fields the document may show.
 	entry.Snapshot.OS, entry.Snapshot.Arch, entry.Snapshot.CPUCount, entry.Snapshot.BootTime = "linux", "arm64", 8, published
 	entry.Snapshot.KnownRepositories = []string{"acme/gadgets"}
+	// The optional agents and sample are fields the document may show, each only
+	// where it is plain, in its closed set or a known measurement: the first
+	// agent is clean, the second carries a sentinel in every field the document
+	// must refuse (an out-of-set activity and a repository it has no entry of;
+	// its free-text fields are cleaned, so they hold none), and the sample's
+	// time and one measurement are all that is given (a sentinel number is out
+	// of range and dropped).
+	hostile := func(label string) string { return sentinel + label + " /Users/x HOME=/y" } // fails every pattern and rule
+	entry.Snapshot.Agents = []remotestate.AgentState{
+		{Kind: "session", SessionID: "wbs-remote", Runtime: "claude", Model: "opus", State: "live", Activity: "idle", Task: "task-x", Repository: "acme/gadgets", StartedAt: published},
+		// Every non-identifying string carries a sentinel that fails its rule: the
+		// agent is kept and each of those fields is blanked.
+		{Kind: "run", RunID: "agt-remote", State: "running", Runtime: hostile("runtime"), Model: hostile("model"), Activity: hostile("activity"), Task: hostile("task"), Repository: hostile("repository")},
+		// An identifying field that fails drops the whole agent.
+		{Kind: "run", RunID: hostile("run_id"), State: "running", Runtime: "dropped-runtime"},
+		{Kind: hostile("kind"), State: "running", Runtime: "dropped-runtime"},
+	}
+	entry.Snapshot.Metrics = &remotestate.MetricsSample{Load1: ptr(1.5), MemoryUsedBytes: ptr(uint64(1)), MemoryTotalBytes: ptr(uint64(2)), DiskFreeBytes: ptr(uint64(3)), DiskTotalBytes: ptr(uint64(4)), CPUPercent: ptr(float64(sentinelNumber)), SampledAt: published}
 	state := &entry.Snapshot.Worktrees[0]
 	state.Task, state.Stream, state.Repository, state.Branch = "task-x", "stream-x", "acme/gadgets", "feature/x"
 	state.Lifecycle, state.OwnerState = "working", "orphaned"
@@ -211,7 +229,7 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
 		`"route":"live-remote"`, `"transport":"http"`, `"remote_error":"http_unavailable"`, `"machine":"vm"`, `"machine":"broken"`,
-		`"desktop"`, `"v0.9.0"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"desktop"`, `"v0.9.0"`, `"wbs-remote"`, `"agt-remote"`, `"route":"cached"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)
@@ -230,7 +248,7 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"Throughput":       {"window_days", "per_day", "slowest", "median_seconds", "p90_seconds", "capped"},
 		"ThroughputDay":    {"date", "finished", "dropped", "landed"},
 		"ThroughputTask":   {"task", "duration_seconds", "landed_at"},
-		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time", "transport", "remote_error", "export_dropped", "agents_truncated"}, entry...),
+		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time", "transport", "remote_error", "export_dropped", "publish_error", "agents_truncated"}, entry...),
 		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
 		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
 		"Branch":           append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),

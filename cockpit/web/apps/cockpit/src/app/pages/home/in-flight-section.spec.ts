@@ -31,7 +31,7 @@ describe('flightRows', () => {
       ['vm-blocked', 'claude opus', 'migrate-auth', true, false],
     ])
     expect(rows.map((row) => row.runningFor)).toEqual(['35 min', '2 h', '39 min', '1 h 10 min'])
-    expect(rows[0].link).toEqual({ path: '/agents/run-speed', query: {} })
+    expect(rows[0].link).toEqual({ path: '/agents/run-speed', query: {}, commands: ['/agents', 'run-speed'] })
   })
 
   it('says "session" when a session has no start and no task, and has no running time or machine words for what it does not know', () => {

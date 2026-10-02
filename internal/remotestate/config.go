@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -20,7 +21,10 @@ const ConfigSnippet = `remote:
   repo: <owner>/<name>
   machine: <unique-name-for-this-machine>
   publish:
-    unpushed: subjects   # or: counts`
+    unpushed: subjects   # or: counts
+    # interval: 15m      # opt in: the daemon publishes after a local scan, at most this often (minimum 5m)
+    # agents: false      # opt in: include this machine's agents (runtime, model, task, state)
+    # metrics: false     # opt in: include this machine's latest CPU, memory and disk sample`
 
 // HubConfigSnippet is the explicit hosted alternative. It has no anonymous or
 // insecure default and defaults to privacy-safe unpushed counts.
@@ -32,9 +36,33 @@ const HubConfigSnippet = `remote:
   publish:
     unpushed: counts`
 
-// PublishConfig tunes what a snapshot contains.
+// MinPublishInterval is the shortest time between two periodic publishes; a
+// shorter remote.publish.interval is raised to it.
+const MinPublishInterval = 5 * time.Minute
+
+// PublishConfig tunes what a snapshot contains and whether the daemon
+// publishes it by itself. Every field but Unpushed is opt-in and off when
+// unset (cockpit-views#req:periodic-remote-publish).
 type PublishConfig struct {
 	Unpushed Redaction `yaml:"unpushed"`
+	// Interval, when positive, makes the daemon publish after a successful
+	// local scan, never more often than this (at least MinPublishInterval).
+	// Unset or zero: the daemon never publishes.
+	Interval time.Duration `yaml:"interval"`
+	// Agents adds this machine's agents to the snapshot and Metrics its latest
+	// sample; both default to false. Only the daemon's periodic publish has
+	// them (it holds the agents and the sampler); `wb remote publish` does not.
+	Agents  bool `yaml:"agents"`
+	Metrics bool `yaml:"metrics"`
+}
+
+// PublishEvery is the interval the daemon publishes at: zero for never, else
+// the configured interval raised to MinPublishInterval.
+func (c PublishConfig) PublishEvery() time.Duration {
+	if c.Interval <= 0 {
+		return 0
+	}
+	return max(c.Interval, MinPublishInterval)
 }
 
 // Config is the remote section of ~/.config/wb/wb.yaml.
@@ -155,6 +183,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if !machineName.MatchString(cfg.Machine) {
 		return Config{}, fmt.Errorf("remote.machine %q must start with a letter or digit and contain only letters, digits, dots, underscores, or dashes", cfg.Machine)
+	}
+	if cfg.Publish.Interval < 0 {
+		return Config{}, fmt.Errorf("remote.publish.interval %s must not be negative; leave it unset to publish only by hand", cfg.Publish.Interval)
 	}
 	if cfg.Publish.Unpushed != RedactNone && cfg.Publish.Unpushed != RedactUnpushed {
 		return Config{}, fmt.Errorf("remote.publish.unpushed %q must be %q or %q", cfg.Publish.Unpushed, RedactNone, RedactUnpushed)

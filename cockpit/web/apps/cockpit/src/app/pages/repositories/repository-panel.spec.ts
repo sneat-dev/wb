@@ -61,7 +61,7 @@ async function render(key: string, options: { document?: FleetDocument; session?
   return { fixture, root: fixture.nativeElement as HTMLElement, store }
 }
 
-const facts = (root: HTMLElement) => Object.fromEntries([...root.querySelectorAll('article.content > dl.facts > dt')].map((term) => [text(term), term.nextElementSibling as HTMLElement]))
+const facts = (root: HTMLElement) => Object.fromEntries([...root.querySelectorAll('article.content > .aside > dl.facts > dt')].map((term) => [text(term), term.nextElementSibling as HTMLElement]))
 
 describe('RepositoryPanelView', () => {
   it('renders nothing for a repository the document does not list', async () => {
@@ -101,7 +101,8 @@ describe('RepositoryPanelView', () => {
     const oddFacts = facts(odd.root)
     expect(Object.keys(oddFacts)).not.toContain('Host')
     expect(text(oddFacts['Branches'])).toBe('not reported')
-    expect(text(oddFacts['Running agents'])).toBe('not reported')
+    // Whole lists and a checkout of this machine: no agent is a real zero, not an absence.
+    expect(text(oddFacts['Running agents'])).toBe('0')
     expect(text(oddFacts['Code index'])).toBe('not reported')
     expect(text(oddFacts['Last activity'])).toBe('not reported')
     expect(oddFacts['Worktrees'].querySelector('a')).toBeNull()

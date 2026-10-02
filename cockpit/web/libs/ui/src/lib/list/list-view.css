@@ -73,6 +73,13 @@
   text-align: end;
 }
 
+.title,
+.title .sort {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+}
+
 .sort {
   display: inline-flex;
   gap: var(--space-1);
@@ -191,4 +198,14 @@
 .gone {
   margin: 0;
   color: var(--text-2);
+}
+
+/* The page's notes under the rows take no space while there are none. */
+.footer:not(:has(*)) {
+  display: none;
+}
+
+.footer {
+  color: var(--text-2);
+  font-size: var(--fs-xs);
 }

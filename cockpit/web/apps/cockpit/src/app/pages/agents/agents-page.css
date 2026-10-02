@@ -21,10 +21,11 @@
   white-space: nowrap;
 }
 
-/* The label keeps about 22 characters before it truncates; what it works on is muted and truncates first. */
+/* The label is as wide as its text and truncates only when what it works on has no room left; the task and the repository after it share the free width and truncate first. */
 .name {
-  flex: 0 1 auto;
-  min-width: min(22ch, 100%);
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-width: 0;
   color: var(--text);
   font-weight: var(--fw-semibold);
 }
@@ -43,8 +44,7 @@
 }
 
 .task {
-  flex: none;
-  max-width: 14rem;
+  flex: 0 1 auto;
 }
 
 .state app-state-badge {

@@ -104,8 +104,7 @@ async function watch(page: Page, expectedStatus?: number) {
     const store = window as unknown as { __violations: unknown[] }
     store.__violations = []
     document.addEventListener('securitypolicyviolation', (event) => {
-      const inLicenseBanner = event.composedPath().some((node) => (node as Element).id === 'p-license-host')
-      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI, inLicenseBanner })
+      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI })
     })
   })
   return async () => {

@@ -22,7 +22,7 @@
   </ng-template>
   <ng-template appCell="machines" let-r>
     @if (chipsOf(r); as chips) {
-      <span class="chips">
+      <span class="chips" [appFitChips]="chips.shown.length + ':' + chips.more">
         @for (chip of chips.shown; track chip.id) {
           <a class="machine" [class.stale]="chip.stale" [routerLink]="[]" [queryParams]="{ sel: r.id }" queryParamsHandling="merge" [fragment]="'machine-' + chip.id" [attr.title]="chip.title">
             <span class="machine-name">{{ chip.name }}</span>
@@ -55,13 +55,21 @@
   </ng-template>
   <ng-template appCell="agents" let-r>
     @let agents = cellsOf(r).agents;
-    @if (!agents.zero) {
+    @if (agents.value === undefined) {
+      <span class="quiet" title="Not reported: no machine says whether agents run here">—</span>
+    } @else if (agents.zero) {
+      <span class="quiet tnum" title="No running agents">0</span>
+    } @else {
       <app-count-link [value]="agents.value" [link]="agents.link" />
     }
   </ng-template>
   <ng-template appCell="prs" let-r>
     @let prs = cellsOf(r).prs;
-    @if (!prs.zero) {
+    @if (prs.value === undefined) {
+      <span class="quiet" title="Not reported: no machine says whether pull requests are open here">—</span>
+    } @else if (prs.zero) {
+      <span class="quiet tnum" title="No open pull requests">0</span>
+    } @else {
       <app-count-link [value]="prs.value" [link]="prs.link" />
     }
   </ng-template>
