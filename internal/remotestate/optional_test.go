@@ -155,6 +155,10 @@ func TestMetricsAndHardwareAreMadeFitBeforeTheyAreSent(t *testing.T) {
 	if got.Metrics == nil || got.Metrics.CPUPercent != nil || got.Metrics.Load1 != nil || got.Metrics.MemoryUsedBytes != nil || got.Metrics.DiskFreeBytes == nil {
 		t.Errorf("sample = %+v", got.Metrics)
 	}
+	over := base.WithExtras(Extras{Metrics: &MetricsSample{SampledAt: now, DiskFreeBytes: u64(9), DiskTotalBytes: u64(2), Load1: f64(1)}}, false, true)
+	if over.Metrics == nil || over.Metrics.DiskFreeBytes != nil || over.Metrics.DiskTotalBytes != nil || over.Metrics.Load1 == nil {
+		t.Errorf("a disk figure above its total was kept: %+v", over.Metrics)
+	}
 	hardware := Snapshot{OS: "dar win/../x", Arch: "arm64", CPUCount: 1 << 20, BootTime: now.Add(24 * time.Hour)}.CleanHardware()
 	if hardware.OS != "" || hardware.Arch != "arm64" || hardware.CPUCount != 0 || !hardware.BootTime.IsZero() {
 		t.Errorf("hardware = %+v", hardware)
