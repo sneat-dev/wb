@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,9 +113,13 @@ func TestAnOversizedPublishedSnapshotIsCutAtTheLiveCaps(t *testing.T) {
 	var many []remotestate.Entry
 	for index := range maxCachedMachines + 3 {
 		many = append(many, remotestate.Entry{Snapshot: remotestate.Snapshot{
-			Login: "a", Machine: fmt.Sprintf("m%03d", index), PublishedAt: now.Add(-time.Duration(index+1) * time.Minute),
+			Login: "a", Machine: fmt.Sprintf("m%03d", index), PublishedAt: now.Add(-time.Duration((index+1)/2) * time.Minute),
 		}})
 	}
+	// Two machines that published in the same minute are told apart by their
+	// key, whatever order the store lists them in: the last one kept and the
+	// first one cut are such a pair.
+	slices.Reverse(many)
 	crowd := mapRemoteForTest("", "", many)
 	if len(crowd.machines) != maxCachedMachines || crowd.machinesCut != 3 {
 		t.Fatalf("%d machines kept, %d cut", len(crowd.machines), crowd.machinesCut)
