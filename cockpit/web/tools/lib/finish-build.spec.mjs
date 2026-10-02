@@ -4,9 +4,14 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { gunzipSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
-import { FIRST_PAGE_ENTRY, GALLERY_MARKERS, INITIAL_SCRIPT_BUDGET, NONCE_PLACEHOLDER, finishBuild, galleryLeaks, firstPageScripts, initialScripts, precompress, scriptBudget } from './finish-build.mjs'
+import { FIRST_PAGE_ENTRY, GALLERY_MARKERS, HOME_BUDGET, NONCE_PLACEHOLDER, ROUTE_BUDGET, finishBuild, galleryLeaks, firstPageScripts, initialScripts, precompress } from './finish-build.mjs'
+import { routeBudgets } from './route-budgets.mjs'
 
 let dist
+
+// The routes source of a build that has only Home: the page route whose entry is FIRST_PAGE_ENTRY.
+const ROUTES = "export const pageRoutes = [{ ...page('', 'Home', () => import('./pages/home/home-page').then((m) => m.HomePage)), pathMatch: 'full' }]"
+const build = (log = () => {}, report = () => {}) => finishBuild(dist, log, report, ROUTES)
 
 beforeEach(() => {
   dist = mkdtempSync(join(tmpdir(), 'finish-build-'))
@@ -56,7 +61,7 @@ function writeApplication({ mainBytes = 1000, homeBytes = 500, primeBytes = 700,
 it('restores the placeholder file and succeeds for a good build', () => {
   writeApplication()
   const lines = []
-  expect(finishBuild(dist, (line) => lines.push(line))).toBe(0)
+  expect(build((line) => lines.push(line))).toBe(0)
   expect(existsSync(join(dist, '.gitkeep'))).toBe(true)
   expect(existsSync(join(dist, 'stats.json'))).toBe(false)
   expect(lines).toEqual([])
@@ -65,14 +70,14 @@ it('restores the placeholder file and succeeds for a good build', () => {
 it('fails naming the entry document when the build emitted none', () => {
   mkdirSync(dist, { recursive: true })
   const lines = []
-  expect(finishBuild(dist, (line) => lines.push(line))).toBe(1)
+  expect(build((line) => lines.push(line))).toBe(1)
   expect(lines.join('')).toContain('dist/index.html')
 })
 
 it('fails naming the placeholder when the entry document lost it', () => {
   writeFileSync(join(dist, 'index.html'), '<app-root></app-root>')
   const lines = []
-  expect(finishBuild(dist, (line) => lines.push(line))).toBe(1)
+  expect(build((line) => lines.push(line))).toBe(1)
   expect(lines.join('')).toContain('__CSP_NONCE__')
   expect(existsSync(join(dist, '.gitkeep'))).toBe(false)
 })
@@ -84,7 +89,7 @@ it('compresses every text asset beside the original and leaves the rest', () => 
   writeFileSync(join(dist, 'font.woff2'), 'binary'.repeat(200))
   writeFileSync(join(dist, 'main-ABC.js.map'), 'm'.repeat(500))
   mkdirSync(join(dist, 'folder.js'))
-  expect(finishBuild(dist, () => {})).toBe(0)
+  expect(build()).toBe(0)
   expect(gunzipSync(readFileSync(join(dist, 'chunk-LIB.js.gz'))).toString()).toBe('l'.repeat(300))
   expect(existsSync(join(dist, 'media', 'logo.svg.gz'))).toBe(true)
   for (const skipped of ['index.html.gz', 'font.woff2.gz', 'main-ABC.js.map.gz', 'folder.js.gz']) {
@@ -117,45 +122,49 @@ it('counts for the first page the initial scripts, the page, what it imports and
     files: ['chunk-DEEP.js', 'chunk-HOME.js', 'chunk-LIB.js', 'chunk-PRIME.js', 'chunk-SHARED.js', 'chunk-SIDE.js', 'main-ABC.js'],
     problems: [],
   })
-  const budget = scriptBudget(dist)
+  const budget = routeBudgets(dist, ROUTES)
   expect(budget.problems).toEqual([])
-  expect(budget.initial.total).toBeLessThan(budget.firstPage.total)
-  expect(budget.firstPage.total).toBeLessThan(6000)
-  expect(budget.budget).toBe(INITIAL_SCRIPT_BUDGET)
-  expect(INITIAL_SCRIPT_BUDGET).toBe(350_000)
+  expect(budget.initialBytes).toBeLessThan(budget.rows[0].bytes)
+  expect(budget.rows[0].bytes).toBeLessThan(6000)
+  expect(budget.rows[0].budget).toBe(HOME_BUDGET)
+  expect([HOME_BUDGET, ROUTE_BUDGET]).toEqual([350_000, 500_000])
 })
 
-it('reports both numbers and succeeds within the budget', () => {
+it('prints the table of every route and succeeds within the budget', () => {
   writeApplication()
   const lines = []
-  expect(finishBuild(dist, () => {}, (line) => lines.push(line))).toBe(0)
-  expect(lines).toHaveLength(1)
-  expect(lines[0]).toMatch(/^initial static JavaScript \d+\.\d\d kB; first page \(Home\) \d+\.\d\d kB of 350\.00 kB \(/)
+  expect(build(() => {}, (line) => lines.push(line))).toBe(0)
+  expect(lines).toHaveLength(3)
+  expect(lines[0]).toMatch(/^first-page JavaScript per route \(the initial static \d+\.\d\d kB is in every figure\)$/)
+  expect(lines[2]).toMatch(/^\/ +\d+\.\d\d kB +350\.00 kB +\d+% +ok$/)
 })
 
-it('fails the build, naming the files, when the first page is over the budget, even if the initial scripts are not', () => {
-  writeApplication({ primeBytes: INITIAL_SCRIPT_BUDGET })
+it('fails the build, naming the route and the files, when the first page is over the budget, even if the initial scripts are not', () => {
+  writeApplication({ primeBytes: HOME_BUDGET })
   const failures = []
-  expect(scriptBudget(dist).initial.total).toBeLessThan(INITIAL_SCRIPT_BUDGET)
-  expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+  const lines = []
+  expect(routeBudgets(dist, ROUTES).initialBytes).toBeLessThan(HOME_BUDGET)
+  expect(build((line) => failures.push(line), (line) => lines.push(line))).toBe(1)
+  expect(failures.join('')).toContain('/ first-page JavaScript')
   expect(failures.join('')).toContain('over the budget of 350.00 kB')
   expect(failures.join('')).toContain('chunk-PRIME.js')
+  expect(lines.at(-1)).toMatch(/OVER$/)
   expect(existsSync(join(dist, '.gitkeep'))).toBe(false)
 })
 
 it('passes at exactly the budget', () => {
   writeApplication({ mainBytes: 0 })
-  const base = scriptBudget(dist).firstPage.total
-  writeApplication({ mainBytes: INITIAL_SCRIPT_BUDGET - base })
-  expect(scriptBudget(dist).firstPage.total).toBe(INITIAL_SCRIPT_BUDGET)
-  expect(finishBuild(dist, () => {})).toBe(0)
+  const base = routeBudgets(dist, ROUTES).rows[0].bytes
+  writeApplication({ mainBytes: HOME_BUDGET - base })
+  expect(routeBudgets(dist, ROUTES).rows[0].bytes).toBe(HOME_BUDGET)
+  expect(build()).toBe(0)
 })
 
 describe('failing closed', () => {
   it('fails for a script the document names but the build did not emit', () => {
     writeApplication({ extraIndex: '<script src="main-GONE.js" type="module"></script>' })
     const failures = []
-    expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+    expect(build((line) => failures.push(line))).toBe(1)
     expect(failures.join('')).toContain('main-GONE.js')
   })
 
@@ -177,14 +186,14 @@ describe('failing closed', () => {
   it('fails when the document loads no script', () => {
     writeFileSync(join(dist, 'index.html'), `<app-root ngCspNonce="${NONCE_PLACEHOLDER}"></app-root>`)
     const failures = []
-    expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+    expect(build((line) => failures.push(line))).toBe(1)
     expect(failures.join('')).toContain('loads no script')
   })
 
   it('fails without the build metafile, and when no output is the first page', () => {
     writeApplication({ stats: false })
     const failures = []
-    expect(finishBuild(dist, (line) => failures.push(line))).toBe(1)
+    expect(build((line) => failures.push(line))).toBe(1)
     expect(failures.join('')).toContain('stats.json')
     writeApplication()
     writeFileSync(join(dist, 'stats.json'), JSON.stringify({ outputs: { 'main-ABC.js': {} } }))
@@ -210,7 +219,7 @@ describe('the gallery of the preview build', () => {
     writeApplication()
     writeFileSync(join(dist, 'chunk-G1.js'), 'selector:"app-gallery"')
     const messages = []
-    expect(finishBuild(dist, (message) => messages.push(message))).toBe(1)
+    expect(build((message) => messages.push(message))).toBe(1)
     expect(messages.join(' ')).toContain('chunk-G1.js')
     expect(messages.join(' ')).toContain('gallery')
   })
