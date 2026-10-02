@@ -39,6 +39,19 @@ func TestE2ELegacyRepositoryRelocationRefusesMissingLiveProof(t *testing.T) {
 	gitTest(t, fixture.canonical, "commit", "-m", "feature-only")
 	feature := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	check("not contained", "no longer contained", func(e *ListResult) { e.HeadSHA = feature })
+	// A rebase-merged pull request's original head is by definition not an
+	// ancestor of the target: the merged-pull-request proof already verified
+	// the landing, so containment by ancestry is not required of it.
+	for label, mutate := range map[string]func(*ListResult){
+		"rebase-merged": func(e *ListResult) { e.HeadSHA = feature; e.RebaseMergedAtOrigin = true },
+		"absorbed":      func(e *ListResult) { e.HeadSHA = feature; e.AbsorbedAtOrigin = true },
+	} {
+		candidate := entry
+		mutate(&candidate)
+		if _, err := legacyRepositoryRelocationForCleanup(context.Background(), fixture.home, fixture.projectsRoot, candidate, false, nil); err != nil && strings.Contains(err.Error(), "no longer contained") {
+			t.Fatalf("%s head was refused for ancestry although the landing is proved: %v", label, err)
+		}
+	}
 	proved, err := legacyRepositoryRelocationForCleanup(context.Background(), fixture.home, fixture.projectsRoot, entry, false, nil)
 	if err != nil || proved {
 		t.Fatalf("absent local projection: proof=%t err=%v", proved, err)
@@ -235,6 +248,33 @@ func TestE2ELegacyRepositoryRelocationReplaysExactIntentBeforeReceipt(t *testing
 	proved, err = legacyRepositoryRelocationForCleanup(ctx, fixture.home, fixture.projectsRoot, fixture.entry, true, nil)
 	if err != nil || proved {
 		t.Fatalf("completed replay must be a no-op: proof=%t err=%v", proved, err)
+	}
+}
+
+// A rebase-merged pull request's original head is never an ancestor of the
+// target (the merge replayed its commits), so a relocated checkout of one must
+// be provable by its merged-pull-request evidence instead of by ancestry
+// (the datatug/datatug incidentius-domain-honesty case, #814 class).
+//
+//nolint:paralleltest // the native transfer fixture sets process-wide Git environment.
+func TestE2ELegacyRepositoryRelocationProvesARebaseMergedHeadWithoutAncestry(t *testing.T) {
+	fixture := newRelocationLegacyProofFixture(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(fixture.moved, "rebased.txt"), []byte("replayed by the rebase merge\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.moved, "add", "rebased.txt")
+	gitTest(t, fixture.moved, "commit", "-m", "original head, replayed on the target by a rebase merge")
+	original := gitTestOutput(t, fixture.moved, "rev-parse", "HEAD")
+
+	entry := fixture.entry
+	entry.HeadSHA = original // the target stays at the base: the original head is not its ancestor
+	if proved, err := legacyRepositoryRelocationForCleanup(ctx, fixture.home, fixture.projectsRoot, entry, false, nil); proved || err == nil || !strings.Contains(err.Error(), "no longer contained") {
+		t.Fatalf("an unproved head that is not on the target must still be refused: proof=%t err=%v", proved, err)
+	}
+	entry.RebaseMergedAtOrigin = true
+	if proved, err := legacyRepositoryRelocationForCleanup(ctx, fixture.home, fixture.projectsRoot, entry, false, nil); err != nil || !proved {
+		t.Fatalf("a rebase-merged head proved by its merged pull request: proof=%t err=%v", proved, err)
 	}
 }
 
