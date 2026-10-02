@@ -66,6 +66,12 @@ func (r *shellReader) read() []segment {
 			r.readDoubleQuoted()
 		case '\n':
 			r.index++
+			if r.pipePending() {
+				// `a |` then a newline continues the pipeline: the next line
+				// is still the other end of the pipe.
+				r.consumeHeredocBodies()
+				continue
+			}
 			r.endSegment("\n")
 			r.consumeHeredocBodies()
 		case '<':
@@ -116,6 +122,13 @@ func (r *shellReader) read() []segment {
 	}
 	r.endSegment("")
 	return r.segments
+}
+
+// pipePending reports whether the reader is between a pipe operator and the
+// command it feeds: nothing has been read since the operator.
+func (r *shellReader) pipePending() bool {
+	return !r.hasWord && len(r.current.Words) == 0 && len(r.current.RedirectTargets) == 0 &&
+		(r.current.Separator == "|" || r.current.Separator == "|&")
 }
 
 func (r *shellReader) readEscape() {
@@ -221,6 +234,11 @@ func (r *shellReader) readOperator() {
 	r.index++
 	if r.index < len(r.input) && r.input[r.index] == character && character != ';' {
 		operator += string(character)
+		r.index++
+	} else if character == '|' && r.index < len(r.input) && r.input[r.index] == '&' {
+		// `|&` pipes stderr as well as stdout; it is a pipe, not a pipe
+		// followed by a background operator.
+		operator = "|&"
 		r.index++
 	}
 	// A lone & backgrounds the command rather than joining two; either way it

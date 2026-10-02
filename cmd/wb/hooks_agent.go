@@ -226,6 +226,16 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     not that the call ran. The hook process's own ambient environment is
     never read, so a value set ahead of time cannot silently cover a whole
     session.
+  - Masked exit status (Bash): refuses a state-changing wb verb ('create',
+    'land', 'pr create', 'pr land', 'worktree create'/'land'/'merge', and a
+    'worktree cleanup'/'gc' with --apply, among others) whose output is piped
+    into another command ('|' or '|&', including '2>&1 |', through a path to
+    wb, inside a subshell, '$( )' or a 'bash -c' payload). A pipeline reports
+    only its last command's status, so the verb's refusal exits 0 and an '&&'
+    chain runs on (sneat-dev/wb#813). Fix: drop the pipe and use '--quiet'
+    (outcome and refusals only), or 'set -o pipefail' / read PIPESTATUS in
+    the same command. A read-only verb, a verb that ends its pipeline, and any
+    other program are allowed. There is no override.
 
 A 'specscore'/'go'/'npm'/'pnpm'/'yarn'/'bun' invocation is never refused for
 naming a write verb when its own words are shaped as a genuine help request

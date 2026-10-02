@@ -2335,6 +2335,16 @@ verbs of known generators (`specscore … new`, `go mod tidy`, `pnpm install`,
 `gofmt -w`) run with the clone as the working directory; and any Git invocation
 that disables the repository's managed hooks.
 
+It also refuses one construct that is not a write: a state-changing wb verb
+whose output is piped into another command (`wb worktree create … 2>&1 | tail
+-1 && …`). A pipeline reports only its last command's exit status, so the
+verb's refusal exits 0 and the `&&` chain runs on; on 2026-10-02 that opened a
+duplicate pull request. The remedy is `--quiet` on the verb (outcome and
+refusals only, no progress) instead of a pipe, or `set -o pipefail` earlier in
+the same command. Read-only verbs, a verb that ends its pipeline
+(`printf … | wb worktree create … --original-prompt-file -`), and other
+programs are not affected, and there is no override.
+
 Bash detection is deliberately partial and documented as such in
 `internal/agentguard/bash.go`. It models no shell expansion, so a working
 directory reached through a variable and a file written by a script inside a

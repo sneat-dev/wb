@@ -89,13 +89,17 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 // hands the whole line to the rewrite, so the gh pr merge chained after it —
 // and any other real deny later on the line — was never reached. This scan
 // runs first and, if it finds anything, deny wins outright: inspectBashCall
-// never even considers a rewrite.
+// never even considers a rewrite. It also carries the masked-exit-status
+// policy (pipeline.go), which needs the whole command line at once.
 func inspectBashDenyOnly(command, sessionCwd, projectsRoot string) *finding {
 	workingDirectory := ""
 	if absolute, ok := absolutePath(sessionCwd); ok {
 		workingDirectory = absolute
 	}
-	return inspectBashDepth(command, workingDirectory, projectsRoot, 0, false, true)
+	if result := inspectBashDepth(command, workingDirectory, projectsRoot, 0, false, true); result != nil {
+		return result
+	}
+	return inspectMaskedPipelines(command)
 }
 
 // programName is the name every recogniser is keyed by: the last path
