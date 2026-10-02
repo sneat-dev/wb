@@ -396,7 +396,10 @@ state it read in the background from another machine over its configured HTTP ro
 over SSH as the fallback
 ([cockpit-views](../cockpit-views/README.md)#req:remote-ssh-fetch), and `cached` for
 state read from another machine's published snapshot. A `cached` entry's
-`observed_at` is the snapshot's publish time, and a `live-remote` entry's is the
+`observed_at` is the snapshot's publish time, taken as now when it is ahead of this machine's clock
+by 60 seconds or less. A snapshot published more than 60 seconds in the future is observed at an
+unknown time (`observed_at` is absent): the application shows it as stale, never as fresh, and the
+cap on cached machines cuts it before any snapshot with a known time. A `live-remote` entry's is the
 remote snapshot's time. The application MUST show the
 route and the age of every `cached` entry and MUST NOT render cached state as
 live.
@@ -721,6 +724,15 @@ Scenario: One repository, two worktrees, a pull request, a session and a remote 
 Given a projects root with one repository that has two WB worktrees, one of them with recorded open pull request evidence, one registered agent session, and a remote-state snapshot published by a second machine
 When the fleet read model is requested
 Then it lists both machines, the repository with a worktree count of two, both worktrees and their branches with route `local`, the pull request tied to its worktree, the session among agents, every entry with a stable `id`, and the second machine's entries with route `cached` and `observed_at` equal to the snapshot's publish time
+
+### AC: future-dated-snapshot-is-unknown-and-stale
+
+**Requirements:** cockpit#req:route-and-freshness-are-explicit
+
+Scenario: A snapshot that claims to be from the future
+Given published snapshots of a full complement of machines, and one more published a year ahead of this machine's clock, and another published 30 seconds ahead
+When the fleet read model is built
+Then the one a year ahead has no `observed_at`, shows as stale and is the one the machine cap cuts, and the one 30 seconds ahead is observed at now
 
 ### AC: request-does-not-scan
 
