@@ -52,8 +52,8 @@ const CHIP_TEXT: { [P in ListPageId]: Record<ChipsOf<P>, ChipText> } = {
   worktrees: {
     active: ['Active', 'An agent or process owns it now'],
     orphaned: ['Orphaned', 'Its owner process is gone'],
-    unpushed: ['Unpushed', 'It has commits that are not pushed (ahead of its upstream)'],
-    gone: ['Upstream gone', 'The upstream branch it tracked was deleted'],
+    unpushed: ['Unpushed', 'It has commits that are not pushed (ahead of its upstream). Known for this machine only: a worktree read from another machine is never counted'],
+    gone: ['Upstream gone', 'The upstream branch it tracked was deleted. Known for this machine only: a worktree read from another machine is never counted'],
     pr: ['Has pull request', 'A pull request is attached to its branch'],
     idle30: ['Idle 30 days', 'No activity for more than 30 days'],
     safe: ['Safe to remove', 'Counted as safe to remove by the Cleanup line of Home (indicative)'],
@@ -88,7 +88,16 @@ const DEFAULT_SORT: Readonly<Record<ListPageId, PageVocabulary['defaultSort']>> 
 function page(id: ListPageId): PageVocabulary {
   const rules: PageRules = PAGE_RULES[id]
   const text: Readonly<Record<string, ChipText>> = CHIP_TEXT[id]
-  return { ...rules, bare: BARE[id], chips: rules.chips.map((chip): Chip => ({ id: chip, label: text[chip][0], hint: text[chip][1] })), defaultSort: DEFAULT_SORT[id] }
+  return {
+    ...rules,
+    bare: BARE[id],
+    chips: rules.chips.map((chip): Chip => ({
+      id: chip,
+      label: text[chip][0],
+      hint: text[chip][1],
+    })),
+    defaultSort: DEFAULT_SORT[id],
+  }
 }
 
 export const VOCABULARY: Readonly<Record<ListPageId, PageVocabulary>> = {

@@ -127,6 +127,10 @@ describe('WorktreesPage', () => {
   it('has the chips of the vocabulary, and each leaves exactly the worktrees that satisfy it', async () => {
     const { root } = await openPage('/worktrees', WorktreesPage, documentOf())
     expect([...root.querySelectorAll('[aria-label="Quick filters"] button')]).toHaveLength(VOCABULARY.worktrees.chips.length)
+    // The chips that count sync facts say that they cover this machine only (REQ:worktrees-list).
+    const title = (label: string) => ([...root.querySelectorAll('[aria-label="Quick filters"] button')].find((chip) => chip.textContent?.trim() === label) as Element).getAttribute('title')
+    expect(title('Unpushed')).toContain('this machine only')
+    expect(title('Upstream gone')).toContain('this machine only')
     const expected: Record<string, string[]> = {
       active: ['fix-ci'],
       orphaned: ['zeta'],

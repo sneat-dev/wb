@@ -2,7 +2,7 @@ import { LinkResult, agentsBadgeLink, machineAgentsLink, machineRepositoriesLink
 import { DESC_FIRST, SEL_KEYS, VOCABULARY, chipOf, defaultDirection } from './filter-vocabulary'
 import { AGE_TERMS } from './matcher'
 import { TASK_STATE_IDS } from './task-state'
-import { AppLink, encodeListItem, CODE_INDEX_STATES, HOME_PATH, LIST_PAGES, PAGE_RULES, agentDetailLink, ageLink, chipLink, declaredFields, hrefOf, isChip, linkProblems, listLink, listQueryParams, machineDetailLink, machineLink, repositoryDetailLink, selectionLink, stateLink, taskDetailLink, worktreeDetailLink } from './vocabulary'
+import { AppLink, encodeListItem, CODE_INDEX_STATES, HOME_PATH, LIST_PAGES, PAGE_RULES, agentDetailLink, ageLink, chipLink, declaredFields, hrefOf, isChip, linkTarget, linkProblems, listLink, listQueryParams, machineDetailLink, machineLink, repositoryDetailLink, selectionLink, stateLink, taskDetailLink, worktreeDetailLink } from './vocabulary'
 
 describe('the vocabulary table', () => {
   // cockpit-views#ac:filter-vocabulary-is-the-only-link-target
@@ -212,5 +212,48 @@ describe('link builders', () => {
     // A `day:` term is plain text now, never a vocabulary term.
     expect(linkProblems({ path: '/worktrees', query: { q: 'day:2026-10-01' } })).toEqual([])
     expect(linkProblems({ path: '/tasks', query: { q: '-state:landed task:x' } })).toEqual([])
+  })
+})
+
+describe('detail addresses', () => {
+  // The router encodes the segments of router commands itself: a string path given to routerLink would be encoded a second time.
+  const IDS = ['plain', 'a/b', 'a b', '100%', 'é/ü ß', 'x?y#z;w', '%2F']
+
+  it('carries, for an id in the path, the encoded path once and the same address as router commands, whatever the id', () => {
+    for (const id of IDS) {
+      for (const [make, root] of [
+        [agentDetailLink, '/agents'],
+        [machineDetailLink, '/machines'],
+        [worktreeDetailLink, '/worktrees'],
+      ] as const) {
+        const link = make(id)
+        expect(link.path, id).toBe(`${root}/${encodeURIComponent(id)}`)
+        expect(link.commands, id).toEqual([root, id])
+        expect(linkTarget(link), id).toEqual([root, id])
+        // Decoded once, the path is the id again.
+        expect(decodeURIComponent(link.path.slice(root.length + 1)), id).toBe(id)
+      }
+    }
+    expect(linkTarget({ path: '/tasks', query: {} })).toBe('/tasks')
+    expect(linkTarget(taskDetailLink('fix/ci 100%'))).toBe('/tasks/detail')
+  })
+
+  it('addresses a repository by host, owner and name, and one that is not owner/name by its entry id', () => {
+    expect(repositoryDetailLink('github.com', 'a/b')).toEqual({ path: '/repositories/github.com/a/b', query: {}, commands: ['/repositories', 'github.com', 'a', 'b'] })
+    expect(repositoryDetailLink(undefined, 'a/b').commands).toEqual(['/repositories', '-', 'a', 'b'])
+    expect(repositoryDetailLink('github.com', 'a/b', 'r 1').path).toBe('/repositories/github.com/a/b')
+    const gitlab = repositoryDetailLink('gitlab.com', 'group/sub/project', 'r/1 é')
+    expect(gitlab.path).toBe('/repositories/r%2F1%20%C3%A9')
+    expect(gitlab.commands).toEqual(['/repositories', 'r/1 é'])
+    expect(repositoryDetailLink('gitlab.com', 'solo', 'solo-1').path).toBe('/repositories/solo-1')
+    // Without an id there is nothing better than the host path.
+    expect(repositoryDetailLink('gitlab.com', 'group/sub/project').path).toBe('/repositories/gitlab.com/group/sub/project')
+  })
+
+  // cockpit-views#ac:worktrees-columns-and-badges
+  it('says, for the chips that only this machine can know, that they cover this machine only', () => {
+    for (const id of ['unpushed', 'gone']) {
+      expect(chipOf('worktrees', id)?.hint, id).toContain('this machine only')
+    }
   })
 })

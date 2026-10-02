@@ -40,7 +40,7 @@ export function detailOf(page: ListPageId, item: unknown): AppLink {
     case 'tasks':
       return taskDetailLink((item as TaskView).name)
     case 'repositories':
-      return repositoryDetailLink((item as MergedRepository).host, (item as MergedRepository).slug)
+      return repositoryDetailLink((item as MergedRepository).host, (item as MergedRepository).slug, (item as MergedRepository).id)
     case 'worktrees':
       return worktreeDetailLink((item as Worktree).id)
     case 'agents':
@@ -48,6 +48,14 @@ export function detailOf(page: ListPageId, item: unknown): AppLink {
     case 'machines':
       return machineDetailLink((item as MachineView).machine.id)
   }
+}
+
+/**
+ * What `c` copies for a row by default: its name, except for an agent, whose id (a run's id, else the session's)
+ * is what a command wants and whose label ("claude · opus") is not worth copying.
+ */
+export function copyOf(page: ListPageId, item: unknown): string {
+  return page === 'agents' ? ((item as Agent).run_id ?? (item as Agent).id) : nameOf(page, item)
 }
 
 /** The name of an entity that `c` copies: a task, a branch's worktree, a repository, an agent's title, a machine. */

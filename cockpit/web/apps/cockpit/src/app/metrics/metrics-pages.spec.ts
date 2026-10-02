@@ -10,6 +10,9 @@ import { METRICS_INTERVAL_MS } from './metrics-poller'
 
 // cockpit-views#ac:metrics-poll-only-while-visible: Home, then Repositories, then Machines, 30 seconds each.
 describe('machine metrics polling on the pages', () => {
+  // The poller loads the lazy client on its first read: load it now, so the fake clock below is not waiting on a module.
+  beforeAll(async () => void (await import('@cockpit/fleet-data/lazy-client')))
+
   const requests: string[] = []
 
   beforeEach(() => {
@@ -19,7 +22,9 @@ describe('machine metrics polling on the pages', () => {
       requests.push(String(input))
       return new Response(JSON.stringify({ machine: 'x', route: 'local', samples: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
-    TestBed.configureTestingModule({ providers: [provideRouter(appRoutes, withComponentInputBinding()), { provide: FETCH, useValue: fetcher }, { provide: LIST_SHORTCUTS, useExisting: Shortcuts }] })
+    TestBed.configureTestingModule({
+      providers: [provideRouter(appRoutes, withComponentInputBinding()), { provide: FETCH, useValue: fetcher }, { provide: LIST_SHORTCUTS, useExisting: Shortcuts }],
+    })
     const store = TestBed.inject(FleetStore)
     store.loaded.set(true)
     store.document.set(fleetDocument())

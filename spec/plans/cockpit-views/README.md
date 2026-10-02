@@ -245,7 +245,7 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 **Id:** task-15
 **Verifies:** cockpit-views#ac:tasks-list-aggregates-worktrees, cockpit-views#ac:task-detail-shows-its-entities, cockpit-views#ac:worktree-identity-cell, cockpit-views#ac:worktrees-columns-and-badges, cockpit-views#ac:worktrees-quick-filters, cockpit-views#ac:default-sorts
 **Depends-On:** 12, 13
-**Status:** planning
+**Status:** complete
 
 Build the Tasks page (state badge column, chips) with the task panel and `/tasks/detail?task=<name>`, and the Worktrees page (identity cell, conditional Branch column, sync badges for this machine, chips including `safe` and `look`) with its panel. Place the action slots and the "Copy command" lists for worktree, task, pull request and branch (the commands of REQ:copy-the-command). These pages do not edit the routes, tabs or shared fixtures.
 
@@ -315,7 +315,6 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
   publishes it; the digest ignores it): follow-up, not built. A reader shows its age, and one older
   than 24 hours is not served; whether an idle machine should republish its sample more often is
   undecided.
-- The PrimeUI licence key is a pending founder decision outside this plan.
 - Whether Stop and Reply for hand-started sessions should be built on herdr prompts is
   undecided.
 - Whether the owner process liveness of every local worktree is cheap enough for the

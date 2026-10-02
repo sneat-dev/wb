@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { AppLink, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, chipLink, formatAge } from '@cockpit/fleet-data'
+import { AppLink, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, chipLink, formatAge, linkTarget } from '@cockpit/fleet-data'
 import { GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { isoOf } from './home-format'
@@ -70,6 +70,7 @@ export function flightRows(model: FleetModel): FlightRow[] {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class InFlightSection {
+  protected readonly target = linkTarget
   readonly model = input.required<FleetModel>()
   /** The daemon's first scan is still running: an empty section is not yet an answer. */
   readonly warming = input(false)

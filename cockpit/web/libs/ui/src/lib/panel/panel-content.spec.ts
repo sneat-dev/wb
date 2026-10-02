@@ -3,13 +3,26 @@ import { TestBed } from '@angular/core/testing'
 import { provideRouter } from '@angular/router'
 import { ClipboardWriter } from '../control/clipboard'
 import { PanelCommand, taskDetailLink } from '@cockpit/fleet-data'
+import { agentDetailLink } from '@cockpit/fleet-data'
 import { PanelContent } from './panel-content'
+import { PanelState } from './panel-state'
 
 @Component({
   imports: [PanelContent],
   template: `<app-panel-content kind="Worktree" heading="fix-ci"><p class="extra">extra</p><button panelActions>Land</button></app-panel-content>`,
 })
 class Host {}
+
+@Component({
+  imports: [PanelContent, PanelState],
+  template: `<app-panel-content kind="Task" heading="fix-ci" [facts]="facts">
+    <div panelHeader><app-panel-state [reason]="reason"><b class="badge">ready</b><p panelNote class="note">As reported by vm</p></app-panel-state></div>
+  </app-panel-content>`,
+})
+class HeaderHost {
+  protected readonly reason = 'Ready to land: 1 pull request green and mergeable'
+  protected readonly facts = [{ label: 'Last activity', text: '—' }]
+}
 
 const COMMANDS: PanelCommand[] = [
   { title: 'List worktrees', command: { ok: true, text: "wb worktree list 'fix-ci'", needsEdit: false } },
@@ -138,5 +151,48 @@ describe('PanelContent', () => {
   it('has no commands section when there are none', async () => {
     const { root } = await render({})
     expect(root.querySelector('[aria-label="Copy command"]')).toBeNull()
+  })
+
+  it('keeps the summary in one block and what the page projects in another, and splits them into two columns only on a wide detail page', async () => {
+    const one = await render({ facts: [{ label: 'OS', text: 'darwin' }], related: [{ title: 'Agents', items: [] }] })
+    expect(one.root.querySelector('.content')?.classList.contains('split')).toBe(false)
+    expect(one.root.classList.contains('split')).toBe(false)
+    const panel = await render({ facts: [{ label: 'OS', text: 'darwin' }], split: true })
+    expect(panel.root.querySelector('.content')?.classList.contains('split')).toBe(false)
+    const wide = await render({ facts: [{ label: 'OS', text: 'darwin' }], page: true, split: true })
+    expect(wide.root.classList.contains('split')).toBe(true)
+    expect(wide.root.querySelector('.content')?.classList.contains('split')).toBe(true)
+    expect(wide.root.querySelector('.content > .aside > dl.facts')).not.toBeNull()
+    expect(wide.root.querySelector('.content > .main')).not.toBeNull()
+  })
+
+  // The state and why, above the facts: the task panel and the agent panel both put their header here.
+  it('projects a header above the facts, in the one state header (badges, one line of words and a note), and takes no room for one that is absent', async () => {
+    const fixture = TestBed.createComponent(HeaderHost)
+    await fixture.whenStable()
+    const root = fixture.nativeElement as HTMLElement
+    const header = root.querySelector('.header-slot') as HTMLElement
+    expect(text(header.querySelector('.why'))).toBe('Ready to land: 1 pull request green and mergeable')
+    expect(text(header.querySelector('.badge'))).toBe('ready')
+    expect(text(header.querySelector('.note'))).toBe('As reported by vm')
+    expect(header.nextElementSibling?.tagName).toBe('DL')
+    expect(header.parentElement?.previousElementSibling?.tagName).toBe('HEADER')
+    const plain = await render({})
+    expect(plain.root.querySelector('.header-slot')?.children).toHaveLength(0)
+  })
+
+  it('has no facts list when there are no facts, and shows a fact with several links and one with machines', async () => {
+    const none = await render({})
+    expect(none.root.querySelector('dl')).toBeNull()
+    const { root } = await render({
+      facts: [
+        { label: 'Repositories', text: '', links: [{ text: 'a/b', link: agentDetailLink('x/y') }, { text: 'c/d', link: taskDetailLink('t') }] },
+        { label: 'Machines', text: '', machines: ['mach-alpha', 'mach-beta'] },
+      ],
+    })
+    const links = [...root.querySelectorAll('dd.many')[0].querySelectorAll('a')]
+    expect(links.map(text)).toEqual(['a/b', 'c/d'])
+    expect(links[0].getAttribute('href')).toBe('/agents/x%2Fy')
+    expect(root.querySelectorAll('dd.many')[1].querySelectorAll('app-machine-cell')).toHaveLength(2)
   })
 })

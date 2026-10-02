@@ -64,6 +64,8 @@ test('filter, chip, select, panel, detail route and back keep each state, with t
   await expect(listRows(page).filter({ hasText: 'gamma' })).toContainText('stale')
   await expect(listRows(page).filter({ hasText: 'gamma' })).toContainText('warning: its daemon is not running')
   await expect(listRows(page).filter({ hasText: 'alpha' }).locator('.meter')).toHaveCount(2)
+  await expect(page.getByRole('columnheader', { name: 'CPU' })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: 'Memory' })).toBeVisible()
   await expect(listRows(page).filter({ hasText: 'gamma' }).locator('.meter')).toHaveCount(0)
   await expect(listRows(page).filter({ hasText: 'gamma' })).toContainText('load unknown')
 
@@ -102,7 +104,7 @@ test('filter, chip, select, panel, detail route and back keep each state, with t
   await expect(content.locator('app-machine-charts canvas')).toHaveCount(4)
   await expect(content.locator('app-machine-charts .title')).toHaveText(['CPU', 'Load (1 minute)', 'Memory used', 'Disk free'])
   await expect(content.locator('section').last()).toHaveAttribute('aria-label', 'Raw data')
-  await expect(content.locator('[aria-label="Counts"] a').first()).toHaveAttribute('href', '/cockpit/repositories?machine=mach-alpha')
+  await expect(content.locator('[aria-label="On this machine"] a').first()).toHaveAttribute('href', '/cockpit/repositories?machine=mach-alpha')
   await expect(page.getByRole('link', { name: /Machines/ }).first()).toBeVisible()
 
   // Back restores the list and the selection.
@@ -110,6 +112,32 @@ test('filter, chip, select, panel, detail route and back keep each state, with t
   await expect(page).toHaveURL(/sel=mach-alpha/)
   await expect(page.getByRole('complementary').getByRole('heading', { level: 2 })).toHaveText('alpha')
   await expectClean()
+})
+
+// cockpit-views#ac:machine-detail-metrics-charts
+test('the machine page is two columns when it is wide (facts and related entities beside the charts) and one when it is narrow, and the side panel is one column', async ({ page }) => {
+  await stubMachines(page)
+  const boxes = async () => {
+    const aside = await page.locator('app-machine-panel .aside').boundingBox()
+    const main = await page.locator('app-machine-panel .main').boundingBox()
+    return { aside: aside as NonNullable<typeof aside>, main: main as NonNullable<typeof main> }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/cockpit/machines/mach-alpha')
+  await expect(page.locator('app-machine-charts canvas')).toHaveCount(4)
+  expect(await page.locator('app-machine-panel .content').evaluate((element) => getComputedStyle(element).display)).toBe('grid')
+  const wide = await boxes()
+  expect(wide.main.x).toBeGreaterThan(wide.aside.x + wide.aside.width - 1)
+  expect(Math.abs(wide.main.y - wide.aside.y)).toBeLessThan(2)
+  await expect(page.locator('app-machine-panel .aside')).toContainText('On this machine')
+  await expect(page.locator('app-machine-panel .main')).toContainText('Metrics')
+  await page.setViewportSize({ width: 800, height: 900 })
+  expect(await page.locator('app-machine-panel .content').evaluate((element) => getComputedStyle(element).display)).toBe('flex')
+  // The side panel of the list is always one column.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/cockpit/machines?sel=mach-alpha')
+  const panel = await page.locator('app-machine-panel .content').evaluate((element) => getComputedStyle(element).display)
+  expect(panel).toBe('flex')
 })
 
 // cockpit-views#ac:machine-without-metrics-says-so, remote-error-is-visible

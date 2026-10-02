@@ -42,7 +42,7 @@ const noncePlaceholder = "__CSP_NONCE__"
 // PolicyFor is the content security policy of every response under MountPath.
 // Scripts come only from the daemon's own origin: no unsafe-inline, no
 // unsafe-eval. Styles come from the own origin plus the response's nonce, which
-// covers the style elements Angular and PrimeNG inject at run time; style
+// covers the style elements Angular injects at run time; style
 // attributes in markup are not allowed. Images come only from the own origin
 // (no data: URL, no foreign origin), so content that names an image elsewhere
 // makes no request. Framing is limited to the own origin.

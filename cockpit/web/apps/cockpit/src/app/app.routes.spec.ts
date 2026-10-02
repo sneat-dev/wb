@@ -39,7 +39,7 @@ describe('pageRoutes', () => {
     }
   })
 
-  it('loads each page lazily, with no route that provides PrimeNG', async () => {
+  it('loads each page lazily, with no lazy child routes', async () => {
     const lazy = pageRoutes.filter((route): route is Route => route.loadComponent !== undefined)
     expect(pageRoutes.filter((route) => route.loadChildren !== undefined)).toEqual([])
     expect(lazy.map((route) => route.path)).toEqual(['', 'tasks', 'tasks/new', 'tasks/detail', 'repositories', 'repositories/:host/:owner/:name', 'repositories/:id', 'worktrees', 'worktrees/:id', 'agents', 'agents/:id', 'machines', 'machines/:id'])

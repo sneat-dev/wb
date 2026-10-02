@@ -87,7 +87,7 @@ describe('AgentPanelView', () => {
   it('labels an agent of another machine with that machine and its age, and offers it no command', async () => {
     const { panel } = await open('s-beta')
     expect(facts(panel)['Machine']).toContain('beta')
-    expect(facts(panel)['Machine']).toContain('cached, 5 h ago')
+    expect(facts(panel)['Source']).toContain('cached, 5 h ago')
     expect(facts(panel)['Runtime']).toBe('codex')
     expect(facts(panel)['Model']).toBe('not reported')
     expect(panel.querySelector('app-action-slot')).toBeNull()

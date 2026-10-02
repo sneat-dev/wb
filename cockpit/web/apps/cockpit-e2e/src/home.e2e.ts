@@ -117,7 +117,7 @@ test('the charts are canvases that are drawn, and fetched, only when they scroll
   await expect(page.getByRole('region', { name: /^Fleet health|^Cleanup/ }).first()).toBeAttached()
   await expect(page.getByRole('heading', { level: 2, name: 'Throughput' })).toBeAttached()
   // The charts' own slot stands where they will be, with nothing fetched for them yet.
-  await expect(page.locator('.home-lazy-slot')).toBeAttached()
+  await expect(page.locator('.viewport-slot')).toBeAttached()
   await expect(page.locator('app-home-charts')).toHaveCount(0)
   expect(await page.locator('canvas').count()).toBe(0)
   const before = scripts.size

@@ -1,12 +1,19 @@
-import { TestBed } from '@angular/core/testing'
+import { ComponentFixture, TestBed } from '@angular/core/testing'
 import { ID_PREFIX, MAX_PARSED_CHARACTERS } from './markdown-dom'
 import * as parser from 'marked'
 import { ReadmeContent } from './readme-content'
 
+/** The renderer is fetched when a README is first shown: wait for it to have drawn, then for the view to follow. */
+async function drawn(fixture: ComponentFixture<ReadmeContent>) {
+  await fixture.whenStable()
+  await new Promise((done) => setTimeout(done))
+  await fixture.whenStable()
+}
+
 async function render(source: string) {
   const fixture = TestBed.createComponent(ReadmeContent)
   fixture.componentRef.setInput('source', source)
-  await fixture.whenStable()
+  await drawn(fixture)
   return { fixture, root: fixture.nativeElement as HTMLElement }
 }
 
@@ -16,9 +23,21 @@ describe('ReadmeContent', () => {
     expect(root.querySelector('article.readme-content h4')?.textContent).toBe('Title')
     expect(root.querySelector('.readme-failed')).toBeNull()
     fixture.componentRef.setInput('source', 'Other.\n')
-    await fixture.whenStable()
+    await drawn(fixture)
     expect(root.querySelector('h4')).toBeNull()
     expect(root.querySelector('p')?.textContent).toBe('Other.')
+  })
+
+  it('drops a source that was replaced before the renderer had drawn it', async () => {
+    const fixture = TestBed.createComponent(ReadmeContent)
+    fixture.componentRef.setInput('source', '# First\n')
+    fixture.detectChanges()
+    // The renderer is on its way for the first source when the second arrives.
+    fixture.componentRef.setInput('source', '# Second\n')
+    fixture.detectChanges()
+    await drawn(fixture)
+    const root = fixture.nativeElement as HTMLElement
+    expect([...root.querySelectorAll('h4')].map((heading) => heading.textContent)).toEqual(['Second'])
   })
 
   // cockpit#ac:hostile-readme-is-inert
@@ -64,7 +83,7 @@ describe('ReadmeContent', () => {
     expect(root.querySelector('article')?.childNodes).toHaveLength(0)
     lex.mockRestore()
     fixture.componentRef.setInput('source', 'fine')
-    await fixture.whenStable()
+    await drawn(fixture)
     expect(root.querySelector('.readme-failed')).toBeNull()
     expect(root.querySelector('p')?.textContent).toBe('fine')
   })
@@ -78,7 +97,7 @@ describe('ReadmeContent', () => {
     expect(root.querySelector('article > pre')?.textContent).toBe(big)
     expect(root.querySelector('b, h4')).toBeNull()
     fixture.componentRef.setInput('source', '# Small\n')
-    await fixture.whenStable()
+    await drawn(fixture)
     expect(root.querySelector('.readme-notice')).toBeNull()
     expect(root.querySelector('h4')?.textContent).toBe('Small')
     lex.mockRestore()

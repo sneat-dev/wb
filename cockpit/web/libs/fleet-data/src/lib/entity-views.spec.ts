@@ -83,6 +83,25 @@ describe('entity panels', () => {
     expect(ghost?.commands[0].command).toMatchObject({ ok: true, text: "wb worktree list 'ghost'" })
   })
 
+  // cockpit-views#ac:task-detail-shows-its-entities
+  it('puts the commands that change something, and the land command of each open pull request, in the panel of a task decided on this machine, and withholds them from one that only another machine reports', () => {
+    const local = buildTaskPanel(modelOf(), 'fix-ci')
+    expect(local?.commands.map((c) => c.title)).toEqual(['List worktrees', 'Commit and open pull request', 'Plan cleanup (dry run)', 'Land sneat-dev/wb#12'])
+    expect(local?.commands[3].command).toMatchObject({ ok: true, text: expect.stringContaining('pr land') })
+    const base = modelOf().document
+    const remoteDocument = {
+      ...base,
+      worktrees: [{ ...worktree('w9', 'r3', 'vm'), route: 'cached' as const, task: 'only-there', branch: 'task/only-there', owner_state: 'idle' as const, ahead: 0, last_activity_at: ago(2) }],
+      pull_requests: [{ ...pullRequest('p9', 'r3', 'w9', { number: 9 }), route: 'cached' as const, machine: 'vm', machine_id: 'mach-vm' }],
+      agents: [],
+    }
+    const model = new FleetModel(remoteDocument, { now: () => NOW })
+    expect(model.taskNamed('only-there')?.stateSource).toBe('remote')
+    const remote = buildTaskPanel(model, 'only-there')
+    expect(remote?.commands.map((c) => c.title)).toEqual(['List worktrees', 'Plan cleanup (dry run)'])
+    expect(remote?.commands.every((c) => !c.command.ok || !/pr (create|land)/.test(c.command.text))).toBe(true)
+  })
+
   it('has a repository panel with its checkouts, related entities and the placeholder commands', () => {
     const panel = buildRepositoryPanel(modelOf(), 'sneat-dev/wb')
     expect(panel?.summary.checkouts.map((c) => c.machine)).toEqual(['alpha', 'vm'])

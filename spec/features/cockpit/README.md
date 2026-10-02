@@ -96,11 +96,12 @@ section. The existing routes — `/`, `/metrics`, `/coverage`, `/api/v1/*`,
 
 #### REQ: embedded-application
 
-The application is an Angular 22 project using PrimeNG 22 and the Angular
+The application is an Angular 22 project using the Angular
 CDK, kept at `cockpit/web`, with Vitest for unit tests and Playwright for
 end-to-end tests. This is the stack of the CodeGrapher web UI, chosen so its
-components can be reused (founder, 2026-10-01). Only PrimeNG's open-source
-components are used; no paid template or block. It MUST NOT use React. Its production build is
+components can be reused (founder, 2026-10-01). It has no component library
+of its own, and no paid template or block (PrimeNG and its licence banner were
+removed once no page used it). It MUST NOT use React. Its production build is
 embedded in the wb binary at release time, so running Cockpit needs neither
 Node nor a network connection. A wb built from source without that build
 MUST serve a one-line page saying Cockpit was not built and how to build it,
@@ -464,8 +465,8 @@ not a regular file is not served.
 Every response under `/cockpit/` MUST carry a content security policy that
 allows scripts only from the daemon's own origin, with no `unsafe-inline` and
 no `unsafe-eval`, and forbids framing by another origin. Styles are allowed
-from the daemon's own origin and, for the style elements Angular and PrimeNG
-inject at run time, through a nonce issued per response; `unsafe-inline` is
+from the daemon's own origin and, for the style elements Angular injects
+at run time, through a nonce issued per response; `unsafe-inline` is
 not used for styles either.
 
 ### Test coverage

@@ -1,5 +1,5 @@
 // The control surface (badges, chips, copy commands, action slot, sign-in card). Its own entry point,
-// never the barrel (index.ts), which carries the PrimeNG-based components.
+// never the barrel (index.ts).
 export * from './lib/control/glyph'
 export * from './lib/control/glyphs'
 export * from './lib/control/state-vocabulary'

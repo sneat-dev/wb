@@ -63,10 +63,6 @@ app-home-more {
   }
 }
 
-.home-lazy-slot {
-  min-height: 13rem;
-}
-
 .chart-legend {
   display: flex;
   gap: var(--space-2);

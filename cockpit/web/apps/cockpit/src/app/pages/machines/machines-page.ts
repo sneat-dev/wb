@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
 import { ActivatedRoute, RouterLink } from '@angular/router'
-import { FleetStore, MachineView, machineDetailLink, machineLoad } from '@cockpit/fleet-data'
+import { FleetStore, MachineView, linkTarget, machineDetailLink, machineLoad } from '@cockpit/fleet-data'
 import { machineAgentsLink, machineRepositoriesLink, machineWorktreesLink, parseListQuery } from '@cockpit/fleet-data/list'
 import { remoteErrorText } from '@cockpit/fleet-data/home-details'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
@@ -28,10 +28,6 @@ export interface MachineRow {
  * the page's visible title ("Machines", in the section-title type size), so there is no separate heading. CPU and
  * memory come from the latest polled sample (`MetricsPoller`, every 10 seconds while the page is shown) and are
  * empty, never zero, for a machine that reports none.
- *
- * TODO(ui list): the list shows at most 7 columns, so the load verdict and the CPU and memory bars share one
- * "Load" column. A `maxColumns` input would let them be separate columns as REQ:machines-list lists them. TODO(ui list):
- * a `ListColumn.title` flag would size the first header without the `::ng-deep` rule of machines-page.css.
  */
 @Component({
   selector: 'app-machines-page',
@@ -87,21 +83,32 @@ export class MachinesPage {
 
   protected readonly row = (view: MachineView): MachineRow => this.rows().get(view.machine.id) as MachineRow
   protected readonly panelLabel = (view: MachineView): string => `Machine ${view.machine.machine}`
+  private readonly cpu = (view: MachineView): string => {
+    const bars = this.row(view).bars
+    return bars === undefined ? '' : `${bars.cpu}%`
+  }
+  private readonly memory = (view: MachineView): string => {
+    const bars = this.row(view).bars
+    return bars === undefined ? '' : `${bars.memory}%`
+  }
+  protected readonly target = linkTarget
   protected readonly detail = (view: MachineView) => machineDetailLink(view.machine.id)
   protected readonly links = (view: MachineView) => ({ repositories: machineRepositoriesLink(view.machine.id), worktrees: machineWorktreesLink(view.machine.id), agents: machineAgentsLink(view.machine.id) })
 
   /**
-   * The machine and its state stay at every width. A panel or a narrow window takes first the Agents count, then
-   * Repositories, the load (CPU and memory), Worktrees and last the version, whose "older" mark is what the list
+   * The machine and its state stay at every width. A panel or a narrow window takes first the CPU and Memory bars, then
+   * the Agents count, Repositories, the load verdict, Worktrees and last the version, whose "older" mark is what the list
    * exists to show; what is hidden is in the panel. The widths are the least that read.
    */
   protected readonly columns: ListColumn<MachineView>[] = [
-    { id: 'machine', header: 'Machines', sort: 'machine', width: 'fill', grow: 2, min: 150, priority: ALWAYS, value: (view) => view.machine.machine },
+    { id: 'machine', header: 'Machines', title: true, sort: 'machine', width: 'fill', grow: 2, min: 150, priority: ALWAYS, value: (view) => view.machine.machine },
     { id: 'state', header: 'State', sort: 'state', width: 'fill', grow: 3, min: 220, priority: ALWAYS, value: (view) => this.row(view).reach },
     { id: 'version', header: 'WB version', sort: 'version', width: 136, min: 132, priority: 7, value: (view) => view.machine.wb_version ?? '' },
     { id: 'repositories', header: 'Repositories', width: 112, min: 104, priority: 4, align: 'end', value: (view) => String(this.row(view).counts.repositories) },
     { id: 'worktrees', header: 'Worktrees', width: 96, min: 88, priority: 6, align: 'end', value: (view) => String(this.row(view).counts.worktrees) },
     { id: 'agents', header: 'Agents', width: 80, min: 72, priority: 3, align: 'end', value: (view) => String(this.row(view).counts.agents) },
-    { id: 'load', header: 'Load', hint: 'Free, busy or unknown, with the CPU and memory of the latest sample', width: 330, min: 316, priority: 5, value: (view) => this.row(view).load.state },
+    { id: 'load', header: 'Load', hint: 'Free, busy or unknown, from the latest sample', width: 96, min: 88, priority: 5, value: (view) => this.row(view).load.state },
+    { id: 'cpu', header: 'CPU', hint: 'Processor use in the latest sample', width: 128, min: 120, priority: 1, value: (view) => this.cpu(view) },
+    { id: 'memory', header: 'Memory', hint: 'Memory used in the latest sample', width: 128, min: 120, priority: 2, value: (view) => this.memory(view) },
   ]
 }

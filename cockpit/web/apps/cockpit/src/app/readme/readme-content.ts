@@ -1,12 +1,15 @@
 import { ChangeDetectionStrategy, Component, ElementRef, ViewEncapsulation, computed, effect, inject, input, signal, viewChild } from '@angular/core'
 import { DOCUMENT } from '@angular/common'
-import { MAX_PARSED_CHARACTERS, renderMarkdown, renderPlain } from './markdown-dom'
+import { MAX_PARSED_CHARACTERS } from './readme-limit'
 
 /**
  * Untrusted Markdown, shown as DOM built node by node (see markdown-dom.ts): no
  * innerHTML, no sanitizer, nothing from the source becomes an element or an
  * attribute the allow-list does not name. A link to a heading of the same README
  * scrolls to it instead of navigating the application.
+ *
+ * The parser and the renderer (`markdown-dom.ts`, with `marked`, most of the size of this feature) are fetched when a
+ * README is first shown: this component is small and the first page of the application does not carry the rest.
  *
  * Its styles are not encapsulated because the nodes are not created by a
  * template; every rule is scoped by the `readme-content` class.
@@ -29,17 +32,24 @@ export class ReadmeContent {
   protected readonly plain = computed(() => this.source().length > MAX_PARSED_CHARACTERS)
 
   constructor() {
-    effect(() => {
+    effect((onCleanup) => {
       const source = this.source()
       const root = this.root().nativeElement
-      try {
-        root.replaceChildren(this.plain() ? renderPlain(source, this.document) : renderMarkdown(source, this.document))
-        this.failed.set(false)
-      } catch {
-        // A document the parser cannot take (it is untrusted, and may be built to exhaust it) shows nothing of itself.
-        root.replaceChildren()
-        this.failed.set(true)
-      }
+      const plain = this.plain()
+      // A source replaced while the renderer was on its way is dropped.
+      let stale = false
+      onCleanup(() => (stale = true))
+      void import('./markdown-dom').then(({ renderMarkdown, renderPlain }) => {
+        if (stale) return
+        try {
+          root.replaceChildren(plain ? renderPlain(source, this.document) : renderMarkdown(source, this.document))
+          this.failed.set(false)
+        } catch {
+          // A document the parser cannot take (it is untrusted, and may be built to exhaust it) shows nothing of itself.
+          root.replaceChildren()
+          this.failed.set(true)
+        }
+      })
     })
   }
 

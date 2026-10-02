@@ -234,10 +234,16 @@ scrolling.
 
 #### REQ: default-columns-are-few
 
-Every list shows at most 7 columns by default. A column whose value is empty,
-or the same default, for every visible row MUST be hidden automatically, for
-example Lifecycle when it is empty for all rows and Source when every row is
-`local`.
+Every list shows at most 7 columns by default. That is a default and not a limit: a
+page may declare more than seven columns, each with a `priority`, and the columns past
+the seventh are shown while the list is wide enough for the minimum width of every one
+of them, and are hidden lowest priority first as the list narrows (a panel beside it, a
+tablet, a phone); a column that declares no priority is held to seven. A trailing
+actions or chrome cell is not a column: it is not counted, its header is not drawn (it
+stays as the name assistive technology reads), and it hides by priority like the rest.
+A column whose value is empty, or the same default, for every visible row MUST be hidden
+automatically, for example Lifecycle when it is empty for all rows and Source when every
+row is `local`.
 
 #### REQ: names-and-times-rendering
 
@@ -506,9 +512,10 @@ external-link icon, to `remote_url_web`, shown only when that field is present),
 with `rel="noopener noreferrer"` on every external link. There is no text "Code"
 link. The chip `index` means the code index is `stale`, `diverged` or `failed`; the
 chip `errors` leaves repositories with a scan error. The other quick filters are
-those of REQ:filter-vocabulary. That is eight columns and an actions cell, and
-REQ:default-columns-are-few allows seven: the list drops the quietest first, Agents
-then PRs, whose counts and links are then the panel's, and a narrow list drops more.
+those of REQ:filter-vocabulary. That is eight columns and an actions cell, which the page
+declares with a priority each (REQ:default-columns-are-few): a list wide enough for all of
+them shows all of them, and a narrower one (a panel beside it, a tablet) drops the quietest
+first, Agents then PRs, whose counts and links are then the panel's, and then more.
 
 #### REQ: repository-detail
 
@@ -581,11 +588,12 @@ Serves J7. The Machines page MUST NOT have a separate section heading plus a
 title, in larger type. It has a filter box and the chip `stale`. Each machine name
 links to its page. The columns are Machines; State (live or cached with its age,
 stale marked, a remote error as a quiet warning with its text); WB version (marked
-when older than the newest in the fleet); Repositories; Worktrees; Agents; Load. Load
-is the free, busy or unknown verdict with the CPU and Memory bars of the latest
-sample (its route and age are the cell's tooltip), because the list shows at most
-seven columns (REQ:default-columns-are-few); it reads unknown, with no bar and no
-zero, for a machine that reports no metrics. The chip `outdated` leaves the machines
+when older than the newest in the fleet); Repositories; Worktrees; Agents; Load; CPU; Memory. Load is the free, busy or
+unknown verdict, CPU and Memory are bars of the latest sample (its route and age are
+the cell's tooltip); they are columns past the default seven, each with a
+declared priority, so they are the first to go when the list is narrow or a panel is
+open (REQ:default-columns-are-few). A machine that reports no metrics reads unknown,
+with no bar and no zero. The chip `outdated` leaves the machines
 running a WB older than the newest in the fleet.
 
 #### REQ: machine-detail
@@ -1472,8 +1480,7 @@ renders. `cockpit/web/tools/finish-build.mjs` checks it over JavaScript files on
 metafile, and fails the build when it is larger, and also when a script the document names is missing
 or is not a file directly under `dist`, or when the metafile is absent (it fails closed). It reports the
 initial static graph and the first page separately. Chart.js, the detail pages and every page other than
-Home are lazy chunks, loaded only by the routes that use them; PrimeNG, while a page still uses it,
-loads only with that page's route, never for the shell or for a page that uses none.
+Home are lazy chunks, loaded only by the routes that use them.
 
 #### REQ: bounded-row-elements
 
@@ -1498,7 +1505,7 @@ of list rows; clock-bound text, such as relative ages, may update.
 
 #### REQ: look-dependencies
 
-The application keeps PrimeNG and adds Chart.js (MIT licence) at an exact
+The application adds Chart.js (MIT licence) at an exact
 pinned version, registered tree-shaken so only the controllers and elements
 used are bundled. No other new runtime dependency is added without a reason
 recorded in the plan.
@@ -1573,7 +1580,6 @@ responses; the one real-daemon journey runs on Linux CI only.
   is authenticated by a machine credential, served only by a daemon-hosted hub, and lives outside
   `/api/v1/cockpit/`), and metrics from a machine with no live route beyond its last published
   sample; persistence of metrics across daemon restarts, and task storage.
-- The PrimeUI licence key; see Open Questions.
 
 ## Acceptance Criteria
 
@@ -1719,7 +1725,12 @@ Then each row is one line with an ellipsis and the full value in its `title`, th
 Scenario: At most seven, Branch uniform, PR empty, one machine
 Given 529 worktrees on one machine whose branch equals its task and which have no pull request, and a second fleet on two machines in which one worktree has a different branch and one has a pull request
 When every list page is opened, and the Worktrees page for each fleet
-Then no list shows more than 7 columns, the first fleet shows neither the Branch, the Machine nor the PR column and the second shows all three
+Then no list shows more than 7 columns unless its page declares a priority for each beyond the seventh, the first fleet shows neither the Branch, the Machine nor the PR column and the second shows all three
+
+Scenario: More than seven by priority, and the actions cell
+Given the Repositories page, which declares eight columns and an actions cell, each with a priority, and a fleet with more than one machine
+When it is opened in a window wide enough for the minimum width of every column, and again with a panel beside the list and in a tablet-width window
+Then the wide list shows all eight columns and the actions cell, whose header is read by assistive technology and not drawn, and each narrower list shows fewer columns, the lowest priority (Agents, then PRs) first, and never more than the width fits
 
 ### AC: repository-and-time-rendering
 
@@ -2214,7 +2225,7 @@ Then the page shows identity, state, a link to its machine, the repository, both
 Scenario: Three machines
 Given three machines, one live and two cached more than 24 hours ago, and one running an older WB version than another
 When the Machines page is opened
-Then the first column header reads "Machines" in larger type with no separate section heading, each name links to its page, the cached machines show their age and are marked stale, the older version is marked, and the Load cell shows unknown with no CPU or Memory bar for the machines without metrics
+Then the first column header reads "Machines" in larger type with no separate section heading, each name links to its page, the cached machines show their age and are marked stale, the older version is marked, and the Load cell reads unknown, with CPU and Memory empty (no bar, no zero), for the machines without metrics
 
 ### AC: machines-filter-and-stale-chip
 
@@ -2831,8 +2842,6 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
 - `remotessh.Build` fixes the connect timeout at 10 seconds, so the connect timeout of the
   live route is 10 seconds, not the 5 first asked for; making it a parameter is part of
   the export task.
-- The "Invalid PrimeUI License" watermark is a pending founder decision about the
-  PrimeUI licence and is not part of this Feature.
 - Whether Stop and Reply for hand-started sessions should be built on herdr prompts
   is undecided; today only dispatched runs offer Stop and Log.
 - Follow-ups required in `cockpit-actions`, to be specified there and not here:

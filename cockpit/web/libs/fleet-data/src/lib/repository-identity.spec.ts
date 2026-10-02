@@ -164,3 +164,19 @@ describe('isStale', () => {
     expect(OBSERVED).toBeTruthy()
   })
 })
+
+describe('counts of agents and pull requests', () => {
+  const quiet = { active_agent_count: undefined, open_pull_request_count: undefined }
+  const lists = { pullRequests: [], agents: [], agentsComplete: true, pullRequestsComplete: true }
+
+  it('is a real zero for a repository of this machine when the lists are whole, and not reported otherwise', () => {
+    const local = repo('a', 'alpha', 'acme/x', quiet)
+    const cached = repo('b', 'beta', 'acme/y', { ...quiet, route: 'cached' })
+    expect(mergeRepositories([local, cached], NOW, lists).map((row) => [row.activeAgentCount, row.openPullRequestCount])).toEqual([[0, 0], [undefined, undefined]])
+    // Lists cut or throttled by the daemon say nothing about a zero; no lists say nothing either.
+    expect(mergeRepositories([local], NOW, { ...lists, agentsComplete: false, pullRequestsComplete: false })[0]).toMatchObject({ activeAgentCount: undefined, openPullRequestCount: undefined })
+    expect(mergeRepositories([local], NOW)[0].activeAgentCount).toBeUndefined()
+    // What a checkout reports wins over an unknown, and a listed agent over both.
+    expect(mergeRepositories([repo('a', 'alpha', 'acme/x', { active_agent_count: 3 })], NOW, lists)[0].activeAgentCount).toBe(3)
+  })
+})

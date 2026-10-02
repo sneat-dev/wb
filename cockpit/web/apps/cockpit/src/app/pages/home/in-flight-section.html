@@ -18,7 +18,7 @@
           @for (row of rows(); track row.id) {
             <li class="home-row flight-row">
               <div class="home-main">
-                <a class="home-task flight-label" [routerLink]="row.link.path">{{ row.label }}</a>
+                <a class="home-task flight-label" [routerLink]="target(row.link)">{{ row.label }}</a>
                 <span class="home-reason">{{ row.work }}</span>
                 <div class="flight-meta">
                   @if (row.machine; as machine) {

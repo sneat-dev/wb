@@ -58,6 +58,7 @@ export interface ChartTable {
 }
 
 const HOUR = 3_600_000
+const GIGABYTE = 2 ** 30
 
 /** A clock time, `14:05`, in the viewer's time zone. */
 export function clockTime(at: number): string {
@@ -166,7 +167,7 @@ function percent(part: number, whole: number): number | undefined {
 
 /**
  * The four machine charts of REQ:machine-detail-metrics-charts over the last
- * hour ending at `now`: CPU %, load, memory used % and disk used %. A reading
+ * hour ending at `now`: CPU %, load, memory used % and free disk in gigabytes. A reading
  * the machine did not report (a total of zero) is an absent sample.
  */
 export function machineMetricSpecs(samples: readonly MetricsSample[], now: number): TimeSeriesSpec[] {
@@ -182,6 +183,6 @@ export function machineMetricSpecs(samples: readonly MetricsSample[], now: numbe
     series('CPU', 'CPU %', '%', 100, (sample) => sample.cpu_percent),
     series('Load (1 minute)', 'Load', '', undefined, (sample) => sample.load1),
     series('Memory used', 'Memory used %', '%', 100, (sample) => percent(sample.memory_used_bytes, sample.memory_total_bytes)),
-    series('Disk used', 'Disk used %', '%', 100, (sample) => percent(sample.disk_total_bytes - sample.disk_free_bytes, sample.disk_total_bytes)),
+    series('Disk free', 'Disk free GB', ' GB', undefined, (sample) => (sample.disk_total_bytes > 0 && Number.isFinite(sample.disk_free_bytes) ? sample.disk_free_bytes / GIGABYTE : undefined)),
   ]
 }

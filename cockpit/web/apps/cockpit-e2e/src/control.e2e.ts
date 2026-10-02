@@ -40,6 +40,10 @@ test('a copy button puts exactly the library command on the clipboard and says s
   const requests: string[] = []
   await page.goto(gallery)
   await expect(page.locator('app-copy-command-list').first()).toBeVisible()
+  // The gallery's charts load Chart.js (two chunks) once they have rendered, which can be after the command list is
+  // visible. They are the last thing the page fetches by itself, and a chart is on its canvas only once they are in,
+  // so wait for that before listening: what is counted below is what the click causes, not what the page was still loading.
+  await expect.poll(() => page.locator('app-chart canvas').evaluateAll((canvases) => canvases.length === 6 && canvases.every((canvas) => (canvas as HTMLCanvasElement).toDataURL().length > 1000))).toBe(true)
   page.on('request', (request) => requests.push(request.url()))
   const first = page.locator('app-copy-command-list li').first()
   const command = (await first.locator('code').innerText()).trim()

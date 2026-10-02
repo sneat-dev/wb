@@ -25,9 +25,14 @@ export function findMergedRepository(rows: readonly MergedRepository[], id: stri
 }
 
 /** Distinct keys when there are some (a pull request or agent seen by several machines counts once), else the sum of what the entries report. */
-function distinctOrSum(keys: string[] | undefined, reported: (number | undefined)[]): number | undefined {
+/**
+ * The distinct things listed for the repository; else what its checkouts report; else, when the lists are known to
+ * be complete for a checkout of this machine (`knownZero`), a real zero. Absent data stays absent: "not reported".
+ */
+function distinctOrSum(keys: string[] | undefined, reported: (number | undefined)[], knownZero = false): number | undefined {
   const distinct = new Set(keys).size
-  return distinct > 0 ? distinct : sum(reported)
+  if (distinct > 0) return distinct
+  return sum(reported) ?? (keys !== undefined && knownZero ? 0 : undefined)
 }
 
 function sum(values: (number | undefined)[]): number | undefined {
@@ -39,6 +44,10 @@ function sum(values: (number | undefined)[]): number | undefined {
 export interface MergeLists {
   pullRequests: readonly PullRequest[]
   agents: readonly Agent[]
+  /** The document's agent list is whole (not cut at the daemon's bound): this machine's repositories then have no agent when none is listed. */
+  agentsComplete?: boolean
+  /** The pull request list is whole (the daemon did not throttle it). */
+  pullRequestsComplete?: boolean
 }
 
 function mergeGroup(key: string, rows: Repository[], now: number, lists?: MergeLists): MergedRepository {
@@ -68,10 +77,12 @@ function mergeGroup(key: string, rows: Repository[], now: number, lists?: MergeL
     openPullRequestCount: distinctOrSum(
       lists?.pullRequests.filter((pullRequest) => ids.has(pullRequest.repository ?? '') && (pullRequest.state === 'open' || pullRequest.state === 'draft')).map((pullRequest) => `${key}#${pullRequest.number}`),
       ordered.map((row) => row.open_pull_request_count),
+      lists?.pullRequestsComplete === true && ordered.some((row) => row.route === 'local'),
     ),
     activeAgentCount: distinctOrSum(
       lists?.agents.filter((agent) => ids.has(agent.repository ?? '') && isRunning(agent)).map((agent) => agent.id),
       ordered.map((row) => row.active_agent_count),
+      lists?.agentsComplete === true && ordered.some((row) => row.route === 'local'),
     ),
     codeIndex: worstCodeIndex(states),
     codeIndexStates: [...new Set(states)],

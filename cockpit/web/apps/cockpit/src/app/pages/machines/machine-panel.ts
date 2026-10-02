@@ -1,13 +1,11 @@
 import { ChangeDetectionStrategy, Component, Type, computed, inject, input } from '@angular/core'
-import { RouterLink } from '@angular/router'
-import { FleetModel, FleetStore, Worktree, agentDetailLink, agentTitle, machineLoad, selectionLink } from '@cockpit/fleet-data'
-import { machineAgentsLink, machineRepositoriesLink, machineWorktreesLink } from '@cockpit/fleet-data/list'
+import { AppLink, FleetModel, FleetStore, Worktree, agentDetailLink, agentTitle, machineLoad, selectionLink } from '@cockpit/fleet-data'
+import { LinkResult, machineAgentsLink, machineRepositoriesLink, machineWorktreesLink } from '@cockpit/fleet-data/list'
 import { MachinePanel, buildMachinePanel } from '@cockpit/fleet-data/panel'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
-import { AgeText, CountLink } from '@cockpit/ui/list'
-import { PanelContent } from '@cockpit/ui/panel'
+import { PanelContent, PanelFact, PanelRelated, PanelRelatedItem, PanelState } from '@cockpit/ui/panel'
 import { MetricsPoller, watchMetrics } from '../../metrics/metrics-poller'
-import { ViewportMount } from '../home/viewport-mount'
+import { ViewportMount } from '@cockpit/ui/viewport-mount'
 import { attentionOf } from './machine-attention'
 import { MachineCounts, machineCounts } from './machine-counts'
 import { metricsView, reachWords, uptimeWords } from './machine-text'
@@ -26,13 +24,10 @@ interface Loaded {
  * filtered lists, the running agents, the most recent worktrees, and the collapsed Raw data.
  *
  * It polls the machine's metrics only while it exists, through the shell's `MetricsPoller` (10 seconds).
- *
- * TODO(ui PanelContent): it has no slot above its facts, so the sections are projected whole and the facts are
- * drawn here; a `[panelHeader]` slot would let `facts` and `related` be used.
  */
 @Component({
   selector: 'app-machine-panel',
-  imports: [RouterLink, PanelContent, StateBadge, AgeText, CountLink, ViewportMount],
+  imports: [PanelContent, PanelState, StateBadge, ViewportMount],
   templateUrl: './machine-panel.html',
   styleUrl: './machine-panel.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -58,10 +53,7 @@ export class MachinePanelView {
 
   protected readonly name = computed(() => (this.data() as Loaded).view.summary.machine.machine)
   protected readonly reach = computed(() => reachWords((this.data() as Loaded).view.summary, this.clock()))
-  protected readonly uptime = computed(() => uptimeWords((this.data() as Loaded).view.summary))
   protected readonly attention = computed(() => attentionOf((this.data() as Loaded).model, this.id()))
-  protected readonly counts = computed(() => machineCounts((this.data() as Loaded).model).get(this.id()) as MachineCounts)
-  protected readonly links = computed(() => ({ repositories: machineRepositoriesLink(this.id()), worktrees: machineWorktreesLink(this.id()), agents: machineAgentsLink(this.id()) }))
   protected readonly truncated = computed(() => this.store.document().agents_truncated === true)
 
   protected readonly metrics = computed(() => metricsView(this.poller.entries().get(this.id()), this.clock()))
@@ -71,9 +63,41 @@ export class MachinePanelView {
   /** `() => import(...)`: the charts' chunk, which holds Chart.js's wrapper. */
   protected readonly loadCharts = (): Promise<Type<unknown>> => import('./machine-charts').then((module) => module.MachineCharts)
 
-  protected readonly agents = computed(() => (this.data() as Loaded).view.related.runningAgents.map((agent) => ({ agent, title: agentTitle(agent), link: agentDetailLink(agent.id) })))
-  protected readonly worktrees = computed(() => {
+  /** The summary: how it is reached, OS, architecture, CPUs, WB version, uptime, what its export left out. */
+  protected readonly facts = computed<PanelFact[]>(() => {
+    const { summary } = (this.data() as Loaded).view
+    const { machine } = summary
+    const reported = (label: string, text: string | undefined): PanelFact => (text === undefined || text === '' ? { label, text: 'not reported', muted: true } : { label, text })
+    const dropped = machine.export_dropped
+    return [
+      reported('OS', machine.os),
+      reported('Architecture', machine.arch),
+      reported('CPUs', machine.cpu_count === undefined ? undefined : String(machine.cpu_count)),
+      reported('WB version', machine.wb_version),
+      reported('Uptime', uptimeWords(summary)),
+      { label: 'Reached by', text: machine.route === 'local' ? 'this machine' : (machine.transport ?? 'a published snapshot') },
+      ...(machine.route === 'local' || machine.observed_at === undefined ? [] : [{ label: 'Observed', time: Date.parse(machine.observed_at) }]),
+      ...(dropped ? [{ label: 'Left out', text: `${dropped} ${dropped === 1 ? 'entry' : 'entries'} of its export` }] : []),
+      ...(this.truncated() ? [{ label: 'Agents', text: 'The agent list is capped at the first 200 of each machine.' }] : []),
+    ]
+  })
+
+  /** What is on the machine, the running agents and the most recent worktrees, as links to the lists and the entries. */
+  protected readonly related = computed<PanelRelated[]>(() => {
     const { view, model } = this.data() as Loaded
-    return view.related.recentWorktrees.map((worktree: Worktree) => ({ worktree, repository: model.repositoryName(worktree.repository), link: selectionLink('worktrees', worktree.id) }))
+    const counts = machineCounts(model).get(this.id()) as MachineCounts
+    const links = { repositories: machineRepositoriesLink(this.id()), worktrees: machineWorktreesLink(this.id()), agents: machineAgentsLink(this.id()) }
+    const count = (n: number, one: string, many: string, link: LinkResult, extra = ''): PanelRelatedItem => ({ text: `${n} ${n === 1 ? one : many}${extra}`, ...(n === 0 ? {} : { link: (link as { link: AppLink }).link }) })
+    return [
+      {
+        title: 'On this machine',
+        items: [count(counts.repositories, 'repository', 'repositories', links.repositories), count(counts.worktrees, 'worktree', 'worktrees', links.worktrees), count(counts.agents, 'agent', 'agents', links.agents, `, ${view.summary.runningAgents} running`)],
+      },
+      { title: 'Running agents', items: view.related.runningAgents.map((agent) => ({ text: agentTitle(agent), link: agentDetailLink(agent.id), title: `Agent state: ${agent.state}` })) },
+      {
+        title: 'Recent worktrees',
+        items: view.related.recentWorktrees.map((worktree: Worktree) => ({ text: `${worktree.task} in ${model.repositoryName(worktree.repository)}`, link: selectionLink('worktrees', worktree.id) })),
+      },
+    ]
   })
 }

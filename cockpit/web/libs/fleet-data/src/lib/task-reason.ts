@@ -1,21 +1,19 @@
-import { Agent, PullRequest, TaskView, agentTitle, blockingRuns, failedChecks, interimAtRiskWorktrees, isOpenPullRequest, isRunning, notReadyReasons } from '@cockpit/fleet-data'
+// Why a task is in its state, in plain words (REQ:task-detail: the summary header), as one function of
+// the model, so the Tasks panel, Home's rows and the palette say the same words and cannot disagree
+// with the badge. The decision is the library's (`task.state`); this only says it, from the library's
+// own predicates and reason words (`interimAtRiskWorktrees`, `failedChecks`, `notReadyReasons`,
+// `blockingRuns`). A task that only another machine reports (`stateSource` `remote`) has the state that
+// machine reports, and no at-risk rule (the sync facts are known for this machine only); a ready or
+// not-ready one says so in the words below, and the page that shows it names the reporting machine.
 
-// Why a task is in its state, in plain words (REQ:task-detail: the summary header). The decision is the
-// library's (`task.state`); this only says it, from the library's own predicates and reason words
-// (`interimAtRiskWorktrees`, `failedChecks`, `notReadyReasons`, `blockingRuns`), so that the sentence
-// cannot disagree with the badge.
-// TODO(fleet-data): a `taskReason(model, name)` next to `buildTaskPanel` would let Home's rows and the
-// palette say the same words; until it exists the Tasks page composes them here.
+import type { FleetModel } from './fleet-model'
+import { Agent, PullRequest, Worktree, isRunning } from './fleet.types'
+import { agentTitle } from './fleet-view'
+import { blockingRuns, failedChecks, interimAtRiskWorktrees, isOpenPullRequest, notReadyReasons } from './task-state'
+import { TaskView } from './view-types'
 
 /** How many parts of a reason are named before "+n more". */
 export const REASON_PARTS_SHOWN = 3
-
-export interface ReasonContext {
-  /** `owner/name` of a repository entry id. */
-  repositoryName: (id: string) => string
-  /** Epoch milliseconds: a failed run blocks for 24 hours. */
-  now: number
-}
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`
 
@@ -32,17 +30,26 @@ function sentence(label: string, parts: readonly string[]): string {
   return `${label}: ${shown.join('; ')}`
 }
 
-/** The task's state in words: "Ready to land: 2 pull requests green and mergeable". */
-export function taskReason(task: TaskView, context: ReasonContext): string {
-  const slugs = [...new Set([...task.repositories, ...task.pullRequests.flatMap((pr) => (pr.repository === undefined ? [] : [context.repositoryName(pr.repository)]))])]
+/**
+ * The task's state in words: "Ready to land: 2 pull requests green and mergeable". `undefined` for a task
+ * the document does not list.
+ */
+export function taskReason(model: FleetModel, name: string): string | undefined {
+  const task = model.taskNamed(name)
+  return task === undefined ? undefined : reasonOf(model, task)
+}
+
+function reasonOf(model: FleetModel, task: TaskView): string {
+  const repositoryName = (id: string): string => model.repositoryName(id)
+  const slugs = [...new Set([...task.repositories, ...task.pullRequests.flatMap((pr) => (pr.repository === undefined ? [] : [repositoryName(pr.repository)]))])]
   const name = repositoryNamer(slugs)
-  const prLabel = (pr: PullRequest): string => `${pr.repository === undefined ? '' : name(context.repositoryName(pr.repository))}#${pr.number}`
+  const prLabel = (pr: PullRequest): string => `${pr.repository === undefined ? '' : name(repositoryName(pr.repository))}#${pr.number}`
   switch (task.state) {
     case 'at-risk':
       return sentence(
         'At risk',
         interimAtRiskWorktrees(task.worktrees).map((worktree) => {
-          const where = name(context.repositoryName(worktree.repository))
+          const where = name(repositoryName(worktree.repository))
           const unpushed = (worktree.ahead ?? 0) > 0 ? `${plural(worktree.ahead as number, 'commit')} only on this machine` : 'a branch with no upstream, only on this machine'
           return `${unpushed} in ${where} (worktree ${worktree.owner_state})`
         }),
@@ -50,14 +57,12 @@ export function taskReason(task: TaskView, context: ReasonContext): string {
     case 'checks-failed':
       return sentence(
         'Checks failed',
-        task.openPullRequests
-          .filter((pr) => failedChecks(pr) > 0)
-          .map((pr) => `${prLabel(pr)} has ${plural(failedChecks(pr), 'failing check')}${pr.failed_check ? ` (${pr.failed_check})` : ''}`),
+        task.openPullRequests.filter((pr) => failedChecks(pr) > 0).map((pr) => `${prLabel(pr)} has ${plural(failedChecks(pr), 'failing check')}${pr.failed_check ? ` (${pr.failed_check})` : ''}`),
       )
     case 'blocked':
       return sentence('Blocked', [
         ...task.agents.filter((agent) => agent.activity === 'blocked').map((agent) => `${agentTitle(agent)} is waiting on you`),
-        ...blockingRuns(task.agents, context.now).map((run) => `the ${agentTitle(run)} run ${run.state === 'timeout' ? 'timed out' : 'failed'}${run.exit_code === undefined ? '' : ` (exit ${run.exit_code})`}`),
+        ...blockingRuns(task.agents, model.now).map((run) => `the ${agentTitle(run)} run ${run.state === 'timeout' ? 'timed out' : 'failed'}${run.exit_code === undefined ? '' : ` (exit ${run.exit_code})`}`),
       ])
     case 'ready':
       return `Ready to land: ${plural(task.openPullRequests.length, 'pull request')} green and mergeable`
@@ -72,7 +77,7 @@ export function taskReason(task: TaskView, context: ReasonContext): string {
     case 'working':
       return sentence('Working', [
         ...task.agents.filter(isWorking).map((agent) => `${agentTitle(agent)} is running`),
-        ...task.worktrees.filter((worktree) => worktree.owner_state === 'active').map((worktree) => `a worktree in ${name(context.repositoryName(worktree.repository))} is active`),
+        ...task.worktrees.filter((worktree) => worktree.owner_state === 'active').map((worktree) => `a worktree in ${name(repositoryName(worktree.repository))} is active`),
       ])
     case 'landed':
       return 'Landed: merged, with nothing left unpushed'

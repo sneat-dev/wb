@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, input, linkedSignal, signal, untracked } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { Branch, FleetClient, FleetRequestError, FleetStore, Machine, RepositoryCheckout, Worktree, taskDetailLink, worktreeDetailLink, routeLabel } from '@cockpit/fleet-data'
+import { Branch, FETCH, FleetRequestError, FleetStore, Machine, RepositoryCheckout, Worktree, linkTarget, taskDetailLink, worktreeDetailLink, routeLabel } from '@cockpit/fleet-data'
 import { CodeIndexPanel } from '@cockpit/ui/code-index-panel'
 import { MachineChip, StateBadge, SyncBadges } from '@cockpit/ui/control'
 import { AgeText } from '@cockpit/ui/list'
@@ -36,7 +36,7 @@ export class RepositoryMachineSection {
   readonly open = input(false)
 
   protected readonly store = inject(FleetStore)
-  private readonly client = inject(FleetClient)
+  private readonly fetcher = inject(FETCH)
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef)
 
   protected readonly expanded = linkedSignal(() => this.open())
@@ -67,6 +67,7 @@ export class RepositoryMachineSection {
   }
 
   protected taskLink = taskDetailLink
+  protected readonly target = linkTarget
   protected worktreeLink = worktreeDetailLink
 
   protected showAll(): void {
@@ -76,11 +77,15 @@ export class RepositoryMachineSection {
   protected async load(): Promise<void> {
     this.branches.set({ kind: 'loading' })
     try {
-      const { branches, reason } = await this.client.readBranches(this.checkout().repository.id)
+      const { readBranches } = await import('@cockpit/fleet-data/lazy-client')
+      const { branches, reason } = await readBranches(this.fetcher, this.checkout().repository.id)
       this.all.set(branches)
       this.branches.set({ kind: 'ready', branches, reason })
     } catch (error) {
-      this.branches.set({ kind: 'failed', text: error instanceof FleetRequestError ? `The daemon answered with status ${error.status}.` : 'The daemon did not answer, or answered with something else.' })
+      this.branches.set({
+        kind: 'failed',
+        text: error instanceof FleetRequestError ? `The daemon answered with status ${error.status}.` : 'The daemon did not answer, or answered with something else.',
+      })
     }
   }
 }

@@ -47,6 +47,7 @@ export const REMOTE_ERRORS = [
   'daemon_not_running',
   'export_refused',
   'bad_payload',
+  'self_export',
 ] as const
 export type RemoteError = (typeof REMOTE_ERRORS)[number]
 

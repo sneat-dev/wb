@@ -96,7 +96,7 @@ function describers(model: FleetModel) {
     repository: (row: ListRow<MergedRepository>): Described => ({
       label: row.item.slug,
       detail: [...new Set(row.item.checkouts.map((checkout) => checkout.machine))].join(', '),
-      link: repositoryDetailLink(row.item.host, row.item.slug),
+      link: repositoryDetailLink(row.item.host, row.item.slug, row.item.id),
     }),
     worktree: (row: ListRow<Worktree>): Described => ({
       label: row.item.task,

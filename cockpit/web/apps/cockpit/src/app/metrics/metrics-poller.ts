@@ -1,6 +1,6 @@
 import { DOCUMENT } from '@angular/common'
 import { DestroyRef, Injectable, InjectionToken, inject, signal } from '@angular/core'
-import { FleetClient, FleetRequestError, MachineMetrics } from '@cockpit/fleet-data'
+import { FETCH, FleetRequestError, MachineMetrics } from '@cockpit/fleet-data'
 
 /** How often the machine metrics are read while a page that shows them is visible (REQ:machine-metrics-polling). */
 export const METRICS_INTERVAL_MS = 10_000
@@ -34,7 +34,12 @@ export interface MetricsEntry {
  */
 @Injectable({ providedIn: 'root' })
 export class MetricsPoller {
-  private readonly client = inject(FleetClient)
+  private readonly fetcher = inject(FETCH)
+  /** The reads are in their own chunk, which is fetched once, when the first page that shows metrics starts the polling. */
+  private lazyClient: Promise<typeof import('@cockpit/fleet-data/lazy-client')> | undefined
+  private get lazy(): Promise<typeof import('@cockpit/fleet-data/lazy-client')> {
+    return (this.lazyClient ??= import('@cockpit/fleet-data/lazy-client'))
+  }
   private readonly interval = inject(METRICS_INTERVAL)
   private readonly doc = inject(DOCUMENT)
   private readonly watchers = new Set<() => readonly string[]>()
@@ -130,7 +135,7 @@ export class MetricsPoller {
       [...ids].map(async (id): Promise<[string, MachineMetrics | Error]> => {
         try {
           // A stop aborts the request itself; whatever still comes back for a stopped round is dropped.
-          const metrics = await this.client.readMachineMetrics(id, signal)
+          const metrics = await (await this.lazy).readMachineMetrics(this.fetcher, id, signal)
           return signal.aborted ? [id, new Error('stopped')] : [id, metrics]
         } catch (error) {
           if (signal.aborted) return [id, new Error('stopped')]
@@ -146,7 +151,11 @@ export class MetricsPoller {
     let refused = false
     for (const [id, result] of results) {
       if (result instanceof Error) {
-        next.set(id, { metrics: next.get(id)?.metrics, error: result.message, readAt })
+        next.set(id, {
+          metrics: next.get(id)?.metrics,
+          error: result.message,
+          readAt,
+        })
         // The daemon refusing the request or failing: asking more often will not help.
         if (result instanceof FleetRequestError && (result.status === 401 || result.status >= 500)) refused = true
       } else {

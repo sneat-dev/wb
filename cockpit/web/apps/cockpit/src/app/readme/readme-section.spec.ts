@@ -18,12 +18,18 @@ function controlledFetch() {
         pending.push({ resolve, reject, url: String(input) })
       }),
   )
-  return { fetcher: fetcher as unknown as typeof fetch, pending, calls: fetcher }
+  return {
+    fetcher: fetcher as unknown as typeof fetch,
+    pending,
+    calls: fetcher,
+  }
 }
 
 function mount(fetcher: typeof fetch, repository: string, canRead: boolean, sessionStatus: 'loading' | 'ready' | 'failed' = 'ready') {
   TestBed.resetTestingModule()
-  TestBed.configureTestingModule({ providers: [{ provide: FETCH, useValue: fetcher }] })
+  TestBed.configureTestingModule({
+    providers: [{ provide: FETCH, useValue: fetcher }],
+  })
   const fixture = TestBed.createComponent(ReadmeSection)
   fixture.componentRef.setInput('repository', repository)
   fixture.componentRef.setInput('canRead', canRead)
@@ -31,10 +37,16 @@ function mount(fetcher: typeof fetch, repository: string, canRead: boolean, sess
   return fixture
 }
 
+/** Waits until the section has asked `count` times: the read starts once the lazy client has loaded. */
+const started = (pending: Pending[], count: number) => vi.waitFor(() => expect(pending).toHaveLength(count))
+
 const text = (root: HTMLElement) => (root.querySelector('section')?.textContent as string).replace(/\s+/g, ' ').trim()
 
 // cockpit#ac:readme-needs-owner
 describe('ReadmeSection', () => {
+  // The section loads the lazy client when it first reads: load it now, so a read starts within the settle of the first render.
+  beforeAll(async () => void (await import('@cockpit/fleet-data/lazy-client')))
+
   it('says an owner session is needed, naming wb cockpit, and never asks for the README without one', async () => {
     const { fetcher, calls } = controlledFetch()
     const fixture = mount(fetcher, 'r1', false)
@@ -60,6 +72,7 @@ describe('ReadmeSection', () => {
     const { fetcher, pending } = controlledFetch()
     const fixture = mount(fetcher, 'repo a', true)
     await fixture.whenStable()
+    await started(pending, 1)
     expect(text(fixture.nativeElement)).toContain('Reading the README…')
     expect(pending.map((read) => read.url)).toEqual(['/api/v1/cockpit/readme?repository=repo%20a'])
     pending[0].resolve(new Response('# Widgets\n\nHello.\n'))
@@ -79,6 +92,7 @@ describe('ReadmeSection', () => {
       const { fetcher, pending } = controlledFetch()
       const fixture = mount(fetcher, 'r1', true)
       await fixture.whenStable()
+      await started(pending, 1)
       pending[0].resolve(new Response(JSON.stringify({ error: code }), { status }))
       await settle(fixture, () => !text(fixture.nativeElement).includes('Reading'))
       expect(text(fixture.nativeElement)).toContain(words)
@@ -90,6 +104,7 @@ describe('ReadmeSection', () => {
     const { fetcher, pending } = controlledFetch()
     const fixture = mount(fetcher, 'r1', true)
     await fixture.whenStable()
+    await started(pending, 1)
     pending[0].reject(new TypeError('network'))
     await settle(fixture, () => !text(fixture.nativeElement).includes('Reading'))
     expect(text(fixture.nativeElement)).toContain('the daemon did not answer')
@@ -99,8 +114,10 @@ describe('ReadmeSection', () => {
     const { fetcher, pending } = controlledFetch()
     const fixture = mount(fetcher, 'r1', true)
     await fixture.whenStable()
+    await started(pending, 1)
     fixture.componentRef.setInput('repository', 'r2')
     await fixture.whenStable()
+    await started(pending, 2)
     expect(pending.map((read) => read.url.split('=')[1])).toEqual(['r1', 'r2'])
     pending[1].resolve(new Response('# Second\n'))
     pending[0].resolve(new Response('# First\n'))
@@ -111,6 +128,7 @@ describe('ReadmeSection', () => {
 
     fixture.componentRef.setInput('repository', 'r3')
     await fixture.whenStable()
+    await started(pending, 3)
     fixture.componentRef.setInput('canRead', false)
     await fixture.whenStable()
     pending[2].reject(new TypeError('late'))

@@ -2,3 +2,4 @@
 export * from './sheet-mode'
 export * from './side-panel'
 export * from './panel-content'
+export * from './panel-state'
