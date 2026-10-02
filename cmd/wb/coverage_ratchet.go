@@ -180,6 +180,8 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return err
 	}
 
+	warnRedBase(cmd.ErrOrStderr(), baseline.RedBase)
+
 	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath, changedOwners)
 
 	report := changedCoverageReport{
@@ -190,6 +192,7 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		ChangedScope: changedOwners, ScopeIdentity: scopeIdentity,
 		Packages: results,
 		Warnings: warnings,
+		RedBase:  baseline.RedBase,
 	}
 	if err := writeChangedCoverageOutputTo(cmd.OutOrStdout(), report, options.format, options.reportDir); err != nil {
 		return err
@@ -271,6 +274,23 @@ type changedCoverageReport struct {
 	// Warnings are count rises in packages the PR did not itself change
 	// (founder decision 2026-09-23, review B1): reported, never failed on.
 	Warnings []quality.RatchetWarning `yaml:"warnings" json:"warnings"`
+	// RedBase is set when the merge base was measured while its own tests
+	// were failing: the ratchet still ran, against an upper-bound baseline.
+	RedBase *quality.RedBaseline `yaml:"red_base,omitempty" json:"red_base,omitempty"`
+}
+
+// warnRedBase tells the reader the ratchet was judged against a merge base
+// whose own tests fail. That is allowed, because a red base can only be
+// repaired through a pull request, but it must never pass unnoticed.
+func warnRedBase(stderr io.Writer, redBase *quality.RedBaseline) {
+	if redBase == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(stderr, "WARNING: the coverage baseline was measured on a RED merge base: %d test(s) fail at %s.\n", len(redBase.FailedTests), redBase.SHA)
+	for _, name := range redBase.FailedTests {
+		_, _ = fmt.Fprintf(stderr, "  failed at base: %s\n", name)
+	}
+	_, _ = fmt.Fprintln(stderr, "  The baseline uses the coverage those test runs still wrote, so the uncovered counts of their packages are an upper bound and the count-rise check is looser for them. Changed statements are still held to full coverage.")
 }
 
 func changedCoverageRatchetError(results []quality.PackageRatchet) error {

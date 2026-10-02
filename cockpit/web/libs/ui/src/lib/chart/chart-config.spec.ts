@@ -118,6 +118,18 @@ describe('chartConfiguration', () => {
       expect(config.options.scales.y.ticks.precision).toBe(0)
     })
 
+    it('leaves the value axis to the library, unless the spec asks for it to fit: the tallest stack rounded up to an even number, two steps', () => {
+      expect(config.options.scales.y.max).toBeUndefined()
+      expect(config.options.scales.y.ticks.stepSize).toBeUndefined()
+      const fitted = (bars: StackedBarsSpec['bars']) => (chartConfiguration({ ...stackedDays, bars, fitAxis: true }, context()) as Loose).options.scales.y
+      expect(fitted(stackedDays.bars)).toMatchObject({ max: 6, ticks: { stepSize: 3 } })
+      expect(fitted([{ label: 'a', values: [1, 2, 2] }])).toMatchObject({ max: 6, ticks: { stepSize: 3 } })
+      expect(fitted([{ label: 'a', values: [3, 2] }])).toMatchObject({ max: 6, ticks: { stepSize: 3 } })
+      expect(fitted([{ label: 'a', values: [1, 2] }])).toMatchObject({ max: 4, ticks: { stepSize: 2 } })
+      expect(fitted([{ label: 'a', values: [0, 0] }, { label: 'b', values: [1] }])).toMatchObject({ max: 2, ticks: { stepSize: 1 } })
+      expect(fitted([])).toMatchObject({ max: 2 })
+    })
+
     it('shows all the series of a day in one tooltip, with their colours, and no legend of its own', () => {
       expect(config.options.interaction).toEqual({ mode: 'index', intersect: false })
       expect(config.options.plugins.tooltip.displayColors).toBe(true)

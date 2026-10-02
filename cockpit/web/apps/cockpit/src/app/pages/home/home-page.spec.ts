@@ -46,28 +46,63 @@ describe('HomePage', () => {
     TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: FETCH, useValue: async () => new Response('{}', { status: 404 }) }] })
     const fixture = TestBed.createComponent(HomePage)
     await fixture.whenStable()
-    expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('Needs you')
+    expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('Throughput')
+    expect(fixture.nativeElement.querySelector('.throughput-slot[data-state=pending]')).not.toBeNull()
+    expect(fixture.nativeElement.querySelector('app-needs-you h2')?.textContent).toContain('Needs you')
     expect(fixture.nativeElement.querySelector('app-lazy-mount')).not.toBeNull()
   })
 
   it('renders "Needs you" at once from the model that is already loaded', async () => {
-    const { root } = await open()
-    expect(headings(root)[0]).toBe('Needs you 6')
+    const { root } = await open(fleet('no-throughput'))
+    expect(headings(root)[1]).toBe('Needs you 6')
     expect(root.querySelectorAll('.needs-row')).toHaveLength(6)
   })
 
-  it('then appends the rest of Home from its lazy chunk, below, in order', async () => {
+  it('puts Throughput first, above "Needs you", and draws its charts from a lazy chunk', async () => {
     const { harness, root } = await open()
+    expect(headings(root).slice(0, 2)).toEqual(['Throughput', 'Needs you 6'])
+    expect(root.querySelector('.throughput-slot')).not.toBeNull()
     await vi.waitFor(async () => {
       await harness.fixture.whenStable()
-      expect(headings(root)).toEqual(['Needs you 6', 'Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2', 'Throughput'])
-    })
+      expect(headings(root)).toEqual(['Throughput', 'Needs you 6', 'Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2'])
+      expect(root.querySelectorAll('.throughput-slot app-chart')).toHaveLength(2)
+    }, { timeout: 5000 })
     expect(root.querySelector('app-home-rest')).not.toBeNull()
+    expect(root.textContent).not.toContain('No charts')
+  })
+
+  it('keeps Throughput first, with its calm line in the slot and nothing at the bottom, when there is no throughput block', async () => {
+    const { harness, root } = await open(fleet('no-throughput'))
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(headings(root)).toEqual(['Throughput', 'Needs you 6', 'Ready to land 2', 'In flight 4', 'Resume', 'Cleanup', 'Fleet health 2'])
+    })
+    expect(root.querySelectorAll('app-throughput')).toHaveLength(1)
+    expect(root.querySelector('.throughput-slot[data-state=none] .throughput-note')?.textContent).toContain('No charts: the daemon reports no throughput')
+  })
+
+  it('walks the one slot through pending, no block and charts as documents arrive, never adding or removing it', async () => {
+    const { harness, root, store } = await open({ ...fleet('warming'), warming_up: true })
+    const slot = root.querySelector('.throughput-slot')
+    expect(slot?.getAttribute('data-state')).toBe('pending')
+    expect(headings(root).slice(0, 2)).toEqual(['Throughput', 'Needs you'])
+    store.document.set({ ...fleet('no-throughput'), warming_up: false })
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(root.querySelector('.throughput-slot')?.getAttribute('data-state')).toBe('none')
+    })
+    store.document.set({ ...fleet(), warming_up: false })
+    await vi.waitFor(async () => {
+      await harness.fixture.whenStable()
+      expect(root.querySelectorAll('.throughput-slot app-chart')).toHaveLength(2)
+    }, { timeout: 5000 })
+    expect(root.querySelector('.throughput-slot')).toBe(slot)
+    expect(root.querySelectorAll('app-throughput')).toHaveLength(1)
   })
 
   it('keeps the rest current with the model, and shows a skeleton and not "Nothing needs you" while the daemon is scanning', async () => {
     const { harness, root, store } = await open({ ...fleet('warming'), warming_up: true })
-    expect(root.querySelector('.home-calm')).toBeNull()
+    expect(root.querySelector('app-needs-you .home-calm')).toBeNull()
     expect(root.querySelector('app-skeleton-rows')).not.toBeNull()
     await vi.waitFor(async () => {
       await harness.fixture.whenStable()
@@ -76,7 +111,7 @@ describe('HomePage', () => {
     store.document.set({ ...fleet('healthy'), warming_up: false })
     await vi.waitFor(async () => {
       await harness.fixture.whenStable()
-      expect(root.querySelector('.home-calm')?.textContent).toContain('Nothing needs you.')
+      expect(root.querySelector('app-needs-you .home-calm')?.textContent).toContain('Nothing needs you.')
     })
   })
 
