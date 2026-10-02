@@ -25,10 +25,18 @@ export const LOGIN_KEY_FRAGMENT = 'key'
 const KEY_SHAPE = /^[A-Za-z0-9_-]{43}$/
 
 /**
- * A path of the page's own origin: one slash and then anything but a second slash or a backslash. A browser
- * reads `//host` and `/\host` alike as an address on another host.
+ * Whether `input` is a path of the page's own origin: one slash, then anything but a second slash or a
+ * backslash, and no control character anywhere. A browser reads `//host` and `/\\host` alike as an address on
+ * another host, and removes tabs and line breaks from an address before reading it, so `/\t/host` is one too.
  */
-const OWN_PATH = /^\/(?![/\\])/
+function isOwnPath(input: string): boolean {
+  if (!input.startsWith('/') || input[1] === '/' || input[1] === '\\') return false
+  for (let index = 0; index < input.length; index++) {
+    const code = input.charCodeAt(index)
+    if (code < 0x20 || code === 0x7f) return false
+  }
+  return true
+}
 
 /** The host names the daemon's own page is served on. The hosted page is on none of them and never takes a key. */
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', '[::1]', 'localhost'])
@@ -108,7 +116,7 @@ export class SessionKeys {
    */
   sign(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
     const key = this.current()
-    if (key === null || typeof input !== 'string' || !OWN_PATH.test(input)) return init
+    if (key === null || typeof input !== 'string' || !isOwnPath(input)) return init
     const headers = new Headers(init?.headers)
     if (!headers.has(SESSION_KEY_HEADER)) headers.set(SESSION_KEY_HEADER, key)
     return { ...init, headers }

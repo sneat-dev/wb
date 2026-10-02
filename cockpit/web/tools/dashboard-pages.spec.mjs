@@ -24,6 +24,9 @@ const PAYLOADS = [
   '&#39;);window.__pwned=1;(&#39;',
 ]
 
+/** Repository values of a record stored before names were checked: each would have pointed the link at another host. */
+const OTHER_HOSTS = ['attacker.example/x/y', 'attacker.example', 'github.com.attacker.example/a/b', 'github.com/a/b/../../../attacker', 'github.com@attacker.example/a', 'a/b?x=1#y', 'a/b/c']
+
 /** One metric record with `payload` in every field, of every type the field could have. */
 function hostileMetric(payload, index, extra = {}) {
   return {
@@ -54,6 +57,9 @@ const hostileMetrics = () => [
   // A record with no statements shows its workflow run: an address that is not https is never a link.
   ...PAYLOADS.map((payload, index) => hostileMetric(payload, `w${index}`, { metadata: { workflow_run_url: payload, workflow_run_id: payload } })),
   hostileMetric('ok', 'https', { metadata: { workflow_run_url: 'https://github.com/acme/r/actions/runs/1', workflow_run_id: 1 } }),
+  // A repository that is not owner/name is never a link: it could name any host.
+  ...OTHER_HOSTS.map((repository, index) => hostileMetric('ok', `h${index}`, { repository })),
+  hostileMetric('ok', 'bare', { repository: 'Acme/Widgets.go' }),
 ]
 
 const hostileOverview = () => ({
@@ -134,7 +140,7 @@ function expectNothingInjected() {
       if (!CLASSES.has(name)) problems.push(`class "${name}"`)
     }
     if (node.tagName === 'A' && !['https:', 'http:'].includes(new URL(node.href, 'http://127.0.0.1:8766').protocol)) problems.push(`address ${node.getAttribute('href')}`)
-    if (node.tagName === 'A' && node.target === '_blank' && new URL(node.href).protocol !== 'https:') problems.push(`external address ${node.getAttribute('href')}`)
+    if (node.tagName === 'A' && node.target === '_blank' && !/^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\/actions\/runs\/\d+)?$/.test(node.href)) problems.push(`external address ${node.getAttribute('href')}`)
     if (node.hasAttribute('style') && /url\(|expression|javascript/i.test(node.getAttribute('style'))) problems.push(`style ${node.getAttribute('style')}`)
   }
   expect([...new Set(problems)]).toEqual([])
@@ -200,7 +206,12 @@ describe('the metrics page with a hostile value in every field of every record',
     // An address that is not https is text; the one that is https is a link.
     const runs = [...document.querySelectorAll('#tableContainer a')].filter((link) => link.textContent.startsWith('Run #'))
     expect(runs.map((link) => link.href)).toEqual(['https://github.com/acme/r/actions/runs/1'])
-    expect([...document.querySelectorAll('#tableContainer span.sub')].filter((span) => span.textContent.startsWith('Run #')).length).toBe(PAYLOADS.length * 2)
+    expect([...document.querySelectorAll('#tableContainer span.sub')].filter((span) => span.textContent.startsWith('Run #')).length).toBe(PAYLOADS.length * 2 + OTHER_HOSTS.length + 1)
+    // A repository is a link only when it is owner/name, and then to GitHub, built from those two parts.
+    const repositories = [...document.querySelectorAll('#tableContainer td.repo a')]
+    expect(repositories.map((link) => link.href)).toEqual(['https://github.com/ok/https', 'https://github.com/Acme/Widgets.go'])
+    const names = [...document.querySelectorAll('#tableContainer td.repo')].map((cell) => cell.textContent)
+    for (const repository of OTHER_HOSTS) expect(names, repository).toContain(repository.replace(/^github\.com\//, ''))
     document.querySelector('#tableView button[data-action="expand"]').click()
     expect(document.querySelectorAll('#tableContainer .dim-table tbody tr').length).toBe(hostileMetrics().length * 3 - 3)
     expectNothingInjected()
@@ -245,13 +256,20 @@ describe('the metrics page with a hostile value in every field of every record',
     // A daemon with no hub answers the metrics addresses with its index page: no data, and no error.
     await load('metrics', { '/api/v1/overview': hostileOverview(), '/v0/workbench/metrics/types': '<!doctype html>', '/v0/workbench/metrics': '<!doctype html>' }, 'text/html')
     expect(document.querySelector('#error').style.display).toBe('none')
-    expect(document.querySelector('#leastCoverageTable').textContent).toBe('No coverage metrics recorded yet.')
+    expect(document.querySelector('#leastCoverageTable').textContent).toBe('No hub on this daemon: metrics are recorded by a hub.')
+    expect(document.querySelector('#mostActiveTable').textContent).toBe('No hub on this daemon: metrics are recorded by a hub.')
     expect(document.querySelectorAll('#worktreesTable tbody tr').length).toBe(PAYLOADS.length * 2)
     expect([...document.querySelectorAll('#tabs [data-type]')].map((tab) => tab.dataset.type)).toEqual(['summary', 'test_coverage'])
+    document.querySelector('#tabs [data-type="test_coverage"]').click()
+    expect(document.querySelector('#tableContainer').textContent).toBe('No hub on this daemon: metrics are recorded by a hub.')
     expectNothingInjected()
-    // With no route at all the page says so in its own words.
+    // A daemon that answers those addresses 404 has no hub either.
     await load('metrics', {})
+    expect(document.querySelector('#leastCoverageTable').textContent).toBe('No hub on this daemon: metrics are recorded by a hub.')
+    // A hub with nothing recorded says so in other words.
+    await load('metrics', { '/v0/workbench/metrics/types': [], '/v0/workbench/metrics': [] })
     expect(document.querySelector('#leastCoverageTable').textContent).toBe('No coverage metrics recorded yet.')
+    expect(document.querySelector('#mostActiveTable').textContent).toBe('No repository activity recorded yet.')
     expectNothingInjected()
   })
 })

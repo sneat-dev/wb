@@ -70,10 +70,20 @@
     return number(record.covered) + ' / ' + record.statements + suffix
   }
 
-  /** The address of a repository on its forge: always https, whatever the name holds. */
+  /** A repository in the form the hub stores: `owner/name`, with or without the forge before it. */
+  const REPOSITORY = /^(?:github\.com\/)?([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/
+
+  /**
+   * The repository's cell: a link to it on GitHub when its name has the owner/name form, built by the page from
+   * those two parts; a name of any other form (a record stored before names were checked) is plain text, so it
+   * can never point the link at another host.
+   */
   function repositoryLink(repository) {
-    const link = el('a', '', text(repository).replace(/^github\.com\//, ''))
-    link.href = 'https://' + text(repository)
+    const slug = text(repository).replace(/^github\.com\//, '')
+    const parts = REPOSITORY.exec(text(repository))
+    if (parts === null) return el('td', 'repo', slug)
+    const link = el('a', '', slug)
+    link.href = 'https://github.com/' + parts[1] + '/' + parts[2]
     link.target = '_blank'
     link.rel = 'noopener'
     return el('td', 'repo', null, [link])
@@ -140,7 +150,7 @@
     const sortedCov = coverageMetrics.filter((m) => !filter || lower(m.repository).includes(filter)).sort((a, b) => number(a.value) - number(b.value))
     document.querySelector('#leastCoverageTable').replaceChildren(
       !sortedCov.length
-        ? el('div', 'empty', 'No coverage metrics recorded yet.')
+        ? el('div', 'empty', noHub ? NO_HUB : 'No coverage metrics recorded yet.')
         : table(
             '',
             ['Repository', 'Coverage', 'Statements', 'Action'],
@@ -159,7 +169,7 @@
     const sortedActive = allMetrics.filter((m) => !filter || lower(m.repository).includes(filter)).sort((a, b) => new Date(b.reported_at) - new Date(a.reported_at))
     document.querySelector('#mostActiveTable').replaceChildren(
       !sortedActive.length
-        ? el('div', 'empty', 'No repository activity recorded yet.')
+        ? el('div', 'empty', noHub ? NO_HUB : 'No repository activity recorded yet.')
         : table(
             '',
             ['Repository', 'Metric', 'Last Activity', 'Commit'],
@@ -198,6 +208,10 @@
     const filter = filterText.toLowerCase()
     const shown = allMetrics.filter((m) => !filter || lower(m.repository).includes(filter) || list(m.dimensions).some((d) => lower(d.name).includes(filter)))
 
+    if (!shown.length && noHub) {
+      container.replaceChildren(el('div', 'empty', NO_HUB))
+      return
+    }
     if (!shown.length) {
       container.replaceChildren(el('div', 'empty', null, [document.createTextNode('No repositories found for metric: '), el('b', '', currentType), document.createTextNode('.')]))
       return
@@ -338,12 +352,23 @@
     }
   }
 
+  /** Set when the daemon has no hub: there is nowhere metrics are recorded, which is not an error. */
+  let noHub = false
+  const NO_HUB = 'No hub on this daemon: metrics are recorded by a hub.'
+
   /**
-   * The records of an answer, or none when it is not JSON: a daemon with no hub has no metrics routes, and
-   * answers their addresses with its index page.
+   * The records of an answer; null when the route failed, and what was read before is kept. A daemon with no
+   * hub has no metrics routes: it answers their addresses 404 (an older wb answered them with its index page,
+   * which is not JSON), and that is the "no hub" state with no records.
    */
   async function records(res) {
+    const isJSON = (res.headers.get('Content-Type') || '').includes('application/json')
+    if (res.status === 404 || (res.ok && !isJSON)) {
+      noHub = true
+      return []
+    }
     if (!res.ok) return null
+    noHub = false
     try {
       return list(await res.json())
     } catch {

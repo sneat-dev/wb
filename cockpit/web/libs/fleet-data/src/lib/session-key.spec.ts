@@ -174,7 +174,7 @@ describe('SessionKeys', () => {
       const keys = keysWith(storage())
       keys.adopt(KEY)
       const init = { headers: { Accept: 'application/json' } }
-      for (const input of ['https://sneat.dev/wb/cockpit/api', 'http://127.0.0.1:3000/api/v1/cockpit/session', '//attacker.example/api', '/\\attacker.example/api', '\\\\attacker.example/api', '/\\/attacker.example', 'api/relative', '', new URL('http://127.0.0.1:8766/api/v1/cockpit/session'), new Request('http://127.0.0.1:8766/api/v1/cockpit/session')]) {
+      for (const input of ['https://sneat.dev/wb/cockpit/api', 'http://127.0.0.1:3000/api/v1/cockpit/session', '//attacker.example/api', '/\\attacker.example/api', '\\\\attacker.example/api', '/\\/attacker.example', '/\t/attacker.example', '/\n/attacker.example', '/\r\\attacker.example', '/api\t/v1', '/api/v1\u0000', '/api/v1\u007f', 'api/relative', '', new URL('http://127.0.0.1:8766/api/v1/cockpit/session'), new Request('http://127.0.0.1:8766/api/v1/cockpit/session')]) {
         expect(keys.sign(input, init)).toBe(init)
       }
     })
