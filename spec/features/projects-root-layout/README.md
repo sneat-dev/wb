@@ -390,6 +390,9 @@ with an error naming the user-only configuration path.
 **Then** the command ignores the variable, writes under `<root>/.wb`, and emits
 a diagnostic naming the ignored variable, its value, and the state directory in
 use; and no command ever writes to `<projects-root>/.wb` as a fallback home.
+When `WB_HOME` names the state directory in use anyway, nothing is printed; the
+diagnostic goes to stderr once per process and never appears when the command
+was asked for JSON output (`--format json` or `--json`).
 
 ### AC: denied-write-names-the-path-and-remedy
 

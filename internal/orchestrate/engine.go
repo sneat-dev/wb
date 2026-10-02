@@ -789,20 +789,13 @@ func changedFilesSince[T any](ctx context.Context, worktree string, before map[s
 }
 
 func worktreeStatus(ctx context.Context, worktree string, options Options) (map[string]string, error) {
-	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "status", "--porcelain=v1", "-z")
+	entries, err := readPorcelainStatus(ctx, options.resolveRunner(), options.Timeout, worktree)
 	if err != nil {
 		return nil, err
 	}
-	files := make(map[string]string)
-	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
-		if len(entry) < 4 {
-			continue
-		}
-		path := entry[3:]
-		if arrow := strings.LastIndex(path, " -> "); arrow >= 0 {
-			path = path[arrow+4:]
-		}
-		files[filepath.ToSlash(path)] = entry[:2]
+	files := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		files[filepath.ToSlash(entry.path)] = string([]byte{entry.index, entry.worktree})
 	}
 	return files, nil
 }
