@@ -199,6 +199,9 @@ test('at 375 x 812 both charts are shown and the "Needs you" heading is at or ab
   const slot = await page.locator('.throughput-slot').evaluate((element) => element.getBoundingClientRect().height)
   // The slot is exactly the two cards and the gap between them: nothing is left over, so nothing moved.
   expect(cards[0] + cards[1] + 8).toBe(slot)
+  // Five rows of 11 px labels: the "Time to finish" plot is at least five label lines tall (a line is 1.25 times the font), so the rows do not touch.
+  const plot = await page.locator('.chart-card').nth(1).locator('.plot').evaluate((element) => element.getBoundingClientRect().height)
+  expect(plot).toBeGreaterThanOrEqual(5 * 11 * 1.25)
 })
 
 test('an owner whose daemon has an action registry still gets no live button on Home: there is no handler, so each row offers Copy', async ({ page }) => {

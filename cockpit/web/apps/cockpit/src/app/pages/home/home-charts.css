@@ -9,6 +9,10 @@
   padding: var(--space-3);
 }
 
+.chart-card + .chart-card {
+  min-height: var(--chart-card-min-2, var(--chart-card-min, 14rem));
+}
+
 @media (min-width: 60rem) {
   .charts-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -29,12 +29,13 @@ main:has(.home) > app-skeleton-rows.warming {
 
 /* Throughput is the first section of Home and its charts are a lazy chunk (REQ:home-charts): this slot keeps
    their height until they arrive (and while it is not known yet whether there are any), so "Needs you" below
-   does not move. --chart-card-min is the card's height (home-charts.css) and --chart-card-gap the space between
+   does not move. --chart-card-min and -min-2 are the heights of the first and second card (home-charts.css) and --chart-card-gap the space between
    the cards: two cards stacked under 60rem, one row of two from there; compact on a phone. */
 .throughput-slot {
   --chart-card-min: 14rem;
+  --chart-card-min-2: var(--chart-card-min);
   --chart-card-gap: var(--space-3);
-  min-height: calc(2 * var(--chart-card-min) + var(--chart-card-gap));
+  min-height: calc(var(--chart-card-min) + var(--chart-card-min-2) + var(--chart-card-gap));
 }
 
 .throughput-slot.pending {
@@ -50,7 +51,8 @@ main:has(.home) > app-skeleton-rows.warming {
 
 @media (max-width: 480px) {
   .throughput-slot {
-    --chart-card-min: 7.375rem;
+    --chart-card-min: 6.625rem;
+    --chart-card-min-2: 8.125rem;
     --chart-card-gap: var(--space-2);
   }
 }
