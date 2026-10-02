@@ -44,8 +44,9 @@ export const fleet = {
 }
 
 export async function stub(page: Page, codeBrowserUrl = 'https://codegrapher.dev/') {
+  // The snapshot is stamped when it is served, as a daemon does: a slow runner reaches a test minutes after this file loaded.
   await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: fleet, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache' } }),
+    route.fulfill({ json: { ...fleet, snapshot_at: new Date().toISOString() }, headers: { ETag: '"stub"', 'Cache-Control': 'no-cache' } }),
   )
   await page.route('**/api/v1/cockpit/session', (route) =>
     route.fulfill({
