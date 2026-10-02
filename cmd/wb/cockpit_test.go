@@ -187,12 +187,12 @@ func TestCockpitLoginURLUsesTheAddressTheDaemonListensOn(t *testing.T) {
 	var mints int
 	deps := cockpitTestDependencies(t, &opened, &mints)
 	deps.local = func(context.Context, daemonDependencies, string, string, bool) (cockpitLocalSession, error) {
-		return cockpitLocalSession{Listen: "127.0.0.2:9000", Code: "c", Path: cockpit.LoginPath}, nil
+		return cockpitLocalSession{Listen: "127.0.0.2:9000", Code: "c", Key: "k", Path: cockpit.LoginPath}, nil
 	}
 	if _, _, err := runCockpit(t, &invocation{}, deps); err != nil {
 		t.Fatal(err)
 	}
-	if len(opened) != 1 || opened[0] != "http://127.0.0.2:9000/cockpit/session/login?code=c" {
+	if len(opened) != 1 || opened[0] != "http://127.0.0.2:9000/cockpit/session/login?code=c#key=k" {
 		t.Fatalf("opened = %v", opened)
 	}
 }
