@@ -39,6 +39,10 @@ func remoteClaimWriter(cmd *cobra.Command) io.Writer {
 var relocateWorktrees = worktrees.Relocate
 var recoverRetiredStages = worktrees.RecoverRetiredStages
 
+// cleanupWorktreeTasks is the cleanup engine the command drives. It is a
+// variable so the flag-to-option mapping can be asserted without Git.
+var cleanupWorktreeTasks = worktrees.Cleanup
+
 func newWorktreeCmd(inv *invocation) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "worktree",
@@ -2138,6 +2142,24 @@ and to have its current branch head integrated into the freshly fetched exact
 origin target. A matching merged GitHub pull request supplies merge-time age
 evidence, but a verified direct push to the target is also eligible. A local
 merge that was not pushed remains awaiting_push. The default is a dry-run plan.
+
+The target is the base recorded when the worktree was created, per repository.
+Two situations change it, and the plan names the target that proved the work
+either way (integration_proof in JSON, in parentheses in text):
+
+  - The recorded base is gone from origin (an integration branch that landed
+    and was deleted), or it is still there and has itself landed in the
+    repository's default branch (a task stacked on another task's branch).
+    The head is then judged against the freshly fetched default branch, and
+    is eligible only when it is a plain Git ancestor of it. A head that is not
+    stays in the plan with the reason; it is never dropped as malformed.
+  - --base <branch> given explicitly is the exact origin target the head is
+    judged against, and nothing else: the recorded base is only reported
+    (recorded_base), no other branch is substituted, and a branch origin does
+    not have is an error. Left at its default, --base is only the fallback
+    for a worktree with no recorded base.
+
+Every refusal that compares against a target names the ref and SHA it used.
 --apply removes worktrees and exact local branch refs; --remote additionally
 deletes an unchanged remote branch with force-with-lease protection. Durable
 Work Log archive/outbox evidence is written before any remote or local deletion.
@@ -2337,10 +2359,11 @@ required to remove anything.`,
 			now := time.Now()
 			progress := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
 			defer progress.finish()
-			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
+			outcome, err := cleanupWorktreeTasks(command.Context(), worktrees.CleanupOptions{
 				ProjectsRoot:      inv.projectsRoot,
 				Tasks:             tasks,
 				Base:              base,
+				ExplicitBase:      command.Flags().Changed("base"),
 				Filter:            inv.filterFlag,
 				AbsorbedBy:        absorbedBy,
 				SupersededBy:      supersededBy,
@@ -2433,7 +2456,7 @@ required to remove anything.`,
 			return nil
 		},
 	}
-	command.Flags().StringVar(&base, "base", "main", "exact origin target branch required to contain the work")
+	command.Flags().StringVar(&base, "base", "main", "exact origin target branch required to contain the work; when given, it overrides each worktree's recorded base")
 	command.Flags().BoolVar(&allMerged, "all-merged", false, "select every safely merged WB task")
 	command.Flags().BoolVar(&apply, "apply", false, "remove eligible worktrees and local branches")
 	command.Flags().BoolVar(&resumeInterrupted, "resume-interrupted", false, "recover only this named task's proven-dead interrupted lock before cleanup")
@@ -2903,12 +2926,12 @@ func printWorktreeCleanup(command *cobra.Command, results []worktrees.CleanupRes
 			if result.WorktreeResidueRemoved {
 				residue = " (WB removed the checkout Git unregistered but could not delete)"
 			}
-			if _, err := fmt.Fprintf(command.OutOrStdout(), "removed %s %s%s%s\n", result.Task, result.Repository, remote, residue); err != nil {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "removed %s %s%s%s%s\n", result.Task, result.Repository, remote, residue, cleanupProofNote(result)); err != nil {
 				return err
 			}
 		case result.Eligible:
 			eligible++
-			if _, err := fmt.Fprintf(command.OutOrStdout(), "would remove %s %s\n", result.Task, result.Repository); err != nil {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "would remove %s %s%s\n", result.Task, result.Repository, cleanupProofNote(result)); err != nil {
 				return err
 			}
 		default:
@@ -2923,6 +2946,16 @@ func printWorktreeCleanup(command *cobra.Command, results []worktrees.CleanupRes
 	}
 	_, err := fmt.Fprintf(command.OutOrStdout(), "%d eligible; dry-run only, pass --apply to remove\n", eligible)
 	return err
+}
+
+// cleanupProofNote names the target that proved a candidate's work landed when
+// that is not the base recorded for it, so the operator reads what authorized
+// the removal on the same line that announces it.
+func cleanupProofNote(result worktrees.CleanupResult) string {
+	if result.IntegrationProof == "" {
+		return ""
+	}
+	return " (" + result.IntegrationProof + ")"
 }
 
 func printWorktreeRename(command *cobra.Command, results []worktrees.RenameResult, apply bool) error {
