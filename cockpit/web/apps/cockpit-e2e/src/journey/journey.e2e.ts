@@ -138,9 +138,14 @@ async function watch(page: Page, expectedStatus?: number) {
 async function dashboardPagesRunUnderTheStrictPolicy(page: Page, origin: string): Promise<void> {
   const failed: string[] = []
   const scripts: string[] = []
-  page.on('requestfailed', (request) => failed.push(`${request.url()} ${request.failure()?.errorText ?? ''}`))
+  // The journey arrives here from a Cockpit page, which may still be fetching one of its own chunks when the browser
+  // leaves it: that answer, or its abort, belongs to the page left behind, not to the dashboard page being checked.
+  const ofTheCockpit = (url: string) => new URL(url).pathname.startsWith('/cockpit/')
+  page.on('requestfailed', (request) => {
+    if (!ofTheCockpit(request.url())) failed.push(`${request.url()} ${request.failure()?.errorText ?? ''}`)
+  })
   page.on('response', (response) => {
-    if (response.request().resourceType() !== 'script') return
+    if (response.request().resourceType() !== 'script' || ofTheCockpit(response.url())) return
     scripts.push(new URL(response.url()).pathname)
     if (response.status() !== 200 || !(response.headers()['content-type'] ?? '').startsWith('text/javascript')) failed.push(`${response.status()} ${response.url()}`)
   })
