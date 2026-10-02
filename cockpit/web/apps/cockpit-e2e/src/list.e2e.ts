@@ -128,13 +128,17 @@ test('chip and sort replace the history entry, and back from a selection keeps t
   await page.goto('/cockpit/worktrees')
   await expect(listRows(page).first()).toBeVisible()
   const filter = page.getByRole('textbox', { name: 'Filter worktrees' })
+  // Each count is read before the step that changes it: read after, a fast page has already moved on and the wait never ends.
+  const count = page.locator('.count')
+  const whole = (await count.textContent())!
   await filter.fill('fix')
   await expect(page).toHaveURL(/q=fix/)
+  await expect(count).not.toHaveText(whole)
+  const withFilter = (await count.textContent())!
   await page.getByRole('button', { name: 'Unpushed', exact: true }).click()
   await expect(page).toHaveURL(/chips=unpushed/)
-  const unfiltered = (await page.locator('.count').textContent())!
-  await expect(page.locator('.count')).not.toHaveText(unfiltered)
-  const withChip = await page.locator('.count').textContent()
+  await expect(count).not.toHaveText(withFilter)
+  const withChip = await count.textContent()
   // A chip and a sort replace the history entry: they refine one view, and back must not walk through them.
   const before = await page.evaluate(() => history.length)
   await page.getByRole('button', { name: 'Machine', exact: true }).click()
