@@ -132,6 +132,19 @@ test('no page scrolls sideways at 360 px', async ({ page }) => {
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
     expect(widths.page).toBeLessThanOrEqual(widths.window)
   }
+  // The detail routes and an open panel too: they hold the long names and commands.
+  for (const path of ['worktrees', 'tasks', 'agents', 'machines']) {
+    await page.goto(`/cockpit/${path}`)
+    await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
+    expect(widths.page, `${path} panel`).toBeLessThanOrEqual(widths.window)
+    await page.keyboard.press('Escape')
+    await page.getByRole('grid').locator('[role=row][data-index] a').first().click()
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    const detail = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
+    expect(detail.page, `${path} detail`).toBeLessThanOrEqual(detail.window)
+  }
   await expectClean()
 })
 

@@ -22,11 +22,11 @@ export class WorktreesPage {
 
   /** Narrow lists (a panel beside, a tablet) lose Code index and Branch first, then PR, then Machine; Worktree, State and Last activity stay. */
   protected readonly columns: ListColumn<Worktree>[] = [
-    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 4, min: 300, priority: ALWAYS, value: (w) => `${w.task} · ${this.repoName(w)}` },
+    { id: 'worktree', header: 'Worktree', sort: 'worktree', width: 'fill', grow: 4, min: 200, priority: ALWAYS, value: (w) => `${w.task} · ${this.repoName(w)}` },
     { id: 'branch', header: 'Branch', width: 'fill', grow: 1, min: 120, priority: 1, value: (w) => w.branch, empty: (w) => w.branch === w.task },
     { id: 'machine', header: 'Machine', sort: 'machine', width: 160, min: 140, priority: 3, value: (w) => w.machine, empty: () => this.store.document().machines.length <= 1 },
-    { id: 'state', header: 'State', sort: 'state', width: 250, min: 230, priority: ALWAYS, hint: 'Owner state. ↑ unpushed, ↓ behind and gone are known for this machine only', value: (w) => w.owner_state ?? 'unknown' },
-    { id: 'pr', header: 'PR', width: 200, min: 140, priority: 2, empty: (w) => (this.store.model().worktreePullRequests.get(w.id) ?? []).length === 0 },
+    { id: 'state', header: 'State', sort: 'state', width: 300, min: 280, priority: ALWAYS, hint: 'Owner state. ↑ unpushed, ↓ behind and gone are known for this machine only', value: (w) => w.owner_state ?? 'unknown' },
+    { id: 'pr', header: 'PR', width: 250, min: 220, priority: 2, empty: (w) => (this.store.model().worktreePullRequests.get(w.id) ?? []).length === 0 },
     { id: 'index', header: 'Code index', width: 160, min: 120, priority: 1, empty: (w) => !w.code_index?.length },
     { id: 'activity', header: 'Last activity', sort: 'activity', width: 104, min: 96, priority: ALWAYS },
   ]

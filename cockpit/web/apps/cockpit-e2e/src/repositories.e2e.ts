@@ -159,11 +159,12 @@ test('Recent, Most worktrees and Most branches switch the order in one click and
   await group.getByRole('radio', { name: 'Most worktrees' }).focus()
   await page.keyboard.press('ArrowRight')
   await expect(page).toHaveURL(/sort=branches&dir=desc/)
+  const entries = await page.evaluate(() => history.length)
   await page.getByRole('button', { name: 'Repository', exact: true }).click()
   await expect(page).toHaveURL(/sort=repository/)
   await expect(group.getByRole('radio', { checked: true })).toHaveCount(0)
-  await page.goBack()
-  await expect(group.getByRole('radio', { name: 'Most branches' })).toBeChecked()
+  // A sort replaces the history entry: it adds none for back to walk through.
+  expect(await page.evaluate(() => history.length)).toBe(entries)
   await expectClean()
 })
 

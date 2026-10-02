@@ -81,7 +81,7 @@ test('Home lists what needs the operator with one action each, and what is ready
 
   // Work at risk opens its task first; with no registry its secondary action, a lazy chunk, is a quiet "Copy template" icon button.
   await expect(needs.locator('.home-row').nth(0).getByRole('link', { name: 'Open task refactor-cache' })).toHaveAttribute('href', /\/tasks\?sel=refactor-cache$/)
-  const template = needs.locator('.home-row').nth(0).getByRole('button', { name: /^Copy command template/ })
+  const template = needs.locator('.home-row').nth(0).getByRole('button', { name: /^Copy template/ })
   await expect(template).toHaveText('Copy template')
   await expect(template.locator('.visually-hidden')).toHaveText('Copy template')
   await template.click()
@@ -92,13 +92,13 @@ test('Home lists what needs the operator with one action each, and what is ready
   await expect(ready.locator('.home-row')).toHaveCount(1)
   await expect(ready.locator('.home-row')).toContainText('improve-docs')
   await expect(ready.locator('.home-row')).toContainText('5/5 checks')
-  const land = ready.getByRole('button', { name: /^Copy command: wb pr land/ })
+  const land = ready.getByRole('button', { name: /^Copy wb pr land/ })
   await land.click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("wb pr land 'acme/cli#7'")
 
   const flight = page.getByRole('region', { name: /^In flight/ })
   await expect(flight).toContainText('claude opus')
-  await expect(flight.getByRole('button', { name: 'Copy command: wb agent stop' })).toBeVisible()
+  await expect(flight.getByRole('button', { name: /^Copy wb agent stop/ })).toBeVisible()
   await expect(flight.getByLabel('Machines').locator('.home-tile')).toHaveCount(1)
   expect(await page.evaluate(() => (window as unknown as { __cls: number }).__cls)).toBeLessThan(0.01)
   await expectClean()
@@ -134,7 +134,7 @@ test('the charts are canvases that are drawn, and fetched, only when they scroll
   await expectClean()
 })
 
-test('an owner whose daemon has an action registry gets the registry\'s actions in slots; an anonymous reader is never asked', async ({ page }) => {
+test('an owner whose daemon has an action registry still gets no live button on Home: there is no handler, so each row offers Copy', async ({ page }) => {
   const asked: string[] = []
   await serve(page, OWNER)
   await page.route('**/api/v1/cockpit/actions?**', (route) => {
@@ -147,10 +147,10 @@ test('an owner whose daemon has an action registry gets the registry\'s actions 
   })
   const expectClean = await watch(page)
   await page.goto('/cockpit/')
-  await expect(page.getByRole('region', { name: /^Needs you/ }).getByRole('button', { name: 'Push' })).toBeVisible()
-  await expect(page.getByRole('region', { name: /^Ready to land/ }).getByRole('button', { name: 'Land' })).toBeVisible()
-  await expect(page.getByRole('region', { name: /^Needs you/ }).getByRole('button', { name: /^Copy command template/ })).toHaveCount(0)
-  expect(asked.sort()).toEqual(['pull_request:pr-ready', 'worktree:wt-risk'])
+  // Nothing on Home runs anything: a registry action with no handler behind it would be a button that does nothing.
+  await expect(page.getByRole('region', { name: /^Needs you/ }).getByRole('button', { name: /^Copy template/ })).toBeVisible()
+  await expect(page.getByRole('region', { name: /^Ready to land/ }).getByRole('button', { name: /^Copy wb pr land/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^(Push|Land)$/ })).toHaveCount(0)
   await expectClean()
 
   const anonymous = await page.context().newPage()

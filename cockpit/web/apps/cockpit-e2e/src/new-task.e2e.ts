@@ -50,24 +50,30 @@ test('typing a pattern, choosing both repositories and filling the form gives th
   await expect(page.locator('.chip-name')).toHaveText(['sneat-co/sneat-go', 'sneat-co/bots-go'])
 
   await page.getByLabel('Task name').fill('fix-ci')
-  await page.getByLabel('Brief').fill('Fix the flaky CI.')
+  await page.getByLabel('Brief', { exact: true }).fill('Fix the flaky CI.')
   await page.getByLabel(/Base branch/).fill('main')
-  // The model is required: until it is entered there is a reason and no command.
-  await expect(commandRows(page)).toHaveCount(1)
-  await expect(commandRows(page).first()).toContainText('a model is required')
-  await expect(page.getByRole('button', { name: /Copy command/ })).toHaveCount(0)
-  await page.getByLabel('Model').fill('opus')
-
-  await expect(commandRows(page)).toHaveCount(3)
-  await expect(commandRows(page).nth(0).locator('code')).toHaveText("wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'")
-  await expect(commandRows(page).nth(1).locator('code')).toHaveText("wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'")
-  await expect(commandRows(page).nth(2).locator('code')).toHaveText("wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'")
+  // With a brief the commands are the dispatches alone (dispatch creates the worktree itself): no creation before them, and no model asked for.
+  await expect(commandRows(page)).toHaveCount(2)
+  await expect(commandRows(page).nth(0).locator('code')).toHaveText("wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'")
+  await expect(commandRows(page).nth(1).locator('code')).toHaveText("wb agent dispatch --repo='sneat-co/bots-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'")
   for (const row of await commandRows(page).all()) {
     await expect(row).toContainText('edit before running')
     await expect(row).toContainText('run here')
   }
-  await commandRows(page).nth(1).getByRole('button', { name: /Copy command template/ }).click()
+  await commandRows(page).nth(0).getByRole('button', { name: /^Copy template/ }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile=<<<edit:profile>>> --new-worktree='fix-ci' --base='main'")
+  // The profile fills the one placeholder; the command then has nothing left to edit.
+  await page.getByLabel(/Agent profile/).fill('cheap-coder')
+  await expect(commandRows(page).nth(0).locator('code')).toHaveText("wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'")
+  await commandRows(page).nth(0).getByRole('button', { name: /^Copy wb agent dispatch/ }).click()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("wb agent dispatch --repo='sneat-co/sneat-go' --task='Fix the flaky CI.' --profile='cheap-coder' --new-worktree='fix-ci' --base='main'")
+  // Without a brief there is nothing to dispatch: the creation command alone, and now the model is required.
+  await page.getByLabel('Brief', { exact: true }).fill('')
+  await expect(commandRows(page)).toHaveCount(1)
+  await expect(commandRows(page).first()).toContainText('a model is required')
+  await page.getByLabel('Model').fill('opus')
+  await expect(commandRows(page)).toHaveCount(1)
+  await expect(commandRows(page).first().locator('code')).toHaveText("wb worktree create 'fix-ci' 'sneat-co/sneat-go' 'sneat-co/bots-go' --model='opus' --original-prompt-file=<<<edit:file>>> --base='main'")
 
   // Nothing was run or sent: the form made no request but the reads of the page itself.
   expect(requests.filter((request) => !request.startsWith('GET ')).length).toBe(0)
@@ -83,7 +89,7 @@ test('the address holds the form but not the brief, a reload restores it, and ba
   await page.getByRole('option', { name: 'acme/web' }).click()
   await page.getByLabel('Task name').fill('try-it')
   await page.getByLabel('Model').fill('sonnet')
-  await page.getByLabel('Brief').fill('A private note that stays here.')
+  await page.getByLabel('Brief', { exact: true }).fill('A private note that stays here.')
   await expect(page).toHaveURL(/repo=acme%2Fweb/)
   await expect(page).toHaveURL(/task=try-it/)
   await expect(page).toHaveURL(/model=sonnet/)
@@ -94,8 +100,9 @@ test('the address holds the form but not the brief, a reload restores it, and ba
   await page.reload()
   await expect(page.locator('.chip-name')).toHaveText(['acme/web'])
   await expect(page.getByLabel('Task name')).toHaveValue('try-it')
-  await expect(page.getByLabel('Brief')).toHaveValue('')
-  await expect(commandRows(page).nth(1).locator('code')).toContainText('--task=<<<edit:brief>>>')
+  await expect(page.getByLabel('Brief', { exact: true })).toHaveValue('')
+  // The brief is not in the address, so after a reload there is none and the form gives the creation command.
+  await expect(commandRows(page).first().locator('code')).toContainText("wb worktree create 'try-it' 'acme/web' --model='sonnet'")
 
   // Back: choosing the repository was a step, so back leaves it chosen no more.
   await page.getByRole('button', { name: 'Remove acme/web' }).click()
@@ -135,7 +142,9 @@ test('the form fits 360 px without sideways scroll, with the commands filled in'
   await page.setViewportSize({ width: 360, height: 800 })
   await stubForm(page)
   await page.goto('/cockpit/tasks/new?repo=sneat-co%2Fsneat-go&repo=sneat-co%2Fbots-go&task=fix-ci&base=main&model=opus')
-  await expect(commandRows(page)).toHaveCount(3)
+  await expect(commandRows(page)).toHaveCount(1)
+  await page.getByLabel('Brief', { exact: true }).fill('Fix the flaky CI.')
+  await expect(commandRows(page)).toHaveCount(2)
   const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
   expect(widths.page).toBeLessThanOrEqual(widths.window)
 })

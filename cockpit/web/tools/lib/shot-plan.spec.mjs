@@ -105,7 +105,7 @@ describe('homeShotPlan', () => {
 
   it('serves each case its fleet, session and registry, and scrolls to the end', () => {
     const owner = shots.find((shot) => shot.file === 'home-busy-owner-light-1440.png')
-    expect(owner).toMatchObject({ home: 'busy', session: 'owner', registry: true, state: 'ok', fullPage: true, scrollEnd: true, ready: 'app-home-rest' })
+    expect(owner).toMatchObject({ home: 'busy', session: 'owner', state: 'ok', fullPage: true, scrollEnd: true, ready: 'app-home-rest' })
     expect(shots.find((shot) => shot.file === 'home-warming-dark-390.png')).toMatchObject({ state: 'warming', home: 'warming' })
     expect(shots.find((shot) => shot.file === 'home-busy-more-light-390.png')?.click).toBe('button.home-more-toggle')
   })

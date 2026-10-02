@@ -123,7 +123,7 @@ test('j, k, Enter and Esc move through the rows and open and close the panel, an
   await expectClean()
 })
 
-test('the back button restores each earlier state: filter, chip, sort and selection', async ({ page }) => {
+test('chip and sort replace the history entry, and back from a selection keeps the filter, chip and sort', async ({ page }) => {
   await stubFixture(page)
   await page.goto('/cockpit/worktrees')
   await expect(listRows(page).first()).toBeVisible()
@@ -135,23 +135,24 @@ test('the back button restores each earlier state: filter, chip, sort and select
   const unfiltered = (await page.locator('.count').textContent())!
   await expect(page.locator('.count')).not.toHaveText(unfiltered)
   const withChip = await page.locator('.count').textContent()
+  // A chip and a sort replace the history entry: they refine one view, and back must not walk through them.
+  const before = await page.evaluate(() => history.length)
   await page.getByRole('button', { name: 'Machine', exact: true }).click()
   await expect(page).toHaveURL(/sort=machine/)
+  expect(await page.evaluate(() => history.length)).toBe(before)
+  // Choosing a row is a step of its own: back closes the panel and keeps the filter, chip and sort.
   await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
   await expect(page).toHaveURL(/sel=/)
+  expect(await page.evaluate(() => history.length)).toBe(before + 1)
   await page.goBack()
   await expect(page).not.toHaveURL(/sel=/)
-  await expect(page.getByRole('complementary')).toBeHidden()
-  await page.goBack()
-  await expect(page).not.toHaveURL(/sort=/)
-  await expect(page.locator('.count')).toHaveText(withChip!)
-  await page.goBack()
-  await expect(page).not.toHaveURL(/chips=/)
-  await expect(page.getByRole('button', { name: 'Unpushed', exact: true })).toHaveAttribute('aria-pressed', 'false')
-  await expect(filter).toHaveValue('fix')
-  await page.goForward()
+  await expect(page).toHaveURL(/sort=machine/)
   await expect(page).toHaveURL(/chips=unpushed/)
-  await expect(page.getByRole('button', { name: 'Unpushed', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('complementary')).toBeHidden()
+  await expect(page.locator('.count')).toHaveText(withChip!)
+  await page.goForward()
+  await expect(page).toHaveURL(/sel=/)
+  await expect(filter).toHaveValue('fix')
 })
 
 test('o opens the focused row\'s page and c copies its name', async ({ page, context }) => {
@@ -226,6 +227,50 @@ test('the panel is a full-screen sheet on a phone, and Esc closes it', async ({ 
   await expect(sheet).toBeHidden()
   const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }))
   expect(widths.page).toBeLessThanOrEqual(widths.window)
+})
+
+// Layout: a short list ends with its last row (no empty strip), and no cell of the busiest rows is cut at 1440 with the panel open.
+test('a short list has no empty strip under its rows, and the cells of the worktrees and tasks lists are not cut at 1440 with the panel open', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await stubFixture(page)
+  await page.goto('/cockpit/machines')
+  const viewport = page.locator('.viewport')
+  await expect(listRows(page).first()).toBeVisible()
+  const rows = await listRows(page).count()
+  const box = (await viewport.boundingBox())!
+  const rowHeight = (await listRows(page).first().boundingBox())!.height
+  // The header and the rows, and the borders: nothing taller.
+  expect(box.height).toBeLessThanOrEqual(rowHeight * (rows + 1) + 4)
+
+  for (const path of ['worktrees', 'tasks']) {
+    await page.goto(`/cockpit/${path}`)
+    await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+    await expect(page.getByRole('complementary')).toBeVisible()
+    const cut = await page.evaluate(() =>
+      [...document.querySelectorAll('[role=row][data-index] [role=gridcell]')]
+        .filter((cell) => cell.scrollWidth > cell.clientWidth + 1 && cell.querySelector('app-state-badge, app-pr-cell, app-task-pr-cell, .chip, app-owner-state-cell'))
+        .map((cell) => `${cell.className}: ${cell.scrollWidth} > ${cell.clientWidth}`),
+    )
+    expect(cut, `${path}: cells whose chips are cut`).toEqual([])
+  }
+})
+
+// A closed phone sheet leaves focus on the list, never on the page's top: the keyboard user keeps their place.
+test('closing the phone sheet, by Esc or by its close button, puts focus back on the list', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stubFixture(page)
+  await page.goto('/cockpit/worktrees')
+  await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+  const sheet = page.getByRole('dialog')
+  await expect(sheet).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(sheet).toBeHidden()
+  await expect(grid(page)).toBeFocused()
+  await listRows(page).first().locator('[role=gridcell]:not(.open-cell)').last().click()
+  await expect(sheet).toBeVisible()
+  await sheet.getByRole('button', { name: /^Close/ }).click()
+  await expect(sheet).toBeHidden()
+  await expect(grid(page)).toBeFocused()
 })
 
 test('the detail route renders the same content as the panel, ending with Raw data', async ({ page }) => {

@@ -165,16 +165,12 @@ export async function newTaskProducesCommands(page: Page, origin: string, reposi
   await expect(page.locator('.chip-name')).toHaveCount(repositories.length)
   expect((await page.locator('.chip-name').allInnerTexts()).map((text) => text.trim()).sort()).toEqual([...repositories].sort())
   await page.getByLabel('Task name').fill('journey-three')
-  await page.getByLabel('Brief').fill('Journey brief.')
-  await page.getByLabel('Model').fill('opus')
+  await page.getByLabel('Brief', { exact: true }).fill('Journey brief.')
 
+  // With a brief the commands are the dispatches alone: dispatch creates the worktree itself, so no creation comes first.
   const commands = page.locator('app-copy-command-list li')
-  await expect(commands).toHaveCount(1 + repositories.length)
-  const create = (await commands.nth(0).locator('code').textContent()) ?? ''
-  expect(create.startsWith("wb worktree create 'journey-three' ")).toBe(true)
-  for (const repository of repositories) expect(create).toContain(`'${repository}'`)
-  expect(create).toContain("--model='opus'")
-  expect(create).toContain('--original-prompt-file=')
+  await expect(commands).toHaveCount(repositories.length)
+  await expect(page.locator('app-copy-command-list')).not.toContainText('wb worktree create')
   for (const repository of repositories) {
     const dispatch = commands.filter({ hasText: `--repo='${repository}'` })
     await expect(dispatch).toHaveCount(1)

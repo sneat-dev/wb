@@ -68,11 +68,13 @@ test('Tasks, Repositories and Machines: the counts are links with only vocabular
   const first = () => page.locator('[role=row][data-index]').first()
 
   await page.goto('/cockpit/tasks')
-  const taskName = ((await first().locator('a.name').textContent()) ?? '').trim()
-  const worktrees = first().locator('a[href*="/cockpit/worktrees?"]')
+  // The default order is by state, so the first row may have no pull request: take the first that has one.
+  const withPr = page.locator('[role=row][data-index]').filter({ has: page.locator('app-task-pr-cell app-state-badge [title*="Not a link"]') }).first()
+  const taskName = ((await withPr.locator('a.name').textContent()) ?? '').trim()
+  const worktrees = withPr.locator('a[href*="/cockpit/worktrees?"]')
   expect(decodeURIComponent((await hrefOf(worktrees)).search)).toBe(`?q=task:"${taskName}"`)
   // A pull request's checks over total is a fact of one pull request: not a link, with its reason.
-  const checks = first().locator('app-task-pr-cell app-state-badge [title*="Not a link"]').first()
+  const checks = withPr.locator('app-task-pr-cell app-state-badge [title*="Not a link"]').first()
   await expect(checks).toContainText(/\d+\/\d+/)
 
   await page.goto('/cockpit/repositories')

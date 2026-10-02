@@ -34,7 +34,7 @@ nothing. `ClipboardWriter` and `app-copy-button` are reusable.
 
 ## Action slot
 
-`app-action-slot [actions] [target] (activated)`. `actions` is what the registry returned for `<type>:<id>`
+`app-action-slot [actions] [target] [run] [copy]`. `run` is the page's handler: live buttons render only when it is set; without it the slot shows `app-lazy-copy` for the `copy` input (`{build, label, template?, quiet?}`) or nothing. Copy buttons announce through `StatusAnnouncer` (one `<app-status-region>` in the shell, imported from the small `@cockpit/ui/status` entry so the first page stays under budget); names come from `copy-label.ts` ("Copy wb pr land: ..."). `actions` is what the registry returned for `<type>:<id>`
 (`RegistryAction[]`), `undefined` when the route is absent. only `safe` and `guarded` are buttons; every other class (`destructive`, unknown or missing) sits under an overflow
 menu, so the slot fails closed (cockpit-actions REQ:common-actions-are-direct). An action that cannot run is
 `aria-disabled` (still focusable), its reason read once as its description and shown in words on hover, focus and tap; a not-permitted action

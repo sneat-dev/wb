@@ -31,6 +31,7 @@
       "@cockpit/ui": ["./libs/ui/src/index.ts"],
       "@cockpit/ui/control": ["./libs/ui/src/control.ts"],
       "@cockpit/ui/state": ["./libs/ui/src/state.ts"],
+      "@cockpit/ui/status": ["./libs/ui/src/status.ts"],
       "@cockpit/ui/chart": ["./libs/ui/src/chart.ts"]
     },
     "strict": false,

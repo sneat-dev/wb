@@ -25,7 +25,6 @@
 
 .viewport {
   max-height: calc(100dvh - 14rem);
-  min-height: 10rem;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
