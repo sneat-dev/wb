@@ -81,7 +81,23 @@ func assertCanonicalPublicationDeletedLinuxCwd(t *testing.T, root string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gitExecutable, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitExecutable, err = filepath.Abs(gitExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIdentity, err := os.Stat(gitExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stage := filepath.Join(root, "empty-stage")
+	relativeGitDirectory, err := filepath.Rel(stage, filepath.Dir(gitExecutable))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(stage, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +127,23 @@ func assertCanonicalPublicationDeletedLinuxCwd(t *testing.T, root string) {
 	}
 	if code := verifySecureStageContainment(absoluteRoot); code != 1 {
 		t.Fatalf("deleted-cwd stage containment = %d, want 1", code)
+	}
+	// Go documents execerrdot=0 for callers retaining relative PATH search.
+	// Resolve the captured real Git through Linux's still-reachable parent;
+	// only its later absolute-spelling step must fail on the unlinked cwd.
+	t.Setenv("PATH", relativeGitDirectory)
+	t.Setenv("GODEBUG", os.Getenv("GODEBUG")+",execerrdot=0")
+	foundGit, err := exec.LookPath("git")
+	if err != nil || filepath.IsAbs(foundGit) {
+		t.Fatalf("real Git relative lookup prerequisite = %q, %v", foundGit, err)
+	}
+	foundIdentity, err := os.Stat(foundGit)
+	if err != nil || !os.SameFile(gitIdentity, foundIdentity) {
+		t.Fatalf("relative lookup did not retain captured real Git identity: %q, %v", foundGit, err)
+	}
+	gotExecutable, err := platformTrustedGitExecutable()
+	wantError := fmt.Sprintf("make Git path absolute before secure staging handoff: %v", os.NewSyscallError("getwd", syscall.ENOENT))
+	if gotExecutable != "" || !errors.Is(err, syscall.ENOENT) || err.Error() != wantError {
+		t.Fatalf("relative real Git absolute-spelling refusal = %q, %v; want %q", gotExecutable, err, wantError)
 	}
 }
