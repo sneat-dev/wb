@@ -598,11 +598,9 @@ func validateBuiltPackageSource(source string) error {
 	return nil
 }
 
-// copyBuiltPackageContentsInjected is copyBuiltPackageContents's test seam
-// (task-9 PR-8): every production call site reaches it only through
-// copyBuiltPackageContents, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged. A test passes its own Injector to
-// reach the create/write/close failure branches deterministically. The
+// copyBuiltPackageContentsInjected copies a built package tree. Production
+// call sites pass a nil *filewrite.Injector, so production behaviour is
+// unchanged; a test passes its own Injector to reach the create/write/close failure branches deterministically. The
 // copy itself goes through io.Copy into a filewrite.Writer wrapping output,
 // which restores io.Copy's copy_file_range/splice/sendfile fast path
 // because input is a real *os.File (review-t9-pr6 N3).

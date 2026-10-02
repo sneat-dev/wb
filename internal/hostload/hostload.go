@@ -7,8 +7,8 @@
 // below which they refuse new CPU-heavy work instead of piling onto an
 // already-overloaded host.
 //
-// The floor is disabled entirely — every check admits, and Resolve/Floor
-// report a floor of 0 with a reason — in three cases, evaluated in this
+// The floor is disabled entirely — every check admits, and Resolve
+// reports a floor of 0 with a reason — in three cases, evaluated in this
 // order:
 //
 //  1. WB_ADMISSION_LOAD_FLOOR is set to a positive number: that number is
@@ -131,7 +131,7 @@ func Resolve(configPath string) (floor float64, reason string) {
 
 // Check refuses admission when the host's 1-minute load average exceeds
 // floor, unless allow is true (the caller passed --allow-saturated-host).
-// floor <= 0 means admission is disabled (see Resolve/Disabled) and Check
+// floor <= 0 means admission is disabled (see Resolve) and Check
 // always admits, without even reading the load. read is normally nil, which
 // selects System; tests inject a fake Reader. A Reader error (including
 // ErrUnsupported) never blocks admission — an unreadable or unsupported

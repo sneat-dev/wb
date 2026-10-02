@@ -171,8 +171,9 @@ func (s State) Valid() error {
 	return nil
 }
 
-// NewStartingAt is NewStarting with the daemon's own location recorded, so the
-// generation it opens names the home it belongs to.
+// NewStartingAt creates the next fenced queue generation and records the
+// daemon's own location, so the generation it opens names the home it
+// belongs to.
 func NewStartingAt(previous *State, listen string, provenance Provenance, ownerToken, wbHome, statePath string, now time.Time) State {
 	state := newStarting(previous, listen, provenance, ownerToken, now)
 	state.WBHome = wbHome

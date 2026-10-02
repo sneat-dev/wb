@@ -316,7 +316,7 @@ type UnpushedBranch struct {
 
 // UnpushedWork returns both the unique flat commit list and branch/worktree
 // attribution. It requires at least one known remote-tracking ref for the same
-// reason as UnpushedCommits: without one, the whole repository history would
+// reason as the commit list: without one, the whole repository history would
 // be indistinguishable from unpublished work.
 func UnpushedWork(repoPath string) ([]string, []UnpushedBranch, error) {
 	return unpushedWork(repoPath, true)
