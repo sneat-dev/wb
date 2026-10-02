@@ -30,7 +30,7 @@ and the repository README asks for an owner session.
 
 ## Approach
 
-Nine tasks. The Go side is built bottom-up — mount and guard, then the
+Nine tasks, and a tenth added after the plan was implemented. The Go side is built bottom-up — mount and guard, then the
 session, then the command that issues it, then the read model — so every
 route exists and is protected before any browser code calls it. The
 application is split in three so no pull request carries the whole of it:
@@ -195,6 +195,34 @@ reload, and assert that lists load while the README asks for an owner
 session. No reloads or manual steps beyond those the journey names. The journey
 runs on Linux in CI only, because on macOS the daemon is a launchd service with
 one fixed label per user.
+
+### Task 10: The daemon's log is the owner's alone
+
+**Id:** task-10
+**Verifies:** cockpit#ac:daemon-log-needs-an-owner-session, cockpit#ac:daemon-log-fails-closed-without-an-owner-check, cockpit#ac:daemon-log-error-names-no-path
+**Depends-On:** 2
+**Status:** complete
+
+Added 2026-10-02, after the founder's rule that anything returning the content
+of a file requires authentication. The dashboard's `GET /api/v1/log` takes an
+owner check through `dashboard.Options.Owner`, which the daemon fills with
+`cockpit.Server.IsOwner`: a loopback `Host`, the canonical origin or none, and a
+live session. Without an owner the route answers 401 before the file is opened,
+without an owner check it answers 403, and its failures carry a closed code and
+no path.
+
+### Task 11: The dashboard's JSON routes answer only on a loopback host
+
+**Id:** task-11
+**Verifies:** cockpit#ac:dashboard-json-routes-answer-only-on-loopback
+**Depends-On:** 10
+**Status:** complete
+
+Added 2026-10-02, from the whole-branch security review. `GET /api/v1/health`
+and `GET /api/v1/overview` apply the Host check, by the rule Cockpit's guard
+applies (package `internal/loopbackhost`, which both ask), and a failed overview
+answers a closed code and a fixed message while its reason goes to the daemon's
+log.
 
 ## Open Questions
 

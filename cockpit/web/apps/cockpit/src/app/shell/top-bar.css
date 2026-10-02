@@ -1,0 +1,378 @@
+:host {
+  position: sticky;
+  z-index: 40;
+  top: 0;
+  display: block;
+}
+
+.topbar {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  min-height: var(--topbar-h);
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.brand {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex: none;
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  text-decoration: none;
+}
+
+.brand:hover {
+  text-decoration: none;
+}
+
+.logo {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.logo rect {
+  fill: var(--accent);
+}
+
+.logo path {
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+}
+
+.tabs {
+  display: flex;
+  flex: none;
+  align-self: stretch;
+  gap: var(--space-1);
+}
+
+.tab-slot {
+  --tab-pad: var(--space-3);
+
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: 0 var(--tab-pad);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+/* The current tab: ink and a 2 px accent line on the bar's own border. */
+.tab.active {
+  color: var(--text);
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  right: var(--space-2);
+  bottom: -1px;
+  left: var(--space-2);
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
+
+.badge-pending {
+  visibility: hidden;
+}
+
+/* The badge is a link of its own, laid over the room the tab holds for it. */
+a.badge {
+  position: absolute;
+  top: 50%;
+  right: var(--tab-pad);
+  z-index: 1;
+  min-height: 1.5rem;
+  line-height: 1.5rem;
+  text-decoration: none;
+  transform: translateY(-50%);
+}
+
+a.badge:hover {
+  text-decoration: none;
+  filter: brightness(0.95);
+}
+
+.badge {
+  min-width: 1.5rem;
+  padding: 0 0.375rem;
+  border-radius: var(--radius-pill);
+  background: var(--idle-soft);
+  color: var(--idle);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1.25rem;
+  text-align: center;
+}
+
+/* A badge above zero is a signal: the one accent colour, filled. */
+.badge.hot {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex: 1 1 0;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* The search entry is the one part that gives way by the pixel: fonts differ in width from one system to the next, and the tabs must never be the part that is cut. */
+.palette-trigger {
+  display: inline-flex;
+  flex: 0 1 12.5rem;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 2rem;
+  overflow: hidden;
+  height: 2rem;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.palette-trigger:hover {
+  background: var(--surface-hover);
+  color: var(--text-2);
+}
+
+.trigger-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.trigger-keys {
+  font-size: 0.6875rem;
+}
+
+.new-task {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  height: 2rem;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.new-task:hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+}
+
+.session {
+  flex: none;
+}
+
+/* The anonymous chip is a button that opens the sign-in card. */
+.session[role='button'] {
+  cursor: pointer;
+}
+
+.session[role='button']:hover {
+  background: var(--surface-hover);
+}
+
+/* "session" while it is read, then "anonymous" or "owner": the same width, so the bar does not move. */
+@media (min-width: 48rem) {
+  .session {
+    min-width: 6.5rem;
+  }
+}
+
+/*
+ * Between a wide window and a phone the bar gives up room in a fixed order, so the tabs never run under a
+ * control: first the search entry shrinks to its icon (below 83 rem, 1328 px), then "New task" to its icon
+ * (below 75 rem), then the brand's name goes (below 71 rem) and, last, the freshness chip and the
+ * session chip keep their icon and say the rest in their `title` and to assistive technology (below 66 rem), with the tabs closer together. Below 48 rem the tabs are the scrolling strip under the bar.
+ */
+@media (max-width: 83rem) {
+  .palette-trigger {
+    flex: none;
+    width: 2rem;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .trigger-text,
+  .trigger-keys {
+    display: none;
+  }
+}
+
+@media (min-width: 48rem) and (max-width: 75rem) {
+  .new-task {
+    width: 2rem;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .new-task-text {
+    display: none;
+  }
+}
+
+@media (min-width: 48rem) and (max-width: 71rem) {
+  .brand-name {
+    display: none;
+  }
+}
+
+@media (min-width: 48rem) and (max-width: 66rem) {
+  .tab-slot {
+    --tab-pad: var(--space-2);
+  }
+
+  .session {
+    min-width: 0;
+  }
+
+  .session-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* A phone: the brand keeps its mark, the actions share the first row and the tabs
+   are a scrollable strip below it. */
+@media (max-width: 48rem) {
+  .topbar {
+    flex-wrap: wrap;
+    gap: 0 var(--space-3);
+    padding-inline: var(--space-3);
+  }
+
+  .brand {
+    min-height: var(--topbar-h);
+  }
+
+  .brand-name {
+    display: none;
+  }
+
+  .actions {
+    flex: 1;
+    justify-content: flex-end;
+    min-height: var(--topbar-h);
+  }
+
+  .new-task {
+    width: 2rem;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .new-task-text {
+    display: none;
+  }
+
+  /* A finger needs 44 px: the controls of the bar are that big, the small badge and mark hold a target of their own. */
+  .palette-trigger,
+  .new-task {
+    flex: none;
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .session {
+    min-height: 2.75rem;
+  }
+
+  .brand {
+    position: relative;
+  }
+
+  .brand::after {
+    content: '';
+    position: absolute;
+    inset: 0 -0.625rem;
+  }
+
+  a.badge::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2.75rem;
+    height: 2.75rem;
+    transform: translate(-50%, -50%);
+  }
+
+  .tabs {
+    flex: 0 0 calc(100% + 2 * var(--space-3));
+    order: 3;
+    height: calc(2.75rem + 1px);
+    margin: 0 calc(-1 * var(--space-3));
+    padding: 0 var(--space-2);
+    overflow-x: auto;
+    border-top: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* The narrowest phones: the session chip keeps its icon and says the rest in its title and to assistive technology, so the
+   freshness chip and the controls fit one row at 360 px. */
+@media (max-width: 30rem) {
+  .session {
+    justify-content: center;
+    width: 2.75rem;
+    padding: 0;
+    border-radius: var(--radius-md);
+  }
+
+  .session-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}

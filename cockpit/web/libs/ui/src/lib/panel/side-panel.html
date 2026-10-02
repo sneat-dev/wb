@@ -1,0 +1,13 @@
+<!-- A div with the role, not an <aside>: the sheet is a dialog, which an aside may not be. -->
+<div
+  #panel
+  class="panel side-panel"
+  tabindex="-1"
+  [attr.role]="sheet() ? 'dialog' : 'complementary'"
+  [attr.aria-modal]="sheet() ? 'true' : null"
+  [attr.aria-label]="label()"
+  (keydown)="trap($event)"
+>
+  <button type="button" class="close" aria-label="Close panel" title="Close (Esc)" (click)="closed.emit()"><app-glyph [paths]="cross" /></button>
+  <div class="scroll"><ng-content /></div>
+</div>

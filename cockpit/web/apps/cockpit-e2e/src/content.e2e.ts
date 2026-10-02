@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
+import { checkedAt } from './support'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 
 // Repository content and the code-index panel, in the built application served
 // under the daemon's content security policy, against a stubbed API. Every test
-// ends by checking that no policy violation and no console error occurred,
-// beyond the PrimeUI licence banner this build is known to show.
+// ends by checking that no policy violation and no console error occurred.
 
 const now = new Date().toISOString()
 const alpha = { machine: 'alpha', machine_id: 'mach-alpha', route: 'local', observed_at: now }
@@ -25,7 +25,7 @@ function fleet(files: number, provider: string | null = 'codegrapher') {
   // A daemon with no provider configured reports no statistics at all.
   const withStats = (statistics: object) => (provider ? { statistics } : {})
   return {
-    schema_version: 1,
+    schema_version: 2,
     snapshot_at: now,
     warming_up: false,
     repositories_total: 1,
@@ -49,7 +49,6 @@ function fleet(files: number, provider: string | null = 'codegrapher') {
       { id: 'wt-indexed', ...alpha, repository: 'repo-cli', task: 'add-search', branch: 'task/add-search', code_index: [{ indexer: 'codegrapher', state: 'fresh', receipt_at: now, ...withStats(stats(files)) }] },
       { id: 'wt-bare', ...alpha, repository: 'repo-cli', task: 'fix-index', branch: 'task/fix-index', code_index: [{ indexer: 'codegrapher', state: 'never', ...withStats(notIndexed) }] },
     ],
-    branches: [],
     pull_requests: [],
     agents: [],
   }
@@ -64,9 +63,10 @@ async function stub(page: Page, options: { session: typeof OWNER; document?: () 
   const readmeCalls: string[] = []
   page.on('request', (request) => requests.push(request.url()))
   await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: (options.document ?? (() => fleet(12)))(), headers: { ETag: `"${Math.random()}"`, 'Cache-Control': 'no-cache' } }),
+    route.fulfill({ json: (options.document ?? (() => fleet(12)))(), headers: { ETag: `"${Math.random()}"`, 'Cache-Control': 'no-cache', ...checkedAt() } }),
   )
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: options.session }))
+  await page.route('**/api/v1/cockpit/branches?*', (route) => route.fulfill({ json: { branches: [] } }))
   await page.route('**/api/v1/cockpit/readme?*', (route) => {
     readmeCalls.push(route.request().url())
     const readme = options.readme ?? { body: '' }
@@ -95,8 +95,7 @@ async function watch(page: Page, expectedStatus?: number) {
     const store = window as unknown as { __violations: unknown[] }
     store.__violations = []
     document.addEventListener('securitypolicyviolation', (event) => {
-      const inLicenseBanner = event.composedPath().some((node) => (node as Element).id === 'p-license-host')
-      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI, inLicenseBanner })
+      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI })
     })
   })
   return async () => {
@@ -112,7 +111,7 @@ test('the README renders for an owner session, and without one the page asks for
   const expectClean = await watch(page)
   const owner = await stub(page, { session: OWNER, readme: { body: '# Widgets\n\nA **small** library.\n' } })
   await page.goto('/cockpit/repositories/repo-cli')
-  await expect(page.getByRole('heading', { name: 'github.com/specscore/specscore-cli' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'specscore/specscore-cli' })).toBeVisible()
   await expect(page.locator('.readme-content h4')).toHaveText('Widgets')
   await expect(page.locator('.readme-content strong')).toHaveText('small')
   expect(owner.readmeCalls).toHaveLength(1)
@@ -127,7 +126,7 @@ test('the README renders for an owner session, and without one the page asks for
   await expect(page.locator('.readme-content')).toHaveCount(0)
   expect(anonymous.readmeCalls).toEqual([])
   // The lists still load without a session.
-  await expect(page.getByRole('heading', { name: 'github.com/specscore/specscore-cli' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'specscore/specscore-cli' })).toBeVisible()
   await expectClean()
 })
 
@@ -240,13 +239,13 @@ test('a row opens its detail page, which links back to the list', async ({ page 
   const expectClean = await watch(page)
   await stub(page, { session: ANONYMOUS })
   await page.goto('/cockpit/repositories')
-  await page.getByRole('link', { name: 'github.com/specscore/specscore-cli' }).first().click()
-  await expect(page).toHaveURL(/\/cockpit\/repositories\/repo-cli$/)
-  await expect(page.locator('dl.detail')).toContainText('main')
+  await page.getByRole('link', { name: 'Open specscore/specscore-cli', exact: true }).click()
+  await expect(page).toHaveURL(/\/cockpit\/repositories\/github\.com\/specscore\/specscore-cli$/)
+  await expect(page.locator('app-repository-machine-section')).toContainText('main')
   await page.getByRole('link', { name: /Repositories/ }).first().click()
   await expect(page).toHaveURL(/\/cockpit\/repositories$/)
   await page.goto('/cockpit/worktrees')
-  await page.getByRole('link', { name: 'add-search' }).click()
+  await page.getByRole('link', { name: 'Open add-search', exact: true }).click()
   await expect(page).toHaveURL(/\/cockpit\/worktrees\/wt-indexed$/)
   await expect(page.getByRole('heading', { name: 'add-search' })).toBeVisible()
   await expectClean()

@@ -121,6 +121,47 @@ only the hub-owned fields in the `remote` configuration while preserving other
 settings, and restart a running daemon by default so event polling adopts the
 new credential without operator guesswork.
 
+#### REQ: remote-publish-periodic
+
+The daemon MAY publish the machine's snapshot after a successful local scan by
+the same publish path as `wb remote publish`. It is opt-in: it runs only when
+`remote.publish.interval` is set (minimum 5 minutes; a shorter value is raised
+to it) and publishes nothing otherwise, so a machine that only publishes by hand
+is unchanged by an upgrade. It publishes no more often than the interval, skips
+a snapshot that says what the last published one said (a git store gains no
+commit for an idle machine; an unchanged snapshot is still published once
+max(6 hours, the interval) have passed), does not even scan while the daemon's
+change fingerprints are unchanged, reads with Git only the repositories whose
+fingerprint moved since it last read them (what it keeps is never older than that
+keepalive), runs one publish at a time under a time bound, and a failed
+publish is a typed diagnostic that stays until the step that failed works again,
+retried at the next interval, then with a doubling
+backoff of at most one hour, and never delays the local fleet snapshot.
+[cockpit-views](../cockpit-views/README.md)#req:periodic-remote-publish is the
+full statement.
+
+#### REQ: remote-snapshot-optional-fields
+
+A published snapshot MAY carry `agents` (per entry: runtime, model, task,
+repository, `activity` when known, start time and the run or session identifier)
+and `metrics` (the latest machine sample, as
+[cockpit-views](../cockpit-views/README.md)#req:machine-metrics-route defines),
+and its machine entry MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents
+(at most 200) are published only with `remote.publish.agents: true` and metrics
+only with `remote.publish.metrics: true`, both off by default. Every such field is
+optional and `schema_version` does not change, so an older reader that decodes
+without strict field checking ignores them. The hub provider's own snapshot model
+refuses unknown fields and MUST be extended to accept them before a publisher
+emits them; a publisher refused with status 400 by an older hub retries once
+without the optional fields and records a diagnostic, remembering the refusal
+for 24 hours for the life of that provider. `wb remote publish`, run by hand,
+publishes the machine's `os`, `arch`, `cpu_count` and `boot_time` as well (it did
+not before; its help says so and the first publish after the upgrade prints one
+line) and never agents or metrics. The part of a snapshot these
+fields add carries no path, command line, environment value or free text
+([cockpit-views](../cockpit-views/README.md)#req:remote-snapshot-agents-and-metrics
+lists what is published in each mode).
+
 ## Acceptance Criteria
 
 ### AC: pluggable-store-with-git-provider
@@ -147,6 +188,18 @@ Every publish advances `published_at` (except a byte-identical repeat),
 feeding the effective heartbeat that staleness detection relies on, and two
 machines publishing at the same time both succeed via a rebase-and-retry on
 push rejection.
+
+### AC: periodic-publish-and-optional-fields
+
+**Requirements:** remote-state#req:remote-publish-periodic, remote-state#req:remote-snapshot-optional-fields
+
+A daemon with a remote store and `remote.publish.interval` set publishes after each
+successful local scan no more often than every 5 minutes, retries a failed publish at
+the next interval without delaying its local snapshot, and a daemon with no store or
+no interval publishes nothing. A
+snapshot carrying the optional `agents`, `metrics` and machine hardware fields is
+decoded by the previous decoder without error, and the hub provider accepts and
+stores them.
 
 ### AC: cross-machine-visibility
 

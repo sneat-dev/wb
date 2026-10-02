@@ -10,7 +10,7 @@ import (
 
 func TestCockpitDefaultsApplyWhenNothingIsConfigured(t *testing.T) {
 	t.Parallel()
-	want := CockpitConfig{HostedURL: "https://sneat.dev/wb/cockpit/", CodeBrowserURL: "https://codegrapher.dev/", AnonymousMetadata: true}
+	want := CockpitConfig{HostedURL: "https://sneat.dev/wb/cockpit/", CodeBrowserURL: "https://codegrapher.dev/", AnonymousMetadata: true, RemoteHTTP: true, RemoteSSH: true}
 	for name, raw := range map[string]string{"empty": "", "other sections only": "hub:\n  engine: x\n", "empty section": "cockpit: {}\n", "null section": "cockpit:\n"} {
 		got, err := parseCockpit([]byte(raw))
 		if err != nil || got != want {
@@ -21,10 +21,18 @@ func TestCockpitDefaultsApplyWhenNothingIsConfigured(t *testing.T) {
 
 func TestCockpitSectionOverridesEachKey(t *testing.T) {
 	t.Parallel()
-	got, err := parseCockpit([]byte("cockpit:\n  hosted_url: https://hosted.example.test/c/\n  code_browser_url: https://code.example.test/\n  anonymous_metadata: false\n  refresh_interval: 45s\n"))
+	got, err := parseCockpit([]byte("cockpit:\n  hosted_url: https://hosted.example.test/c/\n  code_browser_url: https://code.example.test/\n  anonymous_metadata: false\n  refresh_interval: 45s\n  remote_http: false\n  remote_ssh: false\n"))
 	want := CockpitConfig{HostedURL: "https://hosted.example.test/c/", CodeBrowserURL: "https://code.example.test/", RefreshInterval: 45 * time.Second}
 	if err != nil || got != want {
 		t.Fatalf("got %+v, %v; want %+v", got, err, want)
+	}
+}
+
+func TestCockpitPullRequestLimitIsConfigured(t *testing.T) {
+	t.Parallel()
+	got, err := parseCockpit([]byte("cockpit:\n  pull_request_limit: 25\n  pull_request_hourly_budget: 300\n"))
+	if err != nil || got.PullRequestLimit != 25 || got.PullRequestHourlyBudget != 300 {
+		t.Fatalf("got %+v, %v", got, err)
 	}
 }
 
@@ -58,6 +66,10 @@ func TestCockpitSectionRejectsInvalidValues(t *testing.T) {
 		"cockpit:\n  refresh_interval: soon\n":                     "cockpit.refresh_interval",
 		"cockpit:\n  refresh_interval: -5s\n":                      "cockpit.refresh_interval",
 		"cockpit:\n  refresh_interval: 0s\n":                       "cockpit.refresh_interval",
+		"cockpit:\n  pull_request_limit: 0\n":                      "cockpit.pull_request_limit",
+		"cockpit:\n  pull_request_limit: 201\n":                    "cockpit.pull_request_limit",
+		"cockpit:\n  pull_request_hourly_budget: 9\n":              "cockpit.pull_request_hourly_budget",
+		"cockpit:\n  pull_request_hourly_budget: 401\n":            "cockpit.pull_request_hourly_budget",
 		"cockpit:\n  anonymous_metadata: maybe\n":                  "parse cockpit section",
 		"cockpit: [unterminated\n":                                 "parse config",
 		"cockpit: just text\n":                                     "parse cockpit section",

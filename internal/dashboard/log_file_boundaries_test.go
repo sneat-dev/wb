@@ -15,7 +15,7 @@ func TestLogReportsClosedFileStatFailure(t *testing.T) {
 	if err := os.WriteFile(path, []byte("complete log"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server := &service{options: Options{LogPath: path}}
+	server := &service{options: Options{LogPath: path, Owner: everyRequestIsTheOwner}}
 	response := httptest.NewRecorder()
 	server.logOpened(response, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil), func(path string) (*os.File, error) {
 		file, err := os.Open(path)

@@ -16,8 +16,8 @@ Deliver the first slice of [WB Cockpit](../../ideas/wb-cockpit.md): an
 operational web UI served by the local daemon that shows this machine's
 repositories, worktrees, branches, pull requests and agents, leads with work
 at risk of being lost, and can commit, push, open and land a pull request,
-discard work with a check first, and refresh the code index. Three Features,
-one sub-plan each. The discovery this plan rests on is in
+discard work with a check first, and refresh the code index. Four Features,
+one sub-plan each (the fourth, cockpit views, was added on 2026-10-01). The discovery this plan rests on is in
 [_research/README.md](_research/README.md).
 
 ## Journey
@@ -44,7 +44,7 @@ last one, in the actions sub-plan, starts from `wb cockpit` and walks stages
 
 ## Approach
 
-Three sub-plans in dependency order. The shell comes first because it owns
+Four sub-plans in dependency order; cockpit views comes after the shell. The shell comes first because it owns
 the mount, the request protection, the owner session and the read model that
 everything else is served through. Risk comes second because it is
 computation over Git state plus one Dashboard section, and it is useful on
@@ -117,6 +117,15 @@ Durability levels and risk reasons for every worktree, branch and canonical clon
 **Status:** planning
 
 The action registry, the preview-then-run protocol with a fresh risk assessment, typed daemon operations, and the first seven actions.
+
+### Task 4: Cockpit views
+
+**Id:** task-4
+**Sub-Plan:** cockpit-views
+**Depends-On:** 1
+**Status:** planning
+
+The Cockpit UX redesign for a dispatcher: fleet read model schema version 2 with pull request state, agent activity, periodic remote publish, machine metrics and throughput; a shell with palette and side panel; the task lifecycle; and Home, Tasks, Repositories, Worktrees, Agents and Machines pages.
 
 ## Open Questions
 

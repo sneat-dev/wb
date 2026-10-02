@@ -23,7 +23,7 @@ func TestDashboardServesUIAndHealth(t *testing.T) {
 		{path: "/", contentType: "text/html", contains: "WB operations"},
 		{path: "/api/v1/health", contentType: "application/json", contains: `"status":"ready"`},
 	} {
-		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request := loopbackRequest(test.path)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
@@ -79,7 +79,7 @@ func TestPeersOptionIsMountedWithoutConflictingTheCatchAllIndex(t *testing.T) {
 		t.Fatalf("index status = %d, want 200", index.Code)
 	}
 	health := httptest.NewRecorder()
-	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	handler.ServeHTTP(health, loopbackRequest("/api/v1/health"))
 	if health.Code != http.StatusOK {
 		t.Fatalf("health status = %d, want 200", health.Code)
 	}
@@ -102,7 +102,7 @@ func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
 	t.Parallel()
 	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	handler.ServeHTTP(response, loopbackRequest("/api/v1/health"))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d", response.Code)
 	}
@@ -133,7 +133,7 @@ func TestOverviewPersistsReadOnlyFleetIndex(t *testing.T) {
 	})
 	load := func() Overview {
 		t.Helper()
-		request := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
+		request := loopbackRequest("/api/v1/overview")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
@@ -191,7 +191,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 
 	// The pre-existing routes keep answering exactly as before.
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	handler.ServeHTTP(recorder, loopbackRequest("/api/v1/health"))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status"`) {
 		t.Fatalf("health = %d %q", recorder.Code, recorder.Body.String())
 	}
@@ -216,7 +216,7 @@ func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
 
 func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
 	t.Parallel()
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", Owner: everyRequestIsTheOwner})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -231,7 +231,7 @@ func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte("line one\nline two\nline three\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath, Owner: everyRequestIsTheOwner})
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
@@ -269,10 +269,57 @@ func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
 
 func TestLogReportsUnavailableWhenTheFileIsMissing(t *testing.T) {
 	t.Parallel()
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log")})
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log"), Owner: everyRequestIsTheOwner})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503", recorder.Code)
+	}
+	// The open error names the file's path; the body carries a closed code and
+	// a fixed message instead (cockpit#ac:daemon-log-error-names-no-path).
+	if body := recorder.Body.String(); !strings.Contains(body, `"error":"log_unavailable"`) || strings.Contains(body, "missing.log") || strings.Contains(body, string(filepath.Separator)) {
+		t.Fatalf("body = %q; want the closed code and no path", body)
+	}
+}
+
+// loopbackRequest is a GET of target as a browser on this machine makes it: on
+// a loopback Host.
+func loopbackRequest(target string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = "127.0.0.1:8766"
+	return request
+}
+
+// TestHealthAndOverviewAnswerOnlyOnALoopbackHost: the dashboard's own JSON
+// routes sit on Cockpit's listener and hold the machine's name, the daemon's
+// process id and the names of its worktrees. A request whose Host names
+// anything but a loopback host (a page that rebound DNS to 127.0.0.1) is
+// refused with 421 and is told none of it; the three loopback names are served.
+func TestHealthAndOverviewAnswerOnlyOnALoopbackHost(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "9.9.9-marker", DaemonPID: 4242})
+	for _, target := range []string{"/api/v1/health", "/api/v1/overview"} {
+		for _, host := range []string{"127.0.0.1:8766", "localhost:8766", "[::1]:8766", "LOCALHOST"} {
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			request.Host = host
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "9.9.9-marker") {
+				t.Errorf("%s on %s = %d %s, want it served", target, host, recorder.Code, recorder.Body.String())
+			}
+		}
+		for _, host := range []string{"attacker.example", "attacker.example:8766", "127.0.0.2:8766", "127.0.0.1:http", "[bad", ""} {
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			request.Host = host
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			body := recorder.Body.String()
+			if recorder.Code != http.StatusMisdirectedRequest || !strings.Contains(body, `"error":"misdirected_request"`) || recorder.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("%s on Host %q = %d %s, want 421 misdirected_request, never stored", target, host, recorder.Code, body)
+			}
+			if strings.Contains(body, "9.9.9-marker") || strings.Contains(body, "4242") || strings.Contains(body, "machine") {
+				t.Errorf("%s on Host %q was told about the machine: %s", target, host, body)
+			}
+		}
 	}
 }

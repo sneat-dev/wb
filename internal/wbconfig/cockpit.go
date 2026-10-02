@@ -34,13 +34,42 @@ type CockpitConfig struct {
 	// RefreshInterval is how often the daemon refreshes the fleet snapshot.
 	// Zero means unset: the consumer chooses its default.
 	RefreshInterval time.Duration
+	// PullRequestLimit is the most pull requests the daemon observes on GitHub
+	// in one pass (cockpit-views#req:pull-request-fields). Zero means unset:
+	// the consumer chooses its default.
+	PullRequestLimit int
+	// PullRequestHourlyBudget is the most pull request observations in a
+	// rolling hour. Zero means unset: the consumer chooses its default.
+	PullRequestHourlyBudget int
 	// CodeIndexProvider names the code-index provider whose statistics the
 	// panels show; empty means none is configured, which is a normal state.
 	CodeIndexProvider string
 	// CodeIndexIndexer is the hooks executor whose receipts the provider
 	// follows; empty means the provider's own default.
 	CodeIndexIndexer string
+	// RemoteHTTP lets the daemon read other machines' export envelopes over
+	// HTTP from the machines that have an HTTP route configured
+	// (cockpit-views#req:remote-exporter-transports). It is on unless
+	// cockpit.remote_http is false.
+	RemoteHTTP bool
+	// RemoteSSH is the same switch for the SSH fallback, on unless
+	// cockpit.remote_ssh is false. It is accepted here so that a configuration
+	// that opts out is valid before the SSH transport exists; the transport
+	// reads it when it is added.
+	RemoteSSH bool
 }
+
+// MaxCockpitPullRequestLimit bounds cockpit.pull_request_limit, so one pass
+// cannot be configured into an unbounded number of GitHub reads.
+const MaxCockpitPullRequestLimit = 200
+
+// The bounds of cockpit.pull_request_hourly_budget. An observation of an open
+// pull request is 6 GitHub reads, so the ceiling is at most 2,400 reads an hour
+// (half of an authenticated token's 5,000), the default of 120 at most 720.
+const (
+	MinCockpitPullRequestHourlyBudget = 10
+	MaxCockpitPullRequestHourlyBudget = 400
+)
 
 // CodeIndexProviderCodeGrapher is the one code-index provider there is.
 const CodeIndexProviderCodeGrapher = "codegrapher"
@@ -55,8 +84,12 @@ type cockpitSection struct {
 	CodeBrowserURL    *string `yaml:"code_browser_url"`
 	AnonymousMetadata *bool   `yaml:"anonymous_metadata"`
 	RefreshInterval   *string `yaml:"refresh_interval"`
+	PullRequestLimit  *int    `yaml:"pull_request_limit"`
+	PullRequestBudget *int    `yaml:"pull_request_hourly_budget"`
 	CodeIndexProvider *string `yaml:"code_index_provider"`
 	CodeIndexIndexer  *string `yaml:"code_index_indexer"`
+	RemoteHTTP        *bool   `yaml:"remote_http"`
+	RemoteSSH         *bool   `yaml:"remote_ssh"`
 }
 
 // DefaultCockpitConfig is the section's value when wb.yaml sets nothing.
@@ -65,6 +98,8 @@ func DefaultCockpitConfig() CockpitConfig {
 		HostedURL:         DefaultCockpitHostedURL,
 		CodeBrowserURL:    DefaultCockpitCodeBrowserURL,
 		AnonymousMetadata: true,
+		RemoteHTTP:        true,
+		RemoteSSH:         true,
 	}
 }
 
@@ -114,6 +149,12 @@ func parseCockpit(raw []byte) (CockpitConfig, error) {
 	if section.AnonymousMetadata != nil {
 		config.AnonymousMetadata = *section.AnonymousMetadata
 	}
+	if section.RemoteHTTP != nil {
+		config.RemoteHTTP = *section.RemoteHTTP
+	}
+	if section.RemoteSSH != nil {
+		config.RemoteSSH = *section.RemoteSSH
+	}
 	if err := validateCockpitURL("hosted_url", config.HostedURL); err != nil {
 		return CockpitConfig{}, err
 	}
@@ -126,6 +167,18 @@ func parseCockpit(raw []byte) (CockpitConfig, error) {
 			return CockpitConfig{}, fmt.Errorf("cockpit.refresh_interval must be a positive duration such as 30s, got %q", *section.RefreshInterval)
 		}
 		config.RefreshInterval = interval
+	}
+	if section.PullRequestLimit != nil {
+		if *section.PullRequestLimit < 1 || *section.PullRequestLimit > MaxCockpitPullRequestLimit {
+			return CockpitConfig{}, fmt.Errorf("cockpit.pull_request_limit must be between 1 and %d, got %d", MaxCockpitPullRequestLimit, *section.PullRequestLimit)
+		}
+		config.PullRequestLimit = *section.PullRequestLimit
+	}
+	if section.PullRequestBudget != nil {
+		if *section.PullRequestBudget < MinCockpitPullRequestHourlyBudget || *section.PullRequestBudget > MaxCockpitPullRequestHourlyBudget {
+			return CockpitConfig{}, fmt.Errorf("cockpit.pull_request_hourly_budget must be between %d and %d, got %d", MinCockpitPullRequestHourlyBudget, MaxCockpitPullRequestHourlyBudget, *section.PullRequestBudget)
+		}
+		config.PullRequestHourlyBudget = *section.PullRequestBudget
 	}
 	if err := parseCockpitCodeIndex(section, &config); err != nil {
 		return CockpitConfig{}, err

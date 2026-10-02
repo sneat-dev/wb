@@ -200,9 +200,16 @@ func WorktreeOwnerState(owners []OwnerView) string {
 	return state
 }
 func (p OwnerPorts) DeclaredOwner(worktree string) (state, agent string, pid int) {
+	state, view := p.DeclaredOwnerView(worktree)
+	return state, view.Agent, view.PID
+}
+
+// DeclaredOwnerView is DeclaredOwner with the whole registration the verdict
+// rests on (its zero value when the state is OwnerUnstated for want of one).
+func (p OwnerPorts) DeclaredOwnerView(worktree string) (state string, chosen OwnerView) {
 	views, err := p.OwnerViews(worktree)
 	if err != nil || len(views) == 0 {
-		return OwnerUnstated, "", 0
+		return OwnerUnstated, OwnerView{}
 	}
 	state = OwnerUnstated
 	for _, view := range views {
@@ -211,16 +218,16 @@ func (p OwnerPorts) DeclaredOwner(worktree string) (state, agent string, pid int
 		}
 		switch view.PIDStatus {
 		case "active":
-			state, agent, pid = OwnerLive, view.Agent, view.PID
+			state, chosen = OwnerLive, view
 		case "orphaned":
 			if state != OwnerLive {
-				state, agent, pid = OwnerGone, view.Agent, view.PID
+				state, chosen = OwnerGone, view
 			}
 		default:
 			if state == OwnerUnstated {
-				agent, pid = view.Agent, view.PID
+				chosen = view
 			}
 		}
 	}
-	return state, agent, pid
+	return state, chosen
 }

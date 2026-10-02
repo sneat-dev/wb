@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 	"github.com/sneat-dev/wb/internal/runlog"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -46,10 +47,17 @@ type Options struct {
 	// than by opening the hub's store a second time. Nil when there is no hub.
 	Hub func(context.Context) HubHealth
 	// LogPath is the daemon's own runtime log file. When set, /api/v1/log
-	// serves a tail of it directly — the daemon is the log's only authority,
-	// so a reverse proxy in front of it never needs disk access of its own.
-	// Empty disables the endpoint (503).
+	// serves a tail of it to the owner — the daemon is the log's only
+	// authority, so a reverse proxy in front of it never needs disk access of
+	// its own. Empty disables the endpoint (503, to the owner only).
 	LogPath string
+	// Owner reports whether a request acts as the owner principal. It is the
+	// seam the daemon fills with Cockpit's own session check
+	// (cockpit.Server.IsOwner), so this package neither imports Cockpit nor
+	// has a second authentication mechanism. The log is file content, and
+	// file content is the owner's alone (cockpit#req:daemon-log-is-owner-only):
+	// with no Owner the log route refuses every request.
+	Owner func(*http.Request) bool
 	// Peers serves /api/v1/peers and /api/v1/peers/{id}
 	// (peer-connectivity#req:peers-api's "mounted...on every node"). The
 	// caller always supplies one, backed by an empty-list source when this
@@ -58,6 +66,9 @@ type Options struct {
 	// A nil value keeps the previous behaviour (unmounted, 404s into the
 	// index) purely as a defensive default; every real caller sets it.
 	Peers http.Handler
+	// Logf is where a failed overview says why, in the daemon's own log, which is
+	// the owner's alone; the route itself answers a fixed message. Nil discards.
+	Logf func(format string, args ...any)
 }
 
 // defaultLogTailBytes bounds an unqualified /api/v1/log request. It is large
@@ -148,6 +159,9 @@ type service struct {
 	mu       sync.Mutex
 	cached   Overview
 	cachedAt time.Time
+	// failure is the text of the last failed overview, so that a failure that
+	// repeats on every poll is logged once.
+	failure string
 }
 
 // NewHandler returns the dashboard UI and versioned read-only API.
@@ -166,8 +180,8 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /", server.index)
 	mux.HandleFunc("GET /metrics", server.metrics)
 	mux.HandleFunc("GET /coverage", server.coverageRedirect)
-	mux.HandleFunc("GET /api/v1/health", server.health)
-	mux.HandleFunc("GET /api/v1/overview", server.overview)
+	mux.HandleFunc("GET /api/v1/health", loopbackOnly(server.health))
+	mux.HandleFunc("GET /api/v1/overview", loopbackOnly(server.overview))
 	mux.HandleFunc("GET /api/v1/log", server.log)
 	if options.Peers != nil {
 		// GET-qualified patterns: an unqualified "/api/v1/peers" pattern
@@ -249,17 +263,65 @@ func (server *service) health(writer http.ResponseWriter, request *http.Request)
 	writeJSON(writer, http.StatusOK, payload)
 }
 
+// overviewUnavailable is the one message a failed overview is answered with.
+// The error it failed with names a path under the projects root (a worktree
+// whose records could not be read), which no reader of this route is told.
+const overviewUnavailable = "the overview could not be built; the daemon's log says why"
+
+// An overview that is built again after a failure is not logged: the next
+// failure is.
+
+// misdirected is the one message a request on another host name is answered
+// with.
+const misdirected = "this route answers only on a loopback host name"
+
+// loopbackOnly refuses a request whose Host header does not name a loopback
+// host with status 421, before next runs (cockpit#req:host-header-check): the
+// dashboard's own JSON routes hold the machine's name, its daemon's process id
+// and the names of its worktrees, and a page that rebinds DNS to the loopback
+// address must not read them. The rule is the one Cockpit's guard applies.
+func loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if !loopbackhost.Request(request) {
+			writeJSON(writer, http.StatusMisdirectedRequest, map[string]any{
+				"schema_version": APISchemaVersion,
+				"error":          "misdirected_request",
+				"message":        misdirected,
+			})
+			return
+		}
+		next(writer, request)
+	}
+}
+
 func (server *service) overview(writer http.ResponseWriter, request *http.Request) {
 	overview, err := server.load(request.Context())
+	server.logFailure(err)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{
 			"schema_version": APISchemaVersion,
 			"error":          "overview_unavailable",
-			"message":        err.Error(),
+			"message":        overviewUnavailable,
 		})
 		return
 	}
 	writeJSON(writer, http.StatusOK, overview)
+}
+
+// logFailure logs a failed overview when its text is not the last one logged,
+// and forgets the last one when the overview is built again.
+func (server *service) logFailure(err error) {
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	server.mu.Lock()
+	changed := text != server.failure
+	server.failure = text
+	server.mu.Unlock()
+	if changed && text != "" && server.options.Logf != nil {
+		server.options.Logf("dashboard: the overview could not be built: %s", text)
+	}
 }
 
 func (server *service) load(ctx context.Context) (Overview, error) {
@@ -375,56 +437,51 @@ func buildOverview(_ context.Context, projectsRoot, version string, now time.Tim
 	return overview, nil
 }
 
-// log serves a tail of the daemon's own runtime log file as plain text, so a
-// reverse proxy in front of the daemon never reads the file from disk itself.
-// ?tail=<bytes> requests fewer or more than defaultLogTailBytes, capped at
-// maxLogTailBytes.
+// log serves a tail of the daemon's own runtime log file as plain text to the
+// owner, so a reverse proxy in front of the daemon never reads the file from
+// disk itself. ?tail=<bytes> requests fewer or more than defaultLogTailBytes,
+// capped at maxLogTailBytes.
 func (server *service) log(writer http.ResponseWriter, request *http.Request) {
 	server.logOpened(writer, request, os.Open)
 }
 
+// logOpened is log over an injectable open. The owner check comes before
+// everything else, so a request that is not the owner's learns nothing: not
+// whether a log path is configured, not whether its query is valid, and the
+// file is never opened for it (cockpit#req:daemon-log-is-owner-only). Every
+// refusal and failure carries a closed code and a fixed message; the error an
+// open, stat or seek returns names the file's path and is never echoed.
 func (server *service) logOpened(writer http.ResponseWriter, request *http.Request, open func(string) (*os.File, error)) {
+	if server.options.Owner == nil {
+		writeLogError(writer, http.StatusForbidden, "log_owner_check_unavailable", "this daemon has no owner check for the runtime log, so it serves it to nobody")
+		return
+	}
+	if !server.options.Owner(request) {
+		writeLogError(writer, http.StatusUnauthorized, "owner_session_required", "the runtime log is the owner's alone; run `wb cockpit` to sign in")
+		return
+	}
 	if server.options.LogPath == "" {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        "this daemon was not started with a runtime log path",
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", "this daemon was not started with a runtime log path")
 		return
 	}
 	tail := int64(defaultLogTailBytes)
 	if raw := request.URL.Query().Get("tail"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed <= 0 {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{
-				"schema_version": APISchemaVersion,
-				"error":          "invalid_tail",
-				"message":        "tail must be a positive number of bytes",
-			})
+			writeLogError(writer, http.StatusBadRequest, "invalid_tail", "tail must be a positive number of bytes")
 			return
 		}
-		tail = parsed
-		if tail > maxLogTailBytes {
-			tail = maxLogTailBytes
-		}
+		tail = min(parsed, maxLogTailBytes)
 	}
 	file, err := open(server.options.LogPath)
 	if err != nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        err.Error(),
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", logUnreadable)
 		return
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        err.Error(),
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", logUnreadable)
 		return
 	}
 	start := info.Size() - tail
@@ -433,11 +490,7 @@ func (server *service) logOpened(writer http.ResponseWriter, request *http.Reque
 		start = 0
 	}
 	if _, err := file.Seek(start, io.SeekStart); err != nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        err.Error(),
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", logUnreadable)
 		return
 	}
 	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -445,6 +498,20 @@ func (server *service) logOpened(writer http.ResponseWriter, request *http.Reque
 	writer.Header().Set("X-Log-Truncated", strconv.FormatBool(truncated))
 	writer.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(writer, file)
+}
+
+// logUnreadable is the one message a failed open, stat or seek of the runtime
+// log is answered with.
+const logUnreadable = "the runtime log file cannot be read"
+
+// writeLogError answers the log route with a closed code and a fixed message,
+// in the JSON error shape of this API, never stored.
+func writeLogError(writer http.ResponseWriter, status int, code, message string) {
+	writeJSON(writer, status, map[string]any{
+		"schema_version": APISchemaVersion,
+		"error":          code,
+		"message":        message,
+	})
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {

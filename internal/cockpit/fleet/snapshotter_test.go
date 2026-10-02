@@ -22,8 +22,8 @@ import (
 // TestRefreshSkipsGitWorkButReadsRecordsForAnUnchangedFingerprint proves
 // cockpit#req:snapshot-refresh: a repository whose fingerprint did not move
 // costs no worktree or branch read however many passes run, a moved one costs
-// one, and its worktrees' heartbeats are read on every pass, so an owner state
-// that changes outside Git still shows.
+// one, and its worktrees' records and owner liveness are read on every pass, so
+// an owner state that changes outside Git still shows.
 func TestRefreshSkipsGitWorkButReadsRecordsForAnUnchangedFingerprint(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
@@ -56,13 +56,22 @@ func TestRefreshSkipsGitWorkButReadsRecordsForAnUnchangedFingerprint(t *testing.
 		}
 		return ""
 	}
-	if ownerOf("task-a") != OwnerActive || ownerOf("task-b") != OwnerIdle {
+	if ownerOf("task-a") != OwnerActive || ownerOf("task-b") != OwnerOrphaned {
 		t.Fatalf("owner states = %q, %q", ownerOf("task-a"), ownerOf("task-b"))
 	}
 	clock.advance(7 * time.Hour)
 	refresh()
-	if ownerOf("task-a") != OwnerIdle || sources.worktreeCalls.Load() != 1 {
-		t.Errorf("task-a is %q after its heartbeat aged, with %d Git reads", ownerOf("task-a"), sources.worktreeCalls.Load())
+	if ownerOf("task-a") != OwnerActive {
+		t.Errorf("task-a is %q after its heartbeat aged; the heartbeat must play no part", ownerOf("task-a"))
+	}
+	sources.change(func(f *fakeSources) {
+		record := f.records["/wt/task-a"]
+		record.Owner = worktrees.OwnerGone
+		f.records["/wt/task-a"] = record
+	})
+	refresh()
+	if ownerOf("task-a") != OwnerOrphaned || sources.worktreeCalls.Load() != 1 {
+		t.Errorf("task-a is %q after its owner process died, with %d Git reads", ownerOf("task-a"), sources.worktreeCalls.Load())
 	}
 	fingerprint.value.Store("two")
 	refresh()
@@ -82,6 +91,7 @@ func TestFailingRepositoryIsRecordedWithACodeAndKeepsItsLastState(t *testing.T) 
 	})
 	refreshAndSettle(t, snapshotter)
 	before := snapshotter.Document()
+	branchesBefore := len(snapshotter.allBranches())
 
 	sources.change(func(f *fakeSources) {
 		f.worktreeErr, f.sessionErr, f.remoteErr, f.bindingErr = errBoom, errBoom, errBoom, errBoom
@@ -104,7 +114,7 @@ func TestFailingRepositoryIsRecordedWithACodeAndKeepsItsLastState(t *testing.T) 
 	if len(snapshotter.Document().Machines) != 2 {
 		t.Errorf("a failing remote read dropped the other machine: %+v", snapshotter.Document().Machines)
 	}
-	if local.Error != ErrorReadFailed || local.WorktreeCount != 2 || len(after.Worktrees) != len(before.Worktrees) || len(after.Branches) != len(before.Branches) || len(after.Agents) != 1 || len(after.Machines) != 2 {
+	if local.Error != ErrorReadFailed || local.WorktreeCount != 2 || len(after.Worktrees) != len(before.Worktrees) || len(snapshotter.allBranches()) != branchesBefore || len(after.Agents) != 1 || len(after.Machines) != 2 {
 		t.Errorf("failed sources dropped state: repository %+v, %d worktrees, %d agents, %d machines", local, len(after.Worktrees), len(after.Agents), len(after.Machines))
 	}
 	body, _ := jsonString(after)
@@ -174,8 +184,9 @@ func (o onlyFor) Worktrees(ctx context.Context, repo discover.Repo) ([]LinkedWor
 	return o.otherwise.Worktrees(ctx, repo)
 }
 
-// TestRefreshFailsWhenTheRepositoriesCannotBeListed keeps the document warming
-// when there has never been a scan.
+// TestRefreshFailsWhenTheRepositoriesCannotBeListed: a first pass that cannot
+// list the repositories returns the failure, and the document it leaves is not
+// one that warms up for ever: it is empty and says why.
 func TestRefreshFailsWhenTheRepositoriesCannotBeListed(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
@@ -184,8 +195,8 @@ func TestRefreshFailsWhenTheRepositoriesCannotBeListed(t *testing.T) {
 	if err := snapshotter.Refresh(t.Context()); !errors.Is(err, errBoom) || !strings.Contains(err.Error(), "list repositories") {
 		t.Fatalf("refresh = %v", err)
 	}
-	if !snapshotter.Document().WarmingUp {
-		t.Error("a failed first scan ended the warm-up")
+	if document := snapshotter.Document(); document.WarmingUp || document.Error != ErrorRepositoriesUnreadable || len(document.Repositories) != 0 {
+		t.Errorf("after a failed first scan: warming %v, error %q, %d repositories; want the warm-up ended in the error state", document.WarmingUp, document.Error, len(document.Repositories))
 	}
 }
 
@@ -546,7 +557,7 @@ func TestRunsAndSessionsBecomeAgentsWithRepositoryCounts(t *testing.T) {
 func TestRemoteMachinesAreCachedAndSkipOurOwnPublication(t *testing.T) {
 	t.Parallel()
 	published := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
-	view := mapRemote(testMachine, "", "/projects", []remotestate.Entry{
+	view := mapRemoteForTest("", "/projects", []remotestate.Entry{
 		{Snapshot: remotestate.Snapshot{Login: "me", Machine: testMachine, PublishedAt: published, ProjectsRoot: "/projects"}},
 		{Snapshot: remotestate.Snapshot{Login: "a", Machine: "broken", PublishedAt: published}, Error: "bad yaml"},
 		{Snapshot: remotestate.Snapshot{
@@ -572,7 +583,7 @@ func TestRemoteMachinesAreCachedAndSkipOurOwnPublication(t *testing.T) {
 }
 
 // TestLocalEntriesMapRecordsBranchesAndDropDuplicates covers the owner state
-// from the heartbeat (falling back to creation), a detached worktree taking
+// from the owner process's liveness, a detached worktree taking
 // its branch from the manifest, the tracking fields, the worktree link and
 // duplicate identities. No lifecycle or stream is derived.
 func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
@@ -580,9 +591,9 @@ func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
 	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	repo := discover.Repo{Host: "github.com", Org: "o", Name: "r", Path: "/p"}
 	recorded := []recordedWorktree{
-		{linked: LinkedWorktree{Path: "/a", Branch: "a"}, record: WorktreeRecord{Task: "fresh", CreatedAt: at.Add(-time.Hour)}},
-		{linked: LinkedWorktree{Path: "/b"}, record: WorktreeRecord{Task: "detached", Branch: "b", CreatedAt: at.Add(-30 * time.Hour), HeartbeatAt: at.Add(-time.Minute)}},
-		{linked: LinkedWorktree{Path: "/c", Branch: "c"}, record: WorktreeRecord{Task: "old", CreatedAt: at.Add(-30 * time.Hour)}},
+		{linked: LinkedWorktree{Path: "/a", Branch: "a"}, record: WorktreeRecord{Task: "fresh", CreatedAt: at.Add(-time.Hour), Owner: worktrees.OwnerLive}},
+		{linked: LinkedWorktree{Path: "/b"}, record: WorktreeRecord{Task: "detached", Branch: "b", CreatedAt: at.Add(-30 * time.Hour), HeartbeatAt: at.Add(-time.Minute), Owner: worktrees.OwnerLive}},
+		{linked: LinkedWorktree{Path: "/c", Branch: "c"}, record: WorktreeRecord{Task: "old", CreatedAt: at.Add(-30 * time.Hour), Owner: worktrees.OwnerUnstated}},
 		{linked: LinkedWorktree{Path: "/c2", Branch: "c"}, record: WorktreeRecord{Task: "old", CreatedAt: at.Add(-30 * time.Hour)}},
 	}
 	mapped := mapLocalRepository(testMachine, repo, "trunk", recorded, []BranchRef{
@@ -593,7 +604,7 @@ func TestLocalEntriesMapRecordsBranchesAndDropDuplicates(t *testing.T) {
 	want := map[string]struct {
 		branch, owner string
 		activity      time.Time
-	}{"fresh": {"a", OwnerActive, at.Add(-time.Hour)}, "detached": {"b", OwnerActive, at.Add(-time.Minute)}, "old": {"c", OwnerIdle, at.Add(-30 * time.Hour)}}
+	}{"fresh": {"a", OwnerActive, at.Add(-time.Hour)}, "detached": {"b", OwnerActive, at.Add(-time.Minute)}, "old": {"c", OwnerUnknown, at.Add(-30 * time.Hour)}}
 	if len(mapped.worktrees) != 3 || mapped.repository.DefaultBranch != "trunk" || mapped.repository.Host != "github.com" {
 		t.Fatalf("worktrees = %d, repository %+v", len(mapped.worktrees), mapped.repository)
 	}
@@ -659,7 +670,7 @@ func TestPullRequestRecordsAttachOnlyToAUniqueRepository(t *testing.T) {
 	if byNumber[1].Repository != "" || byNumber[4].Repository != "" || byNumber[2].Repository != gadgets.ID || byNumber[2].Worktree == "" || byNumber[2].Branch != "g" || byNumber[3].Repository != gadgets.ID || byNumber[3].Worktree != "" {
 		t.Errorf("pull requests = %+v", byNumber)
 	}
-	if byNumber[2].State != PullRequestUnknown || gadgets.OpenPullRequestCount != nil {
+	if byNumber[2].State != "" || gadgets.OpenPullRequestCount != nil {
 		t.Errorf("state %q and open pull request count %v on the repository, want unknown and no count", byNumber[2].State, gadgets.OpenPullRequestCount)
 	}
 }
@@ -688,14 +699,14 @@ func TestDocumentOrdersEqualNamesByIDAndHostsDoNotCollide(t *testing.T) {
 	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
 	refreshAndSettle(t, snapshotter)
 	document := snapshotter.Document()
-	if len(document.Repositories) != 2 || len(document.Worktrees) != 2 || len(document.Branches) != 2 || len(document.Machines) != 3 {
+	if len(document.Repositories) != 2 || len(document.Worktrees) != 2 || len(snapshotter.allBranches()) != 2 || len(document.Machines) != 3 {
 		t.Fatalf("document = %d repositories, %d worktrees, %d branches, %d machines",
-			len(document.Repositories), len(document.Worktrees), len(document.Branches), len(document.Machines))
+			len(document.Repositories), len(document.Worktrees), len(snapshotter.allBranches()), len(document.Machines))
 	}
 	if len(document.PullRequests) != 2 || document.PullRequests[0].ID >= document.PullRequests[1].ID || document.Diagnostics != 2 {
 		t.Errorf("pull requests = %+v, diagnostics %d", document.PullRequests, document.Diagnostics)
 	}
-	if document.Worktrees[0].ID >= document.Worktrees[1].ID || document.Branches[0].ID >= document.Branches[1].ID || document.Machines[0].ID >= document.Machines[1].ID {
+	if document.Worktrees[0].ID >= document.Worktrees[1].ID || document.Machines[0].ID >= document.Machines[1].ID {
 		t.Error("entries with equal names are not ordered by id")
 	}
 	first, _ := snapshotter.Checkout(localRepositoryID(testMachine, sources.repos[0]))
@@ -900,7 +911,13 @@ func TestPublicationsDuringAPassAreRateLimited(t *testing.T) {
 	if paced.publishes != 6 {
 		t.Errorf("a pass whose repositories each take longer than the interval published %d times, want 5 and the final", paced.publishes)
 	}
+	// A request outside a pass publishes at once what it found changed, and
+	// nothing when it found the repository as it was.
 	before := paced.publishes
+	if err := paced.RefreshRepository(t.Context(), localRepositoryID(testMachine, slow.repos[0])); err != nil || paced.publishes != before {
+		t.Errorf("a request outside a pass that found nothing changed published %d times, err %v", paced.publishes-before, err)
+	}
+	slow.change(func(f *fakeSources) { f.branch = "trunk" })
 	if err := paced.RefreshRepository(t.Context(), localRepositoryID(testMachine, slow.repos[0])); err != nil || paced.publishes != before+1 {
 		t.Errorf("a request outside a pass published %d times, err %v", paced.publishes-before, err)
 	}
@@ -909,20 +926,66 @@ func TestPublicationsDuringAPassAreRateLimited(t *testing.T) {
 // TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines requires a
 // failed repository listing to show in the document, not to leave a silent
 // warm-up, to keep reading what is not per repository, and to clear when the
-// next listing works.
+// next listing works. A first listing that fails ends the warm-up in the
+// error state: a browser that polls every 2 seconds while the document warms
+// up stops, and a reader of this machine is told export_failed instead of
+// warming_up for ever, while its metrics are still exported. The first listing
+// that works warms the document up for the pass it starts.
 func TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
+	sources.repos = append(sources.repos, discover.Repo{Host: "github.com", Org: "acme", Name: "gadgets", Path: t.TempDir()})
 	sources.repoErr = errBoom
-	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	var snapshotter *Snapshotter
+	var clock *manualClock
+	var warmingDuringThePass atomic.Bool
+	snapshotter, clock = newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+		options.Workers = 1
+		// The fingerprint is read during a pass, once for each repository. What a
+		// publication made between the two repositories says (it is made here, so
+		// the test does not depend on when the pass makes its own) is the document
+		// of a pass that is still running.
+		options.Fingerprint = func(string) (string, error) {
+			clock.advance(time.Second)
+			snapshotter.mu.Lock()
+			snapshotter.publishLocked()
+			snapshotter.mu.Unlock()
+			if document := snapshotter.Document(); document.WarmingUp && document.RepositoriesScanned == 1 {
+				warmingDuringThePass.Store(true)
+			}
+			return "print", nil
+		}
+	})
+	if !snapshotter.Document().WarmingUp {
+		t.Fatal("the document does not warm up before the first pass")
+	}
 	err := snapshotter.Refresh(t.Context())
 	snapshotter.side.Wait()
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("refresh = %v", err)
 	}
 	failed := snapshotter.Document()
-	if failed.Error != ErrorRepositoriesUnreadable || !failed.WarmingUp || len(failed.Agents) != 1 || len(failed.PullRequests) != 2 || failed.SnapshotAt.IsZero() {
+	if failed.Error != ErrorRepositoriesUnreadable || failed.WarmingUp || len(failed.Agents) != 1 || len(failed.PullRequests) != 2 || failed.SnapshotAt.IsZero() {
 		t.Errorf("document after a failed listing = %+v", failed)
+	}
+	if !Unlistable(failed) {
+		t.Error("a document whose repositories were never listed is taken for one that can be exported")
+	}
+	if _, failure := snapshotter.ExportPayload(false); failure != ErrorExportFailed {
+		t.Errorf("the export of a machine that cannot list its repositories = %q, want export_failed", failure)
+	}
+	if payload, failure := snapshotter.ExportPayload(true); failure != "" || payload.Size() == 0 {
+		t.Errorf("its metrics-only export = %q, want it made", failure)
+	}
+	// A listing that fails while the daemon stops says nothing about the fleet.
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	stopping, _ := newSnapshotter(sources.collectors(), nil)
+	_ = stopping.Refresh(cancelled)
+	stopping.side.Wait()
+	if !stopping.Document().WarmingUp {
+		t.Error("a pass that was cancelled ended the warm-up")
 	}
 	snapshotter.mu.Lock()
 	snapshotter.publishLocked()
@@ -932,8 +995,24 @@ func TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines(t *testing
 	}
 	sources.change(func(f *fakeSources) { f.repoErr = nil })
 	refreshAndSettle(t, snapshotter)
-	if recovered := snapshotter.Document(); recovered.Error != "" || recovered.WarmingUp {
+	if recovered := snapshotter.Document(); recovered.Error != "" || recovered.WarmingUp || Unlistable(recovered) {
 		t.Errorf("document after the listing recovered = error %q, warming %v", recovered.Error, recovered.WarmingUp)
+	}
+	if !warmingDuringThePass.Load() {
+		t.Error("the first pass after the listing recovered did not warm the document up: a partial fleet could be exported")
+	}
+	if _, failure := snapshotter.ExportPayload(false); failure != "" {
+		t.Errorf("the export after the listing recovered = %q", failure)
+	}
+	// A listing that fails after one has worked keeps what is held and exports it.
+	sources.change(func(f *fakeSources) { f.repoErr = errBoom })
+	_ = snapshotter.Refresh(t.Context())
+	snapshotter.side.Wait()
+	if later := snapshotter.Document(); later.Error != ErrorRepositoriesUnreadable || later.WarmingUp || len(later.Repositories) == 0 || Unlistable(later) {
+		t.Errorf("document after a later failed listing = error %q, warming %v, %d repositories", later.Error, later.WarmingUp, len(later.Repositories))
+	}
+	if _, failure := snapshotter.ExportPayload(false); failure != "" {
+		t.Errorf("the export after a later failed listing = %q, want what is held", failure)
 	}
 }
 
@@ -1063,26 +1142,28 @@ func TestRemoteEntriesThatAreUnusableOrOurOwnAreSkipped(t *testing.T) {
 		}
 		return strings.Join(listed, ",")
 	}
-	byLogin := names(mapRemote(testMachine, "me", "/projects", entries))
+	byLogin := names(mapRemoteForTest("me", "/projects", entries))
 	if byLogin != testMachine+"@"+remotePublish+",desk@"+remotePublish {
 		t.Errorf("machines when the login is known = %s, want another login's machine of the same name kept", byLogin)
 	}
-	byRoot := names(mapRemote(testMachine, "", "/projects", entries))
+	byRoot := names(mapRemoteForTest("", "/projects", entries))
 	if byRoot != testMachine+"@"+remotePublish+",desk@"+remotePublish {
 		t.Errorf("machines when the login is unknown = %s, want only the one with our projects root skipped", byRoot)
 	}
-	if byName := names(mapRemote(testMachine, "", "", entries)); !strings.Contains(byName, "desk@") || strings.Count(byName, testMachine+"@") != 2 {
+	if byName := names(mapRemoteForTest("", "", entries)); !strings.Contains(byName, "desk@") || strings.Count(byName, testMachine+"@") != 2 {
 		t.Errorf("machines when neither login nor projects root is known = %s, want none skipped", byName)
 	}
 }
 
 // TestGitTooOldTurnsEveryGitBackedReadOff makes the version gate refuse: no
 // branch or default-branch read happens, the document says why with a stable
-// code, the README route says so, and the gate is asked once however many
-// passes run; a panicking gate counts as refusing.
+// code, the README route says so, and a gate that answered is asked once
+// however many passes run. A gate that panics has not answered: Git stays off
+// and it is asked again on every pass, and the change is logged once.
 func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 	t.Parallel()
 	for name, gate := range map[string]*fakeGate{"too old": {usable: false}, "panicking": {panics: true}} {
+		wantAsks := map[string]int64{"too old": 1, "panicking": 2}[name]
 		sources := oneRepoSources(t.TempDir())
 		collectors := sources.collectors()
 		collectors.Git = gate
@@ -1093,11 +1174,11 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 		refreshAndSettle(t, snapshotter)
 		refreshAndSettle(t, snapshotter)
 		document := snapshotter.Document()
-		if gate.asked.Load() != 1 || logged.Load() != 1 || document.Error != ErrorGitTooOld {
-			t.Errorf("%s: gate asked %d times, logged %d, document error %q", name, gate.asked.Load(), logged.Load(), document.Error)
+		if gate.asked.Load() != wantAsks || logged.Load() != 1 || document.Error != ErrorGitTooOld {
+			t.Errorf("%s: gate asked %d times (want %d), logged %d, document error %q", name, gate.asked.Load(), wantAsks, logged.Load(), document.Error)
 		}
-		if len(document.Branches) != 0 || len(localWorktrees(document)) != 2 {
-			t.Errorf("%s: %d branches, %d worktrees; Git-backed reads must be off and file reads kept", name, len(document.Branches), len(localWorktrees(document)))
+		if len(snapshotter.allBranches()) != 0 || len(localWorktrees(document)) != 2 {
+			t.Errorf("%s: %d branches, %d worktrees; Git-backed reads must be off and file reads kept", name, len(snapshotter.allBranches()), len(localWorktrees(document)))
 		}
 		server := newCockpitServer(t, snapshotter)
 		var id string
@@ -1116,8 +1197,8 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 	collectors.Git = usable
 	snapshotter, _ := newSnapshotter(collectors, nil)
 	refreshAndSettle(t, snapshotter)
-	if document := snapshotter.Document(); document.Error != "" || len(document.Branches) == 0 {
-		t.Errorf("with Git usable: error %q, %d branches", document.Error, len(document.Branches))
+	if document := snapshotter.Document(); document.Error != "" || len(snapshotter.allBranches()) == 0 {
+		t.Errorf("with Git usable: error %q, %d branches", document.Error, len(snapshotter.allBranches()))
 	}
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -1127,6 +1208,52 @@ func TestGitTooOldTurnsEveryGitBackedReadOff(t *testing.T) {
 	untouched.checkGit(cancelled)
 	if fresh.asked.Load() != 0 || untouched.gitChecked {
 		t.Error("a pass with a cancelled context asked the Git gate")
+	}
+}
+
+// TestAGitVersionThatCouldNotBeReadIsAskedAgainOnTheNextPass: one failed
+// `git version` (a busy machine, a timeout) is not an answer. That pass runs
+// with Git off and says so; the next asks again, and when the version is read
+// and usable the error goes, every repository's Git state is read although no
+// fingerprint moved, and the gate is not asked a third time.
+func TestAGitVersionThatCouldNotBeReadIsAskedAgainOnTheNextPass(t *testing.T) {
+	t.Parallel()
+	gate := &fakeGate{usable: true, failures: 1}
+	sources := oneRepoSources(t.TempDir())
+	collectors := sources.collectors()
+	collectors.Git = gate
+	logs := &logRecorder{}
+	snapshotter, clock := newSnapshotter(collectors, func(options *Options) {
+		options.Logf = logs.logf
+		options.Fingerprint = newConstFingerprint("unchanged").get
+	})
+	refreshAndSettle(t, snapshotter)
+	if document := snapshotter.Document(); document.Error != ErrorGitTooOld || len(snapshotter.allBranches()) != 0 || len(localWorktrees(document)) != 2 {
+		t.Fatalf("the pass whose version read failed: error %q, %d branches, %d worktrees; want Git off and the file reads kept", document.Error, len(snapshotter.allBranches()), len(localWorktrees(document)))
+	}
+	clock.advance(time.Minute)
+	refreshAndSettle(t, snapshotter)
+	if document := snapshotter.Document(); document.Error != "" || len(snapshotter.allBranches()) == 0 {
+		t.Fatalf("the pass after it: error %q, %d branches; want Git read again", document.Error, len(snapshotter.allBranches()))
+	}
+	clock.advance(time.Minute)
+	refreshAndSettle(t, snapshotter)
+	if gate.asked.Load() != 2 {
+		t.Errorf("the gate was asked %d times, want twice: once failing, once answering", gate.asked.Load())
+	}
+	if logs.count("could not be read") != 1 || logs.count("on again") != 1 || logs.count("too old;") != 0 {
+		t.Errorf("log = %q, want the failed read and the recovery once each", logs.all())
+	}
+	// A definite "too old" after a failed read stays, and is said once.
+	old := &fakeGate{usable: false, failures: 1}
+	collectors.Git = old
+	oldLogs := &logRecorder{}
+	stuck, _ := newSnapshotter(collectors, func(options *Options) { options.Logf = oldLogs.logf })
+	for range 3 {
+		refreshAndSettle(t, stuck)
+	}
+	if old.asked.Load() != 2 || stuck.Document().Error != ErrorGitTooOld || oldLogs.count("Git-backed reads are off") != 1 {
+		t.Errorf("a Git that is too old after a failed read: asked %d times, error %q, log %q", old.asked.Load(), stuck.Document().Error, oldLogs.all())
 	}
 }
 
@@ -1207,7 +1334,7 @@ func TestEveryEntryCarriesItsMachinesUniqueId(t *testing.T) {
 	for _, entry := range document.Worktrees {
 		ids = append(ids, entry.MachineID)
 	}
-	for _, entry := range document.Branches {
+	for _, entry := range snapshotter.allBranches() {
 		ids = append(ids, entry.MachineID)
 	}
 	for _, entry := range document.PullRequests {
@@ -1251,7 +1378,10 @@ func TestPublishedDocumentMarshalsEveryCollectionAsAList(t *testing.T) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"machines", "repositories", "worktrees", "branches", "pull_requests", "agents"} {
+	if _, present := raw["branches"]; present {
+		t.Error("the document carries a branches collection")
+	}
+	for _, name := range []string{"machines", "repositories", "worktrees", "pull_requests", "agents"} {
 		if value := string(raw[name]); !strings.HasPrefix(value, "[") {
 			t.Errorf("%s = %s, want a list", name, value)
 		}

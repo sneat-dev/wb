@@ -6,12 +6,12 @@
 .readme-content pre {
   overflow-x: auto;
   padding: 0.5rem 0.75rem;
-  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+  background: var(--surface-hover);
   border-radius: 4px;
 }
 
 .readme-content pre.raw-html {
-  border-left: 3px solid var(--p-content-border-color, #bbb);
+  border-left: 3px solid var(--border);
   white-space: pre-wrap;
 }
 
@@ -23,8 +23,8 @@
 .readme-content blockquote {
   margin: 0.75rem 0;
   padding-left: 0.75rem;
-  border-left: 3px solid var(--p-content-border-color, #bbb);
-  color: var(--p-text-muted-color);
+  border-left: 3px solid var(--border);
+  color: var(--text-3);
 }
 
 .readme-content table {
@@ -37,7 +37,7 @@
 .readme-content th,
 .readme-content td {
   padding: 0.25rem 0.75rem;
-  border: 1px solid var(--p-content-border-color, #ccc);
+  border: 1px solid var(--border);
 }
 
 .readme-content .align-center {
@@ -46,4 +46,31 @@
 
 .readme-content .align-right {
   text-align: right;
+}
+
+.readme-more {
+  margin: var(--space-3) 0 0;
+}
+
+.readme-more button {
+  height: 1.75rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.readme-more button:disabled {
+  color: var(--text-3);
+  cursor: progress;
+}
+
+@media (max-width: 30rem) {
+  .readme-more button {
+    height: 2.75rem;
+  }
 }

@@ -1,0 +1,269 @@
+/* The lazy part of Home: Ready to land, In flight with the machine strip, Resume. It builds on the
+   shared classes of styles/home.css. */
+app-home-rest {
+  display: contents;
+}
+
+.home-where-run {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.home-calm-idle {
+  color: var(--text-3);
+}
+
+.home-act.quiet {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--text-2);
+}
+
+/* The whole row is the click target of a link that carries the class. */
+.home-act.stretched::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+}
+
+.home-row:has(.stretched:hover) {
+  background: var(--surface-hover);
+}
+
+.muted-row .home-task,
+.muted-row .home-reason {
+  color: var(--text-3);
+  font-weight: var(--fw-regular);
+}
+
+.ready-row {
+  grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 24rem);
+  align-items: start;
+}
+
+.ready-row > app-state-badge {
+  padding-top: 2px;
+}
+
+.home-prs {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home-pr {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 1.75rem;
+  font-size: var(--fs-sm);
+}
+
+.home-pr-number {
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-idle {
+  padding-left: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.resume-row {
+  grid-template-columns: 7.5rem minmax(0, 1fr) 6rem 4.5rem;
+}
+
+.flight-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.flight-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+  align-items: center;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.flight-label {
+  color: var(--text);
+}
+
+.flight-layout {
+  display: grid;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.flight-list {
+  min-width: 0;
+}
+
+.home-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home-tile {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  min-height: 5.75rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.tile-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tile-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile-reach {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.tile-bars {
+  display: grid;
+  grid-template-columns: auto 1fr 2.25rem;
+  gap: 2px var(--space-2);
+  align-items: center;
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+}
+
+.tile-label,
+.tile-value {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-value {
+  text-align: right;
+}
+
+.tile-bar {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+}
+
+.tile-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+.home-more-toggle,
+.home-toggle {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  height: 1.75rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.home-more-toggle {
+  justify-self: start;
+  height: 2.75rem;
+  padding: 0 var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+.chevron {
+  transition: transform var(--transition);
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+.home-rest {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+@media (min-width: 70rem) {
+  .flight-layout {
+    grid-template-columns: minmax(0, 1fr) 22rem;
+  }
+
+  .home-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 52rem) {
+  .ready-row {
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+
+  .ready-row .home-prs {
+    grid-column: 2;
+  }
+
+  .home-pr {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 30rem) {
+  .flight-row,
+  .ready-row,
+  .resume-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ready-row .home-prs {
+    grid-column: 1;
+  }
+
+  .flight-side {
+    justify-content: flex-start;
+  }
+
+  .home-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 30rem) {
+  .home-toggle {
+    height: 2.75rem;
+  }
+}

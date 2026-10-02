@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -48,19 +49,33 @@ type BranchRef struct {
 }
 
 // WorktreeRecord is what a WB worktree records about itself locally: its
-// manifest and its heartbeat.
+// manifest, its heartbeat and the liveness of its declared owner process.
+// Owner is worktrees.OwnerLive, worktrees.OwnerGone or worktrees.OwnerUnstated
+// (no owner process recorded).
 type WorktreeRecord struct {
 	Task        string
 	Branch      string
 	CreatedAt   time.Time
 	HeartbeatAt time.Time
+	Owner       string
+	// OwnerPID is the process id of the live declared owner, 0 when the owner
+	// is gone or unstated. It stays inside the daemon: it joins a session to
+	// the worktree its owner process holds and is never emitted.
+	OwnerPID int
+	// OwnerAgent is the agent the live owner declared (runtime, or runtime/id) and
+	// OwnerStarted when its process started, zero when the platform cannot say.
+	OwnerAgent   string
+	OwnerStarted time.Time
 }
 
 // GitGate says whether Git is new enough to be run against untrusted
 // repositories at all: before 2.45 GIT_NO_LAZY_FETCH is ignored, so a
-// repository's promisor remote could be contacted. The snapshotter asks once.
+// repository's promisor remote could be contacted. An error says the version
+// could not be read at all (the command failed or did not answer in time),
+// which is not an answer: the snapshotter keeps Git off for that pass and asks
+// again on the next, and stops asking once it has a definite answer.
 type GitGate interface {
-	GitUsable(ctx context.Context) bool
+	GitUsable(ctx context.Context) (usable bool, err error)
 }
 
 // RepositoryCollector lists this machine's canonical clones.
@@ -122,6 +137,14 @@ type RunCollector interface {
 	Runs(ctx context.Context) ([]agents.Result, error)
 }
 
+// ActivityCollector reads the activity herdr reports for the agents it hosts:
+// herdr's status (working, blocked, idle, done or unknown) by harness session
+// id, and nothing else. A machine with no herdr, or one that does not answer
+// in time, returns an error, which leaves every agent with no activity.
+type ActivityCollector interface {
+	Activity(ctx context.Context) (map[string]string, error)
+}
+
 // RemoteCollector reads the snapshots other machines published, from what this
 // machine already holds locally.
 type RemoteCollector interface {
@@ -142,6 +165,9 @@ type Collectors struct {
 	Sessions     SessionCollector
 	Runs         RunCollector
 	Remote       RemoteCollector
+	// Activity reads herdr's agent statuses; nil means no herdr, and no agent
+	// carries an activity.
+	Activity ActivityCollector
 	// CodeIndex reads indexer receipts; nil means no code-index freshness.
 	CodeIndex CodeIndexCollector
 	// CodeIndexProvider reports the statistics of a checkout's index; nil means
@@ -173,13 +199,25 @@ type LocalCollectors struct {
 	// Runner runs the Git commands; nil means the real runner. A test supplies
 	// a fake, so the unit tier starts no process.
 	Runner runner.Runner
+	// DeclaredOwner reads a worktree's declared owner process liveness
+	// (worktrees.OwnerLive, OwnerGone or OwnerUnstated); nil means the Work Log
+	// journal's, read without writing (worktrees.DeclaredOwnerLiveReadOnly): one
+	// file read and a signal-zero check of each recorded process id.
+	DeclaredOwner func(worktree string) string
+	// ProcessStart observes when a process started; nil means
+	// daemon.ProcessStartTime (Linux only: elsewhere it reports false).
+	ProcessStart func(pid int) (time.Time, bool)
 }
 
 // GitUsable reads `git version` through the hardened helper and reports
-// whether it names Git 2.45 or newer.
-func (c LocalCollectors) GitUsable(ctx context.Context) bool {
+// whether it names Git 2.45 or newer. A command that fails is an error, not a
+// Git that is too old.
+func (c LocalCollectors) GitUsable(ctx context.Context) (bool, error) {
 	out, err := c.git(ctx, ".", "version")
-	return err == nil && gitVersionUsable(string(out))
+	if err != nil {
+		return false, err
+	}
+	return gitVersionUsable(string(out)), nil
 }
 
 // git runs the Git binary through the hardened helper.
@@ -445,15 +483,54 @@ func parseTrack(track string) (ahead, behind int, gone bool) {
 	return ahead, behind, gone
 }
 
-// Record reads the worktree's manifest and heartbeat. Both reads only open
-// files; a directory with no valid manifest is not a WB task worktree.
+// Record reads the worktree's manifest, heartbeat and declared owner process.
+// The reads only open files and probe a process id; a directory with no valid
+// manifest is not a WB task worktree.
 func (c LocalCollectors) Record(worktree string) (WorktreeRecord, bool) {
 	manifest, err := worktrees.ReadManifest(worktree)
 	if err != nil {
 		return WorktreeRecord{}, false
 	}
-	return WorktreeRecord{Task: manifest.EffortID, Branch: manifest.Branch, CreatedAt: manifest.CreatedAt, HeartbeatAt: worktrees.HeartbeatAt(worktree)}, true
+	owner, live := declaredOwner(worktree)
+	if c.DeclaredOwner != nil {
+		owner, live = c.DeclaredOwner(worktree), worktrees.LiveOwner{}
+	}
+	record := WorktreeRecord{
+		Task: manifest.EffortID, Branch: manifest.Branch, CreatedAt: manifest.CreatedAt,
+		HeartbeatAt: worktrees.HeartbeatAt(worktree), Owner: owner,
+	}
+	if live.PID > 0 {
+		observe := c.ProcessStart
+		if observe == nil {
+			observe = daemon.ProcessStartTime
+		}
+		started, known := observe(live.PID)
+		// A process that started after the owner registered is not the process that
+		// registered: the id was reused. When the start is unknown (not Linux) the
+		// live check alone stands, which is a limitation.
+		if !known || !started.After(live.At.Add(processStartSkew)) {
+			record.OwnerPID, record.OwnerAgent = live.PID, live.Agent
+			if known {
+				record.OwnerStarted = started
+			}
+		}
+	}
+	return record, true
 }
+
+// declaredOwner is the liveness of the owner process the worktree's journal
+// records, read without writing anything (worktrees.DeclaredOwner opens the
+// journal as a writer does, which may add an exclude rule to the repository, and
+// the snapshotter never writes inside a repository), with the live owner's
+// process id.
+func declaredOwner(worktree string) (string, worktrees.LiveOwner) {
+	return worktrees.DeclaredOwnerLiveReadOnly(worktree)
+}
+
+// processStartSkew is how much later than a record's time a process may be seen
+// to have started (the clock the records use and the one the start time derives
+// from are not the same).
+const processStartSkew = 5 * time.Second
 
 // PullRequests lists the pull requests `wb pr create` recorded beside active
 // Work Log claims. It reads local files and calls no forge.

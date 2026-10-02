@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
@@ -20,7 +23,11 @@ func newRemotePublishCmd(inv *invocation) *cobra.Command {
 		Use:   "publish",
 		Short: "Scan this machine's fleet and publish the snapshot to the remote store",
 		Long: `Scans every clone under --projects-root (honouring --filter), lists live
-task worktrees, and publishes one snapshot keyed <login>/<machine>.
+task worktrees, and publishes one snapshot keyed <login>/<machine>, with this
+machine's os, arch, cpu_count and boot_time (the first publish after an upgrade
+says so once). Agents and metrics are never published by hand: only the daemon's
+periodic publish, which remote.publish.interval turns on, carries them, each
+behind remote.publish.agents and remote.publish.metrics.
 --dry-run prints the snapshot and writes nothing, locally or remotely.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -50,9 +57,9 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	if err != nil || login == "" {
 		return &exitError{code: exitUsage, message: fmt.Sprintf("wb remote needs the GitHub login to key this machine's entry (gh auth status): %v", err)}
 	}
-	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID()}
+	identity := publishIdentity(cfg, login, deps.now())
 	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, inv.nonInteractive))
-	snapshot, err := collectSnapshot(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
+	snapshot, err := collectSnapshot(context.Background(), projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress, nil)
 	if err != nil {
 		progress.fail(err)
 		return err
@@ -70,13 +77,27 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 		_, err = out.Write(data)
 		return err
 	}
+	// What a publish must say does not depend on whether it shows progress: a
+	// caller with no progress writer is told on stderr.
+	notes := progressOut
+	if notes == nil {
+		notes = deps.stderr
+	}
+	marker := ""
+	if notes != nil {
+		marker = noteHardware(deps.configPath, notes)
+	}
 	progress.phase("publishing snapshot")
-	result, err := provider.Publish(context.Background(), snapshot)
+	result, diagnostic, err := remotestate.PublishWithFallback(context.Background(), provider, snapshot, deps.now())
 	if err != nil {
 		progress.fail(err)
 		return &exitError{code: exitFindings, message: "publish: " + err.Error()}
 	}
 	report.Location = result.Location
+	recordHardwareNoted(marker)
+	if diagnostic != nil && notes != nil {
+		_, _ = fmt.Fprintf(notes, "wb: %v\n", diagnostic)
+	}
 	progress.finish(fmt.Sprintf("published %d repositories and %d worktrees", report.RepositoriesScanned, report.Worktrees))
 	if jsonOut {
 		return json.NewEncoder(out).Encode(report)
@@ -84,4 +105,73 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	_, err = fmt.Fprintf(out, "published %s: %d repositories scanned, %d need attention, %d worktrees → %s\n",
 		report.Key, report.RepositoriesScanned, report.Attention, report.Worktrees, report.Location)
 	return err
+}
+
+// publishIdentity is the part of a snapshot that is this machine's own rather
+// than the scan's: who and where it is, when it publishes, which wb, and the
+// hardware facts of its machine entry (cockpit-views#req:remote-snapshot-
+// agents-and-metrics). `wb remote publish` and the daemon's periodic publish
+// both start from it.
+func publishIdentity(cfg remotestate.Config, login string, now time.Time) remotestate.Snapshot {
+	hardware := cockpitfleet.LocalHardware()
+	return remotestate.Snapshot{
+		Login: login, Machine: cfg.Machine, PublishedAt: now, WBVersion: collectVersion().Version, RemoteStore: cfg.StoreID(),
+		OS: hardware.OS, Arch: hardware.Arch, CPUCount: hardware.CPUCount, BootTime: hardware.BootTime,
+	}.CleanHardware()
+}
+
+// hardwareNote is the one line the first real publish prints after the machine's
+// hardware facts joined the snapshot: on stderr, by hand or from `wb sync`,
+// with or without a progress writer, and in the daemon's log when the first
+// publish that sends them is the periodic one.
+const hardwareNote = "wb: this publish also includes this machine's os, arch, cpu_count and boot_time (new in this version); agents and metrics are never sent by hand\n"
+
+// noteHardware prints hardwareNote unless it was printed on an earlier
+// successful publish, and returns the marker to write once this publish has
+// succeeded ("" when there is nothing to record), so a publish that fails does
+// not use the note up.
+func noteHardware(configPath string, out io.Writer) (marker string) {
+	if marker = hardwareNoteMarker(configPath); marker != "" {
+		_, _ = io.WriteString(out, hardwareNote)
+	}
+	return marker
+}
+
+// hardwareNoteMarker is the file that records that the hardware note was said,
+// or "" when it was (or when there is no configuration to keep it beside).
+func hardwareNoteMarker(configPath string) string {
+	if configPath == "" {
+		return ""
+	}
+	marker := filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
+	if _, err := os.Stat(marker); err == nil {
+		return ""
+	}
+	return marker
+}
+
+// periodicHardwareNote is hardwareNote as the daemon's log says it, when the
+// first publish that sends the hardware facts is the periodic one.
+const periodicHardwareNote = "remote publish: the snapshot now also carries this machine's os, arch, cpu_count and boot_time (new in this version)"
+
+// notePeriodicHardware says periodicHardwareNote in the daemon's log after a
+// periodic publish that reached the store, unless the note was already said by
+// an earlier publish, by hand or periodic.
+func notePeriodicHardware(configPath string, logf func(string, ...any)) {
+	marker := hardwareNoteMarker(configPath)
+	if marker == "" {
+		return
+	}
+	if logf != nil {
+		logf("%s", periodicHardwareNote)
+	}
+	recordHardwareNoted(marker)
+}
+
+// recordHardwareNoted writes the marker noteHardware returned. A marker that
+// cannot be written costs only a repeat of the line.
+func recordHardwareNoted(marker string) {
+	if marker != "" {
+		_ = os.WriteFile(marker, nil, 0o600)
+	}
 }

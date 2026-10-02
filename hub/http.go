@@ -60,6 +60,11 @@ type HandlerOptions struct {
 	// the route exactly as before, which is what the hosted instance's own
 	// OAuth-viewer-gated deployment keeps doing without changing a line here.
 	DisableSelfHostedEnrollment bool
+	// MachineExport mounts GET MachineExportPath, the host machine's own Cockpit
+	// export, on a daemon-hosted hub (cockpit-views#req:hub-export-route). Nil,
+	// which is what the hosted multi-identity service leaves it, means the route
+	// does not exist.
+	MachineExport *MachineExport
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -68,10 +73,13 @@ func NewHandler(options HandlerOptions) http.Handler {
 	} else {
 		options.WebhookSecret = append([]byte(nil), options.WebhookSecret...)
 	}
-	handler := apiHandler{options: options}
+	handler := apiHandler{options: options, exports: &exportLimiter{}}
 	mux := http.NewServeMux()
 	if !options.DisableSelfHostedEnrollment {
 		mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	}
+	if options.MachineExport.usable() {
+		mux.HandleFunc("GET "+MachineExportPath, handler.exportMachine)
 	}
 	mux.HandleFunc("POST "+machinesnapshot.SnapshotPath, handler.publishSnapshot)
 	mux.HandleFunc("GET "+machinesnapshot.SnapshotPath, handler.listSnapshots)
@@ -155,7 +163,11 @@ func (h apiHandler) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-type apiHandler struct{ options HandlerOptions }
+type apiHandler struct {
+	options HandlerOptions
+	// exports limits the rate of the machine export route, per credential.
+	exports *exportLimiter
+}
 
 func (h apiHandler) viewer(r *http.Request) (Viewer, bool) {
 	if h.options.ViewerResolver == nil {

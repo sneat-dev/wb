@@ -183,3 +183,33 @@ func marshalHostedJSON(t *testing.T, value any) []byte {
 	}
 	return raw
 }
+
+func TestMachineSnapshotHTTPStoresTheOptionalHardwareAgentsAndMetrics(t *testing.T) {
+	t.Parallel()
+	store := &memoryMachineSnapshotStore{}
+	handler := NewHandler(HandlerOptions{
+		MachineSnapshots: &MachineSnapshotService{Store: store},
+		PublisherResolver: publisherResolverFunc(func(*http.Request) (MachinePublisher, error) {
+			return MachinePublisher{Login: "alice", Machine: "laptop"}, nil
+		}),
+	})
+	snapshot := validHostedSnapshot()
+	load := 1.5
+	snapshot.OS, snapshot.Arch, snapshot.CPUCount = "linux", "arm64", 8
+	snapshot.Agents = []machinesnapshot.Agent{{Kind: "run", RunID: "agt-1", State: "running", Runtime: "claude"}}
+	snapshot.Metrics = &machinesnapshot.Metrics{Load1: &load, SampledAt: snapshot.PublishedAt}
+	body, _ := json.Marshal(snapshot)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, machinesnapshot.SnapshotPath, bytes.NewReader(body)))
+	if response.Code != http.StatusOK || store.writes != 1 {
+		t.Fatalf("status/writes = %d/%d: %s", response.Code, store.writes, response.Body.String())
+	}
+	// An agent outside the closed kinds is refused as an invalid payload.
+	snapshot.Agents[0].Kind = "daemon"
+	body, _ = json.Marshal(snapshot)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, machinesnapshot.SnapshotPath, bytes.NewReader(body)))
+	if response.Code != http.StatusBadRequest || store.writes != 1 {
+		t.Fatalf("invalid agent status/writes = %d/%d", response.Code, store.writes)
+	}
+}

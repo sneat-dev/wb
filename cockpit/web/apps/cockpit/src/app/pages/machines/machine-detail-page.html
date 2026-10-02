@@ -1,0 +1,8 @@
+<p class="back"><a routerLink="/machines">&larr; Machines</a></p>
+@if (exists()) {
+  <app-machine-panel [id]="id()" [page]="true" />
+} @else if (store.warmingUp() || !store.loaded()) {
+  <p class="muted">Waiting for the fleet snapshot…</p>
+} @else {
+  <p>This machine is not in the fleet document; it may have stopped publishing.</p>
+}

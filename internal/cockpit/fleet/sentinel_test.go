@@ -1,15 +1,23 @@
 package fleet
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/cockpit"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/herdr"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -36,10 +44,40 @@ func sentinelSources() *fakeSources {
 
 	view := filled[session.View]()
 	view.WBSessionID, view.Runtime, view.Model, view.State = "wbs-1", "claude", "opus", session.StateLive
+	// The view's process id is the sentinel number, as is the declared owner's of
+	// the worktree record, so the session is linked to the worktree; the harness
+	// session id is the one herdr's fake agent carries.
+	view.NativeHarnessID, view.StartedAt = "hid-1", newClock().Now()
+	record.OwnerPID, record.OwnerAgent = view.PID, "claude/hid-1"
 
 	run := filled[agents.Result]()
 	run.AgentID, run.State, run.Repository = "agt-1", agents.StateRunning, "acme/widgets"
 	run.Resolved.Harness, run.Resolved.Model = "codex", "gpt"
+	run.Worktree, run.Branch, run.StartedAt = "task-a", "feature/a", newClock().Now()
+	finished := newClock().Now()
+	failedRun := run
+	failedRun.AgentID, failedRun.State, failedRun.FinishedAt = "agt-2", agents.StateFailed, &finished
+	two := 2
+	failedRun.ExitCode = &two
+	// The session registry and the run records are files a harness writes: a
+	// session and a run whose runtime and model are a sentinel (a path, an
+	// environment value) are kept with those fields blanked, and ones whose
+	// identifier is a sentinel are dropped whole.
+	planted := func(label string) string { return sentinel + label + " /Users/x HOME=/y" }
+	oddView := view
+	oddView.WBSessionID, oddView.PID, oddView.Runtime, oddView.Model = "wbs-odd", view.PID+1, planted("local-session-runtime"), planted("local-session-model")
+	droppedView := view
+	droppedView.WBSessionID, droppedView.PID, droppedView.Runtime = planted("local-session-id"), view.PID+2, "dropped-local-runtime"
+	oddRun := run
+	oddRun.AgentID, oddRun.Resolved.Harness, oddRun.Resolved.Model, oddRun.Worktree = "agt-odd", planted("local-run-runtime"), planted("local-run-model"), "task-a"
+	droppedRun := run
+	droppedRun.AgentID, droppedRun.Resolved.Harness = planted("local-run-id"), "dropped-local-runtime"
+
+	// herdr's fake agent has a sentinel in every field but its status and the
+	// harness session id that joins it to the session.
+	herdrAgent := filled[herdr.Agent]()
+	herdrAgent.Status = herdr.StatusBlocked
+	herdrAgent.Session = &herdr.AgentSession{Agent: sentinel + "agent", Kind: "id", Source: sentinel + "source", Value: "hid-1"}
 
 	// The remote entry is built by the filler like the rest, so every field its
 	// types have, and gain later, carries a sentinel except the few the
@@ -48,10 +86,30 @@ func sentinelSources() *fakeSources {
 	published, _ := time.Parse(time.RFC3339, remotePublish)
 	entry.Error = ""
 	entry.Snapshot.Login, entry.Snapshot.Machine, entry.Snapshot.WBVersion, entry.Snapshot.PublishedAt = "someone", "desktop", "v0.9.0", published
+	// The machine's hardware facts are fields the document may show.
+	entry.Snapshot.OS, entry.Snapshot.Arch, entry.Snapshot.CPUCount, entry.Snapshot.BootTime = "linux", "arm64", 8, published
 	entry.Snapshot.KnownRepositories = []string{"acme/gadgets"}
+	// The optional agents and sample are fields the document may show, each only
+	// where it is plain, in its closed set or a known measurement: the first
+	// agent is clean, the second carries a sentinel in every field the document
+	// must refuse (an out-of-set activity and a repository it has no entry of;
+	// its free-text fields are cleaned, so they hold none), and the sample's
+	// time and one measurement are all that is given (a sentinel number is out
+	// of range and dropped).
+	hostile := func(label string) string { return sentinel + label + " /Users/x HOME=/y" } // fails every pattern and rule
+	entry.Snapshot.Agents = []remotestate.AgentState{
+		{Kind: "session", SessionID: "wbs-remote", Runtime: "claude", Model: "opus", State: "live", Activity: "idle", Task: "task-x", Repository: "acme/gadgets", StartedAt: published},
+		// Every non-identifying string carries a sentinel that fails its rule: the
+		// agent is kept and each of those fields is blanked.
+		{Kind: "run", RunID: "agt-remote", State: "running", Runtime: hostile("runtime"), Model: hostile("model"), Activity: hostile("activity"), Task: hostile("task"), Repository: hostile("repository")},
+		// An identifying field that fails drops the whole agent.
+		{Kind: "run", RunID: hostile("run_id"), State: "running", Runtime: "dropped-runtime"},
+		{Kind: hostile("kind"), State: "running", Runtime: "dropped-runtime"},
+	}
+	entry.Snapshot.Metrics = &remotestate.MetricsSample{Load1: ptr(1.5), MemoryUsedBytes: ptr(uint64(1)), MemoryTotalBytes: ptr(uint64(2)), DiskFreeBytes: ptr(uint64(3)), DiskTotalBytes: ptr(uint64(4)), CPUPercent: ptr(float64(sentinelNumber)), SampledAt: published}
 	state := &entry.Snapshot.Worktrees[0]
 	state.Task, state.Stream, state.Repository, state.Branch = "task-x", "stream-x", "acme/gadgets", "feature/x"
-	state.Lifecycle, state.OwnerState = "active", "active"
+	state.Lifecycle, state.OwnerState = "working", "orphaned"
 	state.PullRequest.Number, state.PullRequest.State, state.PullRequest.URL = 3, "OPEN", "https://github.com/acme/gadgets/pull/3"
 
 	return &fakeSources{
@@ -61,10 +119,26 @@ func sentinelSources() *fakeSources {
 		records:   map[string]WorktreeRecord{path: record},
 		branches:  map[string][]BranchRef{"acme/widgets": {ref}},
 		bindings:  []worktrees.RegisteredPullRequestBinding{binding},
-		sessions:  []session.View{view},
-		runs:      []agents.Result{run},
+		sessions:  []session.View{view, oddView, droppedView},
+		runs:      []agents.Result{run, failedRun, oddRun, droppedRun},
 		remote:    []remotestate.Entry{entry},
+		activity:  HerdrActivity{Open: func() (HerdrLister, error) { return fakeHerdr{agents: []herdr.Agent{herdrAgent}}, nil }},
 	}
+}
+
+// sentinelTerminals is a terminal source whose one landed record has a
+// sentinel in every field of the record and of its claim (its repository,
+// worktree path, branch, commit, agent, prompt and report path among them)
+// except the task name and the two times, which are the fields the throughput
+// block may carry.
+func sentinelTerminals() *fakeTerminals {
+	record := filled[worktreeclaims.TerminalRecord]()
+	now := newClock().Now()
+	record.Disposition, record.Task = "removed", "task-landed"
+	record.RecordedAt, record.SealedAt = now.Add(-3*time.Hour), now.Add(-time.Hour)
+	source := newFakeTerminals()
+	source.put(sentinel+"path/to/terminal.json", now, record)
+	return source
 }
 
 // TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet feeds every source a
@@ -73,10 +147,161 @@ func sentinelSources() *fakeSources {
 // fields do arrive (so the test is not vacuous).
 func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	t.Parallel()
-	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), nil)
+	// The projects root is a sentinel path: it is compared and statted, never
+	// emitted, and the metrics route must not carry it either.
+	// Two other machines are read live (cockpit-views#req:remote-entries-replace-
+	// cached). The first exports the same sentinel sources under a machine name
+	// that is itself a sentinel: the name a response gives is never used, so it
+	// must not reach the document. The second fails with a sentinel as its error
+	// text and as its code: only a code of the closed vocabulary may be shown.
+	remote, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
+		options.Machine = sentinel + "remote-machine"
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+	})
+	refreshAndSettle(t, remote)
+	exported := remote.Export(false)
+	if exported.Machine != sentinel+"remote-machine" || len(exported.Fleet.Worktrees) != 1 {
+		t.Fatalf("the remote export = %+v", exported)
+	}
+	// A third machine is read end to end, over the real HTTP transport from a hub
+	// that answers a hostile body: the valid export with a sentinel in every text
+	// an envelope can carry and in fields it has no place for. The decoder refuses
+	// it as a whole, and nothing of it may be shown: only bad_payload.
+	hostileHub := newFakeHub(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(hostileEnvelope(t, exported))
+	})
+	overHTTP := NewHTTPExporter(nil)
+	exporter := &fakeExporter{answer: func(target RemoteTarget, metricsOnly bool) (Envelope, error) {
+		switch target.Machine {
+		case "broken":
+			return Envelope{}, errors.Join(errors.New(sentinel+"error-text"), &RemoteError{Code: sentinel + "code"})
+		case "hostile":
+			return overHTTP.Export(t.Context(), target, metricsOnly)
+		case "sshvm":
+			return Envelope{}, ErrNoRoute
+		}
+		return exported, nil
+	}}
+	// A fourth machine has an SSH route (its host, user and wb path are
+	// sentinels: they are the owner's alone) and is read over SSH, which fails
+	// with a sentinel as everything the remote and ssh printed.
+	runner := &fakeSSH{answer: failingSSH(255, sentinel+"stdout", sentinel+"stderr: Permission denied (publickey).")}
+	sshRoute := SSHRoute{Host: sentinel + "host.example", User: "SENTINEL_user", WBPath: "/opt/" + sentinel + "path/wb"}
+	// The periodic publisher's diagnostic is shown only as one of its closed
+	// codes: any other text it gives is dropped.
+	publisher := &fakePublisher{diag: sentinel + "publish-error /Users/x: permission denied"}
+	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
+		options.ProjectsRoot = "/" + sentinel + "projects-root"
+		options.Sampler = filledSampler(t, &countingSource{}, 3)
+		options.Remotes = []RemoteTarget{
+			{Machine: "vm", HTTP: &HTTPRoute{URL: "https://" + sentinel + "host.example", TokenFile: "/" + sentinel + "token-file"}},
+			{Machine: "broken", HTTP: &HTTPRoute{URL: "https://" + sentinel + "broken.example", TokenFile: "/" + sentinel + "token-file"}},
+			{Machine: "hostile", HTTP: &HTTPRoute{URL: hostileHub.server.URL, TokenFile: tokenFile(t, sentinel+"bearer")}},
+			{Machine: "sshvm", SSH: &sshRoute},
+		}
+		options.Transports = []RemoteTransport{
+			{Name: TransportHTTP, Exporter: exporter},
+			{Name: TransportSSH, Exporter: NewSSHExporter(foundSSH(t, nil), runner, nil, nil)},
+		}
+		options.SSHRoutes = map[string]SSHRoute{"sshvm": sshRoute, "vm": sshRoute}
+		options.Terminals = sentinelTerminals()
+		options.Publisher = publisher
+	})
 	refreshAndSettle(t, snapshotter)
+	pollAndSettle(t, snapshotter)
+	if vm, found := machineNamed(snapshotter.Document(), "vm"); !found || vm.WorktreeCount != 1 {
+		t.Fatalf("the live machine = %+v (the test would be vacuous)", vm)
+	}
+	for name, want := range map[string]string{"hostile": RemoteErrorBadPayload, "sshvm": RemoteErrorAuthFailed} {
+		if machine, found := machineNamed(snapshotter.Document(), name); !found || machine.RemoteError != want {
+			t.Fatalf("the machine %s = %+v (found %v), want it shown with %s (the test would be vacuous)", name, machine, found, want)
+		}
+	}
+	if len(hostileHub.seen()) == 0 || runner.count() == 0 || publisher.calls == 0 || len(snapshotter.MachineRoutes()) == 0 {
+		t.Fatalf("the hostile hub was asked %d times, ssh run %d times, the publisher called %d times, %d owner routes (the test would be vacuous)", len(hostileHub.seen()), runner.count(), publisher.calls, len(snapshotter.MachineRoutes()))
+	}
 	server := newCockpitServer(t, snapshotter)
 	body := server.get("/api/v1/cockpit/fleet", nil).Body.String()
+	// The scoped reads of the fleet route, and who an anonymous reader is told it is.
+	for _, target := range []string{"fleet?scope=" + ScopeOwn, "fleet?scope=" + ScopeMachine, "session"} {
+		recorder := server.get(cockpit.APIPrefix+target, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", target, recorder.Code, recorder.Body.String())
+		}
+		body += recorder.Body.String() + headersOf(recorder)
+	}
+	// Every refusal an anonymous reader can provoke, each asked with a sentinel:
+	// an error body is a closed code or a fixed text and repeats nothing it was
+	// sent.
+	for name, refused := range map[string]struct {
+		recorder *httptest.ResponseRecorder
+		status   int
+		code     string
+	}{
+		"a forwarded request (401)":       {server.get(cockpit.APIPrefix+FleetRoute+"?scope="+sentinel+"scope", nil, "X-Forwarded-For", sentinel+"forwarded"), http.StatusUnauthorized, "an owner session is required"},
+		"the README with no session":      {server.get(ReadmePath+"?repository="+sentinel+"repository", nil), http.StatusUnauthorized, "an owner session is required"},
+		"an unknown route (404)":          {server.get(cockpit.APIPrefix+sentinel+"route", nil), http.StatusNotFound, "not found"},
+		"another method (405)":            {server.do(http.MethodPost, cockpit.APIPrefix+FleetRoute+"?"+sentinel+"query=1", sentinel+"body"), http.StatusMethodNotAllowed, "method not allowed"},
+		"an unknown repository":           {server.get(cockpit.APIPrefix+BranchesRoute+"?repository="+sentinel+"repository", nil), http.StatusNotFound, "unknown_repository"},
+		"an unknown machine":              {server.get(metricsURL+sentinel+"machine", nil), http.StatusNotFound, "unknown_machine"},
+		"a foreign origin (403)":          {server.get(cockpit.APIPrefix+FleetRoute, nil, "Origin", "https://"+sentinel+"origin.example"), http.StatusForbidden, "cross-origin request refused"},
+		"a foreign host (421)":            {server.onHost(sentinel+"host.example:8766", cockpit.APIPrefix+FleetRoute), http.StatusMisdirectedRequest, "misdirected request"},
+		"the hosted page's bad preflight": {server.do(http.MethodOptions, cockpit.APIPrefix+FleetRoute, "", "Origin", hostedOrigin, "Access-Control-Request-Method", "GET", "Access-Control-Request-Headers", sentinel+"header"), http.StatusForbidden, "not allowed from the hosted origin"},
+	} {
+		if refused.recorder.Code != refused.status || !strings.Contains(refused.recorder.Body.String(), refused.code) {
+			t.Errorf("%s = %d %s, want %d %q", name, refused.recorder.Code, refused.recorder.Body.String(), refused.status, refused.code)
+		}
+		body += refused.recorder.Body.String() + headersOf(refused.recorder)
+	}
+	// The metrics of every machine in the document are served by their own
+	// route (a local history, and none for the machines of snapshots), so the
+	// same checks cover it, and its payload is the fixed field set and nothing more.
+	for _, machine := range snapshotter.Document().Machines {
+		recorder := server.get(metricsURL+machine.ID, nil)
+		if recorder.Code != 200 {
+			t.Fatalf("metrics route = %d %s", recorder.Code, recorder.Body.String())
+		}
+		var decoded struct {
+			Samples []map[string]any `json:"samples"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		for _, sample := range decoded.Samples {
+			keys := make([]string, 0, len(sample))
+			for key := range sample {
+				keys = append(keys, key)
+			}
+			if !sameSet(keys, []string{"load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"}) {
+				t.Errorf("a metrics sample carries %v", keys)
+			}
+		}
+		if machine.Route == RouteLocal && len(decoded.Samples) != 3 {
+			t.Errorf("the local machine has %d samples, want 3 (the test would be vacuous)", len(decoded.Samples))
+		}
+		body += recorder.Body.String()
+		// A forwarded request has no anonymous reading: it gets no data at all.
+		if forwarded := server.get(metricsURL+machine.ID, nil, "X-Forwarded-For", "203.0.113.9"); forwarded.Code != 401 || strings.Contains(forwarded.Body.String(), "samples") {
+			t.Errorf("a forwarded metrics request = %d %s, want 401 and no data", forwarded.Code, forwarded.Body.String())
+		}
+	}
+	// The branches are served by their own route, so the same checks cover it.
+	for _, repository := range snapshotter.Document().Repositories {
+		recorder := server.get("/api/v1/cockpit/branches?repository="+repository.ID, nil)
+		if recorder.Code != 200 {
+			t.Fatalf("branches route for a %s repository = %d %s", repository.Route, recorder.Code, recorder.Body.String())
+		}
+		body += recorder.Body.String()
+	}
+	// The export envelope (cockpit-views#req:cockpit-export-verb) is built from the
+	// same document and sampler, so the same checks cover both of its shapes.
+	for _, metricsOnly := range []bool{false, true} {
+		exported, err := json.Marshal(snapshotter.Export(metricsOnly))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body += string(exported)
+	}
 	if strings.Contains(body, strconv.Itoa(sentinelNumber)) {
 		t.Fatalf("the document carries a sentinel number from a source field: %s", body)
 	}
@@ -84,9 +309,19 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 		start := strings.Index(body, sentinel)
 		t.Fatalf("the document carries a forbidden source field: ...%s...", body[start:min(len(body), start+60)])
 	}
+	// An agent whose identifier fails its rule is dropped, not shown blanked.
+	if strings.Contains(body, "dropped-local-runtime") || strings.Contains(body, "dropped-runtime") {
+		t.Fatalf("an agent with an invalid identifier reached a response: %s", body)
+	}
+	// The publisher's text is not one of its codes: no publish_error at all.
+	if strings.Contains(body, "publish_error") || strings.Contains(body, "machine_routes") {
+		t.Fatalf("an anonymous response carries a publish error that is no code, or the owner's routes: %s", body)
+	}
 	for _, want := range []string{
-		`"task-a"`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
-		`"desktop"`, `"v0.9.0"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
+		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
+		`"route":"live-remote"`, `"transport":"http"`, `"remote_error":"http_unavailable"`, `"machine":"vm"`, `"machine":"broken"`,
+		`"remote_error":"bad_payload"`, `"machine":"hostile"`, `"remote_error":"auth_failed"`, `"machine":"sshvm"`, `"principal":"anonymous-local"`,
+		`"desktop"`, `"v0.9.0"`, `"wbs-remote"`, `"agt-remote"`, `"wbs-odd"`, `"agt-odd"`, `"route":"cached"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the document lacks the allowed value %s: %s", want, body)
@@ -101,24 +336,75 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 	t.Parallel()
 	entry := []string{"id", "machine", "machine_id", "route", "observed_at"}
 	want := map[string][]string{
-		"Document":       {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "machines", "repositories", "worktrees", "branches", "pull_requests", "agents", "agents_truncated"},
-		"Machine":        append([]string{"wb_version", "repository_count", "worktree_count"}, entry...),
-		"Repository":     append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "code_index"}, entry...),
-		"Worktree":       append([]string{"repository", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "code_index"}, entry...),
-		"Branch":         append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
-		"PullRequest":    append([]string{"repository", "worktree", "branch", "number", "state", "url"}, entry...),
-		"CodeIndex":      {"indexer", "state", "behind", "receipt_at", "statistics"},
-		"CodeStatistics": {"indexed", "files", "symbols", "edges", "kinds", "error"},
-		"KindCount":      {"kind", "count"},
-		"Agent":          append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "repository"}, entry...),
+		"Document":         {"schema_version", "snapshot_at", "warming_up", "repositories_total", "repositories_scanned", "diagnostics", "error", "code_index_provider", "refresh_interval_seconds", "machines", "repositories", "worktrees", "pull_requests", "agents", "agents_truncated", "pull_requests_throttled", "throughput"},
+		"Throughput":       {"window_days", "per_day", "slowest", "median_seconds", "p90_seconds", "capped"},
+		"ThroughputDay":    {"date", "finished", "dropped", "landed"},
+		"ThroughputTask":   {"task", "duration_seconds", "landed_at"},
+		"Machine":          append([]string{"wb_version", "repository_count", "worktree_count", "os", "arch", "cpu_count", "boot_time", "transport", "remote_error", "export_dropped", "publish_error", "agents_truncated"}, entry...),
+		"Repository":       append([]string{"host", "name", "default_branch", "worktree_count", "local_branch_count", "remote_branch_count", "open_pull_request_count", "active_agent_count", "error", "last_activity_at", "remote_url_web", "code_index"}, entry...),
+		"Worktree":         append([]string{"repository", "name", "task", "stream", "branch", "lifecycle", "owner_state", "last_activity_at", "ahead", "behind", "upstream_gone", "has_upstream", "code_index"}, entry...),
+		"Branch":           append([]string{"repository", "name", "scope", "task", "worktree", "upstream", "ahead", "behind", "upstream_gone", "last_activity_at"}, entry...),
+		"PullRequest":      append([]string{"repository", "worktree", "branch", "number", "state", "url", "mergeable", "checks_total", "checks_passed", "checks_failed", "checks_skipped", "checks_pending", "checks_green", "failed_check", "checked_at"}, entry...),
+		"BranchesResponse": {"repository", "branches", "reason"},
+		"CodeIndex":        {"indexer", "state", "behind", "receipt_at", "statistics"},
+		"CodeStatistics":   {"indexed", "files", "symbols", "edges", "kinds", "error"},
+		"KindCount":        {"kind", "count"},
+		"MetricsResponse":  {"machine", "route", "fetched_at", "samples", "reason"},
+		"Sample":           {"cpu_percent", "load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"},
+		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "activity", "repository", "task", "worktrees", "started_at", "finished_at", "exit_code"}, entry...),
+		// The export envelope, which the hub route and the export verb print and
+		// every reader of another machine decodes, and the verb's typed failure.
+		"Envelope":        {"schema_version", "machine", "exported_at", "fleet", "metrics", "dropped"},
+		"splicedEnvelope": {"schema_version", "machine", "exported_at", "fleet", "metrics", "dropped"},
+		"EnvelopeMetrics": {"route", "samples", "reason"},
+		"ExportError":     {"schema_version", "error"},
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),
 		"Worktree": jsonFields(Worktree{}), "Branch": jsonFields(Branch{}), "PullRequest": jsonFields(PullRequest{}), "Agent": jsonFields(Agent{}),
-		"CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
+		"BranchesResponse": jsonFields(BranchesResponse{}), "MetricsResponse": jsonFields(MetricsResponse{}), "Sample": jsonFields(machinemetrics.Sample{}), "CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
+		"Throughput": jsonFields(Throughput{}), "ThroughputDay": jsonFields(ThroughputDay{}), "ThroughputTask": jsonFields(ThroughputTask{}),
+		"Envelope": jsonFields(Envelope{}), "splicedEnvelope": jsonFields(splicedEnvelope{}), "EnvelopeMetrics": jsonFields(EnvelopeMetrics{}), "ExportError": jsonFields(ExportError{}),
 	} {
 		if !sameSet(got, want[name]) {
 			t.Errorf("%s fields = %v, want exactly %v", name, got, want[name])
 		}
 	}
+}
+
+// headersOf is every header of a response, names and values, as text.
+func headersOf(recorder *httptest.ResponseRecorder) string {
+	var text strings.Builder
+	for name, values := range recorder.Header() {
+		text.WriteString(name + ": " + strings.Join(values, ", ") + "\n")
+	}
+	return text.String()
+}
+
+// hostileEnvelope is the bytes of a valid export made hostile: a sentinel in
+// its machine name, in every name of its entries, in fields a machine's own
+// export never carries (the reader's codes), and in fields the envelope has no
+// place for at all (a path, an error text, a command line).
+func hostileEnvelope(t *testing.T, valid Envelope) []byte {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal(marshalled(t, valid), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope["machine"] = sentinel + "envelope-machine"
+	envelope["path"] = "/" + sentinel + "envelope/path"
+	envelope["error"] = sentinel + "envelope-error: no such file or directory"
+	fleet := envelope["fleet"].(map[string]any)
+	fleet["error"] = sentinel + "fleet-error"
+	for _, collection := range []string{"machines", "repositories", "worktrees", "pull_requests", "agents"} {
+		for _, item := range fleet[collection].([]any) {
+			entry := item.(map[string]any)
+			for _, field := range []string{"machine", "name", "task", "branch", "stream", "failed_check", "model", "runtime", "remote_error", "publish_error", "transport", "wb_version", "os", "error", "url", "remote_url_web", "default_branch", "host"} {
+				entry[field] = sentinel + "hostile-" + collection + "-" + field
+			}
+			entry["path"] = "/" + sentinel + "hostile/" + collection
+			entry["command"] = sentinel + "hostile-command --token " + sentinel + "secret"
+		}
+	}
+	return marshalled(t, envelope)
 }

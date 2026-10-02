@@ -4,33 +4,20 @@ import {
   provideZonelessChangeDetection,
 } from '@angular/core'
 import { provideRouter, withComponentInputBinding } from '@angular/router'
-import Aura from '@primeuix/themes/aura'
-import { providePrimeNG } from 'primeng/config'
+import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
 import { appRoutes } from './app.routes'
+import { providePageTitle } from './shell/page-title'
+import { Shortcuts } from './shortcuts/shortcuts'
 
-/**
- * The style nonce the daemon issued for this response. It is carried by the
- * ngCspNonce attribute on the application root, which Angular itself reads for
- * the styles it injects; PrimeNG needs it handed over explicitly.
- */
-export function readCspNonce(doc: Document): string | undefined {
-  return doc.querySelector('[ngCspNonce]')?.getAttribute('ngCspNonce') ?? undefined
-}
-
-export function createAppConfig(doc: Document): ApplicationConfig {
+export function createAppConfig(): ApplicationConfig {
   return {
     providers: [
       provideBrowserGlobalErrorListeners(),
       provideZonelessChangeDetection(),
       provideRouter(appRoutes, withComponentInputBinding()),
-      providePrimeNG({
-        csp: { nonce: readCspNonce(doc) },
-        theme: {
-          preset: Aura,
-          // 'system' follows the browser's prefers-color-scheme.
-          options: { darkModeSelector: 'system' },
-        },
-      }),
+      providePageTitle(),
+      // Every list answers the shell's `/` and Esc.
+      { provide: LIST_SHORTCUTS, useExisting: Shortcuts },
     ],
   }
 }

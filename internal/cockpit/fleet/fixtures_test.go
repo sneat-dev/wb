@@ -24,8 +24,11 @@ import (
 )
 
 const (
-	testHost      = "127.0.0.1:8766"
-	hostedOrigin  = "https://hosted.example"
+	testHost     = "127.0.0.1:8766"
+	hostedOrigin = "https://hosted.example"
+	// testLogin is the login the live fixtures run as, which the published
+	// snapshots of their configured machine carry (cachedVM).
+	testLogin     = "alex"
 	testMachine   = "laptop"
 	sentinel      = "SENTINEL-"
 	testVersion   = "v1.2.3"
@@ -44,6 +47,7 @@ type fakeSources struct {
 	sessions     []session.View
 	runs         []agents.Result
 	remote       []remotestate.Entry
+	activity     ActivityCollector
 	branch       string
 	readme       []byte
 	readmeErr    error
@@ -59,7 +63,7 @@ type fakeSources struct {
 }
 
 func (f *fakeSources) collectors() Collectors {
-	return Collectors{Repositories: f, Worktrees: f, Branches: f, Readme: f, Records: f, PullRequests: f, Sessions: f, Runs: f, Remote: f}
+	return Collectors{Repositories: f, Worktrees: f, Branches: f, Readme: f, Records: f, PullRequests: f, Sessions: f, Runs: f, Remote: f, Activity: f.activity}
 }
 
 func (f *fakeSources) Repositories(context.Context) ([]discover.Repo, error) {
@@ -241,7 +245,7 @@ func (f *constFingerprint) get(string) (string, error) {
 const passCalls = 10
 
 // oneRepoSources is a fake with one repository holding two worktrees (the
-// first active, the second idle), their branches, a pull request recorded for
+// first with a live owner process, the second with a gone one), their branches, a pull request recorded for
 // the first, a session and a second machine's snapshot.
 func oneRepoSources(path string) *fakeSources {
 	repo := discover.Repo{Host: "github.com", Org: "acme", Name: "widgets", Path: path}
@@ -255,8 +259,8 @@ func oneRepoSources(path string) *fakeSources {
 			{Path: "/wt/task-a", Branch: "feature/a"}, {Path: "/wt/task-b", Branch: "feature/b"},
 		}},
 		records: map[string]WorktreeRecord{
-			"/wt/task-a": {Task: "task-a", Branch: "feature/a", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-time.Hour)},
-			"/wt/task-b": {Task: "task-b", Branch: "feature/b", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-48 * time.Hour)},
+			"/wt/task-a": {Task: "task-a", Branch: "feature/a", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-time.Hour), Owner: worktrees.OwnerLive},
+			"/wt/task-b": {Task: "task-b", Branch: "feature/b", CreatedAt: now.Add(-72 * time.Hour), HeartbeatAt: now.Add(-48 * time.Hour), Owner: worktrees.OwnerGone},
 		},
 		branches: map[string][]BranchRef{"acme/widgets": {
 			{Name: "feature/a", Scope: BranchLocal, Upstream: "origin/feature/a", Ahead: 2},
@@ -303,6 +307,18 @@ type cockpitServer struct {
 	server *cockpit.Server
 	api    http.Handler
 	page   http.Handler
+	// session is the owner session owner() logged in with, kept for the test.
+	session *http.Cookie
+}
+
+// owner returns one owner session cookie for the whole test: a read with it is
+// an owner's, the only reader that is demand for the SSH transport.
+func (c *cockpitServer) owner() *http.Cookie {
+	c.t.Helper()
+	if c.session == nil {
+		c.session = c.login()
+	}
+	return c.session
 }
 
 func newCockpitServer(t *testing.T, snapshotter *Snapshotter) *cockpitServer {
@@ -327,6 +343,29 @@ func (c *cockpitServer) get(target string, cookie *http.Cookie, headers ...strin
 	if cookie != nil {
 		request.AddCookie(cookie)
 	}
+	recorder := httptest.NewRecorder()
+	c.api.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// do makes a request of any method on the API mount, with a body and headers.
+func (c *cockpitServer) do(method, target, body string, headers ...string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Host = testHost
+	for i := 0; i < len(headers); i += 2 {
+		request.Header.Set(headers[i], headers[i+1])
+	}
+	recorder := httptest.NewRecorder()
+	c.api.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// onHost requests target on the API mount with another Host header.
+func (c *cockpitServer) onHost(host, target string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = host
 	recorder := httptest.NewRecorder()
 	c.api.ServeHTTP(recorder, request)
 	return recorder
@@ -498,13 +537,49 @@ func (s *Snapshotter) Document() Document {
 type fakeGate struct {
 	usable bool
 	panics bool
-	asked  atomic.Int64
+	// failures is how many asks fail to read the version before one answers.
+	failures int64
+	asked    atomic.Int64
 }
 
-func (g *fakeGate) GitUsable(context.Context) bool {
-	g.asked.Add(1)
+func (g *fakeGate) GitUsable(context.Context) (bool, error) {
+	asked := g.asked.Add(1)
 	if g.panics {
 		panic("a gate panicked")
 	}
-	return g.usable
+	if asked <= g.failures {
+		return false, errors.New("git version: exit status 128")
+	}
+	return g.usable, nil
+}
+
+// Body is the last published document as marshalled JSON, and its strong ETag,
+// as a request without Accept-Encoding receives them; a test-only view.
+func (s *Snapshotter) Body() (body []byte, etag string) {
+	recorder := httptest.NewRecorder()
+	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), s.Payload())
+	return recorder.Body.Bytes(), recorder.Header().Get("ETag")
+}
+
+// allBranches is every branch the daemon holds, in the order the branches route
+// would list them within a repository and by repository id across them; a
+// test-only view, as the document no longer carries them.
+func (s *Snapshotter) allBranches() []Branch {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var ids []string
+	for id := range s.repos {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	var branches []Branch
+	for _, id := range ids {
+		branches = append(branches, s.repos[id].entries.branches...)
+	}
+	return branches
+}
+
+// mapRemoteForTest is mapRemote for this machine and the fixtures' clock.
+func mapRemoteForTest(login, projectsRoot string, entries []remotestate.Entry) remoteView {
+	return mapRemote(testMachine, login, projectsRoot, entries, newClock().Now())
 }

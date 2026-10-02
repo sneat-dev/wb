@@ -2528,8 +2528,9 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 		return fmt.Errorf("mount the bench hub: %w", err)
 	}
 	defer func() { _ = mount.Close() }()
-	// Best-effort: an unresolved log path only disables /api/v1/log (503),
-	// it never blocks the daemon from serving everything else.
+	// Best-effort: an unresolved log path only disables /api/v1/log (503, which
+	// only the owner is told), it never blocks the daemon from serving
+	// everything else.
 	// daemonStartLogPath is the cross-platform accessor (daemonLogPath is
 	// !darwin-only; darwin's launchd unit owns a fixed, home-derived path).
 	logPath, _ := daemonStartLogPath(inv.projectsRoot)
@@ -2544,11 +2545,17 @@ func serveDashboard(inv *invocation, command *cobra.Command, deps daemonDependen
 	}
 	peersHandler := peers.NewHandler("/api/v1/peers", peersSource, peersViewerAuthorize(localIdentityID))
 	cockpitServer := newCockpitServer(address, cockpitConfig)
-	fleetSnapshotter := registerCockpitFleet(cockpitServer, cockpitFleetOptions(inv.projectsRoot, location.Home, hubConfigPath(), cockpitConfig, command.ErrOrStderr(), os.Hostname))
+	fleetOptions := cockpitFleetOptions(inv.projectsRoot, location.Home, hubConfigPath(), cockpitConfig, command.ErrOrStderr(), os.Hostname)
+	fleetOptions.Remotes = withoutOwnAddress(fleetOptions.Remotes, address, fleetOptions.Logf)
+	fleetSnapshotter := registerCockpitFleet(cockpitServer, fleetOptions)
+	mount.serveExportOf(fleetSnapshotter, cockpitConfig)
 	server := &http.Server{Handler: dashboard.NewHandler(dashboard.Options{
 		ProjectsRoot: inv.projectsRoot, Version: collectVersion().Version,
 		DaemonPID: os.Getpid(), SchedulerGeneration: state.Queue.Generation,
 		Mounts: cockpitServer.MountsWith(mount.handlers()), Hub: mount.hubHealth(), LogPath: logPath,
+		// The log is file content: only Cockpit's owner session reads it
+		// (cockpit#req:daemon-log-is-owner-only).
+		Owner: cockpitServer.IsOwner, Logf: fleetOptions.Logf,
 		Peers: peersHandler,
 	}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
