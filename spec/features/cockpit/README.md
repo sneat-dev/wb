@@ -406,7 +406,7 @@ background. A request MUST NOT wait for a Git scan of every repository. A
 request made before the first snapshot exists returns an empty, well-formed
 document marked as warming up.
 
-The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned.
+The snapshot is built from local state only and is read-only: it never contacts a network and never writes inside a repository. It is published incrementally, so the document is readable while the first pass is still running; `warming_up` stays true until that pass completes, and the document says how many repositories have been scanned. A warm-up always ends. When the repositories cannot be listed and no listing has ever worked, the first pass has nothing more to learn: `warming_up` becomes false and the document, which is empty, carries the closed code `repositories_unreadable` in `error`, so that a client that polls faster while the document warms up stops, and a reader of this machine is told that its export failed instead of being told `warming_up` for ever. The first listing that works then starts the first pass, and the document warms up again until that pass completes.
 
 #### REQ: snapshot-refresh
 

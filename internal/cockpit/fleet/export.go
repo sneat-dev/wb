@@ -308,6 +308,15 @@ func ParseExportDrops(header string) ExportDrops {
 	return ExportDrops{Repositories: counts[0], Worktrees: counts[1], PullRequests: counts[2], Agents: counts[3]}
 }
 
+// Unlistable reports whether document is one whose repositories could not be
+// listed and that holds none of them: this machine cannot say what it has, so
+// its fleet is not exported (an empty fleet would replace what a reader holds
+// of it). The export is then ErrorExportFailed, which a reader shows as an
+// error of that machine; the metrics-only export is made.
+func Unlistable(document Document) bool {
+	return document.Error == ErrorRepositoriesUnreadable && document.RepositoriesTotal == 0
+}
+
 // ownFleet is this machine's own entries of one published document, prepared
 // once for that document: the fleet half of its export.
 type ownFleet struct {
@@ -434,14 +443,15 @@ type splicedEnvelope struct {
 // published document, ownFleetNow). failure is empty, or ErrorWarmingUp for a
 // full export while the first pass has not ended (a partial fleet must not
 // replace what a reader holds), or ErrorExportFailed when the envelope would
-// not pass its own rules or its size bound. It reads memory only.
+// not pass its own rules or its size bound, or when this machine's
+// repositories could not be listed at all (Unlistable). It reads memory only.
 func (s *Snapshotter) ExportPayload(metricsOnly bool) (payload cockpit.Payload, failure string) {
 	slot := 0
 	if metricsOnly {
 		slot = 1
 	}
 	s.mu.RLock()
-	documentVersion, warming, machine := s.publishes, s.doc.WarmingUp, ""
+	documentVersion, warming, unlistable, machine := s.publishes, s.doc.WarmingUp, Unlistable(s.doc), ""
 	for _, entry := range s.doc.Machines {
 		if entry.Route == RouteLocal {
 			machine = entry.Machine
@@ -451,6 +461,9 @@ func (s *Snapshotter) ExportPayload(metricsOnly bool) (payload cockpit.Payload, 
 	s.mu.RUnlock()
 	if warming && !metricsOnly {
 		return cockpit.Payload{}, ErrorWarmingUp
+	}
+	if unlistable && !metricsOnly {
+		return cockpit.Payload{}, ErrorExportFailed
 	}
 	metricsVersion := s.metricsVersion()
 	s.exports.mu.Lock()

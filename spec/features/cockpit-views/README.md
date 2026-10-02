@@ -1273,7 +1273,12 @@ reference. The exporter says how many entries of each kind it left out, as numbe
 names: the daemon in its log when the numbers change, the verb on stderr. Only a machine entry that
 is itself invalid still fails the export as `export_failed`. A daemon whose first pass has not ended
 holds a partial fleet, which must never replace what a reader holds: the full export is then the
-fourth typed error `warming_up` (the metrics-only export, which has no fleet, is made). Its capability row, command-coverage entry,
+fourth typed error `warming_up` (the metrics-only export, which has no fleet, is made). A daemon
+that could not list its repositories and holds none (`error` `repositories_unreadable` and
+`repositories_total` 0, [cockpit](../cockpit/README.md)#req:no-fleet-scan-on-the-request-path) cannot
+say what the machine has: its empty fleet is not exported in the machine's place, the full export
+is `export_failed` on both transports (a reader shows it as `bad_payload` and keeps what it holds
+while that is fresh), and the metrics-only export is made. Its capability row, command-coverage entry,
 Agent Skill coverage and flag-matrix line are added with it.
 
 #### REQ: remote-exporter-transports

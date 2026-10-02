@@ -184,8 +184,9 @@ func (o onlyFor) Worktrees(ctx context.Context, repo discover.Repo) ([]LinkedWor
 	return o.otherwise.Worktrees(ctx, repo)
 }
 
-// TestRefreshFailsWhenTheRepositoriesCannotBeListed keeps the document warming
-// when there has never been a scan.
+// TestRefreshFailsWhenTheRepositoriesCannotBeListed: a first pass that cannot
+// list the repositories returns the failure, and the document it leaves is not
+// one that warms up for ever: it is empty and says why.
 func TestRefreshFailsWhenTheRepositoriesCannotBeListed(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
@@ -194,8 +195,8 @@ func TestRefreshFailsWhenTheRepositoriesCannotBeListed(t *testing.T) {
 	if err := snapshotter.Refresh(t.Context()); !errors.Is(err, errBoom) || !strings.Contains(err.Error(), "list repositories") {
 		t.Fatalf("refresh = %v", err)
 	}
-	if !snapshotter.Document().WarmingUp {
-		t.Error("a failed first scan ended the warm-up")
+	if document := snapshotter.Document(); document.WarmingUp || document.Error != ErrorRepositoriesUnreadable || len(document.Repositories) != 0 {
+		t.Errorf("after a failed first scan: warming %v, error %q, %d repositories; want the warm-up ended in the error state", document.WarmingUp, document.Error, len(document.Repositories))
 	}
 }
 
@@ -919,20 +920,63 @@ func TestPublicationsDuringAPassAreRateLimited(t *testing.T) {
 // TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines requires a
 // failed repository listing to show in the document, not to leave a silent
 // warm-up, to keep reading what is not per repository, and to clear when the
-// next listing works.
+// next listing works. A first listing that fails ends the warm-up in the
+// error state: a browser that polls every 2 seconds while the document warms
+// up stops, and a reader of this machine is told export_failed instead of
+// warming_up for ever, while its metrics are still exported. The first listing
+// that works warms the document up for the pass it starts.
 func TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines(t *testing.T) {
 	t.Parallel()
 	sources := oneRepoSources(t.TempDir())
+	sources.repos = append(sources.repos, discover.Repo{Host: "github.com", Org: "acme", Name: "gadgets", Path: t.TempDir()})
 	sources.repoErr = errBoom
-	snapshotter, _ := newSnapshotter(sources.collectors(), nil)
+	var snapshotter *Snapshotter
+	var clock *manualClock
+	var warmingDuringThePass atomic.Bool
+	snapshotter, clock = newSnapshotter(sources.collectors(), func(options *Options) {
+		options.Sampler = filledSampler(t, &countingSource{}, 2)
+		options.Workers = 1
+		// The fingerprint is read during a pass, once for each repository, and the
+		// document is published after each one (the clock moves, so the pass's
+		// publication rate lets it): what a reader is served between the two
+		// repositories is the document of a pass that is still running.
+		options.Fingerprint = func(string) (string, error) {
+			clock.advance(time.Second)
+			if document := snapshotter.Document(); document.WarmingUp && document.RepositoriesScanned == 1 {
+				warmingDuringThePass.Store(true)
+			}
+			return "print", nil
+		}
+	})
+	if !snapshotter.Document().WarmingUp {
+		t.Fatal("the document does not warm up before the first pass")
+	}
 	err := snapshotter.Refresh(t.Context())
 	snapshotter.side.Wait()
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("refresh = %v", err)
 	}
 	failed := snapshotter.Document()
-	if failed.Error != ErrorRepositoriesUnreadable || !failed.WarmingUp || len(failed.Agents) != 1 || len(failed.PullRequests) != 2 || failed.SnapshotAt.IsZero() {
+	if failed.Error != ErrorRepositoriesUnreadable || failed.WarmingUp || len(failed.Agents) != 1 || len(failed.PullRequests) != 2 || failed.SnapshotAt.IsZero() {
 		t.Errorf("document after a failed listing = %+v", failed)
+	}
+	if !Unlistable(failed) {
+		t.Error("a document whose repositories were never listed is taken for one that can be exported")
+	}
+	if _, failure := snapshotter.ExportPayload(false); failure != ErrorExportFailed {
+		t.Errorf("the export of a machine that cannot list its repositories = %q, want export_failed", failure)
+	}
+	if payload, failure := snapshotter.ExportPayload(true); failure != "" || payload.Size() == 0 {
+		t.Errorf("its metrics-only export = %q, want it made", failure)
+	}
+	// A listing that fails while the daemon stops says nothing about the fleet.
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	stopping, _ := newSnapshotter(sources.collectors(), nil)
+	_ = stopping.Refresh(cancelled)
+	stopping.side.Wait()
+	if !stopping.Document().WarmingUp {
+		t.Error("a pass that was cancelled ended the warm-up")
 	}
 	snapshotter.mu.Lock()
 	snapshotter.publishLocked()
@@ -942,8 +986,24 @@ func TestListingFailurePublishesAnErrorAndStillReadsAgentsAndMachines(t *testing
 	}
 	sources.change(func(f *fakeSources) { f.repoErr = nil })
 	refreshAndSettle(t, snapshotter)
-	if recovered := snapshotter.Document(); recovered.Error != "" || recovered.WarmingUp {
+	if recovered := snapshotter.Document(); recovered.Error != "" || recovered.WarmingUp || Unlistable(recovered) {
 		t.Errorf("document after the listing recovered = error %q, warming %v", recovered.Error, recovered.WarmingUp)
+	}
+	if !warmingDuringThePass.Load() {
+		t.Error("the first pass after the listing recovered did not warm the document up: a partial fleet could be exported")
+	}
+	if _, failure := snapshotter.ExportPayload(false); failure != "" {
+		t.Errorf("the export after the listing recovered = %q", failure)
+	}
+	// A listing that fails after one has worked keeps what is held and exports it.
+	sources.change(func(f *fakeSources) { f.repoErr = errBoom })
+	_ = snapshotter.Refresh(t.Context())
+	snapshotter.side.Wait()
+	if later := snapshotter.Document(); later.Error != ErrorRepositoriesUnreadable || later.WarmingUp || len(later.Repositories) == 0 || Unlistable(later) {
+		t.Errorf("document after a later failed listing = error %q, warming %v, %d repositories", later.Error, later.WarmingUp, len(later.Repositories))
+	}
+	if _, failure := snapshotter.ExportPayload(false); failure != "" {
+		t.Errorf("the export after a later failed listing = %q, want what is held", failure)
 	}
 }
 

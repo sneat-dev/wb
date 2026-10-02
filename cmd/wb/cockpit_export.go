@@ -134,6 +134,11 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 	if document.WarmingUp && !metricsOnly {
 		return fail(errWarmingUp)
 	}
+	// A daemon that could not list its repositories and holds none cannot say
+	// what this machine has: an empty fleet is not exported in its place.
+	if cockpitfleet.Unlistable(document) && !metricsOnly {
+		return fail(errExportFailed)
+	}
 	metrics := cockpitfleet.MetricsResponse{Route: cockpitfleet.RouteNone, Reason: cockpitfleet.ReasonNoSource}
 	for _, machine := range document.Machines {
 		if machine.Route != cockpitfleet.RouteLocal {

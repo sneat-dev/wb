@@ -272,9 +272,13 @@ type Snapshotter struct {
 	pullBusy     atomic.Bool
 	mu           sync.RWMutex
 
-	doc         Document
-	payload     cockpit.Payload
+	doc     Document
+	payload cockpit.Payload
+	// complete says the warm-up has ended: the first pass ran to its end, or no
+	// listing of the repositories has ever worked (listed) and the document says
+	// so in its error.
 	complete    bool
+	listed      bool
 	passing     bool
 	listError   string
 	gitChecked  bool
@@ -639,7 +643,9 @@ func (s *Snapshotter) run(ctx context.Context) {
 // delays the pass nor ends the warm-up. If the repositories cannot be listed
 // the document says so in its error field and the agents and other machines
 // are still read. The first full pass ends the warm-up; a cancelled pass does
-// not.
+// not. A listing that fails before any has worked ends it too, in the error
+// state (the document is then empty and says why), and the first listing that
+// works starts the warm-up of the first pass.
 func (s *Snapshotter) Refresh(ctx context.Context) error {
 	s.refresh.Lock()
 	defer s.refresh.Unlock()
@@ -657,6 +663,12 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 		s.startThroughput(ctx)
 		s.mu.Lock()
 		s.listError = ErrorRepositoriesUnreadable
+		if !s.listed && ctx.Err() == nil {
+			// No listing has ever worked, and this pass has nothing more to learn:
+			// the warm-up ends in the error state, so that a reader is told why the
+			// document is empty instead of waiting for a first pass that never ends.
+			s.complete = true
+		}
 		s.publishLocked()
 		s.mu.Unlock()
 		return errors.Join(append(failures, fmt.Errorf("list repositories: %w", listErr))...)
@@ -897,6 +909,11 @@ func (s *Snapshotter) track(discovered []discover.Repo) []string {
 	}
 	s.repos = next
 	s.listError, s.passing = "", true
+	if !s.listed {
+		// The first listing that works starts the first pass, whatever error
+		// state came before it: the document warms up until that pass ends.
+		s.listed, s.complete = true, false
+	}
 	ids := make([]string, 0, len(next))
 	for id := range next {
 		ids = append(ids, id)

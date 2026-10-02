@@ -461,20 +461,33 @@ func TestCockpitExportFailuresArePrintedAsExportFailed(t *testing.T) {
 	// (TestCockpitExportDropsAndCountsAnEntryThatBreaksARule).
 	hostile := exportDocument()
 	hostile.Machines[1].WBVersion = "not a version"
+	// A daemon that could not list its repositories, and holds none, cannot say
+	// what the machine has: its empty fleet is not exported in its place.
+	unlistable := exportDocument()
+	unlistable.Error, unlistable.RepositoriesTotal = cockpitfleet.ErrorRepositoriesUnreadable, 0
+	unlistable.Repositories, unlistable.Worktrees, unlistable.PullRequests, unlistable.Agents = nil, nil, nil, nil
 	cases := map[string]func(*fakeCockpitDaemon){
-		"a 500 from the fleet route":    func(f *fakeCockpitDaemon) { f.fleetStatus = http.StatusInternalServerError },
-		"a 500 from the metrics route":  func(f *fakeCockpitDaemon) { f.metricsStatus = http.StatusInternalServerError },
-		"a fleet body with a new field": func(f *fakeCockpitDaemon) { f.fleetBody = `{"schema_version":2,"mystery":1}` },
-		"a fleet body that is not JSON": func(f *fakeCockpitDaemon) { f.fleetBody = `<html>` },
-		"a fleet body cut short":        func(f *fakeCockpitDaemon) { f.cutShort = true },
-		"a fleet body over its bound":   func(f *fakeCockpitDaemon) { f.fleetBody = strings.Repeat(" ", cockpitDocumentLimit+1) },
-		"a document that breaks a rule": func(f *fakeCockpitDaemon) { f.document = hostile },
+		"a daemon that cannot list its repositories": func(f *fakeCockpitDaemon) { f.document = unlistable },
+		"a 500 from the fleet route":                 func(f *fakeCockpitDaemon) { f.fleetStatus = http.StatusInternalServerError },
+		"a 500 from the metrics route":               func(f *fakeCockpitDaemon) { f.metricsStatus = http.StatusInternalServerError },
+		"a fleet body with a new field":              func(f *fakeCockpitDaemon) { f.fleetBody = `{"schema_version":2,"mystery":1}` },
+		"a fleet body that is not JSON":              func(f *fakeCockpitDaemon) { f.fleetBody = `<html>` },
+		"a fleet body cut short":                     func(f *fakeCockpitDaemon) { f.cutShort = true },
+		"a fleet body over its bound":                func(f *fakeCockpitDaemon) { f.fleetBody = strings.Repeat(" ", cockpitDocumentLimit+1) },
+		"a document that breaks a rule":              func(f *fakeCockpitDaemon) { f.document = hostile },
 	}
 	for name, set := range cases {
 		fake := newFakeCockpitDaemon(t)
 		set(fake)
 		stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)))
 		requireTypedExportFailure(t, stdout, err, "export_failed", name)
+	}
+	// Its metrics are still exported: they do not depend on the fleet.
+	fake := newFakeCockpitDaemon(t)
+	fake.document = unlistable
+	stdout, err := runExport(t, failingStartSeams(t, exportDependencies(readyRecord(fake.listen()), true, true)), "--metrics-only")
+	if only, decodeErr := cockpitfleet.DecodeEnvelope(strings.NewReader(stdout), true, exportNow); err != nil || decodeErr != nil || len(only.Metrics.Samples) != 360 {
+		t.Fatalf("the metrics-only export of a daemon that cannot list its repositories: %v %v %.200s", err, decodeErr, stdout)
 	}
 }
 
