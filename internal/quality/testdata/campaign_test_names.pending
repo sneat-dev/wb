@@ -84,7 +84,6 @@ internal/daemon/dqcov_rawexec_test.go	6	task-21
 internal/daemon/dqcov_rlimit_unix_test.go	3	task-21
 internal/daemon/dqcov_service_test.go	22	task-21
 internal/daemon/dqcov_worker_test.go	15	task-21
-internal/dashboard/zz_tailcov_test.go	8	task-21
 internal/deps/zz_cov_adapters_test.go	1	task-21
 internal/deps/zz_cov_bump_core_test.go	1	task-21
 internal/deps/zz_cov_bump_release_test.go	1	task-21

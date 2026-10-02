@@ -10,7 +10,9 @@ root. Line numbers drift; the function and type names are the stable anchor.
   default listen address `127.0.0.1:8766`; `requireLoopbackAddress` refuses
   anything else. Routes are registered in `internal/dashboard/dashboard.go`:
   `/`, `/metrics`, `/coverage`, `/api/v1/health`, `/api/v1/overview`,
-  `/api/v1/log`, `/api/v1/peers`. `/workbench/` and `/v0/workbench/` are
+  `/api/v1/log`, `/api/v1/peers`. (As researched; `/` now redirects to
+  Cockpit and `/metrics`, `/coverage` and `/api/v1/overview` were retired on
+  2026-10-02.) `/workbench/` and `/v0/workbench/` are
   mounted only when `wb.yaml` has a `hub:` section (`cmd/wb/daemon_hub.go`).
 - **Owner credential.** A second listener on a unix socket serves the
   connect-go `DaemonService` (`proto/wb/daemon/v1/daemon.proto`) and the peer

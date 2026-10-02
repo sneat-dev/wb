@@ -34,7 +34,8 @@ What appears where, on the daemon's loopback listener (default
 
 | Path | Served by |
 |---|---|
-| `/` and `/api/v1/…` | the existing read-only WB dashboard and API |
+| `/` | a redirect to Cockpit at `/cockpit/` |
+| `/api/v1/…` | the existing read-only WB JSON API (`health`, `log`, `peers`) |
 | `/v0/workbench/…` | this package's hub API (`hub.NewHandler`) |
 | `/v0/workbench/dashboard`, `/stats`, `/series`, `/leaderboards`, `/latest-merges`, `/worktrees` | the dashboard read API, answered from this machine's published snapshots (`githubapp.RemoteStateReadModel`) |
 | `/workbench/dashboard/` | the embedded bench dashboard from `hub/web/dist` |

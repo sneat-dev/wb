@@ -88,7 +88,7 @@ func TestDashboardLocalStartsDaemonAndOpensItsURL(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if root != wantRoot || opened != "http://127.0.0.1:9000/" {
+	if root != wantRoot || opened != "http://127.0.0.1:9000/cockpit/" {
 		t.Fatalf("root = %q, opened = %q, want root = %q", root, opened, wantRoot)
 	}
 }
@@ -115,34 +115,83 @@ func TestDashboardLocalPrintsAProvenanceWarningToStderr(t *testing.T) {
 	}
 }
 
-func TestDashboardMetricsAndCoverageFlags(t *testing.T) {
-	var opened string
-	command := newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
-		open: func(target string) error { opened = target; return nil },
-		localURL: func(_ context.Context, _ string) (string, string, error) {
-			return "http://127.0.0.1:9000/", "", nil
+func TestDashboardLocalSaysItIsDeprecatedInFavourOfCockpit(t *testing.T) {
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "http://127.0.0.1:9000/cockpit/", "", nil
 		},
 	})
-	command.SetArgs([]string{"--metrics"})
+	command.SetArgs([]string{"--local"})
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if opened != "http://127.0.0.1:9000/metrics" {
-		t.Fatalf("opened = %q, want http://127.0.0.1:9000/metrics", opened)
+	if !strings.Contains(stderr.String(), "deprecated") || !strings.Contains(stderr.String(), "wb cockpit") {
+		t.Fatalf("stderr = %q, want the deprecation naming wb cockpit", stderr.String())
 	}
+}
 
-	command = newDashboardCmdWithDependencies(&invocation{}, dashboardCommandDependencies{
-		open: func(target string) error { opened = target; return nil },
-		localURL: func(_ context.Context, _ string) (string, string, error) {
-			return "http://127.0.0.1:9000/", "", nil
+func TestDashboardHostedSaysNothingOnStderr(t *testing.T) {
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "", "", errors.New("unexpected local lookup")
 		},
 	})
-	command.SetArgs([]string{"--coverage"})
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if opened != "http://127.0.0.1:9000/coverage" {
-		t.Fatalf("opened = %q, want http://127.0.0.1:9000/coverage", opened)
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want none", stderr.String())
+	}
+}
+
+// The retired operations pages have no flag to open them: their routes answer
+// 404 and the daemon serves Cockpit instead.
+func TestDashboardHasNoFlagForTheRetiredPages(t *testing.T) {
+	for _, flag := range []string{"metrics", "coverage"} {
+		if newDashboardCmd(&invocation{}).Flags().Lookup(flag) != nil {
+			t.Errorf("wb dashboard still has --%s", flag)
+		}
+		// Parsing fails before the command runs, so nothing is started.
+		var stdout, stderr bytes.Buffer
+		if got := run([]string{"dashboard", "--" + flag}, &stdout, &stderr); got != exitUsage || !strings.Contains(stderr.String(), "unknown flag") {
+			t.Errorf("wb dashboard --%s exited %d with %q, want the usage exit %d and an unknown flag", flag, got, stderr.String(), exitUsage)
+		}
+	}
+}
+
+func TestLocalCockpitURLIsTheCockpitMountOfTheDaemonAddress(t *testing.T) {
+	t.Parallel()
+	for _, base := range []string{"http://127.0.0.1:9000/", "http://127.0.0.1:9000/cockpit/"} {
+		got, err := localCockpitURL(base)
+		if want := "http://127.0.0.1:9000/cockpit/"; err != nil || got != want {
+			t.Errorf("localCockpitURL(%q) = %q, %v, want %q", base, got, err, want)
+		}
+	}
+	if got, err := localCockpitURL("http://%zz/"); err == nil || got != "" {
+		t.Errorf("an address that does not parse = %q, %v, want an error and no address", got, err)
+	}
+}
+
+func TestDashboardLocalRefusesADaemonAddressThatDoesNotParse(t *testing.T) {
+	t.Parallel()
+	command := newDashboardCmdWithDependencies(&invocation{nonInteractive: true}, dashboardCommandDependencies{
+		open: func(string) error { return nil },
+		localURL: func(context.Context, string) (string, string, error) {
+			return "http://%zz/", "", nil
+		},
+	})
+	var stdout, stderr bytes.Buffer
+	command.SetOut(&stdout)
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"--local"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "daemon address") {
+		t.Fatalf("Execute() error = %v, want a daemon address error", err)
 	}
 }
 
