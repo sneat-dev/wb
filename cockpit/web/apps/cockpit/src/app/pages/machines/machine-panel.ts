@@ -57,7 +57,7 @@ export class MachinePanelView {
   protected readonly truncated = computed(() => agentsTruncated(this.store.document(), (this.data() as Loaded).view.summary.machine))
 
   protected readonly metrics = computed(() => metricsView(this.poller.entries().get(this.id()), this.clock()))
-  protected readonly load = computed(() => machineLoad(this.poller.metricsOf(this.id())).state)
+  protected readonly load = computed(() => machineLoad(this.poller.metricsOf(this.id()), this.clock()).state)
   /** The inputs of the lazy charts. */
   protected readonly chartInputs = computed(() => ({ samples: this.metrics().samples, now: this.metrics().readAt }))
   /** `() => import(...)`: the charts' chunk, which holds Chart.js's wrapper. */

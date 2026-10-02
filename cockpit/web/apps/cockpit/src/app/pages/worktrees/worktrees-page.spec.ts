@@ -17,7 +17,7 @@ const ago = (days: number) => new Date(NOW - days * DAY).toISOString()
 function documentOf(): FleetDocument {
   return fleetDocument({
     worktrees: [
-      { ...worktree('w1', 'r1', 'alpha'), task: 'fix-ci', branch: 'topic', owner_state: 'active', ahead: 2, behind: 1, lifecycle: 'in_progress', last_activity_at: ago(1), code_index: [{ indexer: 'codegrapher', state: 'fresh' }] },
+      { ...worktree('w1', 'r1', 'alpha'), task: 'fix-ci', branch: 'topic', owner_state: 'active', ahead: 2, behind: 1, lifecycle: 'working', last_activity_at: ago(1), code_index: [{ indexer: 'codegrapher', state: 'fresh' }] },
       { ...worktree('w2', 'r1', 'alpha'), task: 'add-search', branch: 'add-search', owner_state: 'idle', last_activity_at: ago(2) },
       { ...worktree('w3', 'r1', 'alpha'), task: 'zeta', branch: 'zeta', owner_state: 'orphaned', upstream_gone: true, last_activity_at: ago(3) },
       { ...worktree('w4', 'r2', 'beta'), task: 'far', branch: 'far', route: 'cached', owner_state: 'idle', last_activity_at: ago(31), observed_at: ago(0) },
@@ -185,7 +185,7 @@ describe('WorktreesPage', () => {
     expect(panel.querySelector('.side-panel')?.getAttribute('aria-label')).toBe('Worktree fix-ci')
     expect(text(panel.querySelector('h2'))).toBe('fix-ci')
     const facts = Object.fromEntries([...panel.querySelectorAll('dt')].map((term) => [text(term), text(term.nextElementSibling)]))
-    expect(facts).toMatchObject({ Task: 'fix-ci', Repository: 'acme/r1', Branch: 'topic', Machine: 'alpha', Source: 'local', State: 'active, in_progress', 'Sync (this machine)': '2 ahead, 1 behind' })
+    expect(facts).toMatchObject({ Task: 'fix-ci', Repository: 'acme/r1', Branch: 'topic', Machine: 'alpha', Source: 'local', State: 'active; in progress', 'Sync (this machine)': '2 ahead, 1 behind' })
     expect(text(panel.querySelector('[aria-label="Task"]'))).toContain('fix-ci (')
     expect(panel.querySelector('app-copy-command-list')).not.toBeNull()
     expect(panel.querySelector('section.actions')).not.toBeNull()
@@ -202,7 +202,7 @@ describe('WorktreesPage', () => {
     doc.pull_requests = []
     const lone = await openPage('/worktrees?sel=w9', WorktreesPage, doc)
     const facts = (root: HTMLElement) => Object.fromEntries([...root.querySelectorAll('app-side-panel dt')].map((term) => [text(term), text(term.nextElementSibling)]))
-    expect(facts(lone.root)).toMatchObject({ Repository: 'r-gone', State: 'unknown', 'Sync (this machine)': 'in sync', 'Last activity': '—' })
+    expect(facts(lone.root)).toMatchObject({ Repository: 'r-gone', State: 'owner not reported', 'Sync (this machine)': 'in sync', 'Last activity': '—' })
     expect(lone.root.querySelector('app-side-panel dd a[href^="/repositories"]')).toBeNull()
     const cached = await openPage('/worktrees?sel=w8', WorktreesPage, doc)
     expect(facts(cached.root)['Sync (this machine)']).toBeUndefined()

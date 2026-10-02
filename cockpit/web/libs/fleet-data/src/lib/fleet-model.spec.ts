@@ -1,7 +1,7 @@
 import { versionKey } from './list-rows'
 import { buildRepositories } from './model-repositories'
-import { Agent, FleetDocument, MachineMetrics, PullRequest, Worktree, agentsTruncated } from './fleet.types'
-import { Derivation, FleetModel, FleetModels, RESUME_COUNT, agentTitle, compareVersions, machineLoad, parseVersion } from './fleet-model'
+import { Agent, FleetDocument, MachineMetrics, PullRequest, Worktree, agentsTruncated, anyAgentsTruncated } from './fleet.types'
+import { CURRENT_SAMPLE_MS, Derivation, FleetModel, FleetModels, RESUME_COUNT, agentTitle, badgeLabelAtLeast, compareVersions, countWords, machineLoad, parseVersion } from './fleet-model'
 import { buildCleanup, buildHealth, buildThroughput, publishErrorWords, publishFix, remoteErrorText, remoteFix } from './home-details'
 import { buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
 import { NEEDS_YOU_VISIBLE, NeedsYouItem } from './view-types'
@@ -389,20 +389,36 @@ describe('machine load', () => {
 
   // cockpit-views#ac:in-flight-machine-load-indicator (the verdict the library derives)
   it('says free below 70 percent CPU and 80 percent memory, busy otherwise, with the sample route and age', () => {
-    expect(machineLoad(metrics('local', sample(40, 50)))).toEqual({ state: 'free', route: 'local', sampledAt: NOW - 60_000, cpuPercent: 40, memoryPercent: 50 })
-    expect(machineLoad(metrics('live-remote', sample(85, 50)))).toMatchObject({ state: 'busy', route: 'live-remote' })
-    expect(machineLoad(metrics('local', sample(40, 80)))).toMatchObject({ state: 'busy' })
-    expect(machineLoad(metrics('local', sample(70, 10)))).toMatchObject({ state: 'busy' })
-    expect(machineLoad(metrics('local', sample(69.9, 79.9)))).toMatchObject({ state: 'free' })
+    expect(machineLoad(metrics('local', sample(40, 50)), NOW)).toEqual({ state: 'free', route: 'local', sampledAt: NOW - 60_000, cpuPercent: 40, memoryPercent: 50 })
+    expect(machineLoad(metrics('live-remote', sample(85, 50)), NOW)).toMatchObject({ state: 'busy', route: 'live-remote' })
+    expect(machineLoad(metrics('local', sample(40, 80)), NOW)).toMatchObject({ state: 'busy' })
+    expect(machineLoad(metrics('local', sample(70, 10)), NOW)).toMatchObject({ state: 'busy' })
+    expect(machineLoad(metrics('local', sample(69.9, 79.9)), NOW)).toMatchObject({ state: 'free' })
     // The latest sample counts, which is the last.
-    expect(machineLoad(metrics('local', sample(99, 99), sample(10, 10)))).toMatchObject({ state: 'free' })
-    expect(machineLoad(metrics('cached', sample(10, 10)))).toMatchObject({ route: 'cached', state: 'free' })
+    expect(machineLoad(metrics('local', sample(99, 99), sample(10, 10)), NOW)).toMatchObject({ state: 'free' })
+    expect(machineLoad(metrics('cached', sample(10, 10)), NOW)).toMatchObject({ route: 'cached', state: 'free' })
+  })
+
+  // cockpit-views#ac:in-flight-machine-load-indicator
+  it('says load unknown, never free, for a sample that is not current, and keeps when and where it was taken so its age can be said', () => {
+    const old = (minutes: number, route: MachineMetrics['route'] = 'cached') => ({ ...metrics(route, sample(10, 10)), samples: [{ ...sample(10, 10), sampled_at: ago(minutes * 60_000) }] })
+    expect(machineLoad(old(4), NOW)).toMatchObject({ state: 'free' })
+    for (const route of ['cached', 'live-remote', 'local'] as const) {
+      expect(machineLoad(old(6, route), NOW)).toEqual({ state: 'not-reported', route, stale: true, sampledAt: NOW - 6 * 60_000 })
+    }
+    expect(machineLoad(old(60 * 24 * 3), NOW)).toMatchObject({ state: 'not-reported', stale: true })
+    expect(CURRENT_SAMPLE_MS).toBe(5 * 60_000)
+    // A busy machine whose sample is old is not "busy" either; and a sample with no time cannot be called current.
+    expect(machineLoad({ ...old(30), samples: [{ ...sample(99, 99), sampled_at: ago(30 * 60_000) }] }, NOW)).toMatchObject({ state: 'not-reported', stale: true })
+    expect(machineLoad({ ...old(1), samples: [{ ...sample(10, 10), sampled_at: 'not a time' }] }, NOW)).toEqual({ state: 'not-reported', route: 'cached', stale: true, sampledAt: undefined })
+    // A sample from a clock a little ahead of ours is current.
+    expect(machineLoad({ ...old(0), samples: [{ ...sample(10, 10), sampled_at: ago(-30_000) }] }, NOW)).toMatchObject({ state: 'free' })
   })
 
   it('says not reported for no metrics, no sample or no memory total, and never invents a load', () => {
-    expect(machineLoad(undefined)).toEqual({ state: 'not-reported', route: 'none' })
-    expect(machineLoad({ machine: 'm', route: 'none', samples: [], reason: 'unsupported' })).toEqual({ state: 'not-reported', route: 'none' })
-    expect(machineLoad(metrics('local', sample(10, 10, 0)))).toEqual({ state: 'not-reported', route: 'local' })
+    expect(machineLoad(undefined, NOW)).toEqual({ state: 'not-reported', route: 'none' })
+    expect(machineLoad({ machine: 'm', route: 'none', samples: [], reason: 'unsupported' }, NOW)).toEqual({ state: 'not-reported', route: 'none' })
+    expect(machineLoad(metrics('local', sample(10, 10, 0)), NOW)).toEqual({ state: 'not-reported', route: 'local' })
   })
 
   // cockpit-views#ac:in-flight-machine-load-indicator: the first sample after a daemon start has no cpu_percent
@@ -413,11 +429,11 @@ describe('machine load', () => {
       return rest as typeof full
     }
     for (const field of ['cpu_percent', 'memory_used_bytes', 'memory_total_bytes'] as const) {
-      expect(machineLoad(metrics('local', without(field)))).toEqual({ state: 'not-reported', route: 'local' })
+      expect(machineLoad(metrics('local', without(field)), NOW)).toEqual({ state: 'not-reported', route: 'local' })
     }
     // Even a sample that would be busy by its memory says so only with a CPU reading; an earlier full sample does not count.
-    expect(machineLoad(metrics('local', sample(10, 10), without('cpu_percent')))).toEqual({ state: 'not-reported', route: 'local' })
-    expect(machineLoad(metrics('local', { ...full, cpu_percent: Number.NaN }))).toEqual({ state: 'not-reported', route: 'local' })
+    expect(machineLoad(metrics('local', sample(10, 10), without('cpu_percent')), NOW)).toEqual({ state: 'not-reported', route: 'local' })
+    expect(machineLoad(metrics('local', { ...full, cpu_percent: Number.NaN }), NOW)).toEqual({ state: 'not-reported', route: 'local' })
   })
 })
 
@@ -603,6 +619,18 @@ describe('machines and Fleet health', () => {
     expect(agentsTruncated({ agents_truncated: true }, local)).toBe(true)
     expect(agentsTruncated({}, local)).toBe(false)
     expect(agentsTruncated({ agents_truncated: true }, m('gamma', { route: 'cached' }))).toBe(false)
+    // cockpit-views#ac:agents-truncated-says-at-least: any machine's cut makes a count of agents a least.
+    const document = (extra: Partial<FleetDocument>) => ({ agents_truncated: undefined, machines: [local, m('gamma', { route: 'cached' })], ...extra })
+    expect(anyAgentsTruncated(document({}))).toBe(false)
+    expect(anyAgentsTruncated(document({ agents_truncated: true }))).toBe(true)
+    expect(anyAgentsTruncated(document({ machines: [local, cached] }))).toBe(true)
+    expect(anyAgentsTruncated({ agents_truncated: false, machines: [] })).toBe(false)
+    expect(countWords(5, false)).toBe('5')
+    expect(countWords(5, true)).toBe('at least 5')
+    expect(badgeLabelAtLeast(5)).toBe('5+')
+    expect(badgeLabelAtLeast(150)).toBe('99+')
+    expect(modelOf({ agents_truncated: true }).agentsCut).toBe(true)
+    expect(modelOf({}).agentsCut).toBe(false)
     expect(agentsTruncated({}, cached)).toBe(true)
   })
 
@@ -758,7 +786,8 @@ describe('review fixes', () => {
     expect(tasks.find((task) => task.name === 'unobserved')?.state).toBe('not-ready')
   })
 
-  it('says the owner of an at-risk worktree in words, and "owner state not reported" for a value it does not know', () => {
+  // cockpit-views#ac:task-state-at-risk
+  it('says the owner of an at-risk worktree in words, and never puts a task at risk for an owner state it does not know', () => {
     const reasonOf = (owner: string) => {
       const model = modelOf({ worktrees: [wt('w1', 't', { owner_state: owner as never, ahead: 1 })] })
       return (model.needsYou.items[0] as { reason: string }).reason
@@ -766,10 +795,13 @@ describe('review fixes', () => {
     expect(reasonOf('orphaned')).toBe('1 unpushed commit and its owner process is gone')
     expect(reasonOf('idle')).toBe('1 unpushed commit and it has no running owner')
     expect(reasonOf('unknown')).toBe('1 unpushed commit and no owner process is recorded')
-    expect(reasonOf('zombie')).toBe('1 unpushed commit and owner state not reported')
+    // A value outside the vocabulary is "not reported", not "not active": no at-risk row at all.
+    const unknown = modelOf({ worktrees: [wt('w1', 't', { owner_state: 'zombie' as never, ahead: 1 })] })
+    expect(unknown.needsYou.items).toEqual([])
+    expect(unknown.taskNamed('t')?.state).not.toBe('at-risk')
   })
 
-  it('keeps an unobserved count on the ready row, and labels a land command for a pull request on another machine', () => {
+  it('keeps an unobserved count on the ready row, and offers no land command for a pull request another machine reported', () => {
     const model = modelOf({
       repositories: REPOS,
       worktrees: [wt('w1', 'a')],
@@ -777,7 +809,8 @@ describe('review fixes', () => {
     })
     const row = model.readyToLand.ready[0]
     expect(row.unobservedPullRequests).toBe(1)
-    expect(row.pullRequests[0]).toMatchObject({ landCommand: "wb pr land 'sneat-dev/wb#1'", landLabel: 'run on vm', machine: 'vm', machineId: 'mach-vm', remote: true })
+    expect(row.pullRequests[0]).toMatchObject({ landCommand: undefined, landLabel: undefined, machine: 'vm', machineId: 'mach-vm', remote: true })
+    expect(row.pullRequests[1].landCommand).toBe("wb pr land 'sneat-dev/wb#3'")
     expect(row.pullRequests[1]).toMatchObject({ machine: 'alpha', remote: false })
     expect(modelOf({ worktrees: [wt('w1', 'a')], pull_requests: [pr('p1', 'w1')] }).readyToLand.ready[0].pullRequests[0].landLabel).toBeUndefined()
   })

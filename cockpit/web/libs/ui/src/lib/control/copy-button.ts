@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, DestroyRef, inject, input, output, 
 import { ClipboardWriter } from './clipboard'
 import { Glyph } from './glyph'
 import { GLYPH_CHECK, GLYPH_COPY } from './glyphs'
+import { StatusAnnouncer } from './status-announcer'
 
 /** How long "Copied" stays on the button, in milliseconds. */
 export const COPIED_FEEDBACK_MS = 2000
@@ -10,7 +11,8 @@ export const COPIED_FEEDBACK_MS = 2000
  * A button that copies `text` and says so: the word changes to "Copied" with a
  * check, or to "Copy failed" when the browser refused, and returns after two
  * seconds. The button keeps one width, so the feedback moves nothing. The
- * result is also announced politely for assistive technology.
+ * result is also announced politely, through the one status region the shell
+ * renders for every copy button (`StatusAnnouncer`).
  */
 @Component({
   selector: 'app-copy-button',
@@ -18,8 +20,7 @@ export const COPIED_FEEDBACK_MS = 2000
   template: `<button type="button" class="copy" [class.done]="state() === 'copied'" [class.failed]="state() === 'failed'" [attr.aria-label]="label()" (click)="copy()">
       <app-glyph [paths]="state() === 'copied' ? check : copyGlyph" />
       <span aria-hidden="true">{{ word() }}</span>
-    </button>
-    <span class="visually-hidden" role="status">{{ status() }}</span>`,
+    </button>`,
   styles: `
     :host {
       display: inline-flex;
@@ -69,16 +70,17 @@ export const COPIED_FEEDBACK_MS = 2000
 export class CopyButton {
   /** The text that goes on the clipboard. */
   readonly text = input.required<string>()
-  /** The accessible name, which says what is copied. */
+  /** The accessible name: it starts with the word on the button and says what is copied (`copyLabel`). */
   readonly label = input('Copy')
-  /** The word on the button while idle: "Copy", or "Copy template" for a command with parts to edit. */
-  readonly idleWord = input('Copy')
+  /** The word on the button while idle: "Copy", or "Copy template" for a command with parts to edit; nothing else. */
+  readonly idleWord = input<'Copy' | 'Copy template'>('Copy')
   /** What is announced once the text is on the clipboard. */
   readonly doneStatus = input('Copied')
   /** Emits the copied text once it is on the clipboard. */
   readonly copied = output<string>()
 
   private readonly clipboard = inject(ClipboardWriter)
+  private readonly announcer = inject(StatusAnnouncer)
   protected readonly state = signal<'idle' | 'copied' | 'failed'>('idle')
   private timer: ReturnType<typeof setTimeout> | undefined
   private alive = true
@@ -96,16 +98,13 @@ export class CopyButton {
     return { idle: this.idleWord(), copied: 'Copied', failed: 'Copy failed' }[this.state()]
   }
 
-  protected status(): string {
-    return { idle: '', copied: this.doneStatus(), failed: 'Copy failed' }[this.state()]
-  }
-
   protected async copy(): Promise<void> {
     const text = this.text()
     const ok = await this.clipboard.copy(text)
     // The page may have moved on while the browser answered.
     if (!this.alive) return
     this.state.set(ok ? 'copied' : 'failed')
+    this.announcer.say(ok ? this.doneStatus() : 'Copy failed')
     if (ok) this.copied.emit(text)
     clearTimeout(this.timer)
     this.timer = setTimeout(() => this.state.set('idle'), COPIED_FEEDBACK_MS)

@@ -40,11 +40,14 @@ describe('numbers', () => {
 
   it('says the route and age of the sample behind a load, or that there is none', () => {
     const load = (extra: Partial<MachineLoad>): MachineLoad => ({ state: 'free', route: 'local', ...extra })
-    expect(sampleWords(load({ route: 'live-remote', sampledAt: NOW - 120_000 }), NOW)).toBe('live-remote, 2 min ago')
+    expect(sampleWords(load({ route: 'live-remote', sampledAt: NOW - 120_000 }), NOW)).toBe('live, 2 min ago')
     expect(sampleWords(load({}), NOW)).toBe('local')
     expect(sampleWords({ state: 'not-reported', route: 'none' }, NOW)).toBe('no usable sample')
     expect(sampleWords(load({ route: 'cached', sampledAt: NOW }), NOW)).toBe('cached, just now')
     expect(sampleWords(load({ route: 'none' }), NOW)).toBe('no samples')
+    // A sample too old to say how loaded the machine is now: its age is said, and that it is too old; with no time, that.
+    expect(sampleWords({ state: 'not-reported', route: 'cached', stale: true, sampledAt: NOW - 2 * 3_600_000 }, NOW)).toBe('cached, 2 h ago: too old to say')
+    expect(sampleWords({ state: 'not-reported', route: 'live-remote', stale: true }, NOW)).toBe('live, no time: too old to say')
   })
 
   it('writes the uptime from the time since boot, or nothing', () => {
@@ -83,7 +86,7 @@ describe('metricsView', () => {
     const local = metricsView(entry({ metrics: { machine: 'm', route: 'local', samples: [sample(2, 5), sample(1, 6)] } }), NOW)
     expect(local).toMatchObject({ kind: 'local', charts: true, stale: false, source: "local: this machine's own history, 2 samples, latest 1 min ago" })
     const live = metricsView(entry({ metrics: { machine: 'm', route: 'live-remote', fetched_at: ago(30_000), samples: [sample(1, 6)] } }), NOW)
-    expect(live).toMatchObject({ kind: 'live-remote', charts: true, source: 'live-remote: 1 sample, fetched just now' })
+    expect(live).toMatchObject({ kind: 'live-remote', charts: true, source: 'live: 1 sample, fetched just now' })
     const cached = metricsView(entry({ metrics: { machine: 'm', route: 'cached', samples: [sample(30, 6)] } }), NOW)
     expect(cached).toMatchObject({ kind: 'cached', charts: false, source: 'cached: the latest sample of its published snapshot, 30 min ago' })
     expect(cached.latest?.cpu).toBe('6%')

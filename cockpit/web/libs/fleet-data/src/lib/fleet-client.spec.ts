@@ -15,7 +15,7 @@ import {
   hasFleetShape,
   isFleetDocument,
 } from './fleet-client'
-import { agent, fleetDocument, machine, pullRequest } from './test-data'
+import { agent, fleetDocument, machine, pullRequest, worktree } from './test-data'
 
 function respond(status: number, body: unknown, etag?: string): Response {
   return new Response(status === 304 ? null : JSON.stringify(body), {
@@ -198,6 +198,24 @@ describe('optional fields of schema 2 (REQ:field-tables)', () => {
     expect(cleaned).not.toHaveProperty('agents_truncated')
     expect(cleaned).not.toHaveProperty('pull_requests_throttled')
     expect(cleaned.pull_requests[1]).toBe(document.pull_requests[1])
+  })
+
+  // cockpit-views#ac:field-tables
+  it('reads a worktree or pull request field outside its closed set as "not reported", so an owner state it does not know never puts a task at risk', async () => {
+    const odd = {
+      worktrees: [{ ...worktree('w1', 'r1', 'alpha'), task: 'fix-ci', owner_state: 'zombie', lifecycle: 'in_progress', ahead: 'two', behind: null, upstream_gone: 'no', has_upstream: 0, last_activity_at: 7 }],
+      pull_requests: [pullRequest('p1', 'r1', 'w1', { state: 'futuristic' as never, checks_total: 'x' as never, checks_passed: null as never, checks_failed: 'y' as never, checks_pending: {} as never, checks_skipped: [] as never, checks_green: 'yes' as never, checked_at: 5 as never, failed_check: 9 as never })],
+    }
+    const read = (await clientWith(async () => respond(200, { ...fleetDocument(), ...odd })).readFleet()) as Extract<FleetRead, { kind: 'changed' }>
+    expect(read.dropped).toBe(0)
+    const [cleaned] = read.document.worktrees
+    for (const field of ['owner_state', 'lifecycle', 'ahead', 'behind', 'upstream_gone', 'has_upstream', 'last_activity_at']) expect(cleaned, field).not.toHaveProperty(field)
+    expect(cleaned).toMatchObject({ id: 'w1', task: 'fix-ci' })
+    const [pr] = read.document.pull_requests
+    for (const field of ['state', 'checks_total', 'checks_passed', 'checks_failed', 'checks_pending', 'checks_skipped', 'checks_green', 'checked_at', 'failed_check']) expect(pr, field).not.toHaveProperty(field)
+    // And what the page knows is kept.
+    const known = fleetDocument({ worktrees: [{ ...worktree('w1', 'r1', 'alpha'), owner_state: 'orphaned', lifecycle: 'review', ahead: 2, behind: 0, upstream_gone: false, has_upstream: true }], pull_requests: [pullRequest('p1', 'r1', 'w1', { state: 'draft' })] })
+    expect(cleanOptionalFields(known)).toBe(known)
   })
 
   it('accepts a well-formed throughput block through the client, and drops a malformed one', async () => {

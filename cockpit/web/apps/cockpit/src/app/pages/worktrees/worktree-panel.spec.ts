@@ -47,6 +47,21 @@ describe('WorktreePanelView', () => {
     expect(await sync({})).toBe('in sync')
   })
 
+  // cockpit-views#ac:worktree-panel-words
+  it('says the owner and the lifecycle in words, never the raw values', async () => {
+    const state = async (extra: Record<string, unknown>) => text((await render('w1', false, extra)).querySelectorAll('dd')[5])
+    expect(await state({ owner_state: 'active', lifecycle: 'working' })).toBe('active; in progress')
+    expect(await state({ owner_state: 'orphaned', lifecycle: 'review' })).toBe('orphaned, its owner process is gone; in review')
+    expect(await state({ owner_state: 'idle', lifecycle: 'merged' })).toBe('idle, no running owner; merged')
+    expect(await state({ owner_state: 'unknown', lifecycle: 'superseded' })).toBe('owner not recorded; superseded')
+    // Not reported, or outside the vocabulary: said so, and no raw value on the page.
+    expect(await state({ owner_state: undefined, lifecycle: undefined })).toBe('owner not reported')
+    const odd = await render('w1', false, { owner_state: 'zombie', lifecycle: 'in_progress' })
+    expect(text(odd.querySelectorAll('dd')[5])).toBe('owner not reported')
+    expect(odd.textContent).not.toContain('in_progress')
+    expect(odd.textContent).not.toContain('zombie')
+  })
+
   // cockpit-views#ac:copy-command-uses-only-existing-commands-and-identifiers
   it('offers the worktree commands, this branch\'s commands as a dry-run plan, and wb pr land for each open pull request', async () => {
     const root = await render('w1')
@@ -60,16 +75,19 @@ describe('WorktreePanelView', () => {
   })
 
   // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it
-  it('renders the registry\'s actions for this worktree and its pull requests, and no action area without them', async () => {
+  it('gives the slots of this worktree and its pull requests the registry\'s answers, draws no button for them without a handler, and has no action area without them', async () => {
     const registry = new Map([
       ['worktree:w1', [registryAction('branch.push', 'Push')]],
       ['pull_request:p1', [registryAction('pr.land', 'Land', { target_types: ['pull_request'] })]],
     ])
-    expect([...(await render('w1', false, {}, registry)).querySelectorAll('section.actions app-action-slot button')].map(text)).toEqual(['Push', 'Land'])
+    const root = await render('w1', false, {}, registry)
+    expect(root.querySelectorAll('section.actions app-action-slot')).toHaveLength(2)
+    // No page handles an action: a slot is its Copy control or nothing, never the registry's button.
+    expect(root.querySelectorAll('section.actions app-action-slot button')).toHaveLength(0)
     expect((await render('w1')).querySelector('section.actions')?.children).toHaveLength(0)
     expect((await render('w1', false, {}, new Map())).querySelector('section.actions')?.children).toHaveLength(0)
     // A worktree read from another machine has no slot of its own; its pull request on this machine keeps one.
-    expect([...(await render('w1', false, { route: 'cached' }, registry)).querySelectorAll('section.actions app-action-slot button')].map(text)).toEqual(['Land'])
+    expect((await render('w1', false, { route: 'cached' }, registry)).querySelectorAll('section.actions app-action-slot')).toHaveLength(1)
   })
 
   it('is the detail page when asked', async () => {

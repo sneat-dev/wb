@@ -1,7 +1,7 @@
 import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, computed, inject, viewChild } from '@angular/core'
 import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router'
-import { AppLink, BADGE_CAP, FleetStore, badgeLabel, chipLink } from '@cockpit/fleet-data'
+import { AppLink, BADGE_CAP, FleetStore, badgeLabel, badgeLabelAtLeast, chipLink, countWords } from '@cockpit/fleet-data'
 import { filter } from 'rxjs'
 import { NEW_TASK_PATH, PAGE_LINKS, PageLink, TabSignal } from '../nav'
 import { modifierLabel } from '../shortcuts/platform'
@@ -51,17 +51,20 @@ export class TopBar {
   protected readonly modifier = modifierLabel(inject(DOCUMENT).defaultView?.navigator)
 
   /** The signal numbers; undefined until there is data to count. */
-  private readonly counts = computed<Record<TabSignal, number> | undefined>(() => {
+  private readonly counts = computed<{ counts: Record<TabSignal, number>; agentsCut: boolean } | undefined>(() => {
     if (!this.store.loaded() || this.store.schemaMismatch() !== null) return undefined
     const model = this.store.model()
-    return { 'needs-you': model.homeBadge, running: model.runningAgentCount }
+    return { counts: { 'needs-you': model.homeBadge, running: model.runningAgentCount }, agentsCut: model.agentsCut }
   })
 
-  protected badge(link: PageLink): { count: number; label: string; hint: string; hot: boolean; link: AppLink } | undefined {
-    const counts = this.counts()
-    if (link.signal === undefined || counts === undefined) return undefined
-    const count = counts[link.signal]
-    return { count, label: badgeLabel(count), hint: BADGE_HINT[link.signal], hot: count > 0, link: BADGE_LINK[link.signal] }
+  /** A badge: the number as shown ("5+" when agents were cut, so the number is a least), what it says in words, and where it opens. */
+  protected badge(link: PageLink): { count: number; label: string; words: string; hint: string; hot: boolean; link: AppLink } | undefined {
+    const known = this.counts()
+    if (link.signal === undefined || known === undefined) return undefined
+    const count = known.counts[link.signal]
+    // The running agents are counted from the agents each machine sent, which a machine may have cut.
+    const atLeast = link.signal === 'running' && known.agentsCut
+    return { count, label: atLeast ? badgeLabelAtLeast(count) : badgeLabel(count), words: countWords(count, atLeast), hint: BADGE_HINT[link.signal], hot: count > 0, link: BADGE_LINK[link.signal] }
   }
 
   private timer: ReturnType<typeof setTimeout> | undefined

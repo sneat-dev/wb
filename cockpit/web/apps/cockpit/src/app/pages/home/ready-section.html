@@ -42,15 +42,10 @@
                 }
                 <span class="home-place">{{ pullRequest.repository }}</span>
                 @if (pullRequest.remote) {
-                  <span class="home-place" title="Reported by another machine: nothing to land from here">{{ pullRequest.machine }}</span>
+                  <span class="home-place" title="Reported by another machine: nothing to land from here">reported by {{ pullRequest.machine }}</span>
                 }
-                @if (!pullRequest.remote && offered(pullRequest.id); as actions) {
-                  <app-action-slot [actions]="actions" [target]="'pull_request:' + pullRequest.id" />
-                } @else if (pullRequest.landCommand; as command) {
-                  @if (pullRequest.landLabel; as where) {
-                    <span class="home-where-run">{{ where }}</span>
-                  }
-                  <app-copy-button [text]="command" label="Copy command: wb pr land {{ pullRequest.repository }}#{{ pullRequest.number }}" idleWord="Copy command" />
+                @if (pullRequest.landCommand; as command) {
+                  <app-action-slot [actions]="offered(pullRequest.id)" [target]="'pull_request:' + pullRequest.id" [copy]="landCopy(pullRequest, command)" />
                 }
               </li>
             }

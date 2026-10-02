@@ -1,5 +1,6 @@
+import { DOCUMENT } from '@angular/common'
 import { Injectable, InjectionToken, computed, inject, signal } from '@angular/core'
-import { FleetClient, FleetSchemaError, SchemaMismatch } from './fleet-client'
+import { FleetClient, FleetRequestError, FleetSchemaError, SchemaMismatch } from './fleet-client'
 import { FleetModel, FleetModels, ModelOptions } from './fleet-model'
 import { canReadContent, emptyDocument, machineOptions, ownerRoutes, repositoryLabel } from './fleet-view'
 import { FleetDocument, SCHEMA_VERSION, Session, SessionStatus } from './fleet.types'
@@ -32,7 +33,10 @@ export const MODEL_OPTIONS = new InjectionToken<ModelOptions>('fleet model optio
 /**
  * The one fleet store: it holds the last document and the session, re-reads
  * the document with If-None-Match, and never waits for a full scan. While the
- * daemon is warming up it shows what has been scanned so far.
+ * daemon is warming up it shows what has been scanned so far. It reads only while
+ * the page is visible: a hidden tab pauses it, and the page coming back reads at
+ * once, and reads the session again, so an expired or a new owner session is noticed
+ * (as it is when a read is answered 401).
  */
 @Injectable({ providedIn: 'root' })
 export class FleetStore {
@@ -40,12 +44,15 @@ export class FleetStore {
   private readonly intervals = inject(POLL_INTERVALS)
   private readonly expected = inject(EXPECTED_SCHEMA)
   private readonly models = new FleetModels(inject(MODEL_OPTIONS))
+  private readonly doc = inject(DOCUMENT)
   private etag: string | undefined
   private digest: string | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
   private running = false
   private failures = 0
   private loadingSession = false
+  private polling = false
+  private readonly onVisibility = (): void => this.visibilityChanged()
 
   readonly document = signal<FleetDocument>(emptyDocument())
   /** Set while the daemon speaks another schema version: no data is shown, and what to do about it. */
@@ -86,18 +93,33 @@ export class FleetStore {
   start(): void {
     if (this.running) return
     this.running = true
+    this.doc.addEventListener('visibilitychange', this.onVisibility)
     void this.poll()
   }
 
   stop(): void {
     this.running = false
     clearTimeout(this.timer)
+    this.doc.removeEventListener('visibilitychange', this.onVisibility)
+  }
+
+  /** A hidden page schedules nothing more; one that is visible again reads at once (unless a read is already out) and re-reads the session. */
+  private visibilityChanged(): void {
+    if (this.doc.visibilityState === 'hidden') {
+      clearTimeout(this.timer)
+      return
+    }
+    void this.loadSession(true)
+    if (this.polling) return
+    clearTimeout(this.timer)
+    void this.poll()
   }
 
   /** One read of the document, then the next one is scheduled. */
   async poll(): Promise<void> {
     // The session read is retried on every poll until it succeeds.
     if (this.session() === null) void this.loadSession()
+    this.polling = true
     try {
       const read = await this.client.readFleet(this.etag, this.expected)
       if (read.kind === 'changed') {
@@ -123,10 +145,14 @@ export class FleetStore {
       }
       this.error.set(error instanceof Error ? error.message : String(error))
       this.failures++
+      // An answer of 401 says the session this page holds is no longer the one the daemon sees.
+      if (error instanceof FleetRequestError && error.status === 401) void this.loadSession(true)
     }
+    this.polling = false
     this.loaded.set(true)
     this.now.set(Date.now())
-    if (!this.running) return
+    // A hidden page reads nothing more until it is visible again (see `visibilityChanged`).
+    if (!this.running || this.doc.visibilityState === 'hidden') return
     // After a failure, back off: double the fast interval each time, up to the slow one.
     const delay =
       this.failures > 0
@@ -139,7 +165,8 @@ export class FleetStore {
     this.timer = setTimeout(() => void this.poll(), delay)
   }
 
-  private async loadSession(): Promise<void> {
+  /** Reads the session; `refresh` reads it again though there is one, and a failed re-read keeps the session it had. */
+  private async loadSession(refresh = false): Promise<void> {
     if (this.loadingSession) return
     this.loadingSession = true
     try {
@@ -147,8 +174,10 @@ export class FleetStore {
       this.sessionStatus.set('ready')
     } catch {
       // Without a session the page still lists the fleet; it has no code links.
-      this.session.set(null)
-      this.sessionStatus.set('failed')
+      if (!refresh || this.session() === null) {
+        this.session.set(null)
+        this.sessionStatus.set('failed')
+      }
     } finally {
       this.loadingSession = false
     }

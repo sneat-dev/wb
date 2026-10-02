@@ -2,7 +2,14 @@
   <h2 id="home-flight-h" class="home-h">
     In flight
     @if (rows().length > 0) {
-      <a class="home-count" [routerLink]="runningLink.path" [queryParams]="runningLink.query" title="The running agents, on Agents">{{ rows().length }}</a>
+      <a
+        class="home-count"
+        [routerLink]="runningLink.path"
+        [queryParams]="runningLink.query"
+        [attr.title]="cut() ? 'At least ' + rows().length + ': a machine left some agents out. The running agents, on Agents' : 'The running agents, on Agents'"
+        [attr.aria-label]="cut() ? 'At least ' + rows().length + ' running agents' : null"
+        >{{ rows().length }}@if (cut()) {+}</a
+      >
     }
   </h2>
   <div class="flight-layout">
@@ -35,8 +42,10 @@
               <div class="home-action flight-side">
                 <app-state-badge kind="agent-activity" size="small" [value]="row.activity" [label]="row.activity ? undefined : 'state not reported'" />
                 @if (row.controllable) {
-                  <app-lazy-copy idleWord="Copy stop" label="Copy command: wb agent stop" [build]="row.stop" [quiet]="true" />
-                  <app-lazy-copy idleWord="Copy log" label="Copy command: wb agent logs" [build]="row.log" [quiet]="true" />
+                  <span class="home-where-run">stop</span>
+                  <app-lazy-copy label="Copy wb agent stop: {{ row.label }}" [build]="row.stop" [quiet]="true" />
+                  <span class="home-where-run">log</span>
+                  <app-lazy-copy label="Copy wb agent logs: {{ row.label }}" [build]="row.log" [quiet]="true" />
                 }
               </div>
             </li>

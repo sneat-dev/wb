@@ -26,7 +26,7 @@ describe('the vocabulary table', () => {
   })
 
   it('lists, per page, what REQ:filter-vocabulary lists', () => {
-    expect(VOCABULARY.tasks.chips.map((chip) => chip.id)).toEqual(['needs-you', 'ready', 'working', 'agent', 'pr', 'multirepo', 'idle30'])
+    expect(VOCABULARY.tasks.chips.map((chip) => chip.id)).toEqual(['needs-you', 'ready', 'working', 'agent', 'pr', 'multirepo', 'idle30', 'older'])
     expect(VOCABULARY.tasks.states).toEqual(TASK_STATE_IDS)
     expect(VOCABULARY.tasks.bare).toEqual(['task', 'repository'])
     expect(VOCABULARY.tasks.sorts).toEqual(['task', 'state', 'worktrees', 'activity'])

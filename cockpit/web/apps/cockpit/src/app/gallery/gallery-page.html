@@ -96,15 +96,15 @@
     <div class="grid three">
       <div class="panel">
         <h4 class="sub">An owner: what the registry returned</h4>
-        <div class="slot-row"><span>worktree wt-1</span><app-action-slot [actions]="registry" target="worktree:wt-1" (activated)="activated($event)" /></div>
+        <div class="slot-row"><span>worktree wt-1</span><app-action-slot [actions]="registry" target="worktree:wt-1" [run]="run" [copy]="slotCopy" /></div>
       </div>
       <div class="panel">
         <h4 class="sub">An anonymous reader: one explanation</h4>
-        <div class="slot-row"><span>worktree wt-1</span><app-action-slot [actions]="anonymousRegistry" target="worktree:wt-1" (activated)="activated($event)" /></div>
+        <div class="slot-row"><span>worktree wt-1</span><app-action-slot [actions]="anonymousRegistry" target="worktree:wt-1" [run]="run" [copy]="slotCopy" /></div>
       </div>
       <div class="panel">
         <h4 class="sub">No registry: nothing, and no gap</h4>
-        <div class="slot-row"><span>worktree wt-1</span><app-action-slot target="worktree:wt-1" (activated)="activated($event)" /></div>
+        <div class="slot-row"><span>worktree wt-1</span><app-action-slot target="worktree:wt-1" [run]="run" /></div>
       </div>
     </div>
   </section>

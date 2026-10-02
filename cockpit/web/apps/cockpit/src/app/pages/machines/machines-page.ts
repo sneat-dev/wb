@@ -67,7 +67,7 @@ export class MachinesPage {
     const counts = this.counts()
     return new Map(
       this.store.model().machines.map((view): [string, MachineRow] => {
-        const load = machineLoad(entries.get(view.machine.id)?.metrics)
+        const load = machineLoad(entries.get(view.machine.id)?.metrics, now)
         const code = view.machine.remote_error
         const publish = view.machine.publish_error
         return [
@@ -115,7 +115,7 @@ export class MachinesPage {
     { id: 'repositories', header: 'Repositories', width: 112, min: 104, priority: 4, align: 'end', value: (view) => String(this.row(view).counts.repositories) },
     { id: 'worktrees', header: 'Worktrees', width: 96, min: 88, priority: 6, align: 'end', value: (view) => String(this.row(view).counts.worktrees) },
     { id: 'agents', header: 'Agents', width: 80, min: 72, priority: 3, align: 'end', value: (view) => String(this.row(view).counts.agents) },
-    { id: 'load', header: 'Load', hint: 'Free, busy or unknown, from the latest sample', width: 96, min: 88, priority: 5, value: (view) => this.row(view).load.state },
+    { id: 'load', header: 'Load', hint: 'Free, busy or unknown, from the latest sample', width: 140, min: 132, priority: 5, value: (view) => this.row(view).load.state },
     { id: 'cpu', header: 'CPU', hint: 'Processor use in the latest sample', width: 128, min: 120, priority: 1, value: (view) => this.cpu(view) },
     { id: 'memory', header: 'Memory', hint: 'Memory used in the latest sample', width: 128, min: 120, priority: 2, value: (view) => this.memory(view) },
   ]

@@ -32,21 +32,40 @@
     </div>
 
     <div class="field">
-      <label for="new-task-model">Model</label>
-      <input id="new-task-model" type="text" list="new-task-models" autocomplete="off" spellcheck="false" placeholder="opus" required [value]="state().model" (input)="edit({ model: value($event) })" />
+      <label for="new-task-model">Model @if (dispatching()) {<span class="optional">not used with a brief</span>}</label>
+      <input id="new-task-model" type="text" list="new-task-models" autocomplete="off" spellcheck="false" placeholder="opus" [required]="!dispatching()" [value]="state().model" (input)="edit({ model: value($event) })" />
       <datalist id="new-task-models">
         @for (model of models(); track model) {
           <option [value]="model"></option>
         }
       </datalist>
-      <p class="hint">Required. Pick one or type any; <code>unknown</code> says the model is not known.</p>
+      <p class="hint">
+        @if (dispatching()) {
+          <code>wb agent dispatch</code> takes a profile, not a model: the model is the profile's.
+        } @else {
+          Required to create the worktrees. Pick one or type any; <code>unknown</code> says the model is not known.
+        }
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="new-task-profile">Agent profile <span class="optional">optional</span></label>
+      <input id="new-task-profile" type="text" autocomplete="off" spellcheck="false" placeholder="cheap-coder" [value]="state().profile" (input)="edit({ profile: value($event) })" />
+      <p class="hint">A profile named in <code>wb.yaml</code> (<code>agents.profiles</code>), for <code>wb agent dispatch</code>. Left empty the command has a place to fill it in.</p>
     </div>
   </div>
 
   <div class="field">
     <label for="new-task-brief">Brief</label>
     <textarea id="new-task-brief" rows="4" placeholder="What the agent should do. It goes to wb agent dispatch --task." [value]="brief()" (input)="brief.set(value($event))"></textarea>
-    <p class="hint">Several lines are fine. It stays on this page and is not put in the address.</p>
+    <p class="hint">
+      Several lines are fine. It stays on this page and is not put in the address.
+      @if (dispatching()) {
+        With a brief the commands are <code>wb agent dispatch</code>, which creates the worktree itself.
+      } @else {
+        Type a brief to get <code>wb agent dispatch</code> (it creates the worktree itself) in place of <code>wb worktree create</code>.
+      }
+    </p>
   </div>
 
   <fieldset class="machines">
@@ -54,7 +73,11 @@
     @for (candidate of choices(); track candidate.id ?? '') {
       <label class="machine">
         <input type="radio" name="new-task-machine" [value]="candidate.id ?? ''" [checked]="candidate === choice()" (change)="edit({ machine: candidate.id }, true)" />
-        <span class="machine-name">{{ candidate.name }}</span>&ngsp;<app-state-badge kind="load" size="small" [value]="loadOf(candidate.metricsId)" hint="Whether this machine can take another agent, from its latest sample" />
+        <span class="machine-name">{{ candidate.name }}</span>&ngsp;@let load = loadOf(candidate.metricsId);
+        <app-state-badge kind="load" size="small" [value]="load.state" hint="Whether this machine can take another agent, from its latest sample" />
+        @if (load.stale; as why) {
+          &ngsp;<span class="quiet">{{ why }}</span>
+        }
       </label>
     }
     @if (choices().length === 1) {

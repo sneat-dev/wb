@@ -3,8 +3,11 @@ import {
   AGENT_ACTIVITIES,
   FLEET_PATH,
   FleetDocument,
+  LIFECYCLES,
   MERGEABLE_STATES,
+  OWNER_STATES,
   PUBLISH_ERRORS,
+  PULL_REQUEST_STATES,
   SCHEMA_VERSION,
   SESSION_PATH,
   Session,
@@ -144,7 +147,29 @@ const isIdList = (value: unknown): boolean => Array.isArray(value) && value.ever
  */
 const OPTIONAL_CHECKS: Partial<Record<(typeof COLLECTIONS)[number], Record<string, (value: unknown) => boolean>>> = {
   machines: { export_dropped: isCount, remote_error: isText, wb_version: isText, publish_error: isOneOf(PUBLISH_ERRORS), agents_truncated: isBool },
-  pull_requests: { mergeable: isOneOf(MERGEABLE_STATES) },
+  // A value outside its set is removed, so the field reads "not reported": an `owner_state` the page does not know is
+  // never "not active" (which would make a task at risk), nor a pull request `state` it does not know "not open".
+  worktrees: {
+    owner_state: isOneOf(OWNER_STATES),
+    lifecycle: isOneOf(LIFECYCLES),
+    ahead: isCount,
+    behind: isCount,
+    upstream_gone: isBool,
+    has_upstream: isBool,
+    last_activity_at: isText,
+  },
+  pull_requests: {
+    mergeable: isOneOf(MERGEABLE_STATES),
+    state: isOneOf(PULL_REQUEST_STATES),
+    checks_total: isCount,
+    checks_passed: isCount,
+    checks_failed: isCount,
+    checks_pending: isCount,
+    checks_skipped: isCount,
+    checks_green: isBool,
+    checked_at: isText,
+    failed_check: isText,
+  },
   agents: {
     activity: isOneOf(AGENT_ACTIVITIES),
     task: isText,

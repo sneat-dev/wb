@@ -117,9 +117,40 @@ export function formatAge(observedAt: string | undefined, now: number): string {
   return `${Math.floor(elapsed / DAY)} d ago`
 }
 
-/** The route label every row carries; a cached row adds how old it is. */
+/** A worktree's owner state in words for a panel: never the raw value, and a value outside the vocabulary is "not reported". */
+export function ownerStateText(state: string | undefined): string {
+  switch (state) {
+    case 'active':
+      return 'active'
+    case 'idle':
+      return 'idle, no running owner'
+    case 'orphaned':
+      return 'orphaned, its owner process is gone'
+    case 'unknown':
+      return 'owner not recorded'
+  }
+  return 'owner not reported'
+}
+
+/** A worktree's lifecycle in words; none for a value outside the vocabulary (it is "not reported", and says nothing). */
+export function lifecycleText(lifecycle: string | undefined): string | undefined {
+  switch (lifecycle) {
+    case 'working':
+      return 'in progress'
+    case 'review':
+      return 'in review'
+    case 'merged':
+      return 'merged'
+    case 'superseded':
+      return 'superseded'
+  }
+  return undefined
+}
+
+/** The route label every row carries, in the one vocabulary of routes (`local`, `live`, `cached`); a cached row adds how old it is. */
 export function routeLabel(entry: Entry, now: number): string {
-  return entry.route === 'cached' ? `cached, ${formatAge(entry.observed_at, now)}` : 'local'
+  if (entry.route === 'cached') return `cached, ${formatAge(entry.observed_at, now)}`
+  return entry.route === 'live-remote' ? 'live' : 'local'
 }
 
 /** The command that opens an owner session. */

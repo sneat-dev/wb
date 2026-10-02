@@ -3,7 +3,7 @@
   flex: none;
 }
 
-.home-copy {
+.lazy-copy {
   --glyph-size: 0.875rem;
   display: inline-flex;
   gap: 6px;
@@ -24,52 +24,52 @@
     border-color var(--transition);
 }
 
-.home-copy:hover {
+.lazy-copy:hover {
   background: var(--surface-hover);
 }
 
-.home-copy.done {
+.lazy-copy.done {
   border-color: var(--ok-border);
   background: var(--ok-soft);
   color: var(--ok);
 }
 
-.home-copy.failed {
+.lazy-copy.failed {
   border-color: var(--bad-border);
   background: var(--bad-soft);
   color: var(--bad);
 }
 
-.home-copy.quiet {
+.lazy-copy.quiet {
   border-color: transparent;
   background: transparent;
   color: var(--text-2);
 }
 
-.home-copy.quiet:hover {
+.lazy-copy.quiet:hover {
   border-color: var(--border);
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.home-copy.quiet.done {
+.lazy-copy.quiet.done {
   color: var(--ok);
 }
 
-.home-copy.quiet.failed {
+.lazy-copy.quiet.failed {
   color: var(--bad);
 }
 
-.home-copy.icon-only {
+.lazy-copy.icon-only {
   min-width: 1.75rem;
 }
 
 @media (max-width: 30rem) {
-  .home-copy {
+  .lazy-copy {
     height: 2.75rem;
   }
 
-  .home-copy.icon-only {
+  .lazy-copy.icon-only {
     min-width: 2.75rem;
   }
 }

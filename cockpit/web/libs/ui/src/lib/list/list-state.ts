@@ -14,8 +14,6 @@ export const addressKey = (prefix: string, key: string): string => (prefix === '
 export const ROW_HEIGHT = 32
 /** Rows rendered above and below the visible ones: enough that dragging the scrollbar does not show a gap before the next frame. */
 export const OVERSCAN = 12
-/** The most rows ever rendered, on however tall a viewport (REQ:bounded-row-elements). */
-export const MAX_RENDERED_ROWS = 80
 /** At most this many columns show by default (REQ:default-columns-are-few): a column with a declared `priority` may go past it, while the list is wide enough. */
 export const MAX_COLUMNS = 7
 /** The `priority` of a column that is never hidden for lack of room. */
@@ -101,6 +99,13 @@ export function sortedBy(page: ListPageId, query: ListQuery, column: string): Li
   return { ...query, sort: column, dir }
 }
 
+const sameItems = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((item, index) => item === b[index])
+
+/** Whether two states filter and sort alike: everything but the selection. */
+export function sameFilters(a: ListQuery, b: ListQuery): boolean {
+  return a.q === b.q && a.sort === b.sort && a.dir === b.dir && sameItems(a.machines, b.machines) && sameItems(a.chips, b.chips)
+}
+
 /** `items` with `item` removed when it is there, added when it is not. */
 export function toggled(items: readonly string[], item: string): string[] {
   return items.includes(item) ? items.filter((candidate) => candidate !== item) : [...items, item]
@@ -165,12 +170,20 @@ export function fitColumns<T>(columns: readonly ListColumn<T>[], width: number):
   }
 }
 
+/**
+ * The most rows a viewport of `height` pixels ever needs: those in view and the overscan on both sides
+ * (REQ:bounded-row-elements). It follows the height, so a tall viewport is never cut short by a fixed number.
+ */
+export function rowCap(height: number, rowHeight = ROW_HEIGHT, overscan = OVERSCAN): number {
+  return Math.ceil(height / rowHeight) + 1 + 2 * overscan
+}
+
 /** The rows `first` to `last` (exclusive) that a window of `height` pixels scrolled by `scrollTop` renders, with the overscan. */
 export function virtualWindow(scrollTop: number, height: number, total: number, rowHeight = ROW_HEIGHT, overscan = OVERSCAN): { first: number; last: number } {
   // A list that shrank can still hold a scroll position past its end until the browser clamps it.
   const top = Math.min(scrollTop, Math.max(0, total * rowHeight - height))
   const first = Math.max(0, Math.floor(top / rowHeight) - overscan)
-  const last = Math.min(total, first + MAX_RENDERED_ROWS, Math.ceil((top + height) / rowHeight) + overscan)
+  const last = Math.min(total, first + rowCap(height, rowHeight, overscan), Math.ceil((top + height) / rowHeight) + overscan)
   return { first, last }
 }
 

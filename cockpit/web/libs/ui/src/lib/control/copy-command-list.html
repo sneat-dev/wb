@@ -26,12 +26,15 @@
               </code>
               <app-copy-button
                 [text]="row.command.text"
-                [label]="label(row.title, row.command.needsEdit)"
-                [idleWord]="row.command.needsEdit ? 'Copy template' : 'Copy'"
+                [label]="label(row)"
+                [idleWord]="word(row)"
                 [doneStatus]="row.command.needsEdit ? doneStatus : 'Copied'"
                 (copied)="copied.emit($event)"
               />
             </div>
+            @if (hint(row.command); as why) {
+              <p class="hint">{{ why }}</p>
+            }
           } @else {
             <p class="refused"><app-glyph [paths]="ban" /><span>Not copied: {{ row.command.reason }}</span></p>
           }

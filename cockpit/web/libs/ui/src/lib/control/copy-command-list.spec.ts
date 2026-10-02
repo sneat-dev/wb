@@ -1,10 +1,11 @@
 import { TestBed } from '@angular/core/testing'
 import { CopyCommand, FleetModel } from '@cockpit/fleet-data'
-import { branchCleanup, pickRepositories, pullRequestCreate, worktreeList } from '@cockpit/fleet-data/commands'
+import { branchCleanup, pickRepositories, pullRequestCreate, worktreeCreate, worktreeList } from '@cockpit/fleet-data/commands'
 import { PanelCommand, buildAgentPanel, buildPullRequestPanel, buildRepositoryPanel, buildWorktreePanel } from '@cockpit/fleet-data/panel'
 import { agent, machine, pullRequest, repository, run, worktree } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from './clipboard'
-import { CopyCommandList, commandSegments, copyLabel, runLocation } from './copy-command-list'
+import { CopyCommandList, QUOTE_TWICE_HINT, commandSegments, runLocation } from './copy-command-list'
+import { StatusAnnouncer } from './status-announcer'
 
 const NOW = Date.parse('2026-10-01T10:00:00Z')
 
@@ -76,8 +77,8 @@ describe('CopyCommandList', () => {
     expect(text(here.items[0].querySelector('.where'))).toBe('run here')
   })
 
-  it('renders nothing for an entity with no command (an unrecorded session), leaving no box', async () => {
-    const { root, items } = await render(buildAgentPanel(modelOf(), 's1')?.commands ?? [])
+  it('renders nothing for an entity with no command, leaving no box', async () => {
+    const { root, items } = await render([])
     expect(items).toEqual([])
     expect(root.querySelector('section, h3')).toBeNull()
   })
@@ -93,12 +94,12 @@ describe('CopyCommandList', () => {
     expect(items[0].querySelector('mark')?.textContent).toBe('<<<edit:message>>>')
     expect(text(items[0].querySelector('code'))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
     expect(text(items[0].querySelector('app-copy-button button'))).toBe('Copy template')
-    expect(items[0].querySelector('app-copy-button button')?.getAttribute('aria-label')).toBe('Copy command template: Commit and open pull request')
-    expect(items[0].querySelector('[role="status"]')?.textContent).toBe('')
+    expect(items[0].querySelector('app-copy-button button')?.getAttribute('aria-label')).toBe('Copy template wb pr create: Commit and open pull request')
+    expect(items[0].querySelector('[role="status"]')).toBeNull()
     expect(items[1].querySelector('.edit')).toBeNull()
     expect(items[1].querySelector('mark')).toBeNull()
     expect(text(items[1].querySelector('app-copy-button button'))).toBe('Copy')
-    expect(items[1].querySelector('app-copy-button button')?.getAttribute('aria-label')).toBe('Copy command: List worktrees')
+    expect(items[1].querySelector('app-copy-button button')?.getAttribute('aria-label')).toBe('Copy wb worktree list: List worktrees')
   })
 
   it('announces that the parts are to be edited once a template is copied', async () => {
@@ -106,7 +107,7 @@ describe('CopyCommandList', () => {
     ;(items[0].querySelector('app-copy-button button') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       fixture.detectChanges()
-      expect(items[0].querySelector('[role="status"]')?.textContent).toBe('Copied; edit the <…> parts before running')
+      expect(TestBed.inject(StatusAnnouncer).message()).toBe('Copied; edit the <…> parts before running')
     })
   })
 
@@ -118,7 +119,6 @@ describe('CopyCommandList', () => {
     // A value that spells a placeholder is the library's placeholder: it is bare, and flagged.
     expect(items[1].querySelector('mark')?.textContent).toBe('<<<edit:message>>>')
     expect(commandSegments("wb x '<<<edit:model>>>'")).toEqual([{ text: "wb x '", placeholder: false }, { text: '<<<edit:model>>>', placeholder: true }, { text: "'", placeholder: false }])
-    expect(copyLabel('T', true)).toBe('Copy command template: T')
   })
 
   // cockpit-views#ac:copy-command-refuses-hostile-values
@@ -140,6 +140,19 @@ describe('CopyCommandList', () => {
     expect(copy).not.toHaveBeenCalled()
   })
 
+  // cockpit-views#ac:copy-command-for-an-ssh-machine
+  it('says beside an ssh command with a placeholder that the typed text is quoted twice, and beside nothing else', async () => {
+    const ssh = { ssh: { host: 'vm.example', user: 'alex' } }
+    const { items } = await render([
+      { title: 'Create', command: worktreeCreate('t', ['o/r'], {}, ssh) },
+      { title: 'List', command: worktreeList('t', ssh) },
+      { title: 'Here', command: worktreeCreate('t', ['o/r']) },
+    ])
+    expect(text(items[0].querySelector('.hint'))).toBe(QUOTE_TWICE_HINT)
+    expect(items[1].querySelector('.hint')).toBeNull()
+    expect(items[2].querySelector('.hint')).toBeNull()
+  })
+
   it('copies a value with a quote single-quoted, as the library wrote it', async () => {
     const { items, copy } = await render([{ title: 'List worktrees', command: worktreeList("a'; rm -rf ~; '") }])
     expect(text(items[0].querySelector('code'))).toBe(`wb worktree list 'a'\\''; rm -rf ~; '\\'''`)
@@ -149,7 +162,7 @@ describe('CopyCommandList', () => {
 
   it('names each copy button after its entry, and each command line is focusable for keyboard selection', async () => {
     const { items } = await render(buildPullRequestPanel(modelOf(), 'p1')?.commands ?? [])
-    expect(items[0].querySelector('button')?.getAttribute('aria-label')).toBe(`Copy command: ${buildPullRequestPanel(modelOf(), 'p1')?.commands[0].title}`)
+    expect(items[0].querySelector('button')?.getAttribute('aria-label')).toBe(`Copy wb pr land: ${buildPullRequestPanel(modelOf(), 'p1')?.commands[0].title}`)
     expect(items[0].querySelector('code')?.getAttribute('tabindex')).toBe('0')
   })
 

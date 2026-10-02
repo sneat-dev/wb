@@ -165,6 +165,8 @@ export interface InFlightAgent {
 export interface MachineLoad {
   state: 'free' | 'busy' | 'not-reported'
   route: MetricsRoute
+  /** The latest sample was too old to say how loaded the machine is now: the state is `not-reported`, and the sample's age is said. */
+  stale?: boolean
   sampledAt?: number
   cpuPercent?: number
   memoryPercent?: number

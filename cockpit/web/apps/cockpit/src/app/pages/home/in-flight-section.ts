@@ -1,11 +1,10 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { AppLink, CopyCommand, FleetModel, InFlightAgent, agentDetailLink, chipLink, formatAge, linkTarget } from '@cockpit/fleet-data'
-import { GLYPH_CHECK_CIRCLE, Glyph, RelativeTime, StateBadge } from '@cockpit/ui/control'
+import { GLYPH_CHECK_CIRCLE, Glyph, LazyCopy, RelativeTime, StateBadge } from '@cockpit/ui/control'
 import { SkeletonRows } from '../../shell/skeleton-rows'
 import { isoOf } from './home-format'
 import { spanText } from './home-time'
-import { LazyCopy } from './lazy-copy'
 import { MachineWords, machineWords } from './machine-words'
 import { MachineStrip } from './machine-strip'
 
@@ -76,6 +75,8 @@ export class InFlightSection {
   readonly warming = input(false)
 
   protected readonly rows = computed(() => flightRows(this.model()))
+  /** Some machine's agents were cut, so the count is a least. */
+  protected readonly cut = computed(() => this.model().agentsCut)
   /** The other machines that report no agents, in one muted line. */
   protected readonly silent = computed(() =>
     this.model()

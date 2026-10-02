@@ -123,9 +123,12 @@ describe('ages and route labels', () => {
     expect(formatAge('not a time', NOW)).toBe('age unknown')
   })
 
-  it('labels local and cached entries', () => {
+  // cockpit-views#ac:route-vocabulary
+  it('labels every route in the one vocabulary: local, live and cached (with its age), never "live-remote"', () => {
     expect(routeLabel(machine('alpha'), NOW)).toBe('local')
+    expect(routeLabel({ ...machine('beta'), route: 'live-remote' }, NOW)).toBe('live')
     expect(routeLabel(machine('beta', 'cached'), NOW + 7 * 60_000)).toBe('cached, 7 min ago')
+    for (const route of ['local', 'live-remote', 'cached'] as const) expect(routeLabel({ ...machine('x'), route }, NOW)).not.toContain('remote')
   })
 })
 

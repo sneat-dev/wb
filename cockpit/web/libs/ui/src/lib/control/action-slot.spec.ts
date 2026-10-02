@@ -1,7 +1,8 @@
 import { TestBed } from '@angular/core/testing'
 import { ActionsResponse, RegistryAction } from '@cockpit/fleet-data'
 import { fakeControlFetch, registryAction } from '@cockpit/fleet-data/testing'
-import { ActionActivation, ActionSlot, OWNER_ONLY_EXPLANATION, disabledReason, isDirect } from './action-slot'
+import { ActionActivation, ActionSlot, OWNER_ONLY_EXPLANATION, SlotCopy, disabledReason, isDirect } from './action-slot'
+import { ClipboardWriter } from './clipboard'
 
 const REGISTRY: Record<string, RegistryAction[]> = {
   'worktree:wt-1': [
@@ -18,13 +19,13 @@ async function actionsFor(target: string, registry: Record<string, RegistryActio
   return response.ok ? ((await response.json()) as ActionsResponse).actions : undefined
 }
 
-async function render(actions: readonly RegistryAction[] | undefined, target = 'worktree:wt-1') {
+async function render(actions: readonly RegistryAction[] | undefined, target = 'worktree:wt-1', handled = true) {
   TestBed.resetTestingModule()
   const fixture = TestBed.createComponent(ActionSlot)
   fixture.componentRef.setInput('actions', actions)
   fixture.componentRef.setInput('target', target)
   const activations: ActionActivation[] = []
-  fixture.componentInstance.activated.subscribe((activation) => activations.push(activation))
+  if (handled) fixture.componentRef.setInput('run', (activation: ActionActivation) => activations.push(activation))
   await fixture.whenStable()
   const root: HTMLElement = fixture.nativeElement
   const buttons = () => [...root.querySelectorAll<HTMLButtonElement>('.slot > button.action:not(.more)')]
@@ -76,6 +77,58 @@ describe('ActionSlot', () => {
     const { trigger, menu } = await render(REGISTRY['pull_request:pr-1'])
     expect(trigger()).toBeNull()
     expect(menu()).toBeNull()
+  })
+
+  // cockpit-views#ac:action-area-renders-the-registry-and-vanishes-without-it
+  describe('without a handler', () => {
+    const copy: SlotCopy = { build: async () => ({ ok: true, text: "wb pr land 'o/r#1'", needsEdit: false }), label: 'Copy wb pr land: o/r#1' }
+
+    async function renderUnhandled(actions: readonly RegistryAction[] | undefined, slotCopy: SlotCopy | undefined) {
+      const clipboard = vi.fn().mockResolvedValue(true)
+      TestBed.resetTestingModule()
+      TestBed.configureTestingModule({ providers: [{ provide: ClipboardWriter, useValue: { copy: clipboard } }] })
+      const fixture = TestBed.createComponent(ActionSlot)
+      fixture.componentRef.setInput('actions', actions)
+      fixture.componentRef.setInput('target', 'pull_request:pr-1')
+      if (slotCopy !== undefined) fixture.componentRef.setInput('copy', slotCopy)
+      await fixture.whenStable()
+      return { fixture, root: fixture.nativeElement as HTMLElement, clipboard }
+    }
+
+    it('renders the Copy control, never the registry\'s button, when the registry answered and no handler is bound', async () => {
+      const actions = await actionsFor('pull_request:pr-1', REGISTRY)
+      expect(actions?.length).toBeGreaterThan(0)
+      const { root, clipboard } = await renderUnhandled(actions, copy)
+      expect(root.querySelector('.slot')).toBeNull()
+      expect(root.querySelector('.action')).toBeNull()
+      const buttons = [...root.querySelectorAll('button')]
+      expect(buttons.map((button) => text(button))).toEqual(['Copy'])
+      expect(buttons[0].getAttribute('aria-label')).toBe('Copy wb pr land: o/r#1')
+      buttons[0].click()
+      await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith("wb pr land 'o/r#1'"))
+    })
+
+    it('says "Copy template" for a command with a part to edit, and is quiet when asked', async () => {
+      const { root } = await renderUnhandled(undefined, { ...copy, template: true, quiet: true })
+      const button = root.querySelector('button') as HTMLButtonElement
+      expect(text(button)).toBe('Copy template')
+      expect(button.classList.contains('quiet')).toBe(true)
+      expect(button.classList.contains('icon-only')).toBe(true)
+    })
+
+    it('renders nothing at all when it has neither a handler nor a command to copy', async () => {
+      const { root } = await renderUnhandled(await actionsFor('pull_request:pr-1', REGISTRY), undefined)
+      expect(root.children).toHaveLength(0)
+    })
+
+    it('draws the registry\'s buttons once a handler is bound, and the Copy control is gone', async () => {
+      const { fixture, root } = await renderUnhandled(await actionsFor('pull_request:pr-1', REGISTRY), copy)
+      expect(root.querySelector('.slot')).toBeNull()
+      fixture.componentRef.setInput('run', () => undefined)
+      await fixture.whenStable()
+      expect(root.querySelector('.slot')).not.toBeNull()
+      expect(root.querySelector('app-lazy-copy')).toBeNull()
+    })
   })
 
   // Fail closed: only the two known safe classes are prominent buttons.

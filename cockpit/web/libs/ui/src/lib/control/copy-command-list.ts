@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core'
 import { CopyCommand, PLACEHOLDERS, PanelCommand } from '@cockpit/fleet-data'
 import { CopyButton } from './copy-button'
+import { copyNameOf, copyWord } from './copy-label'
 import { Glyph } from './glyph'
 import { GLYPH_BAN, GLYPH_PENCIL, GLYPH_TERMINAL } from './glyphs'
 
@@ -25,15 +26,13 @@ export function commandSegments(text: string): CommandSegment[] {
   return text.split(PLACEHOLDER).map((part, index) => ({ text: part, placeholder: index % 2 === 1 })).filter((segment) => segment.text !== '')
 }
 
-/** The accessible name of a command's copy button: a command with parts to edit is a template. */
-export function copyLabel(title: string, needsEdit: boolean): string {
-  return `${needsEdit ? 'Copy command template' : 'Copy command'}: ${title}`
-}
-
 /** Where a command runs: "run here" unless the library labelled it ("run on <machine>"). */
 export function runLocation(command: Extract<CopyCommand, { ok: true }>): string {
   return command.label ?? 'run here'
 }
+
+/** What an ssh command with a placeholder needs said beside it: the remote shell splits the arguments again. */
+export const QUOTE_TWICE_HINT = 'Quote twice: the remote shell splits this again'
 
 interface Row {
   title: string
@@ -65,7 +64,9 @@ export class CopyCommandList {
     this.entries().map((entry) => ({ title: entry.title, command: entry.command, segments: entry.command.ok ? commandSegments(entry.command.text) : [] })),
   )
   protected readonly where = runLocation
-  protected readonly label = copyLabel
+  protected readonly label = (row: Row): string => copyNameOf(row.command, row.title)
+  protected readonly word = (row: Row): 'Copy' | 'Copy template' => copyWord(row.command.ok && row.command.needsEdit)
+  protected readonly hint = (command: Extract<CopyCommand, { ok: true }>): string | undefined => (command.quoteTwice ? QUOTE_TWICE_HINT : undefined)
   protected readonly terminal = GLYPH_TERMINAL
   protected readonly pencil = GLYPH_PENCIL
   protected readonly ban = GLYPH_BAN

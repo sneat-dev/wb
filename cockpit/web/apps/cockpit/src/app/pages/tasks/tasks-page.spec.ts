@@ -5,7 +5,7 @@ import { fleetDocument, run, worktree } from '@cockpit/fleet-data/testing'
 import { ClipboardWriter } from '@cockpit/ui/control'
 import { LIST_SHORTCUTS } from '@cockpit/ui/list-host'
 import { openPage } from '../test-harness'
-import { tasksDocument } from './tasks-fixture'
+import { ago, tasksDocument } from './tasks-fixture'
 import { TasksPage } from './tasks-page'
 
 const text = (element: Element | null) => (element?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -25,10 +25,27 @@ describe('TasksPage', () => {
   })
 
   // cockpit-views#ac:default-sorts
-  it('lists one row per task, the newest activity first, with the count', async () => {
+  it('lists one row per task, by state precedence and the newest activity first within a state, with the count', async () => {
     const { root } = await openPage('/tasks', TasksPage, tasksDocument())
-    expect(tasksOf(root)).toEqual(['fix-ci', 'add-search', 'zeta', 'broken', 'far', 'mystery', 'fix/ci 100%', 'release.js', 'old'])
+    expect(tasksOf(root)).toEqual(['zeta', 'broken', 'add-search', 'fix-ci', 'far', 'fix/ci 100%', 'release.js', 'old', 'mystery'])
     expect(text(root.querySelector('.count'))).toBe('9 of 9')
+  })
+
+  // cockpit-views#ac:default-sorts
+  it('leaves out an at-risk task idle for over 14 days, says how to include it with a visible chip, and lists it with the chip or with state:at-risk', async () => {
+    const doc = tasksDocument()
+    doc.worktrees = doc.worktrees.map((worktree) => (worktree.task === 'zeta' ? { ...worktree, last_activity_at: ago(20) } : worktree))
+    const { root } = await openPage('/tasks', TasksPage, doc)
+    expect(tasksOf(root)).not.toContain('zeta')
+    expect(text(root.querySelector('.count'))).toBe('8 of 9')
+    const chip = [...root.querySelectorAll('[aria-label="Quick filters"] button')].find((button) => text(button) === 'Older at-risk') as HTMLButtonElement
+    expect(chip.getAttribute('aria-pressed')).toBe('false')
+    expect(chip.getAttribute('title')).toContain('14 days')
+    chip.click()
+    await vi.waitFor(() => expect(tasksOf(root)).toContain('zeta'))
+    expect(tasksOf(root)[0]).toBe('zeta')
+    expect(text(root.querySelector('.count'))).toBe('9 of 9')
+    expect((await openPage('/tasks?q=state:at-risk', TasksPage, doc)).root.querySelector('.count')?.textContent?.trim()).toBe('1 of 9')
   })
 
   it('says that nothing has been observed for a fleet with no task', async () => {
@@ -106,6 +123,8 @@ describe('TasksPage', () => {
       pr: ['fix-ci', 'add-search', 'broken'],
       multirepo: ['fix-ci'],
       idle30: ['old'],
+      // Includes the at-risk tasks the list leaves out; it removes nothing.
+      older: ['fix-ci', 'add-search', 'zeta', 'broken', 'far', 'mystery', 'fix/ci 100%', 'release.js', 'old'],
     }
     expect(Object.keys(expected).sort()).toEqual(VOCABULARY.tasks.chips.map((chip) => chip.id).sort())
     for (const [chip, tasks] of Object.entries(expected)) {

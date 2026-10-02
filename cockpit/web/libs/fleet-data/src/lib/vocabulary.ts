@@ -3,6 +3,7 @@
 // link or chart click is built only here, and a builder refuses what the
 // vocabulary does not list, so every number is a link that the page can read.
 
+import { OWNER_STATES } from './fleet.types'
 import { AGE_TERMS, AgeTerm, MAX_QUERY_LENGTH, parseQuery } from './matcher'
 import { TASK_STATE_IDS } from './task-state'
 
@@ -31,7 +32,6 @@ export interface PageRules {
 }
 
 export const CODE_INDEX_STATES = ['fresh', 'stale', 'diverged', 'pending', 'failed', 'never'] as const
-export const OWNER_STATES = ['active', 'idle', 'orphaned', 'unknown'] as const
 export const AGENT_STATES = ['working', 'blocked', 'idle', 'done', 'unknown', 'live', 'parked', 'running', 'completed', 'failed', 'timeout', 'abandoned'] as const
 export const MACHINE_STATES = ['live', 'cached', 'stale'] as const
 
@@ -44,7 +44,7 @@ export const PAGE_RULES = {
   tasks: {
     path: '/tasks',
     fields: ['task', 'repo', 'machine'],
-    chips: ['needs-you', 'ready', 'working', 'agent', 'pr', 'multirepo', 'idle30'],
+    chips: ['needs-you', 'ready', 'working', 'agent', 'pr', 'multirepo', 'idle30', 'older'],
     states: TASK_STATE_IDS,
     hasActivity: true,
     sorts: ['task', 'state', 'worktrees', 'activity'],

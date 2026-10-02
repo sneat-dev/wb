@@ -5,13 +5,15 @@ import { FleetStore, machineLoad, taskDetailLink } from '@cockpit/fleet-data'
 import { buildRepositories } from '@cockpit/fleet-data/list'
 import { CopyCommandList, StateBadge } from '@cockpit/ui/control'
 import { MetricsPoller, watchMetrics } from '../../metrics/metrics-poller'
+import { sampleWords } from '../machines/machine-text'
 import { EMPTY_STATE, NewTaskState, commandsOf, defaultBranchOf, machineChoices, modelsOffered, nameProblem, queryOf, stateOf } from './new-task-form'
 import { RepositoryPicker } from './repository-picker'
 
 /**
  * The "New task" form (REQ:new-task-form), `/tasks/new`: a repository picker, the task name, an optional base branch, the
- * model, the brief and the machine, and the exact commands to copy: `wb worktree create` once for every repository and
- * `wb agent dispatch` for each, from the library's `newTaskCommands`. Nothing is run. The answers live in the address
+ * model, the agent profile, the brief and the machine, and the exact commands to copy, from the library's `newTaskCommands`:
+ * with a brief `wb agent dispatch` for each repository (it creates the worktree itself, so a `wb worktree create` before it
+ * would collide), without one `wb worktree create` once for every repository. Nothing is run. The answers live in the address
  * (shareable, back and forward restore them) except the brief, which stays in memory.
  *
  * Next to each machine choice the load verdict from its metrics (free, busy or unknown) says whether it can take another
@@ -48,6 +50,8 @@ export class NewTaskPage {
   })
   protected readonly defaultBranch = computed(() => defaultBranchOf(this.store.document(), this.state().repositories))
   protected readonly choice = computed(() => this.choices().find((candidate) => candidate.id === this.state().machine) ?? this.choices()[0])
+  /** A brief is typed: the commands are the dispatch ones, which create the worktree themselves. */
+  protected readonly dispatching = computed(() => this.brief().trim() !== '')
   protected readonly commands = computed(() => commandsOf(this.state(), this.brief(), this.choice().target))
 
   constructor() {
@@ -68,8 +72,11 @@ export class NewTaskPage {
     })
   }
 
-  protected loadOf(metricsId: string | undefined): ReturnType<typeof machineLoad>['state'] {
-    return machineLoad(metricsId === undefined ? undefined : this.poller.metricsOf(metricsId)).state
+  /** The load verdict of a machine's latest sample, and for a sample that is not current the words that say how old it is. */
+  protected loadOf(metricsId: string | undefined): { state: ReturnType<typeof machineLoad>['state']; stale: string | undefined } {
+    const now = this.store.now()
+    const load = machineLoad(metricsId === undefined ? undefined : this.poller.metricsOf(metricsId), now)
+    return { state: load.state, stale: load.stale ? sampleWords(load, now) : undefined }
   }
 
   /** One field changed. A text field replaces the current history entry; choosing a repository or a machine is a step back can undo. */

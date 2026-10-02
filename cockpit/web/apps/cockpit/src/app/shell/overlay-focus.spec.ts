@@ -1,6 +1,6 @@
 import { Component, signal } from '@angular/core'
 import { TestBed } from '@angular/core/testing'
-import { OverlayFocus, restoreFocus, returnTarget } from './overlay-focus'
+import { OverlayFocus, focusMainIfLost, restoreFocus, returnTarget } from './overlay-focus'
 
 @Component({
   imports: [OverlayFocus],
@@ -78,6 +78,48 @@ describe('OverlayFocus', () => {
     byId('overlay').focus()
     expect(tab(byId('overlay')).defaultPrevented).toBe(true)
     expect(document.activeElement).toBe(byId('overlay'))
+    fixture.nativeElement.remove()
+  })
+
+  // cockpit-views#ac:phone-panel-is-a-sheet (focus after an overlay)
+  it('gives the focus to the page\'s main when what it would return to is gone or cannot take it, so it never ends on nothing', async () => {
+    const main = document.createElement('main')
+    main.id = 'main'
+    main.tabIndex = -1
+    document.body.append(main)
+    const { fixture, opener } = await opened()
+    // The opener is removed while the overlay is open (the page changed): the focus is left nowhere, and goes to main.
+    opener.remove()
+    fixture.componentInstance.open.set(false)
+    await fixture.whenStable()
+    expect(document.activeElement).toBe(main)
+    // An element under an inert ancestor cannot take focus: main takes it.
+    const inert = document.createElement('div')
+    inert.setAttribute('inert', '')
+    const inside = document.createElement('button')
+    inert.append(inside)
+    document.body.append(inert)
+    const focus = HTMLElement.prototype.focus
+    const spy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+      if (this.closest('[inert]') === null) focus.call(this, options)
+    })
+    document.body.focus()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    restoreFocus(inside)
+    expect(document.activeElement).toBe(main)
+    spy.mockRestore()
+    expect(() => focusMainIfLost(document)).not.toThrow()
+    // With the focus somewhere, nothing moves it; with no main on the page nothing breaks.
+    const other = document.createElement('button')
+    document.body.append(other)
+    other.focus()
+    focusMainIfLost(document)
+    expect(document.activeElement).toBe(other)
+    main.remove()
+    other.blur()
+    focusMainIfLost(document)
+    inert.remove()
+    other.remove()
     fixture.nativeElement.remove()
   })
 

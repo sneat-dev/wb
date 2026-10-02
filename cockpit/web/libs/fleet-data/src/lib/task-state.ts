@@ -83,14 +83,17 @@ export function openObserved(pullRequests: readonly PullRequest[]): PullRequest[
 /**
  * The interim at-risk worktrees of row 1, until the work-loss-risk read model
  * replaces the rule: on this machine (a local entry), an `owner_state` that is
- * reported and not `active`, and commits ahead or no upstream.
+ * reported and not `active`, and commits ahead or no upstream. A value this page does
+ * not know is "not reported", never "not active" (it must not put a task at risk).
  */
+/** The owner states that say nobody is working in the worktree. */
+const NOT_ACTIVE: readonly string[] = ['idle', 'orphaned', 'unknown']
+
 export function interimAtRiskWorktrees(worktrees: readonly Worktree[]): Worktree[] {
   return worktrees.filter(
     (worktree) =>
       worktree.route === 'local' &&
-      worktree.owner_state !== undefined &&
-      worktree.owner_state !== 'active' &&
+      NOT_ACTIVE.includes(worktree.owner_state as string) &&
       hasUnpushedWork(worktree),
   )
 }
@@ -115,13 +118,17 @@ export function isRun(agent: Agent): boolean {
  * with no agent of the task (a run or a session) that started later, and not
  * ended 24 hours ago or more (from `finished_at`, else `started_at`). Without
  * start times the order is not known and is not guessed (no later agent), and a
- * run with no time at all is not reported as blocking.
+ * run with no time at all is not reported as blocking. When the task has an
+ * entry of this machine (`local`, by default an agent of this machine), a later agent of another machine does not
+ * clear a failed run of this machine: a remote entry may worsen a local task's state, never lift it (REQ:task-state
+ * trust rule). A failed run that another machine reported can still be superseded by a later agent.
  */
-export function blockingRuns(agents: readonly Agent[], now: number): Agent[] {
+export function blockingRuns(agents: readonly Agent[], now: number, local: boolean = agents.some(isLocal)): Agent[] {
   return agents.filter((run) => {
     if (!isRun(run) || (run.state !== 'failed' && run.state !== 'timeout')) return false
     const started = startedAt(run)
-    if (started !== undefined && agents.some((other) => other !== run && (startedAt(other) ?? -Infinity) > started)) return false
+    const supersedes = (other: Agent): boolean => other !== run && (!local || isLocal(other) || !isLocal(run)) && (startedAt(other) ?? -Infinity) > (started as number)
+    if (started !== undefined && agents.some(supersedes)) return false
     // A run with no time at all is not reported as blocking.
     const ended = endedAt(run)
     return ended !== undefined && now - ended < BLOCKED_RUN_EXPIRY_MS
@@ -129,8 +136,8 @@ export function blockingRuns(agents: readonly Agent[], now: number): Agent[] {
 }
 
 /** Row 3: an agent whose `activity` is `blocked`, or a blocking run. */
-export function isBlocked(agents: readonly Agent[], now: number): boolean {
-  return agents.some((agent) => agent.activity === 'blocked') || blockingRuns(agents, now).length > 0
+export function isBlocked(agents: readonly Agent[], now: number, local: boolean = agents.some(isLocal)): boolean {
+  return agents.some((agent) => agent.activity === 'blocked') || blockingRuns(agents, now, local).length > 0
 }
 
 /** The reasons a pull request can be not ready, in words (REQ:task-state). */
@@ -256,7 +263,7 @@ export function taskState(inputs: TaskInputs, now: number): TaskStateId {
   const local = hasLocalEntry(inputs)
   const open = inputs.pullRequests.filter(isOpenPullRequest)
   if (openObserved(inputs.pullRequests).some((pullRequest) => failedChecks(pullRequest) > 0)) return 'checks-failed'
-  if (isBlocked(inputs.agents, now)) return 'blocked'
+  if (isBlocked(inputs.agents, now, local)) return 'blocked'
   // Ready only when every open pull request, observed or not, is observed and ready; when the task has an entry of
   // this machine, one of its own open pull requests must be among them (a remote one alone never makes it ready).
   if (open.length > 0) return open.some((pullRequest) => !local || isLocal(pullRequest)) && open.every(isReadyToLand) ? 'ready' : 'not-ready'

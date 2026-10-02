@@ -58,8 +58,8 @@ export class TasksPage {
    */
   protected readonly columns: ListColumn<TaskView>[] = [
     { id: 'task', header: 'Task', sort: 'task', width: 'fill', grow: 4, min: 280, priority: ALWAYS, value: (t) => `${t.name} · ${this.repositories(t)}` },
-    { id: 'state', header: 'State', sort: 'state', width: 200, min: 170, priority: ALWAYS, value: (t) => t.stateInfo.label },
-    { id: 'pr', header: 'Pull requests', width: 230, min: 190, priority: 3, value: (t) => t.pullRequests.map((pr) => `#${pr.number}`).join(' '), empty: (t) => t.pullRequests.length === 0 },
+    { id: 'state', header: 'State', sort: 'state', width: 150, min: 136, priority: ALWAYS, value: (t) => t.stateInfo.label },
+    { id: 'pr', header: 'Pull requests', width: 190, min: 150, priority: 3, value: (t) => t.pullRequests.map((pr) => `#${pr.number}`).join(' '), empty: (t) => t.pullRequests.length === 0 },
     { id: 'agents', header: 'Agents', width: 150, min: 120, priority: 2, value: (t) => this.runningAgents(t).map((agent) => agent.runtime ?? 'agent').join(' '), empty: (t) => this.runningAgents(t).length === 0 },
     { id: 'worktrees', header: 'Worktrees', sort: 'worktrees', width: 96, min: 90, priority: 4, align: 'end', value: (t) => String(t.worktrees.length) },
     { id: 'machines', header: 'Machines', width: 200, min: 150, priority: 1, value: (t) => t.machines.map((machine) => machine.name).join(' '), empty: (t) => !this.anyRemote(t) },

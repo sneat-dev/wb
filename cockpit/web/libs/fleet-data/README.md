@@ -74,8 +74,8 @@ through `onError`, and is listed in `model.failedDerivations`.
 | `homeBadge`, `homeBadgeLabel`, `runningAgentCount` | the Home badge (tasks needing the operator; `homeBadgeLabel` is the number, or `99+` above `BADGE_CAP`, also `badgeLabel(n)`) and the Agents tab badge |
 | `buildWorktreePanel(model, id)`, `buildTaskPanel(model, name)`, `buildRepositoryPanel(model, key)`, `buildAgentPanel`, `buildMachinePanel`, `buildPullRequestPanel` (`/panel`) | per-entity panels (below); `undefined` for an unknown id |
 
-Also exported: `machineLoad(metrics)` (`free` below 70 % CPU and 80 % memory, `busy` otherwise,
-`not-reported` without a sample), `agentTitle`, `parseVersion`, `compareVersions`, `versionKey`,
+Also exported: `machineLoad(metrics, now)` (`free` below 70 % CPU and 80 % memory, `busy` otherwise,
+`not-reported` without a sample or with one older than 5 minutes, `stale: true`). Commands that change something (`pullRequestCreate`, `pullRequestLand`, `agentStop`, `sessionSend`) refuse any target with `machine` or `ssh` (`onThisMachine`), `agentTitle`, `parseVersion`, `compareVersions`, `versionKey`,
 `remoteErrorText`, `remoteFix` (the command for a `remote_error` code: none, with the reason, for `remote_warming_up`, `export_too_large`, `self_export` and a code this library does not know), `NEEDS_YOU_VISIBLE`, `RESUME_COUNT`. A field the daemon omitted
 gives the "not reported" outcome, never a guess.
 
@@ -165,7 +165,7 @@ target; the shorter `<<edit:x>>` parses when another word follows), checked by a
 `worktreeList`, `pullRequestCreate`, `worktreeCleanup`, `pullRequestLand`, `worktreeCreate`,
 `branchList`, `fleetStatus`, `branchCleanup`, `agentStatus`, `agentLogs`, `agentStop`,
 `sessionSend`, `agentDispatch` (`options.brief` is the `--task` text, the task name goes to
-`--new-worktree`), `newTaskCommands({task, brief, repositories, base?, model, target?})`, `pickRepositories(names, text, now)`,
+`--new-worktree`), `newTaskCommands({task, brief, repositories, base?, model, profile?, target?})` (`{create?, dispatch[]}`: with a brief the dispatches alone, without one `create` alone, because `dispatch --new-worktree` creates the worktree itself), `pickRepositories(names, text, now)`,
 `remotePublish`, `selfUpdate`, `daemonStart`, `remoteEnroll`, `cockpitExport`. Every interpolated
 value is POSIX single-quoted, flags are `--flag=value`, a value that starts with `-` or has a
 control or invisible character (U+061C, U+200B to U+200F, U+2028/2029, bidirectional controls, U+FEFF) is

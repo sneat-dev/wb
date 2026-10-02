@@ -97,7 +97,10 @@ describe('NeedsYouSection', () => {
     expect(buttons[0].classList.contains('quiet')).toBe(true)
     expect(buttons[0].classList.contains('icon-only')).toBe(true)
     expect(buttons[0].querySelector('.visually-hidden')).not.toBeNull()
-    expect(buttons[0].getAttribute('title')).toContain('Copy command template')
+    expect(buttons[0].getAttribute('title')).toContain('Copy template wb pr create')
+    expect(buttons[0].getAttribute('aria-label')).toBe('Copy template wb pr create: commit everything and open the pull request of sneat-dev/wb and sneat-co/sneat-go')
+    // No handler is bound anywhere, so the slot is the Copy control and nothing is a live button.
+    expect(rows[0].querySelector('app-action-slot .slot, app-action-slot .action')).toBeNull()
   })
 
   it('lists "+n more" as a link to Tasks filtered to the same set', async () => {

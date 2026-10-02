@@ -1,6 +1,8 @@
-import { ChangeDetectionStrategy, Component, signal } from '@angular/core'
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core'
+import { ActivatedRoute } from '@angular/router'
 import { AppLink, ageLink, hrefOf } from '@cockpit/fleet-data'
-import { ActionActivation, ActionSlot, CopyCommandList, MachineChip, OwnerSignIn, PrChip, RelativeTime, StateBadge, SyncBadges } from '@cockpit/ui/control'
+import { pullRequestCreate } from '@cockpit/fleet-data/commands'
+import { ActionActivation, ActionSlot, CopyCommandList, MachineChip, OwnerSignIn, PrChip, RelativeTime, SlotCopy, StateBadge, SyncBadges, copyLabel } from '@cockpit/ui/control'
 import { ChartSpec, ChartView, HorizontalBarsSpec, machineMetricSpecs } from '@cockpit/ui/chart'
 import {
   BADGE_ROWS,
@@ -19,6 +21,10 @@ import {
  * Every component of the control surface in every state, on one page: the
  * visual vocabulary to look at, in light and dark. It is in the preview build
  * only (gallery-routes.preview.ts) and has no entry in the navigation.
+ *
+ * No page of the application handles an activated action yet, so by default the slots are drawn as the
+ * application draws them: the Copy control of their command, never a live button. `?handler=1` binds a
+ * handler, to look at (and test) the registry's buttons, the menu and the disabled reasons; it is never in a shot.
  */
 @Component({
   selector: 'app-gallery',
@@ -29,6 +35,11 @@ import {
 })
 export class GalleryPage {
   private readonly now = Date.now()
+  /** A handler is bound only when the address asks for it (`?handler=1`). */
+  private readonly handled = inject(ActivatedRoute).snapshot.queryParamMap.has('handler')
+  protected readonly run = this.handled ? (activation: ActionActivation): void => this.activated(activation) : undefined
+  /** What a slot offers without a handler: the command of the same intent, to copy. */
+  protected readonly slotCopy: SlotCopy = { build: async () => pullRequestCreate('fix-ci'), label: copyLabel(true, 'wb pr create', 'commit and open the pull request'), template: true }
   protected readonly badgeRows = BADGE_ROWS
   protected readonly syncRows = SYNC_ROWS
   protected readonly pullRequests = galleryPullRequests(this.now)

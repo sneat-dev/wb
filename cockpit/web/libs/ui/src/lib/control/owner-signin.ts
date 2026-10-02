@@ -19,7 +19,7 @@ import { GLYPH_LOCK } from './glyphs'
       <span>Sign in as owner: run <code>{{ command }}</code></span>
     </p>
     <p class="why">Anonymous readers see fleet metadata. Actions need an owner session.</p>
-    <app-copy-button [text]="command" label="Copy command: wb cockpit" (copied)="copied.emit($event)" />
+    <app-copy-button [text]="command" label="Copy wb cockpit: sign in as owner" (copied)="copied.emit($event)" />
   `,
   styles: `
     :host {

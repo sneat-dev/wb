@@ -1,7 +1,8 @@
-import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, inject, signal, viewChild } from '@angular/core'
+import { DOCUMENT } from '@angular/common'
+import { ChangeDetectionStrategy, Component, ElementRef, Injector, afterNextRender, computed, effect, inject, signal, viewChild } from '@angular/core'
 import { Router } from '@angular/router'
 import { FleetStore, hrefOf } from '@cockpit/fleet-data'
-import { OverlayFocus } from '../shell/overlay-focus'
+import { OverlayFocus, focusMainIfLost } from '../shell/overlay-focus'
 import { ShellState } from '../shell/shell-state'
 import { Icon } from '../ui/icon'
 import { PALETTE_KINDS, PaletteGroup, PaletteResult, resolveResult, searchPalette } from './palette-search'
@@ -48,6 +49,8 @@ export class CommandPalette {
   private readonly store = inject(FleetStore)
   private readonly router = inject(Router)
   private readonly recents = inject(PaletteRecents)
+  private readonly doc = inject(DOCUMENT)
+  private readonly injector = inject(Injector)
   private readonly list = viewChild<ElementRef<HTMLElement>>('list')
 
   protected readonly query = signal('')
@@ -124,7 +127,8 @@ export class CommandPalette {
     const plain: PaletteResult = { id: result.id, kind: result.kind, label: result.label, detail: result.detail, link: result.link }
     this.shell.closePalette()
     this.recents.add(plain)
-    void this.router.navigateByUrl(hrefOf(result.link))
+    // The focus was on the page the result leaves (the overlay gave it back there): once the new page is drawn, it goes to its main if nothing has it.
+    void this.router.navigateByUrl(hrefOf(result.link)).then(() => afterNextRender(() => focusMainIfLost(this.doc), { injector: this.injector }))
   }
 
   /** After the highlight moved: keep it inside the scrolled list. */

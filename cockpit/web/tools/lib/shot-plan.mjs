@@ -126,9 +126,9 @@ export const HOME_VIEWPORTS = [
 ]
 
 export const HOME_CASES = [
-  // The fleet, then who is looking: an anonymous reader with no registry (copy commands) and an owner with one (action slots).
+  // The fleet, then who is looking: an anonymous reader and an owner: Home has no handler, so both see Copy entries and no live button.
   { name: 'busy', home: 'busy' },
-  { name: 'busy-owner', home: 'busy', session: 'owner', registry: true },
+  { name: 'busy-owner', home: 'busy', session: 'owner' },
   { name: 'healthy', home: 'healthy' },
   { name: 'warming', home: 'warming', state: 'warming' },
   { name: 'throttled', home: 'throttled' },

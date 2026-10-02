@@ -4,8 +4,7 @@ import { AppLink, Cleanup, chipLink } from '@cockpit/fleet-data'
 import { worktreeGc } from '@cockpit/fleet-data/commands'
 import { HorizontalBarsSpec } from '@cockpit/ui/chart'
 import { ChartView } from '@cockpit/ui/chart'
-import { GLYPH_CHECK_CIRCLE, GLYPH_CHEVRON_DOWN, Glyph } from '@cockpit/ui/control'
-import { LazyCopy } from './lazy-copy'
+import { GLYPH_CHECK_CIRCLE, GLYPH_CHEVRON_DOWN, Glyph, LazyCopy } from '@cockpit/ui/control'
 
 /**
  * Home "Cleanup" (REQ:home-cleanup): one line, "N safe to remove; M need a look", with "Review &

@@ -196,7 +196,7 @@ quick-filter chips MUST use only that vocabulary. It is this table.
 
 | Page | Bare term searches | Chip ids | `state:` values | Other fields | `sel` key | Sort column ids |
 |---|---|---|---|---|---|---|
-| Tasks | task, repository | `needs-you`, `ready`, `working`, `agent`, `pr`, `multirepo`, `idle30` | the task state ids `at-risk`, `checks-failed`, `blocked`, `ready`, `not-ready`, `working`, `landed`, `idle`, `not-reported` | `task`, `repo`, `machine`, `age` | the task name | `task`, `state`, `worktrees`, `activity` |
+| Tasks | task, repository | `needs-you`, `ready`, `working`, `agent`, `pr`, `multirepo`, `idle30`, `older` | the task state ids `at-risk`, `checks-failed`, `blocked`, `ready`, `not-ready`, `working`, `landed`, `idle`, `not-reported` | `task`, `repo`, `machine`, `age` | the task name | `task`, `state`, `worktrees`, `activity` |
 | Repositories | repository | `worktrees`, `agents`, `prs`, `index`, `errors` | `fresh`, `stale`, `diverged`, `pending`, `failed`, `never` (code index) | `repo`, `machine`, `age` | the repository entry id | `repository`, `activity`, `worktrees`, `branches` |
 | Worktrees | task, repository, branch | `active`, `orphaned`, `unpushed`, `gone`, `pr`, `idle30`, `safe`, `look` | `active`, `idle`, `orphaned`, `unknown` | `task`, `repo`, `branch`, `machine`, `age` | the worktree entry id | `worktree`, `state`, `machine`, `activity` |
 | Agents | runtime, model, task, repository | `running`, `blocked`, `runtime-<name>` where `<name>` matches `[a-z0-9-]+` | `working`, `blocked`, `idle`, `done`, `unknown`, `live`, `parked`, `running`, `completed`, `failed`, `timeout`, `abandoned` | `runtime`, `task`, `repo`, `machine` | the agent entry id | `label`, `activity`, `machine`, `started` |
@@ -207,7 +207,12 @@ second definition: an at-risk task older than the Needs you window is not in it)
 carries, in the vocabulary itself, an id, a label (the words on the chip) and a one-sentence
 hint (its tooltip), so a list renders its chips from the page's vocabulary alone. `age:` terms apply to last activity and are exactly `age:<1d`,
 `age:1-7d`, `age:8-30d`, `age:31-90d` and `age:>90d`; there is no `day:` term. The chip
-`idle30` is `age:>30d`. The Worktrees chips `safe` and `look` are the two cleanup counts of
+`idle30` is `age:>30d`. The Tasks chip `older` is not a filter but an inclusion: Tasks leaves out the
+tasks in state `at-risk` whose last activity is outside the Needs you window (14 days; no recorded
+activity is not recent), as Home does, because older at-risk work is a cleanup matter; with `older` on,
+or with a `state:at-risk` term in the filter, they are listed too, and the result count still says "n of
+all". The palette applies the same window to its task results, with the same `state:at-risk` way in.
+The Worktrees chips `safe` and `look` are the two cleanup counts of
 REQ:home-cleanup, `stale` on Machines is a state older than 24 hours and `outdated` a WB
 older than the newest in the fleet. The Repositories sort ids `activity`, `worktrees` and
 `branches` are the presets of REQ:repositories-list. A chip whose id a page does not list,
@@ -222,9 +227,14 @@ the selected row MUST be held in the page address, as
 `?q=…&sort=<column>&dir=asc|desc&machine=…&chips=…&sel=<key>`, where the sort column ids and
 the `sel` key of each page are those of REQ:filter-vocabulary, so that the back button and a
 pasted link restore the same view. A list page shows its result count as "37 of 438". The
-default sorts are: Tasks, Worktrees and Repositories by last activity, newest first; Agents
+default sorts are: Tasks by state precedence (the order of REQ:task-state, worst first), then
+last activity newest first; Worktrees and Repositories by last activity, newest first; Agents
 with running agents first, then newest first; Machines with the local machine first, then
-by name.
+by name. Choosing a chip, a machine or a sort (a header, or `s`) replaces the history entry instead of
+adding one, while opening and closing the side panel are entries of their own and moving between
+rows with `j` and `k` adds none; a change of selection alone does not filter or sort again. Under an
+agents list whose machine cut its agents (`agents_truncated`) every count that includes them reads
+"at least n": the Agents badge ("n+"), Home's In flight and the list's own count.
 
 #### REQ: one-line-virtual-rows
 
@@ -350,7 +360,8 @@ only when at least one of its open pull requests is local and every open pull re
 remote, is ready (a remote open pull request that is not ready still blocks, a remote ready one alone
 cannot make the task ready); row 7 (both arms and the unpushed-work veto) reads only local pull
 requests and local worktrees; remote entries may still worsen the state (rows 2, 3 and 5) or add
-`working` (row 6). A task with no local entry is computed from its remote entries, and its state is
+`working` (row 6), but never lift it: a failed run of this machine (row 3) is cleared only by a later agent of this
+machine, not by one that another machine reported. A task with no local entry is computed from its remote entries, and its state is
 that machine's report: the view model carries `stateSource` (`local` or `remote`) and `reportedBy`
 (the machines) so the page can say "as reported by <machine>", and every pull request in a Home row
 says which machine it came from. Home lists such a task, and offers no land or push action for it
@@ -416,7 +427,7 @@ Serves J2. The second section, "Ready to land", MUST list the tasks in state `re
 per task: the task, the number of repositories, the pull request numbers, the checks passed
 over total and the age of the pull request observation (`checked_at`, the oldest among them).
 A task whose `stateSource` is `remote` (REQ:task-state) is listed with "as reported by <machine>" and with no action at all, and the pull requests of a task decided here show the machine each one came from. The action is a list of per-pull-request action slots (REQ:action-slots), one for each of the
-task's pull requests, offering the registry's landing action, and otherwise "Copy command" with
+task's local pull requests (a pull request another machine reported has no land command: its row says "reported by <machine>"), offering the registry's landing action, and otherwise "Copy command" with
 `wb pr land '<owner/repository>#<number>'` for each. Tasks in state `not-ready` that wait only
 on checks are shown below them muted, with how long ago their checks were read and no action.
 
@@ -431,8 +442,9 @@ only for dispatched runs on this machine, through the action slot, and otherwise
 where metrics exist, a load indicator that answers "can this machine take another
 agent": `free` when `cpu_percent` is below 70 and memory used is below 80 percent
 of the total, `busy` otherwise, and `unknown` (never `free`) when the sample has no
-`cpu_percent` or no memory value, with the sample's route (`local`, `live-remote` or
-`cached`) and its age.
+`cpu_percent` or no memory value, or when the sample is older than 5 minutes (an old reading says nothing of the
+machine now; its age is shown beside the word `unknown`), with the sample's route and its age. The route is said
+in three words everywhere: `local`, `live` (the wire value `live-remote`) and `cached`.
 
 #### REQ: home-resume
 
@@ -522,7 +534,9 @@ first, Agents then PRs, whose counts and links are then the panel's, and then mo
 Serves J5. `/repositories/:host/:owner/:name` is the full-page version of the
 repository panel: a merged header; one section per machine with that checkout's
 facts, worktrees and branches; the code-index panel; the README for an owner, as
-[cockpit](../cockpit/README.md) defines; and the "Raw data" block. Repository ids
+[cockpit](../cockpit/README.md) defines, read in parts so a long one never holds the page still (the first 64 KiB
+is drawn at once, and a "Show the rest" button draws the remainder one part at a time with the page free in between);
+and the "Raw data" block. Repository ids
 that worked before this Feature keep working. Branches load lazily from
 `GET /api/v1/cockpit/branches` when the page or panel opens, and while they load
 the section shows skeleton rows. The first machine's section is open, and reads its
@@ -638,7 +652,9 @@ how a direct button and an overflow menu are chosen is defined entirely by
 route is absent or returns no action for the entity, the action area is not rendered at all: no
 disabled placeholder and no gap in the layout. An entity kind with no registry target type
 (task, agent, machine) has no action area of its own, and an entity on another machine has
-none.
+none. A slot shows a live button only where its page gives it a handler that runs the action; with no handler
+(Home, whose rows only point at work) the slot shows the matching Copy entry instead, never a button that does
+nothing.
 
 #### REQ: copy-the-command
 
@@ -659,6 +675,18 @@ unit test parses every template against that manifest:
 - a dispatched run: `wb agent status '<agent-id>'`, `wb agent logs '<agent-id>'` and `wb agent
   stop '<agent-id>'`; a recorded successor session: `wb session send '<wb-session-id>'
   --message='<message>'`; no entry for any other session.
+
+Only the commands of this machine change anything: a command that creates, changes or stops something (`wb pr
+create`, `wb pr land`, `wb worktree create`, `wb agent stop`, `wb session send`, the dispatch forms) is offered
+for an entity of this machine only, because the SSH form of it would act on a checkout the operator did not choose;
+for an entity of another machine the panel offers the read-only entries (`list`, `status`, `logs`) and says in
+words to run the changing command in a terminal on that machine. A pull request another machine reported has no
+land command. A blocked session's next step names `wb session send` with the message left to edit, and a session
+that is not blocked, or has no recorded id, has no send entry. A button that copies reads "Copy" (a command with a
+part to edit: "Copy template"), and its accessible name begins with that word, then the verb and what it is for
+("Copy wb pr land: Land acme/cli#7"). A command written for the SSH route whose value the remote shell would split
+again is quoted twice, and the entry says so in a hint under it. A long command wraps inside its entry, and scrolls
+there past about six lines, and never widens the page.
 
 Every interpolated value is POSIX single-quoted (an embedded `'` is written `'\''`), and flags
 are written `--flag=value`. A placeholder is written `<<<edit:name>>>` (`<<<edit:message>>>`, `<<<edit:model>>>`,
@@ -703,21 +731,24 @@ model can write for it (REQ:copy-the-command), so the reader still sees what cou
 nothing is a dead button. It MUST offer one affordance in the session chip reading "Sign in as
 owner: run `wb cockpit`" and MUST NOT add a separate message to each button. For a session that has
 an action capability, the registry's actions MUST show in action slots, a refused one disabled
-with the registry's own reason.
+with the registry's own reason, wherever a handler runs them (REQ:action-slots).
 
 #### REQ: new-task-form
 
 Serves J3. The "New task" button MUST open a form, the route `/tasks/new`, with a repository picker that uses the
 wildcard matcher and offers only names that match `[A-Za-z0-9._-]+/[A-Za-z0-9._-]+`, a task name,
-a brief (the text of the task prompt, several lines allowed), an optional base branch and a model, and MUST produce the exact command to copy, with the quoting
-and refusal rules of REQ:copy-the-command: `wb worktree create '<task>' '<owner/repository>'...
+a brief (the text of the task prompt, several lines allowed), an optional base branch, a model and an optional agent profile, and MUST produce the exact commands to copy, with the quoting
+and refusal rules of REQ:copy-the-command. `wb agent dispatch --new-worktree` creates the worktree itself, and
+`wb worktree create` never reuses one that exists, so the two are alternatives, never a sequence: with a brief the
+form gives the dispatch command of each repository and nothing before it (the model is not asked for); without a
+brief it gives the creation command alone. The creation command is `wb worktree create '<task>' '<owner/repository>'...
 --model='<model>' --original-prompt-file='<file>'` (both flags are required by that verb, so the
 model is required in the form, `unknown` being the verb's explicit value, and the prompt file is a
 placeholder for the operator) with `--base='<branch>'` when given, and the dispatch form `wb agent
-dispatch --repo='<owner/repository>' --task='<brief>' --profile=<<<edit:profile>>>
+dispatch --repo='<owner/repository>' --task='<brief>' --profile='<profile>'
 --new-worktree='<task>'` (`--task` is the text of the task prompt, not the task name, which is the
 worktree) with `--base='<branch>'` when given; the model is not passed to dispatch,
-which has no such flag, and the profile is a placeholder because profiles are named in `wb.yaml`,
+which has no such flag, and the profile is the form's field, a placeholder (`<<<edit:profile>>>`) while it is empty, because profiles are named in `wb.yaml`,
 not in the read model. The form runs nothing. Running it from the Cockpit, Stop, Log and Reply on a
 run, and the cleanup flow are follow-ups to be specified in `cockpit-actions` (see Open
 Questions).
@@ -1620,7 +1651,9 @@ Typing in a filter MUST NOT be debounced beyond one animation frame.
 
 Polling uses the ETag. A poll that returns `304`, or a snapshot whose document is
 unchanged, MUST cause no recomputation of derived collections and no re-render
-of list rows; clock-bound text, such as relative ages, may update.
+of list rows; clock-bound text, such as relative ages, may update. Polling follows the page's visibility: a hidden
+page schedules no poll, and when it becomes visible again the session is read again (a changed principal or
+capability set is picked up) and the fleet is polled at once; an answer 401 to a poll reads the session again.
 
 ### Look and accessibility
 
@@ -1828,7 +1861,7 @@ Then the address carries `q`, `chips`, `machine`, `sort`, `dir` and `sel`, back 
 Scenario: Each page's first order
 Given a fleet with several tasks, repositories, worktrees, agents (some running) and machines including the local one
 When each list page is opened with no sort in the address
-Then Tasks, Repositories and Worktrees are in last-activity order newest first, Agents list running agents first and then newest first, and Machines list the local machine first and then by name
+Then Tasks are in state order (worst first) with the newest activity first within a state and without the at-risk tasks idle for over 14 days (the `older` chip includes them), Repositories and Worktrees are in last-activity order newest first, Agents list running agents first and then newest first, and Machines list the local machine first and then by name
 
 ### AC: rows-are-one-line-and-virtual
 
@@ -2067,7 +2100,7 @@ Then rows for `a` and `b` show the state, and for `a` the exit code, never the f
 Scenario: Two worktrees, with and without the push action
 Given a task in state `at-risk` with two worktrees on this machine for which a fake registry offers `branch.push`, and one for which it offers nothing
 When Home is opened
-Then the first row names both worktrees and the reason in words and offers "Push" per worktree opening its preview, the second names its worktree and offers "Copy command" with one command per worktree, `wb pr create '<task>' --commit-all --message='<message>'`, and each row has exactly one primary action
+Then the first row names both worktrees and the reason in words and offers "Copy template" for the push of each worktree, with the repository named in its label, the second names its worktree and offers "Copy command" with one command per worktree, `wb pr create '<task>' --commit-all --message='<message>'`, and each row has exactly one primary action
 
 ### AC: needs-you-pr-needs-you
 
@@ -2157,7 +2190,7 @@ Then none of them binds such an address to a link, each names the pull request o
 Scenario: Ready, not ready and the slots
 Given a task `fix-ci` in state `ready` with pull requests `sneat-dev/wb#12` and `sneat-co/sneat-go#7`, each 5 of 5 checks passed and read 4 and 9 minutes ago, a task in `not-ready` waiting only on checks read 4 minutes ago, and a fake registry offering the landing action for pull requests
 When Home is opened, and again with no registry and no owner session
-Then a row shows `fix-ci`, 2 repositories, both numbers, "10/10" and the age 9 min of the oldest observation, with one landing slot per pull request, the not-ready task is shown muted below with "checked 4 min ago" and no action, and without a registry each pull request offers "Copy command" `wb pr land 'sneat-dev/wb#12'`
+Then a row shows `fix-ci`, 2 repositories, both numbers, "10/10" and the age 9 min of the oldest observation, with one landing Copy entry per local pull request, the not-ready task is shown muted below with "checked 4 min ago" and no action, and without a registry each pull request offers "Copy command" `wb pr land 'sneat-dev/wb#12'`
 
 ### AC: in-flight-lists-agents-on-every-machine
 

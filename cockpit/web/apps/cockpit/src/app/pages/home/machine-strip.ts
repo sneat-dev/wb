@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, inject, input } from '@an
 import { FleetModel, MachineLoad, MachineStateId, formatAge, machineLoad } from '@cockpit/fleet-data'
 import { StateBadge } from '@cockpit/ui/control'
 import { MetricsPoller } from '../../metrics/metrics-poller'
+import { sampleWords } from '../machines/machine-text'
 
 export interface MachineTile {
   id: string
@@ -19,16 +20,11 @@ export interface MachineTile {
 
 const percent = (value: number): number => Math.min(100, Math.max(0, Math.round(value)))
 
-const ROUTE_WORDS: Record<MachineLoad['route'], string> = { local: 'local', 'live-remote': 'live', cached: 'cached', none: 'no samples' }
-
 /** The tile of a machine from the model and its polled metrics. */
 export function machineTile(model: FleetModel, view: FleetModel['machines'][number], load: MachineLoad): MachineTile {
   const { machine } = view
   const reach = machine.route === 'local' ? 'local' : machine.route === 'cached' ? `cached ${formatAge(machine.observed_at, model.now)}` : 'live'
-  const sample =
-    load.state === 'not-reported'
-      ? 'no usable sample'
-      : `${ROUTE_WORDS[load.route]}${load.sampledAt === undefined ? '' : `, ${formatAge(new Date(load.sampledAt).toISOString(), model.now)}`}`
+  const sample = sampleWords(load, model.now)
   const bars = load.cpuPercent === undefined || load.memoryPercent === undefined ? undefined : { cpu: percent(load.cpuPercent), memory: percent(load.memoryPercent) }
   return { id: machine.id, name: machine.machine, state: view.state, reach, load, sample, bars }
 }
@@ -51,6 +47,6 @@ export class MachineStrip {
   private readonly poller = inject(MetricsPoller)
   protected readonly tiles = computed(() => {
     const entries = this.poller.entries()
-    return this.model().machines.map((view) => machineTile(this.model(), view, machineLoad(entries.get(view.machine.id)?.metrics)))
+    return this.model().machines.map((view) => machineTile(this.model(), view, machineLoad(entries.get(view.machine.id)?.metrics, this.model().now)))
   })
 }

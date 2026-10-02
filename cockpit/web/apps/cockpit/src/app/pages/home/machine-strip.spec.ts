@@ -24,16 +24,18 @@ describe('machineTile', () => {
   it('says how a machine is reached and the words of the sample behind its load', () => {
     const model = modelOf(fleet())
     const view = (name: string) => model.machines.find((candidate) => candidate.machine.machine === name)!
-    const tile = (name: string) => machineTile(model, view(name), machineLoad(metrics.get(view(name).machine.id)))
+    const tile = (name: string) => machineTile(model, view(name), machineLoad(metrics.get(view(name).machine.id), model.now))
     expect(tile('mac')).toMatchObject({ name: 'mac', reach: 'local', load: { state: 'free' }, sample: 'local, just now', bars: { cpu: 41, memory: 52 } })
     expect(tile('vm')).toMatchObject({ reach: 'live', load: { state: 'busy' }, sample: 'live, just now' })
-    expect(tile('old')).toMatchObject({ reach: 'cached 1 d ago', state: 'stale', sample: 'cached, 30 min ago' })
+    // A cached sample 30 minutes old: the load is unknown, never free, and its age is said.
+    expect(tile('old')).toMatchObject({ reach: 'cached 1 d ago', state: 'stale', load: { state: 'not-reported', stale: true }, sample: 'cached, 30 min ago: too old to say' })
+    expect(tile('old').bars).toBeUndefined()
   })
 
   it('has no bars and says so for a machine with no usable sample, never calling it free', () => {
     const model = modelOf(fleet())
     const view = model.machines[0]
-    const tile = machineTile(model, view, machineLoad(undefined))
+    const tile = machineTile(model, view, machineLoad(undefined, model.now))
     expect(tile.load.state).toBe('not-reported')
     expect(tile.bars).toBeUndefined()
     expect(tile.sample).toBe('no usable sample')
@@ -48,12 +50,13 @@ describe('MachineStrip', () => {
     const { tiles } = await render(true)
     expect(tiles.map((tile) => text(tile.querySelector('.tile-name')))).toEqual(['mac', 'vm', 'old'])
     expect(tiles.map((tile) => text(tile.querySelector('app-state-badge')))).toEqual(
-      ['Load: free', 'Load: busy', 'Load: free'].map((word) => expect.stringContaining(word.replace('Load: ', ''))),
+      ['free', 'busy', 'load unknown'].map((word) => expect.stringContaining(word)),
     )
     expect(text(tiles[0].querySelector('.tile-bars'))).toBe('CPU41%Mem52%')
     expect(tiles[1].querySelector('[aria-label="CPU 86 percent"]')).not.toBeNull()
     expect(tiles[0].querySelector('.tile-fill')?.getAttribute('style')).toContain('width: 41%')
     expect(text(tiles[2])).toContain('cached 1 d ago · stale')
+    expect(text(tiles[2])).toContain('cached, 30 min ago: too old to say')
     expect(text(tiles[0])).toContain('local, just now')
   })
 

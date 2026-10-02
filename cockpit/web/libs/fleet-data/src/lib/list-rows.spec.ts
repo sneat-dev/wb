@@ -4,7 +4,7 @@ import { StepCounter } from './match'
 import { Agent, FleetDocument, Repository, Worktree } from './fleet.types'
 import { FleetModel } from './fleet-model'
 import { buildRepositories } from './model-repositories'
-import { ListRow, applyListQuery, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
+import { ListRow, applyListQuery, includesOlder, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
 import { OBSERVED, agent, fleetDocument, machine, pullRequest, repository, run, worktree } from './test-data'
 
 const NOW = Date.parse(OBSERVED)
@@ -60,8 +60,35 @@ describe('task rows', () => {
     expect(apply({ q: 'state:idle' })).toEqual(['old-work'])
     expect(apply({ q: 'state:at-risk' })).toEqual(['risky'])
     expect(apply({ q: 'age:31-90d' })).toEqual(['old-work'])
-    expect(apply({ q: 'repo:sneat-dev/wb -task:fix*' })).toEqual(['shipping', 'risky', 'old-work'])
+    expect(apply({ q: 'repo:sneat-dev/wb -task:fix*' })).toEqual(['risky', 'shipping', 'old-work'])
     expect(apply({ q: 'machine:beta' })).toEqual(['fix-ci'])
+  })
+
+  // cockpit-views#ac:default-sorts
+  it('leaves out an at-risk task idle for over 14 days, as Home does, unless the older chip is on or the filter asks for state:at-risk', () => {
+    const windowed = buildTaskRows(
+      modelOf({
+        repositories: [repository('r1', 'alpha')],
+        worktrees: [
+          wt('w1', 'fresh-risk', { owner_state: 'orphaned', ahead: 1, last_activity_at: ago(13) }),
+          wt('w2', 'stale-risk', { owner_state: 'orphaned', ahead: 1, last_activity_at: ago(15) }),
+          wt('w3', 'no-time-risk', { owner_state: 'idle', ahead: 1 }),
+          wt('w4', 'stale-idle', { owner_state: 'idle', last_activity_at: ago(40) }),
+        ],
+      }),
+    )
+    expect(windowed.filter((row) => row.windowed === true).map((row) => row.id)).toEqual(['stale-risk', 'no-time-risk'])
+    const apply = (extra: Partial<ReturnType<typeof emptyListQuery>>) => ids(applyListQuery('tasks', windowed, query(extra), NOW).rows)
+    // Only at-risk tasks are windowed: an old idle one is listed.
+    expect(apply({})).toEqual(['fresh-risk', 'stale-idle'])
+    expect(apply({ chips: ['older'] })).toEqual(['fresh-risk', 'stale-risk', 'no-time-risk', 'stale-idle'])
+    expect(apply({ q: 'state:at-risk' })).toEqual(['fresh-risk', 'stale-risk', 'no-time-risk'])
+    // The chip includes; it does not filter to the older ones, and a negated term does not ask for them.
+    expect(apply({ chips: ['older', 'idle30'] })).toEqual(['stale-idle'])
+    expect(apply({ q: '-state:at-risk' })).toEqual(['stale-idle'])
+    expect(applyListQuery('tasks', windowed, query({}), NOW).total).toBe(4)
+    expect(includesOlder(query({ chips: ['older'] }), [])).toBe(true)
+    expect(includesOlder(query({}), [])).toBe(false)
   })
 
   it('reports the number before filtering as the total', () => {
@@ -74,7 +101,7 @@ describe('task rows', () => {
     const states = modelOf({
       repositories: [repository('r1', 'alpha')],
       worktrees: [
-        wt('w1', 'at-risk', { owner_state: 'orphaned', ahead: 1 }),
+        wt('w1', 'at-risk', { owner_state: 'orphaned', ahead: 1, last_activity_at: ago(1) }),
         wt('w2', 'failed'),
         wt('w3', 'blocked'),
         wt('w4', 'ready'),
@@ -93,8 +120,23 @@ describe('task rows', () => {
     expect(reversed).toEqual([...sorted].reverse())
   })
 
-  it('sorts by last activity newest first by default, and by the other listed columns', () => {
-    expect(ids(applyListQuery('tasks', rows, emptyListQuery(), NOW).rows)).toEqual(['fix-ci', 'shipping', 'risky', 'old-work'])
+  // cockpit-views#ac:default-sorts
+  it('sorts by state precedence by default, newest activity first within a state, and by the other listed columns', () => {
+    // at risk, ready, working, idle: the order of REQ:task-state, not the order of the last activity.
+    expect(ids(applyListQuery('tasks', rows, emptyListQuery(), NOW).rows)).toEqual(['risky', 'shipping', 'fix-ci', 'old-work'])
+    const states = modelOf({
+      repositories: [repository('r1', 'alpha')],
+      worktrees: [
+        wt('w1', 'idle-old', { owner_state: 'idle', last_activity_at: ago(9) }),
+        wt('w2', 'idle-new', { owner_state: 'idle', last_activity_at: ago(2) }),
+        wt('w3', 'idle-none', { owner_state: 'idle' }),
+        wt('w4', 'idle-mid', { owner_state: 'idle', last_activity_at: ago(5) }),
+        wt('w5', 'working', { owner_state: 'active', last_activity_at: ago(30) }),
+      ],
+    })
+    expect(ids(applyListQuery('tasks', buildTaskRows(states), emptyListQuery(), NOW).rows)).toEqual(['working', 'idle-new', 'idle-mid', 'idle-old', 'idle-none'])
+    expect(ids(applyListQuery('tasks', buildTaskRows(states), query({ sort: 'state', dir: 'desc' }), NOW).rows)).toEqual(['idle-new', 'idle-mid', 'idle-old', 'idle-none', 'working'])
+    expect(ids(applyListQuery('tasks', rows, query({ sort: 'activity' }), NOW).rows)).toEqual(['fix-ci', 'shipping', 'risky', 'old-work'])
     expect(ids(applyListQuery('tasks', rows, query({ sort: 'activity', dir: 'asc' }), NOW).rows)).toEqual(['old-work', 'risky', 'shipping', 'fix-ci'])
     expect(ids(applyListQuery('tasks', rows, query({ sort: 'task' }), NOW).rows)).toEqual(['fix-ci', 'old-work', 'risky', 'shipping'])
     expect(ids(applyListQuery('tasks', rows, query({ sort: 'worktrees' }), NOW).rows)[0]).toBe('fix-ci')

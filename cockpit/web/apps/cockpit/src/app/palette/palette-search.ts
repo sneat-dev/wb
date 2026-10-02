@@ -1,5 +1,5 @@
 import { Agent, AppLink, FleetModel, MachineView, MergedRepository, TaskView, Worktree, ListPageId, Term, agentDetailLink, declaredFields, machineDetailLink, parseQuery, repositoryDetailLink, taskDetailLink, worktreeDetailLink } from '@cockpit/fleet-data'
-import { EXACT_FIELDS, ListRow, MatchEnv, Subject, agentLabel, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows, matchesTerms } from '@cockpit/fleet-data/list'
+import { EXACT_FIELDS, ListRow, MatchEnv, Subject, agentLabel, emptyListQuery, includesOlder, buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows, matchesTerms } from '@cockpit/fleet-data/list'
 import { IconName } from '../ui/icon'
 
 export type PaletteKind = 'task' | 'repository' | 'worktree' | 'branch' | 'agent' | 'machine'
@@ -164,7 +164,8 @@ export function searchPalette(model: FleetModel, text: string, now: number): Pal
     })
   }
   const groups = [
-    group('task', rows(buildTaskRows(model), describe.task), 'tasks', terms, now),
+    // The window of Home applies: a task at risk and idle for over 14 days is a cleanup matter, so a search leaves it out unless it asks for `state:at-risk`.
+    group('task', rows(buildTaskRows(model).filter((row) => row.windowed !== true || includesOlder(emptyListQuery(), terms)), describe.task), 'tasks', terms, now),
     group('repository', rows(buildRepositoryRows(model), describe.repository), 'repositories', terms, now),
     group('worktree', rows(worktreeRows, describe.worktree), 'worktrees', terms, now),
     group('branch', branches, 'branch', terms, now),

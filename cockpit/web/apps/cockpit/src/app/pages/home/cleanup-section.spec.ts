@@ -32,13 +32,14 @@ describe('CleanupSection', () => {
     expect(look.getAttribute('href')).toBe('/worktrees?chips=look')
   })
 
-  it('has "Review & clean" open Worktrees filtered to the safe set, and "Copy template" for the dry run, which is never applied', async () => {
+  it('has "Review & clean" open Worktrees filtered to the safe set, and "Copy" for the dry run, which is never applied', async () => {
     const { fixture, root, copy } = await render()
     const review = root.querySelector('a.home-act') as HTMLAnchorElement
     expect(text(review)).toBe('Review & clean')
     expect(review.getAttribute('href')).toBe('/worktrees?chips=safe')
     const button = root.querySelector('app-lazy-copy button') as HTMLButtonElement
-    expect(text(button)).toBe('Copy command')
+    expect(text(button)).toBe('Copy')
+    expect(button.getAttribute('aria-label')).toBe("Copy wb worktree gc: the dry-run plan of the fleet's cleanup")
     button.click()
     await fixture.whenStable()
     await new Promise((done) => setTimeout(done, 10))

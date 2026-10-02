@@ -85,11 +85,11 @@ describe('TaskPanelView', () => {
       ['worktree:w3', [registryAction('branch.push', 'Push remote')]],
     ])
     const root = await render('fix-ci', tasksDocument(), false, registry)
-    const buttons = [...root.querySelectorAll('app-action-slot button')].map(text)
-    expect(buttons).toEqual(['Land', 'Push'])
+    // A slot for each pull request and worktree of this machine only; none is a live button, since no page handles an action.
+    expect(root.querySelectorAll('app-action-slot').length).toBe(root.querySelectorAll('[aria-label="Pull requests"] li:has(app-action-slot), [aria-label="Worktrees"] li:has(app-action-slot)').length)
+    expect(root.querySelectorAll('app-action-slot').length).toBeGreaterThan(1)
+    expect(root.querySelectorAll('app-action-slot button, app-action-slot .slot')).toHaveLength(0)
     expect(root.querySelector('[aria-label="Worktrees"] li:nth-child(3) app-action-slot')).toBeNull()
-    // Nothing is rendered for a pull request the registry did not return anything for.
-    expect(root.querySelectorAll('app-action-slot button')).toHaveLength(2)
   })
 
   it('says None for a task with no pull request', async () => {

@@ -15,6 +15,7 @@ export const workspaceAliases = [
   { find: '@cockpit/fleet-data', replacement: resolve(import.meta.dirname, 'libs/fleet-data/src/index.ts') },
   { find: '@cockpit/ui/viewport-mount', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/viewport-mount/viewport-mount.ts') },
   { find: '@cockpit/ui/state', replacement: resolve(import.meta.dirname, 'libs/ui/src/state.ts') },
+  { find: '@cockpit/ui/status', replacement: resolve(import.meta.dirname, 'libs/ui/src/status.ts') },
   { find: '@cockpit/ui/code-index-label', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/code-index-label/code-index-label.ts') },
   { find: '@cockpit/ui/code-index-panel', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/code-index-panel/code-index-panel.ts') },
   { find: '@cockpit/ui/list-host', replacement: resolve(import.meta.dirname, 'libs/ui/src/lib/list/list-host.ts') },

@@ -2,6 +2,7 @@ import { DOCUMENT } from '@angular/common'
 import { ChangeDetectionStrategy, Component, DestroyRef, ViewContainerRef, afterNextRender, effect, inject, signal, viewChild } from '@angular/core'
 import { RouterOutlet } from '@angular/router'
 import { FleetStore } from '@cockpit/fleet-data'
+import { StatusRegion } from '@cockpit/ui/status'
 import { FleetBanner } from './fleet-banner/fleet-banner'
 import { whenIdle } from './shell/idle'
 import { OverlayLoader } from './shell/overlay-loader'
@@ -22,7 +23,7 @@ export { PAGE_LINKS } from './nav'
  */
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, FleetBanner, TopBar, SkeletonRows],
+  imports: [RouterOutlet, FleetBanner, StatusRegion, TopBar, SkeletonRows],
   templateUrl: './app.html',
   styleUrl: './app.css',
   changeDetection: ChangeDetectionStrategy.OnPush,

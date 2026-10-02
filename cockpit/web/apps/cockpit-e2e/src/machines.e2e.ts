@@ -152,7 +152,7 @@ test('a machine without metrics says so, a cached sample has no history chart, a
   const commands = page.locator('app-copy-command-list')
   await expect(commands).toContainText('wb daemon start')
   await expect(commands).toContainText('run on gamma')
-  await commands.getByRole('button', { name: /Copy command: Fix the remote read/ }).click()
+  await commands.getByRole('button', { name: /^Copy wb daemon start: Fix the remote read/ }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('wb daemon start')
 
   await page.goto('/cockpit/machines/mach-beta')

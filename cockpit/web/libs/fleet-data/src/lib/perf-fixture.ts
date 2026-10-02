@@ -167,7 +167,7 @@ export function performanceFixture(seed = 20261001): PerformanceFixture {
       task,
       name: task,
       branch,
-      lifecycle: random() < 0.15 ? 'merged' : 'in_progress',
+      lifecycle: random() < 0.15 ? 'merged' : 'working',
       owner_state: pick(random, owners),
       last_activity_at: new Date(PERF_NOW - idleDays * DAY - Math.floor(random() * DAY)).toISOString(),
       ahead: local ? Math.floor(random() * 3) : undefined,

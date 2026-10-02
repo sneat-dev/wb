@@ -91,13 +91,15 @@ describe('MachinePanelView', () => {
     expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('cached: the latest sample of its published snapshot, 30 min ago')
     expect(facts(panel, '.latest')).toEqual({ CPU: '35%', 'Load (1 min)': '1.75', Memory: '6 GB of 16 GB (38%)', 'Disk free': '200 GB free of 500 GB' })
     expect(panel.querySelector('app-viewport-mount, app-machine-charts, app-chart')).toBeNull()
-    expect(text(panel.querySelector('app-panel-state'))).toContain('free')
+    // The sample is 30 minutes old: the load is unknown, not free.
+    expect(text(panel.querySelector('app-panel-state'))).toContain('load unknown')
+    expect(text(panel.querySelector('app-panel-state'))).not.toContain('free')
   })
 
   it('names a live machine by its transport and age, its history, and how many entries its export left out', async () => {
     const { panel } = await open('mach-vm')
     expect(text(panel.querySelector('app-panel-state .why'))).toBe('live over http, just now')
-    expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('live-remote: 30 samples, fetched just now')
+    expect(text(section(panel, 'Metrics').querySelector('.source'))).toBe('live: 30 samples, fetched just now')
     expect(facts(panel)).toMatchObject({ 'Reached by': 'http', Observed: 'just now', 'Left out': '3 entries of its export' })
     await vi.waitFor(() => expect(panel.querySelectorAll('app-machine-charts app-chart')).toHaveLength(4))
   })

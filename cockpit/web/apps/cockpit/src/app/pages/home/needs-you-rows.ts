@@ -10,7 +10,7 @@ export type RowAction =
 /** What work at risk offers besides opening its task: the registry's Push per worktree when it offers one, otherwise a "Copy template" icon button. */
 export interface WorkOffer {
   task: string
-  worktrees: { id: string; branch: string }[]
+  worktrees: { id: string; branch: string; repository: string }[]
 }
 
 /** A repository, and for work at risk the branch of the worktree, a row says "where" with. */
@@ -85,7 +85,7 @@ function actionOf(item: NeedsYouItem): RowAction {
 }
 
 function workOf(item: NeedsYouItem): WorkOffer | undefined {
-  return item.kind === 'work-at-risk' ? { task: item.task, worktrees: item.worktrees.map((worktree) => ({ id: worktree.id, branch: worktree.branch })) } : undefined
+  return item.kind === 'work-at-risk' ? { task: item.task, worktrees: item.worktrees.map((worktree) => ({ id: worktree.id, branch: worktree.branch, repository: worktree.repository })) } : undefined
 }
 
 function reasonOf(item: NeedsYouItem): string {
