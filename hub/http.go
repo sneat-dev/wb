@@ -65,6 +65,38 @@ type HandlerOptions struct {
 	// which is what the hosted multi-identity service leaves it, means the route
 	// does not exist.
 	MachineExport *MachineExport
+	// OperatorWrites marks a daemon-hosted hub, whose viewer is a fixed local
+	// identity and therefore proves nothing about the caller
+	// (self-hosted-bench#req:hub-writes-need-a-credential). When set, the routes
+	// that write to the store or begin a GitHub installation connection require
+	// the credential it names. Nil, which is what the hosted multi-identity
+	// service leaves it, changes nothing: its own viewer and bearer checks decide.
+	OperatorWrites *OperatorWrites
+}
+
+// OperatorWrites is the credential a daemon-hosted hub requires for a write.
+type OperatorWrites struct {
+	// OwnerIdentityID is the identity of the host owner. A machine bearer of
+	// this identity that is not a peer credential may write.
+	OwnerIdentityID string
+	// Owner reports whether a request acts as the owner principal: the seam the
+	// daemon fills with Cockpit's own session check. Nil means no browser
+	// session can write, so only a machine bearer does.
+	Owner func(*http.Request) bool
+}
+
+// operatorWriteAllowed reports whether a write may proceed. A hosted hub has
+// no such gate; a daemon-hosted hub fails closed unless the request carries a
+// machine bearer of the host owner or the owner's own session.
+func (h apiHandler) operatorWriteAllowed(r *http.Request) bool {
+	gate := h.options.OperatorWrites
+	if gate == nil {
+		return true
+	}
+	if machine, ok := h.machine(r); ok && gate.OwnerIdentityID != "" && machine.IdentityID == gate.OwnerIdentityID && !isPeerScopes(machine.Scopes) {
+		return true
+	}
+	return gate.Owner != nil && gate.Owner(r)
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -259,7 +291,7 @@ func (h apiHandler) listSnapshots(w http.ResponseWriter, r *http.Request) {
 
 func (h apiHandler) connectInstallation(w http.ResponseWriter, r *http.Request) {
 	v, ok := h.viewer(r)
-	if !ok {
+	if !ok || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "viewer_unauthorized")
 		return
 	}
@@ -313,7 +345,7 @@ func (h apiHandler) continueInstallation(w http.ResponseWriter, r *http.Request)
 
 func (h apiHandler) authorizeInstallationOpener(w http.ResponseWriter, r *http.Request) {
 	viewer, ok := h.viewer(r)
-	if !ok {
+	if !ok || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "viewer_unauthorized")
 		return
 	}
@@ -655,7 +687,7 @@ func (h apiHandler) getCoverage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizedForCoverage(r) {
+	if !h.authorizedForCoverage(r) || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "coverage_unauthorized")
 		return
 	}
@@ -669,7 +701,13 @@ func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.options.Coverage.SaveCoverage(r.Context(), record); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// The store's error names the repository and may wrap the engine's own
+		// message, a path included: the caller gets a closed code instead.
+		if errors.Is(err, errInvalidCoverageRecord) {
+			writeError(w, http.StatusBadRequest, "invalid_coverage_record")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "coverage_failed")
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, record)
