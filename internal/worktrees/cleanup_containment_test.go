@@ -136,3 +136,37 @@ func TestExplicitBaseIsNeverReplacedAndNamesItselfAsTheProof(t *testing.T) {
 		t.Fatalf("contained = %t, err = %v, proof = %q; want %q", contained, err, proved.result.IntegrationProof, want)
 	}
 }
+
+// An empty or unresolved head must never be "contained". Git is not even
+// asked: the fake here would answer yes to anything.
+func TestContainmentIsRefusedWithoutAnExactHeadAndAnExactTarget(t *testing.T) {
+	t.Parallel()
+	asked := false
+	yesToEverything := worktreelanding.DefaultTargetPorts{
+		DefaultBranch:   func(context.Context) (string, error) { return "main", nil },
+		FetchTargetHead: func(context.Context, string) (string, error) { return judgedMain, nil },
+		IsAncestor: func(context.Context, string, string) (bool, error) {
+			asked = true
+			return true, nil
+		},
+	}
+	for _, test := range []struct{ name, head, target string }{
+		{name: "empty head", head: "", target: judgedMain},
+		{name: "symbolic head", head: "HEAD", target: judgedMain},
+		{name: "abbreviated head", head: judgedHead[:12], target: judgedMain},
+		{name: "branch name as head", head: "main", target: judgedMain},
+		{name: "empty target", head: judgedHead, target: ""},
+		{name: "target named by ref", head: judgedHead, target: "origin/main"},
+	} {
+		for _, shape := range map[string]*lifecycleInspection{"absent base": absentBaseInspection(), "stacked": stackedInspection(false), "explicit": stackedInspection(true)} {
+			shape.head, shape.result.RemoteTargetSHA = test.head, test.target
+			contained, err := shape.judgeContainment(yesToEverything)
+			if contained || err == nil || shape.result.IntegrationProof != "" {
+				t.Fatalf("%s: contained = %t, err = %v, proof = %q; want a refusal", test.name, contained, err, shape.result.IntegrationProof)
+			}
+		}
+	}
+	if asked {
+		t.Fatal("Git ancestry was consulted for a head or target that is not an exact commit id")
+	}
+}

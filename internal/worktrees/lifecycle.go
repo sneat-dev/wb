@@ -4076,6 +4076,13 @@ func (i *lifecycleInspection) checkGitHubIntegration() error {
 // target that proved the head is not simply the recorded base, the result says
 // which target it was.
 func (i *lifecycleInspection) judgeContainment(ports worktreelanding.DefaultTargetPorts) (bool, error) {
+	// Containment is a statement about one exact commit. An empty or
+	// unresolved head, or a target that was never fetched, has nothing to be
+	// contained in or by: asking Git anyway would let a revision name, or a
+	// lenient answer, stand in for a proof. Fail closed before asking.
+	if !worktreeproof.IsGitObjectID(i.head) || !worktreeproof.IsGitObjectID(i.result.RemoteTargetSHA) {
+		return false, fmt.Errorf("cannot judge containment of head %q in target %q: both must be exact commit ids", i.head, i.result.RemoteTargetSHA)
+	}
 	contained, err := ports.IsAncestor(i.ctx, i.head, i.result.RemoteTargetSHA)
 	if err != nil {
 		return false, err
