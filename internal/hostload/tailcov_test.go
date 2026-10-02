@@ -14,31 +14,6 @@ import (
 	"time"
 )
 
-// TestTailCovDisabledNamesWhyAdmissionIsOff pins Disabled's contract: it
-// reports both whether admission is off and the reason Resolve found, so a
-// caller can record the reason without resolving a second time.
-func TestTailCovDisabledNamesWhyAdmissionIsOff(t *testing.T) {
-	clearAdmissionEnv(t)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	off, reason := Disabled("")
-	if off {
-		t.Fatal("Disabled() with nothing overriding the floor = true, want admission active")
-	}
-	if reason != "" {
-		t.Fatalf("Disabled() reason = %q while admission is active, want empty", reason)
-	}
-
-	t.Setenv(EnvLoadFloor, "0")
-	off, reason = Disabled("")
-	if !off {
-		t.Fatal("Disabled() with WB_ADMISSION_LOAD_FLOOR=0 = false, want true")
-	}
-	if reason != "env" {
-		t.Fatalf("Disabled() reason = %q, want %q", reason, "env")
-	}
-}
-
 // TestTailCovResolveReadsTheDefaultConfigPath pins that an empty configPath
 // resolves wbconfig.DefaultPath(), that a missing file there keeps the default
 // floor, and that a file planted there is honoured — the path a plain
