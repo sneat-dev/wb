@@ -348,6 +348,29 @@ func (c *cockpitServer) get(target string, cookie *http.Cookie, headers ...strin
 	return recorder
 }
 
+// do makes a request of any method on the API mount, with a body and headers.
+func (c *cockpitServer) do(method, target, body string, headers ...string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Host = testHost
+	for i := 0; i < len(headers); i += 2 {
+		request.Header.Set(headers[i], headers[i+1])
+	}
+	recorder := httptest.NewRecorder()
+	c.api.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// onHost requests target on the API mount with another Host header.
+func (c *cockpitServer) onHost(host, target string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = host
+	recorder := httptest.NewRecorder()
+	c.api.ServeHTTP(recorder, request)
+	return recorder
+}
+
 // login returns an owner session cookie.
 func (c *cockpitServer) login() *http.Cookie {
 	c.t.Helper()

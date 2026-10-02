@@ -3,12 +3,15 @@ package fleet
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/herdr"
@@ -160,29 +163,96 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	if exported.Machine != sentinel+"remote-machine" || len(exported.Fleet.Worktrees) != 1 {
 		t.Fatalf("the remote export = %+v", exported)
 	}
-	exporter := &fakeExporter{answer: func(target RemoteTarget, _ bool) (Envelope, error) {
-		if target.Machine == "broken" {
+	// A third machine is read end to end, over the real HTTP transport from a hub
+	// that answers a hostile body: the valid export with a sentinel in every text
+	// an envelope can carry and in fields it has no place for. The decoder refuses
+	// it as a whole, and nothing of it may be shown: only bad_payload.
+	hostileHub := newFakeHub(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(hostileEnvelope(t, exported))
+	})
+	overHTTP := NewHTTPExporter(nil)
+	exporter := &fakeExporter{answer: func(target RemoteTarget, metricsOnly bool) (Envelope, error) {
+		switch target.Machine {
+		case "broken":
 			return Envelope{}, errors.Join(errors.New(sentinel+"error-text"), &RemoteError{Code: sentinel + "code"})
+		case "hostile":
+			return overHTTP.Export(t.Context(), target, metricsOnly)
+		case "sshvm":
+			return Envelope{}, ErrNoRoute
 		}
 		return exported, nil
 	}}
+	// A fourth machine has an SSH route (its host, user and wb path are
+	// sentinels: they are the owner's alone) and is read over SSH, which fails
+	// with a sentinel as everything the remote and ssh printed.
+	runner := &fakeSSH{answer: failingSSH(255, sentinel+"stdout", sentinel+"stderr: Permission denied (publickey).")}
+	sshRoute := SSHRoute{Host: sentinel + "host.example", User: "SENTINEL_user", WBPath: "/opt/" + sentinel + "path/wb"}
+	// The periodic publisher's diagnostic is shown only as one of its closed
+	// codes: any other text it gives is dropped.
+	publisher := &fakePublisher{diag: sentinel + "publish-error /Users/x: permission denied"}
 	snapshotter, _ := newSnapshotter(sentinelSources().collectors(), func(options *Options) {
 		options.ProjectsRoot = "/" + sentinel + "projects-root"
 		options.Sampler = filledSampler(t, &countingSource{}, 3)
 		options.Remotes = []RemoteTarget{
 			{Machine: "vm", HTTP: &HTTPRoute{URL: "https://" + sentinel + "host.example", TokenFile: "/" + sentinel + "token-file"}},
 			{Machine: "broken", HTTP: &HTTPRoute{URL: "https://" + sentinel + "broken.example", TokenFile: "/" + sentinel + "token-file"}},
+			{Machine: "hostile", HTTP: &HTTPRoute{URL: hostileHub.server.URL, TokenFile: tokenFile(t, sentinel+"bearer")}},
+			{Machine: "sshvm", SSH: &sshRoute},
 		}
-		options.Transports = []RemoteTransport{{Name: TransportHTTP, Exporter: exporter}}
+		options.Transports = []RemoteTransport{
+			{Name: TransportHTTP, Exporter: exporter},
+			{Name: TransportSSH, Exporter: NewSSHExporter(foundSSH(t, nil), runner, nil, nil)},
+		}
+		options.SSHRoutes = map[string]SSHRoute{"sshvm": sshRoute, "vm": sshRoute}
 		options.Terminals = sentinelTerminals()
+		options.Publisher = publisher
 	})
 	refreshAndSettle(t, snapshotter)
 	pollAndSettle(t, snapshotter)
 	if vm, found := machineNamed(snapshotter.Document(), "vm"); !found || vm.WorktreeCount != 1 {
 		t.Fatalf("the live machine = %+v (the test would be vacuous)", vm)
 	}
+	for name, want := range map[string]string{"hostile": RemoteErrorBadPayload, "sshvm": RemoteErrorAuthFailed} {
+		if machine, found := machineNamed(snapshotter.Document(), name); !found || machine.RemoteError != want {
+			t.Fatalf("the machine %s = %+v (found %v), want it shown with %s (the test would be vacuous)", name, machine, found, want)
+		}
+	}
+	if len(hostileHub.seen()) == 0 || runner.count() == 0 || publisher.calls == 0 || len(snapshotter.MachineRoutes()) == 0 {
+		t.Fatalf("the hostile hub was asked %d times, ssh run %d times, the publisher called %d times, %d owner routes (the test would be vacuous)", len(hostileHub.seen()), runner.count(), publisher.calls, len(snapshotter.MachineRoutes()))
+	}
 	server := newCockpitServer(t, snapshotter)
 	body := server.get("/api/v1/cockpit/fleet", nil).Body.String()
+	// The scoped reads of the fleet route, and who an anonymous reader is told it is.
+	for _, target := range []string{"fleet?scope=" + ScopeOwn, "fleet?scope=" + ScopeMachine, "session"} {
+		recorder := server.get(cockpit.APIPrefix+target, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", target, recorder.Code, recorder.Body.String())
+		}
+		body += recorder.Body.String() + headersOf(recorder)
+	}
+	// Every refusal an anonymous reader can provoke, each asked with a sentinel:
+	// an error body is a closed code or a fixed text and repeats nothing it was
+	// sent.
+	for name, refused := range map[string]struct {
+		recorder *httptest.ResponseRecorder
+		status   int
+		code     string
+	}{
+		"a forwarded request (401)":       {server.get(cockpit.APIPrefix+FleetRoute+"?scope="+sentinel+"scope", nil, "X-Forwarded-For", sentinel+"forwarded"), http.StatusUnauthorized, "an owner session is required"},
+		"the README with no session":      {server.get(ReadmePath+"?repository="+sentinel+"repository", nil), http.StatusUnauthorized, "an owner session is required"},
+		"an unknown route (404)":          {server.get(cockpit.APIPrefix+sentinel+"route", nil), http.StatusNotFound, "not found"},
+		"another method (405)":            {server.do(http.MethodPost, cockpit.APIPrefix+FleetRoute+"?"+sentinel+"query=1", sentinel+"body"), http.StatusMethodNotAllowed, "method not allowed"},
+		"an unknown repository":           {server.get(cockpit.APIPrefix+BranchesRoute+"?repository="+sentinel+"repository", nil), http.StatusNotFound, "unknown_repository"},
+		"an unknown machine":              {server.get(metricsURL+sentinel+"machine", nil), http.StatusNotFound, "unknown_machine"},
+		"a foreign origin (403)":          {server.get(cockpit.APIPrefix+FleetRoute, nil, "Origin", "https://"+sentinel+"origin.example"), http.StatusForbidden, "cross-origin request refused"},
+		"a foreign host (421)":            {server.onHost(sentinel+"host.example:8766", cockpit.APIPrefix+FleetRoute), http.StatusMisdirectedRequest, "misdirected request"},
+		"the hosted page's bad preflight": {server.do(http.MethodOptions, cockpit.APIPrefix+FleetRoute, "", "Origin", hostedOrigin, "Access-Control-Request-Method", "GET", "Access-Control-Request-Headers", sentinel+"header"), http.StatusForbidden, "not allowed from the hosted origin"},
+	} {
+		if refused.recorder.Code != refused.status || !strings.Contains(refused.recorder.Body.String(), refused.code) {
+			t.Errorf("%s = %d %s, want %d %q", name, refused.recorder.Code, refused.recorder.Body.String(), refused.status, refused.code)
+		}
+		body += refused.recorder.Body.String() + headersOf(refused.recorder)
+	}
 	// The metrics of every machine in the document are served by their own
 	// route (a local history, and none for the machines of snapshots), so the
 	// same checks cover it, and its payload is the fixed field set and nothing more.
@@ -243,9 +313,14 @@ func TestDocumentCarriesNoSourceFieldOutsideTheMetadataSet(t *testing.T) {
 	if strings.Contains(body, "dropped-local-runtime") || strings.Contains(body, "dropped-runtime") {
 		t.Fatalf("an agent with an invalid identifier reached a response: %s", body)
 	}
+	// The publisher's text is not one of its codes: no publish_error at all.
+	if strings.Contains(body, "publish_error") || strings.Contains(body, "machine_routes") {
+		t.Fatalf("an anonymous response carries a publish error that is no code, or the owner's routes: %s", body)
+	}
 	for _, want := range []string{
 		`"task-a"`, `"task-landed"`, `"duration_seconds":7200`, `"median_seconds":7200`, `"feature/a"`, `"acme/widgets"`, `"wbs-1"`, `"agt-1"`, `"codex"`, `"task-x"`, `"stream-x"`, `"acme/gadgets"`,
 		`"route":"live-remote"`, `"transport":"http"`, `"remote_error":"http_unavailable"`, `"machine":"vm"`, `"machine":"broken"`,
+		`"remote_error":"bad_payload"`, `"machine":"hostile"`, `"remote_error":"auth_failed"`, `"machine":"sshvm"`, `"principal":"anonymous-local"`,
 		`"desktop"`, `"v0.9.0"`, `"wbs-remote"`, `"agt-remote"`, `"wbs-odd"`, `"agt-odd"`, `"route":"cached"`, `"activity":"blocked"`, `"exit_code":2`, `"finished_at"`, `"started_at"`, `"os":"linux"`, `"arch":"arm64"`, `"cpu_count":8`, `"owner_state":"orphaned"`, `"lifecycle":"working"`, `"refresh_interval_seconds":60`, `"remote_url_web":"https://github.com/acme/widgets"`, `https://github.com/acme/gadgets/pull/3`, `https://github.com/acme/widgets/pull/7`, `"main"`, `"origin/feature/a"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -277,15 +352,59 @@ func TestDocumentFieldsAreExactlyTheMetadataFieldSet(t *testing.T) {
 		"MetricsResponse":  {"machine", "route", "fetched_at", "samples", "reason"},
 		"Sample":           {"cpu_percent", "load1", "memory_used_bytes", "memory_total_bytes", "disk_free_bytes", "disk_total_bytes", "sampled_at"},
 		"Agent":            append([]string{"kind", "session_id", "run_id", "runtime", "model", "state", "activity", "repository", "task", "worktrees", "started_at", "finished_at", "exit_code"}, entry...),
+		// The export envelope, which the hub route and the export verb print and
+		// every reader of another machine decodes, and the verb's typed failure.
+		"Envelope":        {"schema_version", "machine", "exported_at", "fleet", "metrics", "dropped"},
+		"splicedEnvelope": {"schema_version", "machine", "exported_at", "fleet", "metrics", "dropped"},
+		"EnvelopeMetrics": {"route", "samples", "reason"},
+		"ExportError":     {"schema_version", "error"},
 	}
 	for name, got := range map[string][]string{
 		"Document": jsonFields(Document{}), "Machine": jsonFields(Machine{}), "Repository": jsonFields(Repository{}),
 		"Worktree": jsonFields(Worktree{}), "Branch": jsonFields(Branch{}), "PullRequest": jsonFields(PullRequest{}), "Agent": jsonFields(Agent{}),
 		"BranchesResponse": jsonFields(BranchesResponse{}), "MetricsResponse": jsonFields(MetricsResponse{}), "Sample": jsonFields(machinemetrics.Sample{}), "CodeIndex": jsonFields(CodeIndex{}), "CodeStatistics": jsonFields(CodeStatistics{}), "KindCount": jsonFields(KindCount{}),
 		"Throughput": jsonFields(Throughput{}), "ThroughputDay": jsonFields(ThroughputDay{}), "ThroughputTask": jsonFields(ThroughputTask{}),
+		"Envelope": jsonFields(Envelope{}), "splicedEnvelope": jsonFields(splicedEnvelope{}), "EnvelopeMetrics": jsonFields(EnvelopeMetrics{}), "ExportError": jsonFields(ExportError{}),
 	} {
 		if !sameSet(got, want[name]) {
 			t.Errorf("%s fields = %v, want exactly %v", name, got, want[name])
 		}
 	}
+}
+
+// headersOf is every header of a response, names and values, as text.
+func headersOf(recorder *httptest.ResponseRecorder) string {
+	var text strings.Builder
+	for name, values := range recorder.Header() {
+		text.WriteString(name + ": " + strings.Join(values, ", ") + "\n")
+	}
+	return text.String()
+}
+
+// hostileEnvelope is the bytes of a valid export made hostile: a sentinel in
+// its machine name, in every name of its entries, in fields a machine's own
+// export never carries (the reader's codes), and in fields the envelope has no
+// place for at all (a path, an error text, a command line).
+func hostileEnvelope(t *testing.T, valid Envelope) []byte {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal(marshalled(t, valid), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope["machine"] = sentinel + "envelope-machine"
+	envelope["path"] = "/" + sentinel + "envelope/path"
+	envelope["error"] = sentinel + "envelope-error: no such file or directory"
+	fleet := envelope["fleet"].(map[string]any)
+	fleet["error"] = sentinel + "fleet-error"
+	for _, collection := range []string{"machines", "repositories", "worktrees", "pull_requests", "agents"} {
+		for _, item := range fleet[collection].([]any) {
+			entry := item.(map[string]any)
+			for _, field := range []string{"machine", "name", "task", "branch", "stream", "failed_check", "model", "runtime", "remote_error", "publish_error", "transport", "wb_version", "os", "error", "url", "remote_url_web", "default_branch", "host"} {
+				entry[field] = sentinel + "hostile-" + collection + "-" + field
+			}
+			entry["path"] = "/" + sentinel + "hostile/" + collection
+			entry["command"] = sentinel + "hostile-command --token " + sentinel + "secret"
+		}
+	}
+	return marshalled(t, envelope)
 }
