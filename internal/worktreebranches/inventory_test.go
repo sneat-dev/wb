@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -375,6 +376,28 @@ func TestInventoryPullRequestErrorShapes(t *testing.T) {
 	}
 }
 
+// heartbeatWriter is a progress writer that is safe to read while the
+// inspection still writes to it, and that says when the first write arrived.
+type heartbeatWriter struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+	once   sync.Once
+	wrote  chan struct{}
+}
+
+func (w *heartbeatWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.once.Do(func() { close(w.wrote) })
+	return w.buffer.Write(data)
+}
+
+func (w *heartbeatWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buffer.String()
+}
+
 func TestInventoryInspectionHeartbeatAndFailurePaths(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -388,14 +411,16 @@ func TestInventoryInspectionHeartbeatAndFailurePaths(t *testing.T) {
 	if diag != "done" || len(rows) != 1 {
 		t.Fatalf("direct: %#v %q", rows, diag)
 	}
-	var progress bytes.Buffer
+	// The slow inspection ends only once a heartbeat has been written, so a
+	// loaded machine cannot finish it before the first tick.
+	progress := &heartbeatWriter{wrote: make(chan struct{})}
 	gate := make(chan struct{})
 	slow := func(context.Context, Repository, InventorySweep, map[string]string) ([]BranchEntry, string) {
 		<-gate
 		return []BranchEntry{{Branch: "slow"}}, "done"
 	}
-	go func() { time.Sleep(5 * time.Millisecond); close(gate) }()
-	rows, diag = service.InspectRepositoryBranchesWithHeartbeat(ctx, repo, InventorySweep{Progress: &progress}, nil, 1, 2, time.Millisecond, slow)
+	go func() { <-progress.wrote; close(gate) }()
+	rows, diag = service.InspectRepositoryBranchesWithHeartbeat(ctx, repo, InventorySweep{Progress: progress}, nil, 1, 2, time.Millisecond, slow)
 	if diag != "done" || len(rows) != 1 || !strings.Contains(progress.String(), "still scanning org/repo") {
 		t.Fatalf("heartbeat: %#v %q %q", rows, diag, progress.String())
 	}

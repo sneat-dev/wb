@@ -47,9 +47,9 @@
 
 .tabs {
   display: flex;
+  flex: none;
   align-self: stretch;
   gap: var(--space-1);
-  min-width: 0;
 }
 
 .tab-slot {
@@ -137,15 +137,19 @@ a.badge:hover {
   display: flex;
   gap: var(--space-2);
   align-items: center;
-  margin-left: auto;
+  flex: 1 1 0;
+  justify-content: flex-end;
   min-width: 0;
 }
 
+/* The search entry is the one part that gives way by the pixel: fonts differ in width from one system to the next, and the tabs must never be the part that is cut. */
 .palette-trigger {
   display: inline-flex;
+  flex: 0 1 12.5rem;
   gap: var(--space-2);
   align-items: center;
-  width: 12.5rem;
+  min-width: 2rem;
+  overflow: hidden;
   height: 2rem;
   padding: 0 var(--space-2) 0 var(--space-3);
   border: 1px solid var(--border-strong);
@@ -163,7 +167,10 @@ a.badge:hover {
 
 .trigger-text {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
   text-align: left;
+  white-space: nowrap;
 }
 
 .trigger-keys {
@@ -213,12 +220,12 @@ a.badge:hover {
 /*
  * Between a wide window and a phone the bar gives up room in a fixed order, so the tabs never run under a
  * control: first the search entry shrinks to its icon (below 83 rem, 1328 px), then "New task" to its icon
- * (below 72.5 rem), then the brand's name goes (below 68.75 rem) and, last, the freshness chip and the
- * session chip keep their icon and say the rest in their `title` and to assistive technology (below 64 rem,
- * 1024 px), with the tabs closer together. Below 48 rem the tabs are the scrolling strip under the bar.
+ * (below 75 rem), then the brand's name goes (below 71 rem) and, last, the freshness chip and the
+ * session chip keep their icon and say the rest in their `title` and to assistive technology (below 66 rem), with the tabs closer together. Below 48 rem the tabs are the scrolling strip under the bar.
  */
 @media (max-width: 83rem) {
   .palette-trigger {
+    flex: none;
     width: 2rem;
     justify-content: center;
     padding: 0;
@@ -230,7 +237,7 @@ a.badge:hover {
   }
 }
 
-@media (min-width: 48rem) and (max-width: 72.5rem) {
+@media (min-width: 48rem) and (max-width: 75rem) {
   .new-task {
     width: 2rem;
     justify-content: center;
@@ -242,13 +249,13 @@ a.badge:hover {
   }
 }
 
-@media (min-width: 48rem) and (max-width: 68.75rem) {
+@media (min-width: 48rem) and (max-width: 71rem) {
   .brand-name {
     display: none;
   }
 }
 
-@media (min-width: 48rem) and (max-width: 63.9rem) {
+@media (min-width: 48rem) and (max-width: 66rem) {
   .tab-slot {
     --tab-pad: var(--space-2);
   }

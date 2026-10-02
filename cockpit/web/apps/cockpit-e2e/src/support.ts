@@ -17,7 +17,10 @@ export const beta = { machine: 'beta', machine_id: 'mach-beta', route: 'cached',
 
 export const fleet = {
   schema_version: 2,
-  snapshot_at: now,
+  // Read each time the document is served or copied, as a daemon stamps it: a slow runner reaches a test minutes after this file loaded.
+  get snapshot_at(): string {
+    return new Date().toISOString()
+  },
   warming_up: false,
   repositories_total: 3,
   repositories_scanned: 3,

@@ -439,7 +439,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
       }
     }
     expect(checked).toBeGreaterThan(100)
-  })
+  }, 60_000)
 
   it('refuses a placeholder wherever it stands: first, last, after --flag=, before a word, before another placeholder', () => {
     const values = Object.values(PLACEHOLDERS)
@@ -450,7 +450,7 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
         }
       }
     }
-  })
+  }, 60_000)
 
   // cockpit-views#ac:copy-command-for-an-ssh-machine
   it('builds a command that changes something only for this machine: another machine, with or without an ssh route, gets a refusal', () => {

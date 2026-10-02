@@ -54,7 +54,7 @@ interface ChipView {
       }
     }
     /* A narrow window keeps the icon; the words stay for assistive technology and in the title. */
-    @media (min-width: 48rem) and (max-width: 63.9rem) {
+    @media (min-width: 48rem) and (max-width: 66rem) {
       .chip {
         min-width: 0;
       }

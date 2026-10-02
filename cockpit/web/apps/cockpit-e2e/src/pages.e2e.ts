@@ -84,11 +84,13 @@ test('each repository has icon buttons for the code browser, from the default ba
 // cockpit#ac:code-index-freshness-appears, the table half: three checkouts, one
 // whose latest receipt is at HEAD, one three commits behind and one with none.
 test('the Worktrees page shows fresh, stale with its count, and never', async ({ page }) => {
+  // The receipt is stamped here, not when the file loaded: a slow runner reaches this test minutes later.
+  const receipt = new Date().toISOString()
   const indexed = {
     ...fleet,
     worktrees: [
-      { ...fleet.worktrees[0], id: 'wt-a', task: 'at-head', code_index: [{ indexer: 'codegrapher', state: 'fresh', receipt_at: now }] },
-      { ...fleet.worktrees[0], id: 'wt-b', task: 'behind', code_index: [{ indexer: 'codegrapher', state: 'stale', behind: 3, receipt_at: now }] },
+      { ...fleet.worktrees[0], id: 'wt-a', task: 'at-head', code_index: [{ indexer: 'codegrapher', state: 'fresh', receipt_at: receipt }] },
+      { ...fleet.worktrees[0], id: 'wt-b', task: 'behind', code_index: [{ indexer: 'codegrapher', state: 'stale', behind: 3, receipt_at: receipt }] },
       { ...fleet.worktrees[0], id: 'wt-c', task: 'unindexed', code_index: [{ indexer: 'codegrapher', state: 'never' }] },
       { ...fleet.worktrees[2], id: 'wt-d', task: 'elsewhere' },
     ],
