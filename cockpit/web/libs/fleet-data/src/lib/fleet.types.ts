@@ -31,7 +31,15 @@ export interface Machine extends Entry {
   remote_error?: string
   /** How many entries the live export left out (over a bound); above zero is a Fleet health line. Absent: not reported. */
   export_dropped?: number
+  /** The code of this machine's last failed or degraded periodic publish (REQ:home-fleet-health); on the local machine's entry only, absent when healthy or when publishing is off. */
+  publish_error?: PublishError
+  /** That machine's agents were cut; carried by the entry of a live-remote or cached machine, never by the local one (the document's own flag says it). */
+  agents_truncated?: boolean
 }
+
+/** The typed codes of the local machine's `publish_error`: a closed list, never an error text. */
+export const PUBLISH_ERRORS = ['collect_failed', 'store_unavailable', 'publish_failed', 'optional_fields_dropped'] as const
+export type PublishError = (typeof PUBLISH_ERRORS)[number]
 
 /** The typed codes of a machine's `remote_error` (REQ:remote-error-is-visible). */
 export const REMOTE_ERRORS = [
@@ -244,6 +252,15 @@ export interface FleetDocument {
   /** True when the pull request watcher was rate-limited, so some observations are older than usual. */
   pull_requests_throttled?: boolean
   throughput?: Throughput
+}
+
+/**
+ * Whether the agents of `machine` were cut: the document's own flag for the local machine (the Go side never sets it on
+ * the local entry), the machine entry's flag for another machine. The `pull_requests_throttled` flag stays the
+ * document's: only this machine's own pull requests are observed.
+ */
+export function agentsTruncated(document: Pick<FleetDocument, 'agents_truncated'>, machine: Pick<Machine, 'route' | 'agents_truncated'>): boolean {
+  return (machine.route === 'local' ? document.agents_truncated : machine.agents_truncated) === true
 }
 
 /** The one schema version this page reads (REQ:schema-version-2). */

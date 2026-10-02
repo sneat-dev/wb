@@ -100,11 +100,21 @@ describe('AgentsPage', () => {
     expect(none.root.querySelector('.note')).toBeNull()
   })
 
-  it('notes that the agents of a machine are capped when the document says so', async () => {
-    const doc = agentsDocument()
-    doc.agents_truncated = true
-    const { root } = await openPage('/agents', AgentsPage, doc)
-    expect(text(root.querySelector('.note[role=note]'))).toContain('Showing the first 200 agents of each machine')
+  it('names the machines whose agents are capped: this one by the document flag, another by the flag of its own entry', async () => {
+    const own = agentsDocument()
+    own.agents_truncated = true
+    const local = own.machines.find((machine) => machine.route === 'local')?.machine as string
+    expect(text((await openPage('/agents', AgentsPage, own)).root.querySelector('.note[role=note]'))).toBe(`Showing the first 200 agents of ${local}; it has more.`)
+    const other = agentsDocument()
+    other.machines = other.machines.map((machine) => (machine.route === 'local' ? machine : { ...machine, agents_truncated: true }))
+    const note = text((await openPage('/agents', AgentsPage, other)).root.querySelector('.note[role=note]'))
+    expect(note).toMatch(/^Showing the first 200 agents of .+; (it has|they have) more\.$/)
+    expect(note).not.toContain(local)
+    const both = agentsDocument()
+    both.agents_truncated = true
+    both.machines = both.machines.map((machine) => ({ ...machine, agents_truncated: true }))
+    expect(text((await openPage('/agents', AgentsPage, both)).root.querySelector('.note[role=note]'))).toContain('they have more')
+    // A cached machine's flag is not read from the document's flag: nothing is said when only another machine's entry is clean.
     const plain = await openPage('/agents', AgentsPage, agentsDocument())
     expect(plain.root.querySelector('.note[role=note]')).toBeNull()
   })

@@ -216,6 +216,8 @@ export interface FleetHealth {
   remoteErrors: HealthItem[]
   /** Machines whose live export left entries out (`export_dropped` above zero). */
   exportDropped: HealthItem[]
+  /** This machine's last failed or degraded periodic publish (`publish_error`), with the fixing guidance in the text. */
+  publishErrors: HealthItem[]
   scanErrors: ScanErrorItem[]
 }
 

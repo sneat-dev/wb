@@ -1,8 +1,8 @@
 import { versionKey } from './list-rows'
 import { buildRepositories } from './model-repositories'
-import { Agent, FleetDocument, MachineMetrics, PullRequest, Worktree } from './fleet.types'
+import { Agent, FleetDocument, MachineMetrics, PullRequest, Worktree, agentsTruncated } from './fleet.types'
 import { Derivation, FleetModel, FleetModels, RESUME_COUNT, agentTitle, compareVersions, machineLoad, parseVersion } from './fleet-model'
-import { buildCleanup, buildHealth, buildThroughput, remoteErrorText, remoteFix } from './home-details'
+import { buildCleanup, buildHealth, buildThroughput, publishErrorWords, publishFix, remoteErrorText, remoteFix } from './home-details'
 import { buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
 import { NEEDS_YOU_VISIBLE, NeedsYouItem } from './view-types'
 import { hrefOf, linkProblems } from './vocabulary'
@@ -490,7 +490,7 @@ describe('machines and Fleet health', () => {
   // cockpit-views#ac:fleet-health-only-when-not-ok (the lines the library derives)
   it('is ok for a fleet in which every machine is live and current', () => {
     const model = modelOf({ machines: [m('alpha', { wb_version: '0.176.0' }), m('beta', { route: 'cached', wb_version: '0.176.0', observed_at: ago(HOUR) })], repositories: [repository('r1', 'alpha')] })
-    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], scanErrors: [] })
+    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], publishErrors: [], scanErrors: [] })
   })
 
   it('shows a stale machine, an older WB and a scan error, each with a command to copy', () => {
@@ -551,6 +551,44 @@ describe('machines and Fleet health', () => {
     expect(health.ok).toBe(false)
     expect(health.exportDropped.map((item) => item.text)).toEqual(["3 entries left out of vm's export", "1 entry left out of one's export"])
     expect(health.exportDropped[0].command).toMatchObject({ text: "wb cockpit export --format='json'", label: 'run on vm' })
+  })
+
+  // cockpit-views#ac:fleet-health-only-when-not-ok (publish_error of REQ:home-fleet-health)
+  it('lists this machine\'s publish_error with its fixing guidance and the command to copy, here; nothing when absent', () => {
+    const codes = ['collect_failed', 'store_unavailable', 'publish_failed', 'optional_fields_dropped'] as const
+    const health = buildHealth(modelOf({ machines: [m('alpha', { publish_error: codes[0] }), m('beta', { route: 'cached', observed_at: ago(HOUR) })] }))
+    expect(health.ok).toBe(false)
+    expect(health.publishErrors).toHaveLength(1)
+    expect(health.publishErrors[0].text).toBe('alpha could not publish: the scan or the GitHub login failed. Run `gh auth status` and `wb remote publish --dry-run`')
+    expect(health.publishErrors[0].command).toEqual({ text: 'wb remote publish --dry-run', label: 'run here', needsEdit: false })
+    expect(health.publishErrors[0].link).toEqual({ path: '/machines', query: { machine: 'mach-alpha' } })
+    const commands = codes.map((code) => buildHealth(modelOf({ machines: [m('alpha', { publish_error: code })] })).publishErrors[0].command)
+    expect(commands).toEqual([
+      { text: 'wb remote publish --dry-run', label: 'run here', needsEdit: false },
+      { text: 'wb remote status', label: 'run here', needsEdit: false },
+      { text: 'wb remote publish', label: 'run here', needsEdit: false },
+      { reason: 'nothing to run here: update the hub' },
+    ])
+    expect(buildHealth(modelOf({ machines: [m('alpha')] })).publishErrors).toEqual([])
+  })
+
+  it('says each publish_error with guidance and in a few words, and a code from the future as an unknown problem', () => {
+    for (const code of ['collect_failed', 'store_unavailable', 'publish_failed', 'optional_fields_dropped']) {
+      expect(publishFix(code).guidance).not.toContain('unknown')
+      expect(publishErrorWords(code)).not.toBe('unknown problem')
+    }
+    expect(publishFix('optional_fields_dropped').guidance).toContain('Update the hub')
+    expect(publishFix('new_code')).toEqual({ guidance: 'has an unknown publish problem', command: { ok: false, reason: expect.stringContaining('unknown error') } })
+    expect(publishErrorWords('new_code')).toBe('unknown problem')
+  })
+
+  it('reads the agent cap of this machine from the document and of another machine from its own entry', () => {
+    const local = m('alpha')
+    const cached = m('beta', { route: 'cached', agents_truncated: true })
+    expect(agentsTruncated({ agents_truncated: true }, local)).toBe(true)
+    expect(agentsTruncated({}, local)).toBe(false)
+    expect(agentsTruncated({ agents_truncated: true }, m('gamma', { route: 'cached' }))).toBe(false)
+    expect(agentsTruncated({}, cached)).toBe(true)
   })
 
   it('shows the reason instead of a command when the SSH route of a machine is hostile', () => {

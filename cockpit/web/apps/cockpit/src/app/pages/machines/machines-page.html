@@ -10,6 +10,8 @@
       <span class="mark stale" title="Older than the freshness window">stale</span>
       } @if (r.warning; as text) {
       <span class="warning" [attr.title]="m.machine.machine + ': ' + text">warning: {{ text }}</span>
+      } @if (r.publishWarning; as text) {
+      <span class="warning" [attr.title]="m.machine.machine + ' could not publish: ' + text">publish: {{ text }}</span>
       }
     </span>
   </ng-template>

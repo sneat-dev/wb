@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core'
 import { RouterLink } from '@angular/router'
-import { Agent, FleetStore, isRunning, selectionLink } from '@cockpit/fleet-data'
+import { Agent, FleetStore, agentsTruncated, isRunning, selectionLink } from '@cockpit/fleet-data'
 import { chipOf } from '@cockpit/fleet-data/list'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
 import { ALWAYS, ListCell, ListChip, ListColumn, ListPanelTemplate, ListView, MachineCell } from '@cockpit/ui/list'
@@ -36,7 +36,11 @@ export class AgentsPage {
     return document.machines.filter((machine) => machine.route !== 'local' && !reporting.has(machine.id)).map((machine) => machine.machine)
   })
 
-  protected readonly truncated = computed(() => this.store.document().agents_truncated === true)
+  /** The machines whose agents were cut: this machine by the document's flag, another by the flag of its own entry. */
+  protected readonly truncatedMachines = computed(() => {
+    const document = this.store.document()
+    return document.machines.filter((machine) => agentsTruncated(document, machine)).map((machine) => machine.machine)
+  })
 
   protected readonly name = agentName
   protected readonly panelLabel = (agent: Agent) => `Agent ${agentName(agent)}`

@@ -49,4 +49,17 @@ describe('healthRows', () => {
     expect(rows.at(-1)).toEqual({ id: 'dropped', text: '2 entries of the fleet document were invalid and left out', link: undefined, where: undefined, command: undefined })
     expect(healthRows(buildHealth(modelOf(fleet('healthy'))), 1)[0].text).toBe('1 entry of the fleet document was invalid and left out')
   })
+
+  // cockpit-views#ac:fleet-health-only-when-not-ok (publish_error)
+  it('has a row for this machine\'s publish_error with its guidance, the command to copy and "run here"; none when absent', () => {
+    const document = fleet('healthy')
+    expect(healthRows(buildHealth(modelOf(document)), 0)).toEqual([])
+    const local = document.machines.find((machine) => machine.route === 'local')!
+    local.publish_error = 'store_unavailable'
+    const rows = healthRows(buildHealth(modelOf(document)), 0)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ id: `publish:${local.id}`, text: `${local.machine} could not publish: the remote store cannot be opened. Check \`wb remote status\``, where: 'run here', command: { text: 'wb remote status', needsEdit: false } })
+    local.publish_error = 'optional_fields_dropped'
+    expect(healthRows(buildHealth(modelOf(document)), 0)[0]).toMatchObject({ where: undefined, command: { reason: 'nothing to run here: update the hub' } })
+  })
 })

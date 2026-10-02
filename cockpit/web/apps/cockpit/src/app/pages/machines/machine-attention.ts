@@ -16,7 +16,7 @@ export interface Attention {
 }
 
 /** The title of the copy entry for each kind of problem. */
-const TITLES = { stale: 'Publish its snapshot', older: 'Update wb', remote: 'Fix the remote read', export: 'Try the export' } as const
+const TITLES = { stale: 'Publish its snapshot', older: 'Update wb', remote: 'Fix the remote read', export: 'Try the export', publish: 'Fix the publish' } as const
 
 /**
  * The Fleet health lines of one machine (REQ:remote-error-is-visible and the stale, older WB and export lines of
@@ -29,6 +29,7 @@ export function attentionOf(model: FleetModel, machineId: string): Attention {
     ['older', health.olderWb],
     ['remote', health.remoteErrors],
     ['export', health.exportDropped],
+    ['publish', health.publishErrors],
   ]
   const notes: AttentionNote[] = []
   const commands: PanelCommand[] = []

@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, Type, computed, inject, input } from '@angular/core'
-import { AppLink, FleetModel, FleetStore, Worktree, agentDetailLink, agentTitle, machineLoad, selectionLink } from '@cockpit/fleet-data'
+import { AppLink, FleetModel, FleetStore, Worktree, agentDetailLink, agentTitle, agentsTruncated, machineLoad, selectionLink } from '@cockpit/fleet-data'
 import { LinkResult, machineAgentsLink, machineRepositoriesLink, machineWorktreesLink } from '@cockpit/fleet-data/list'
 import { MachinePanel, buildMachinePanel } from '@cockpit/fleet-data/panel'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
@@ -54,7 +54,7 @@ export class MachinePanelView {
   protected readonly name = computed(() => (this.data() as Loaded).view.summary.machine.machine)
   protected readonly reach = computed(() => reachWords((this.data() as Loaded).view.summary, this.clock()))
   protected readonly attention = computed(() => attentionOf((this.data() as Loaded).model, this.id()))
-  protected readonly truncated = computed(() => this.store.document().agents_truncated === true)
+  protected readonly truncated = computed(() => agentsTruncated(this.store.document(), (this.data() as Loaded).view.summary.machine))
 
   protected readonly metrics = computed(() => metricsView(this.poller.entries().get(this.id()), this.clock()))
   protected readonly load = computed(() => machineLoad(this.poller.metricsOf(this.id())).state)
@@ -78,7 +78,7 @@ export class MachinePanelView {
       { label: 'Reached by', text: machine.route === 'local' ? 'this machine' : (machine.transport ?? 'a published snapshot') },
       ...(machine.route === 'local' || machine.observed_at === undefined ? [] : [{ label: 'Observed', time: Date.parse(machine.observed_at) }]),
       ...(dropped ? [{ label: 'Left out', text: `${dropped} ${dropped === 1 ? 'entry' : 'entries'} of its export` }] : []),
-      ...(this.truncated() ? [{ label: 'Agents', text: 'The agent list is capped at the first 200 of each machine.' }] : []),
+      ...(this.truncated() ? [{ label: 'Agents', text: 'The agent list is capped at the first 200.' }] : []),
     ]
   })
 

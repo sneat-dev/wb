@@ -50,6 +50,15 @@ describe('MachinesPage', () => {
     expect(rowsOf(root).map((row) => row.querySelector('a.name')?.getAttribute('href'))).toEqual(['/machines/mach-macbook', '/machines/mach-nas', '/machines/mach-oldmac', '/machines/mach-vm'])
   })
 
+  it('shows this machine\'s publish_error as a warning in words, and nothing when publishing works', async () => {
+    const document = machinesDocument()
+    document.machines[0] = { ...document.machines[0], publish_error: 'collect_failed' }
+    const { root } = await open('/machines', document)
+    expect(text(cell(root, 0, 'State'))).toContain('publish: the scan or the GitHub login failed')
+    expect(cell(root, 0, 'State').querySelector('.warning')?.getAttribute('title')).toBe('macbook could not publish: the scan or the GitHub login failed')
+    expect(text(cell(root, 3, 'State'))).not.toContain('publish:')
+  })
+
   // cockpit-views#ac:machines-table-title-and-links
   it('says how each machine is reached, marks the stale ones with their age, and marks the older version', async () => {
     const { root } = await open()

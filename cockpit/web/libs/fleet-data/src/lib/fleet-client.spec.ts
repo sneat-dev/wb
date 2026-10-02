@@ -170,7 +170,7 @@ describe('optional fields of schema 2 (REQ:field-tables)', () => {
 
   it('keeps a document whose optional fields are valid, and the document object when it has no throughput', () => {
     const document = fleetDocument({
-      machines: [{ ...machine('alpha'), export_dropped: 2, remote_error: 'something_new' }],
+      machines: [{ ...machine('alpha'), export_dropped: 2, remote_error: 'something_new', publish_error: 'collect_failed', agents_truncated: true }],
       pull_requests: [pullRequest('p', 'r1', undefined, { mergeable: 'has_hooks' })],
       agents: [agent('a', 'r1', 'live', { activity: 'done', task: 't', worktrees: ['w1'], started_at: '2026-10-01T00:00:00Z', finished_at: '2026-10-01T01:00:00Z', exit_code: 0 })],
       agents_truncated: true,
@@ -182,7 +182,7 @@ describe('optional fields of schema 2 (REQ:field-tables)', () => {
 
   it('removes a field of the wrong type or an enum value outside its set, and keeps the entry', () => {
     const document = fleetDocument({
-      machines: [{ ...machine('alpha'), export_dropped: 'many' as never, remote_error: 5 as never }],
+      machines: [{ ...machine('alpha'), export_dropped: 'many' as never, remote_error: 5 as never, publish_error: 'a free text' as never, agents_truncated: 'yes' as never }],
       pull_requests: [pullRequest('p', 'r1', undefined, { mergeable: 'wobbly' as never }), pullRequest('q', 'r1', undefined, { mergeable: 'dirty' })],
       agents: [agent('a', 'r1', 'live', { activity: 'sleeping' as never, task: 4 as never, worktrees: [1] as never, started_at: 3 as never, finished_at: false as never, exit_code: 'x' as never })],
       agents_truncated: 'yes' as never,
@@ -191,6 +191,8 @@ describe('optional fields of schema 2 (REQ:field-tables)', () => {
     const cleaned = cleanOptionalFields(document)
     expect(cleaned.machines[0]).not.toHaveProperty('export_dropped')
     expect(cleaned.machines[0]).not.toHaveProperty('remote_error')
+    expect(cleaned.machines[0]).not.toHaveProperty('publish_error')
+    expect(cleaned.machines[0]).not.toHaveProperty('agents_truncated')
     expect(cleaned.pull_requests.map((p) => p.mergeable)).toEqual([undefined, 'dirty'])
     expect(cleaned.agents[0]).toEqual(agent('a', 'r1', 'live'))
     expect(cleaned).not.toHaveProperty('agents_truncated')
