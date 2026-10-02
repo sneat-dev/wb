@@ -47,6 +47,17 @@ describe('FleetClient', () => {
     expect(read.etag).toBe('')
   })
 
+  // The header is how a client learns the freshness: it is sent on a 304 too, and an older daemon sends none.
+  it('reads X-Wb-Cockpit-Checked-At on a 200 and on a 304, and reports none for a daemon that sends none or one that is not a time', async () => {
+    const stamp = '2026-10-01T10:00:00Z'
+    const withHeader = (status: number, value: string) => new Response(status === 304 ? null : JSON.stringify(fleetDocument()), { status, headers: { ETag: '"v"', 'X-Wb-Cockpit-Checked-At': value } })
+    const read200 = await clientWith(vi.fn(async () => withHeader(200, stamp))).readFleet()
+    expect(read200).toMatchObject({ kind: 'changed', checkedAt: Date.parse(stamp) })
+    expect(await clientWith(vi.fn(async () => withHeader(304, stamp))).readFleet('"v"')).toEqual({ kind: 'unchanged', checkedAt: Date.parse(stamp) })
+    expect(await clientWith(vi.fn(async () => withHeader(304, 'not a time'))).readFleet('"v"')).toEqual({ kind: 'unchanged' })
+    expect(await clientWith(vi.fn(async () => respond(200, fleetDocument(), '"v"'))).readFleet()).not.toHaveProperty('checkedAt')
+  })
+
   it('revalidates with If-None-Match and reports a 304 as unchanged', async () => {
     const fetcher = vi.fn(async () => respond(304, null))
     expect(await clientWith(fetcher).readFleet('"v1"')).toEqual({ kind: 'unchanged' })

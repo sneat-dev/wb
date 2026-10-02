@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { checkedAt } from './support'
 import { otherConsoleErrors, unexplainedViolations, type Violation } from './violations'
 
 // Repository content and the code-index panel, in the built application served
@@ -62,7 +63,7 @@ async function stub(page: Page, options: { session: typeof OWNER; document?: () 
   const readmeCalls: string[] = []
   page.on('request', (request) => requests.push(request.url()))
   await page.route('**/api/v1/cockpit/fleet', (route) =>
-    route.fulfill({ json: (options.document ?? (() => fleet(12)))(), headers: { ETag: `"${Math.random()}"`, 'Cache-Control': 'no-cache' } }),
+    route.fulfill({ json: (options.document ?? (() => fleet(12)))(), headers: { ETag: `"${Math.random()}"`, 'Cache-Control': 'no-cache', ...checkedAt() } }),
   )
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: options.session }))
   await page.route('**/api/v1/cockpit/branches?*', (route) => route.fulfill({ json: { branches: [] } }))

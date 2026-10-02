@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { alpha, beta, fleet, now, watch } from './support'
+import { alpha, beta, checkedAt, fleet, now, watch } from './support'
 
 // The New task form against a stubbed fleet (REQ:new-task-form, REQ:copy-the-command), in the built application under
 // the daemon's content security policy: the repository picker, the commands it produces, the address that holds the
@@ -22,7 +22,7 @@ const sample = (cpu: number) => ({ cpu_percent: cpu, load1: 1, memory_used_bytes
 async function stubForm(page: Page, cpu = 20) {
   const requests: string[] = []
   page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}`))
-  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...newTaskFleet, snapshot_at: now }, headers: { ETag: '"new-task"', 'Cache-Control': 'no-cache' } }))
+  await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...newTaskFleet, snapshot_at: now }, headers: { ETag: '"new-task"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'mach-alpha', route: 'local', samples: [sample(cpu)] } }))
   return requests

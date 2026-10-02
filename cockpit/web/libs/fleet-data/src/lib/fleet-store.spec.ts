@@ -63,6 +63,60 @@ describe('FleetStore', () => {
     store.stop()
   })
 
+  // cockpit-views#ac:compressed-responses-once-per-snapshot
+  it('moves the checked-at time on a 304 without building a new model, and falls back to snapshot_at without the header', async () => {
+    const stamp = (seconds: number) => Date.parse('2026-10-01T10:00:00Z') + seconds * 1000
+    const readFleet = vi
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
+      .mockResolvedValueOnce({ ...changed(false, '"a"'), checkedAt: stamp(0) })
+      .mockResolvedValueOnce({ kind: 'unchanged', checkedAt: stamp(30) })
+      .mockResolvedValueOnce({ kind: 'unchanged' })
+    const store = storeWith({ readFleet, readSession: async () => session })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    const model = store.model()
+    const document = store.document()
+    expect(store.checkedAt()).toBe(stamp(0))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.checkedAt()).toBe(stamp(30))
+    expect(store.freshAt()).toBe(stamp(30))
+    // Unchanged: the document, and with it the model, is the very object it was.
+    expect(store.document()).toBe(document)
+    expect(store.model()).toBe(model)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.checkedAt()).toBeUndefined()
+    expect(store.freshAt()).toBe(Date.parse(document.snapshot_at ?? ''))
+    expect(store.model()).toBe(model)
+    store.stop()
+  })
+
+  it('has no freshness when the daemon sends no header and the document no snapshot time', async () => {
+    const store = storeWith({ readFleet: async () => ({ ...changed(false, '"a"'), document: { ...fleetDocument(), snapshot_at: undefined } }), readSession: async () => session })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.freshAt()).toBeUndefined()
+    store.stop()
+  })
+
+  // cockpit-views#ac:warming-up-shows-progress
+  it('stops polling fast when the first listing failed: warming_up is false with repositories_unreadable', async () => {
+    const readFleet = vi
+      .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()
+      .mockResolvedValueOnce({ ...changed(false, '"a"'), document: { ...fleetDocument({ repositories_total: 0, repositories_scanned: 0 }), error: 'repositories_unreadable' } })
+      .mockResolvedValue({ kind: 'unchanged' })
+    const store = storeWith({ readFleet, readSession: async () => session })
+    store.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.warmingUp()).toBe(false)
+    expect(store.document().error).toBe('repositories_unreadable')
+    // The fast interval is 10 ms and the slow one 100 ms: nothing more is read at the fast one.
+    await vi.advanceTimersByTimeAsync(50)
+    expect(readFleet).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(readFleet).toHaveBeenCalledTimes(2)
+    store.stop()
+  })
+
   it('polls fast while warming up, slowly after, and revalidates with the last ETag', async () => {
     const readFleet = vi
       .fn<(etag?: string, expected?: number) => Promise<FleetRead>>()

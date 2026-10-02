@@ -25,7 +25,7 @@ export class FleetBanner {
   protected readonly documentError = computed(() => {
     const code = this.document().error
     if (code === undefined) return null
-    if (code === ERROR_REPOSITORIES_UNREADABLE) return 'The repositories could not be listed on this machine.'
+    if (code === ERROR_REPOSITORIES_UNREADABLE) return 'The repositories could not be listed on this machine, so nothing is scanned. Check the projects directory in this machine\'s WB configuration; the list fills in on the next refresh once it can be read.'
     if (code === ERROR_GIT_TOO_OLD) return 'Git on this machine is older than Cockpit supports, so repository details are not read.'
     return `The daemon reported a problem reading the fleet (${code}); what is listed may be incomplete.`
   })

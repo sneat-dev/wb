@@ -1,6 +1,6 @@
 import { performanceFixture } from '@cockpit/fleet-data/testing'
 import { expect, test, type Page } from '@playwright/test'
-import { watch } from './support'
+import { checkedAt, watch } from './support'
 
 // The shared list and its side panel, on the Worktrees page, against the 600-worktree fixture
 // of the performance budgets (REQ:bounded-row-elements, REQ:fast-filtering, REQ:look-layout).
@@ -14,7 +14,7 @@ const grid = (page: Page) => page.getByRole('grid')
 async function stubFixture(page: Page, delayMs = 0) {
   await page.route('**/api/v1/cockpit/fleet', async (route) => {
     if (delayMs > 0) await new Promise((done) => setTimeout(done, delayMs))
-    await route.fulfill({ json: fleet, headers: { ETag: '"perf"', 'Cache-Control': 'no-cache' } })
+    await route.fulfill({ json: fleet, headers: { ETag: '"perf"', 'Cache-Control': 'no-cache', ...checkedAt() } })
   })
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'anonymous-local', capabilities: ['fleet.read'], code_browser_url: 'https://codegrapher.dev/' } }))
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))

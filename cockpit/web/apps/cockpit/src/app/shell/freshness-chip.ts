@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core'
-import { FleetStore } from '@cockpit/fleet-data'
+import { ERROR_REPOSITORIES_UNREADABLE, FleetStore } from '@cockpit/fleet-data'
 import { Icon, IconName } from '../ui/icon'
 
 /** The refresh interval assumed for a document that does not carry one. */
@@ -84,8 +84,10 @@ export class FreshnessChip {
       const { scanned, total } = store.progress()
       return { tone: 'idle', icon: 'refresh', text: `scanned ${scanned} of ${total}`, title: 'The daemon is still scanning repositories; what is listed is complete for those scanned.', announce: 'The daemon is scanning repositories' }
     }
-    const taken = Date.parse(document.snapshot_at ?? '')
-    if (Number.isNaN(taken)) return { tone: 'idle', icon: 'clock', text: 'snapshot time unknown', title: 'The document carries no snapshot time.', announce: 'The snapshot time is unknown' }
+    if (document.error === ERROR_REPOSITORIES_UNREADABLE) return { tone: 'bad', icon: 'alert', text: 'scan failed', title: 'The daemon could not list the repositories of this machine, so there is nothing to scan.', announce: 'The repositories could not be listed' }
+    // The time the daemon last found the document current: not `snapshot_at`, which does not move while the fleet is quiet.
+    const taken = store.freshAt()
+    if (taken === undefined) return { tone: 'idle', icon: 'clock', text: 'snapshot time unknown', title: 'The daemon reports no time at which it last checked the fleet.', announce: 'The snapshot time is unknown' }
     const age = Math.max(0, Math.floor((this.clock() - taken) / 1000))
     const interval = document.refresh_interval_seconds ?? DEFAULT_REFRESH_SECONDS
     const stale = age > 2 * interval

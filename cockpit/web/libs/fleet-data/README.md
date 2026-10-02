@@ -74,6 +74,8 @@ through `onError`, and is listed in `model.failedDerivations`.
 | `homeBadge`, `homeBadgeLabel`, `runningAgentCount` | the Home badge (tasks needing the operator; `homeBadgeLabel` is the number, or `99+` above `BADGE_CAP`, also `badgeLabel(n)`) and the Agents tab badge |
 | `buildWorktreePanel(model, id)`, `buildTaskPanel(model, name)`, `buildRepositoryPanel(model, key)`, `buildAgentPanel`, `buildMachinePanel`, `buildPullRequestPanel` (`/panel`) | per-entity panels (below); `undefined` for an unknown id |
 
+The store's `checkedAt` is the `X-Wb-Cockpit-Checked-At` header of the fleet read (sent on a 304 too; moving it builds no model) and `freshAt` is that, else `snapshot_at` for a daemon that sends none: "updated N ago" and stale are measured from `freshAt`, never from `snapshot_at` alone, which moves only when the content does.
+
 Also exported: `machineLoad(metrics, now)` (`free` below 70 % CPU and 80 % memory, `busy` otherwise,
 `not-reported` without a sample or with one older than 5 minutes, `stale: true`). Commands that change something (`pullRequestCreate`, `pullRequestLand`, `agentStop`, `sessionSend`) refuse any target with `machine` or `ssh` (`onThisMachine`), `agentTitle`, `parseVersion`, `compareVersions`, `versionKey`,
 `remoteErrorText`, `remoteFix` (the command for a `remote_error` code: none, with the reason, for `remote_warming_up`, `export_too_large`, `self_export` and a code this library does not know), `NEEDS_YOU_VISIBLE`, `RESUME_COUNT`. A field the daemon omitted

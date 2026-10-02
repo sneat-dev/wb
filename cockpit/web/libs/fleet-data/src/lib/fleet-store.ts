@@ -67,6 +67,19 @@ export class FleetStore {
   /** Set until the first read has been answered. */
   readonly loaded = signal(false)
   readonly error = signal<string | null>(null)
+  /**
+   * When the daemon last found the document current (the `X-Wb-Cockpit-Checked-At` header, sent on a 304 too): what "updated N ago"
+   * and "is it refreshing" are measured from. Undefined for a daemon that sends no header; `freshAt` then falls back to `snapshot_at`.
+   * Moving it builds no model: only the document does.
+   */
+  readonly checkedAt = signal<number | undefined>(undefined)
+  /** The time the document was last found current: the header's, else `snapshot_at` (an older daemon moves that on every pass). */
+  readonly freshAt = computed(() => {
+    const checked = this.checkedAt()
+    if (checked !== undefined) return checked
+    const taken = Date.parse(this.document().snapshot_at ?? '')
+    return Number.isNaN(taken) ? undefined : taken
+  })
   /** The clock ages are measured against; it moves with every read. */
   readonly now = signal(Date.now())
 
@@ -122,6 +135,7 @@ export class FleetStore {
     this.polling = true
     try {
       const read = await this.client.readFleet(this.etag, this.expected)
+      this.checkedAt.set(read.checkedAt)
       if (read.kind === 'changed') {
         this.etag = read.etag
         // A body identical to the last one keeps the document, so nothing downstream recomputes.

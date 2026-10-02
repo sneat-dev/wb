@@ -219,6 +219,8 @@ export function remoteErrorText(code: string): string {
       return 'its export was refused as invalid'
     case 'self_export':
       return 'the address configured for it leads back to this machine, so its export was refused'
+    case 'clock_skew':
+      return 'its clock is more than a minute ahead of this machine\'s, so its export was refused: fix that machine\'s clock'
   }
   return 'unknown error'
 }
@@ -228,6 +230,7 @@ const NOTHING_TO_RUN: Readonly<Record<string, string>> = {
   remote_warming_up: 'nothing to run: it clears when the machine finishes its first scan',
   export_too_large: 'nothing to run: this daemon left its live entries out to stay under its size bound',
   self_export: 'nothing to run: fix the address configured for this machine, which leads back here',
+  clock_skew: 'nothing to run: set the clock of that machine right',
 }
 
 /** The codes whose fix is the export to try, through ssh when the machine has an SSH route. */
