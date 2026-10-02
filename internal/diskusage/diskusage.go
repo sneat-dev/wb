@@ -18,7 +18,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // Usage is one measured tree. ApparentBytes counts each inode's logical size
@@ -56,15 +56,6 @@ type seenInode struct {
 	blocks int64
 	links  uint64
 	seen   uint64
-}
-
-// Measure walks root without following symlinks and reports both sizes. A root
-// that does not exist measures zero: an absent tree occupies nothing, and a
-// caller sweeping a fleet must not fail because one path was already removed.
-// Unreadable subdirectories are skipped rather than fatal, for the same reason.
-func Measure(ctx context.Context, root string) (Usage, error) {
-	usage, _, err := measure(ctx, root)
-	return usage, err
 }
 
 func measure(ctx context.Context, root string) (Usage, map[inodeKey]*seenInode, error) {
