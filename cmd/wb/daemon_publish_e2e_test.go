@@ -16,6 +16,7 @@ import (
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/periodic"
 	"github.com/sneat-dev/wb/internal/wbconfig"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged runs the periodic
@@ -28,7 +29,7 @@ func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 	deps := f.deps("alice", clock)
 	deps.now = func() time.Time { return clock }
 	cfg := remotestate.Config{Provider: "git", Repo: "team/wb-state", Machine: "laptop", Publish: remotestate.PublishConfig{Interval: 5 * time.Minute, Unpushed: remotestate.RedactNone}}
-	publisher := newPeriodicPublisher(deps, cfg, f.projectsRoot, nil)
+	publisher := newPeriodicPublisher(deps, cfg, f.projectsRoot, nil, nil)
 	// The real gate source: the fleet snapshotter of the daemon over the same
 	// projects root, refreshed before each attempt as its own ticker would.
 	options := cockpitFleetOptions(f.projectsRoot, t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "laptop", nil })
@@ -127,7 +128,7 @@ func TestE2EPeriodicPublishPreGateOnA400RepositoryFleet(t *testing.T) {
 		deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
 		deps.now = func() time.Time { return clock }
 		cfg := publishConfig(remotestate.PublishConfig{Interval: 5 * time.Minute, Unpushed: remotestate.RedactNone})
-		return newPeriodicPublisher(deps, cfg, root, nil), provider
+		return newPeriodicPublisher(deps, cfg, root, nil, nil), provider
 	}
 	timed := func(publisher *periodic.Publisher, source remotestate.PublishSource) time.Duration {
 		clock = clock.Add(6 * time.Minute)
@@ -159,10 +160,28 @@ func TestE2EPeriodicPublishPreGateOnA400RepositoryFleet(t *testing.T) {
 	if err := snapshotter.RefreshRepository(t.Context(), localRepoID(t, snapshotter, "repo0")); err != nil {
 		t.Fatal(err)
 	}
-	timed(gated, snapshotter)
-	if gated.Status().Attempts != 2 {
-		t.Fatalf("a changed repository did not open the gate: %+v", gated.Status())
+	changed := timed(gated, snapshotter)
+	if status := gated.Status(); status.Attempts != 2 || status.Published != 2 || status.Scans != 2 {
+		t.Fatalf("a changed repository did not open the gate: %+v", status)
 	}
+	// That scan read with Git the one repository that changed, not the fleet.
+	t.Logf("attempt after one repository of %d changed (scan + publish): %s", repositories, changed.Round(time.Millisecond))
+	if changed*2 > first {
+		t.Fatalf("a change of one repository cost %s, against %s for the scan of them all", changed, first)
+	}
+	// What is left of such an attempt is not the repositories' Git status: it is
+	// the listing of the repositories and the worktree inventory, which reads
+	// state no fingerprint covers (heartbeats, manifests, owners).
+	began = time.Now()
+	if _, err := qualityTargets("", root, "", qualityOptions{fleet: true, parallel: periodicScanWorkers, allowEmpty: true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("of which listing the repositories: %s", time.Since(began).Round(time.Millisecond))
+	began = time.Now()
+	if _, err := worktrees.List(t.Context(), worktrees.ListOptions{ProjectsRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("of which the worktree inventory: %s", time.Since(began).Round(time.Millisecond))
 }
 
 // localRepoID is the id of the local repository named name in the document.

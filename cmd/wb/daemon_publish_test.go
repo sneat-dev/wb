@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/periodic"
 	"github.com/sneat-dev/wb/internal/wbconfig"
@@ -185,11 +187,207 @@ func TestPeriodicPublisherFailsTypedWhenTheLoginOrTheStoreIsUnavailable(t *testi
 	}
 }
 
+// fakeClone makes a directory that the fleet scan lists as a repository and
+// whose change fingerprint can be computed, without running Git.
+func fakeClone(t *testing.T, root, name string) string {
+	t.Helper()
+	clone := filepath.Join(root, "acme", name)
+	if err := os.MkdirAll(filepath.Join(clone, ".git", "refs", "heads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return clone
+}
+
+// moveRef changes a clone as a commit does: a ref of it is written.
+func moveRef(t *testing.T, clone, value string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(clone, ".git", "refs", "heads", "main"), []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAPeriodicScanReadsWithGitOnlyTheRepositoriesThatChanged: the periodic
+// publisher scans because something changed, and what changed is one
+// repository, not the fleet. It reads with Git the clones whose change
+// fingerprint moved since it last read them, and takes what it read of the
+// others again; what it keeps is never older than the keepalive, and a read
+// that failed is not kept.
+func TestAPeriodicScanReadsWithGitOnlyTheRepositoriesThatChanged(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	widgets, gadgets, gizmos := fakeClone(t, root, "widgets"), fakeClone(t, root, "gadgets"), fakeClone(t, root, "gizmos")
+	provider := &capturingProvider{}
+	opened := 0
+	deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
+	clock := deps.now()
+	deps.now = func() time.Time { return clock }
+	var mu sync.Mutex
+	reads := map[string]int{}
+	var failing string
+	deps.readRepository = func(path string) (gitops.RepoStatus, gitops.TrackingState, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		reads[path]++
+		if path == failing {
+			return gitops.RepoStatus{}, gitops.TrackingState{}, errors.New("git failed")
+		}
+		// Each read finds one more untracked file: what is published says which
+		// read it came from.
+		return gitops.RepoStatus{Untracked: make([]string, reads[path])}, gitops.TrackingState{Branch: "main"}, nil
+	}
+	publisher := newPeriodicPublisher(deps, publishConfig(remotestate.PublishConfig{Interval: 5 * time.Minute, Unpushed: remotestate.RedactNone}), root, nil, nil)
+	attempt := func(advance time.Duration) map[string]int {
+		t.Helper()
+		clock = clock.Add(advance)
+		before := len(provider.seen)
+		publisher.Publish(t.Context(), nil)
+		if len(provider.seen) != before+1 {
+			t.Fatalf("nothing was published: %+v", publisher.Status())
+		}
+		untracked := map[string]int{}
+		for _, repository := range provider.seen[before].Repositories {
+			untracked[filepath.Base(repository.Path)] = len(repository.Untracked)
+			if repository.Error != "" {
+				untracked[filepath.Base(repository.Path)] = -1
+			}
+		}
+		return untracked
+	}
+	total := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return reads[widgets] + reads[gadgets] + reads[gizmos]
+	}
+	if got := attempt(0); total() != 3 || got["widgets"] != 1 || got["gadgets"] != 1 || got["gizmos"] != 1 {
+		t.Fatalf("the first scan read %d repositories and published %v", total(), got)
+	}
+	// One repository changed: it alone is read, and the others are published as
+	// they were read.
+	moveRef(t, gadgets, "1")
+	if got := attempt(6 * time.Minute); total() != 4 || reads[gadgets] != 2 || got["gadgets"] != 2 || got["widgets"] != 1 || got["gizmos"] != 1 {
+		t.Fatalf("after one repository changed: %d reads (%v), published %v", total(), reads, got)
+	}
+	// A read that fails is published as the error it is and is not kept: the
+	// repository is read again at the next scan, though its fingerprint is the same.
+	moveRef(t, gizmos, "1")
+	failing = gizmos
+	if got := attempt(6 * time.Minute); total() != 5 || got["gizmos"] != -1 {
+		t.Fatalf("a failed read: %d reads, published %v", total(), got)
+	}
+	failing = ""
+	moveRef(t, widgets, "1")
+	if got := attempt(6 * time.Minute); total() != 7 || reads[gizmos] != 3 || got["gizmos"] != 3 || got["widgets"] != 2 || got["gadgets"] != 2 {
+		t.Fatalf("after the failed read: %d reads (%v), published %v", total(), reads, got)
+	}
+	// What is kept is never as old as the keepalive: the keepalive's scan reads
+	// every repository, which is how a change no fingerprint sees is published.
+	if got := attempt(periodic.DefaultKeepalive); total() != 10 || got["widgets"] != 3 || got["gadgets"] != 3 || got["gizmos"] != 4 {
+		t.Fatalf("the keepalive's scan: %d reads (%v), published %v", total(), reads, got)
+	}
+}
+
+// TestRepositoryScansKeepNothingTheyCannotVouchFor: a clone whose fingerprint
+// cannot be computed is read every time, a repository that left the fleet is
+// forgotten, and without the keeper (a publish by hand) every read is Git's.
+func TestRepositoryScansKeepNothingTheyCannotVouchFor(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	reads := 0
+	fingerprint, fingerprintErr := "a", error(nil)
+	scans := &repositoryScans{
+		read: func(string) (gitops.RepoStatus, gitops.TrackingState, error) {
+			reads++
+			return gitops.RepoStatus{}, gitops.TrackingState{Branch: "main"}, nil
+		},
+		fingerprint: func(string) (string, error) { return fingerprint, fingerprintErr },
+		maxAge:      time.Hour,
+	}
+	for range 2 {
+		if _, tracking, err := scans.of("/repos/widgets", now); err != nil || tracking.Branch != "main" {
+			t.Fatalf("a read: %+v %v", tracking, err)
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("an unchanged clone was read %d times", reads)
+	}
+	fingerprintErr = errors.New("no .git")
+	for range 2 {
+		if _, _, err := scans.of("/repos/widgets", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fingerprintErr = nil
+	if _, _, _ = scans.of("/repos/widgets", now); reads != 4 {
+		t.Fatalf("a clone with no fingerprint: %d reads, want one for each scan and one after, since nothing of it was kept", reads)
+	}
+	scans.keepOnly(map[string]bool{"/repos/gadgets": true})
+	if _, _, _ = scans.of("/repos/widgets", now); reads != 5 {
+		t.Fatalf("a repository that left the fleet was kept: %d reads", reads)
+	}
+	// No keeper: Git reads, here a directory that is no repository.
+	var none *repositoryScans
+	none.keepOnly(nil)
+	if _, _, err := none.of(t.TempDir(), now); err == nil {
+		t.Fatal("a directory that is no repository was read without an error")
+	}
+}
+
+// TestThePeriodicPublishSaysOnceInTheLogThatHardwareIsIncluded: when the first
+// publish that sends the hardware facts is the daemon's, the note is in the
+// daemon's log, once, and a publish by hand does not say it again.
+func TestThePeriodicPublishSaysOnceInTheLogThatHardwareIsIncluded(t *testing.T) {
+	t.Parallel()
+	provider := &capturingProvider{errs: []error{errors.New("down")}}
+	opened := 0
+	deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
+	deps.configPath = cockpitConfigFile(t, "remote:\n  repo: acme/wb-state\n  machine: mac\n")()
+	clock := deps.now()
+	deps.now = func() time.Time { return clock }
+	var logs []string
+	publisher := newPeriodicPublisher(deps, publishConfig(remotestate.PublishConfig{Interval: 5 * time.Minute}), t.TempDir(), func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}, nil)
+	noted := func() int {
+		count := 0
+		for _, line := range logs {
+			if line == periodicHardwareNote {
+				count++
+			}
+		}
+		return count
+	}
+	publisher.Publish(t.Context(), nil) // the store is down: nothing was sent, nothing is said
+	if noted() != 0 {
+		t.Fatalf("a publish that failed used the note up: %q", logs)
+	}
+	for range 2 {
+		clock = clock.Add(7 * time.Hour)
+		publisher.Publish(t.Context(), nil)
+	}
+	if publisher.Status().Published != 2 || noted() != 1 {
+		t.Fatalf("after two publishes the note was logged %d times: %q (%+v)", noted(), logs, publisher.Status())
+	}
+	var out, progress bytes.Buffer
+	if err := runRemotePublishWithProgress(deps, t.TempDir(), "", 1, false, true, &out, &progress, &invocation{}); err != nil || strings.Contains(progress.String(), "boot_time") {
+		t.Fatalf("a publish by hand after the daemon's said the note again: %v %q", err, progress.String())
+	}
+	// With no log and no configuration nothing breaks, and nothing is recorded.
+	notePeriodicHardware("", nil)
+	silent := cockpitConfigFile(t, "remote:\n  repo: acme/wb-state\n")()
+	notePeriodicHardware(silent, nil)
+	if hardwareNoteMarker(silent) != "" {
+		t.Fatal("the note was not recorded as said")
+	}
+}
+
 func TestCollectSnapshotStopsWhenItsContextEnds(t *testing.T) {
 	t.Parallel()
 	closed, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := collectSnapshot(closed, t.TempDir(), "", 1, remotestate.Snapshot{}, remotestate.RedactNone, nil); !errors.Is(err, context.Canceled) {
+	if _, err := collectSnapshot(closed, t.TempDir(), "", 1, remotestate.Snapshot{}, remotestate.RedactNone, nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	// With a repository to read, a scan that was cancelled reads none of them
@@ -198,7 +396,7 @@ func TestCollectSnapshotStopsWhenItsContextEnds(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "acme", "widgets", ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := collectSnapshot(closed, root, "", 1, remotestate.Snapshot{}, remotestate.RedactNone, nil); !errors.Is(err, context.Canceled) {
+	if _, err := collectSnapshot(closed, root, "", 1, remotestate.Snapshot{}, remotestate.RedactNone, nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a scan with a repository: err = %v, want context.Canceled", err)
 	}
 }

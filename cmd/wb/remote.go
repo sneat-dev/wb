@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/remotestate/hub"
@@ -25,6 +26,9 @@ type remoteDeps struct {
 	// progressHeartbeat is a test seam. Production always uses the universal
 	// ten-second progress contract.
 	progressHeartbeat time.Duration
+	// readRepository is a test seam of the daemon's periodic publisher: how one
+	// repository's status and tracking are read. nil means with Git.
+	readRepository func(path string) (gitops.RepoStatus, gitops.TrackingState, error)
 	// stderr is where a publish says what it must say whether or not it shows
 	// progress (the one-time note that the snapshot now carries the machine's
 	// hardware facts, a publish that had to leave the optional fields out); nil

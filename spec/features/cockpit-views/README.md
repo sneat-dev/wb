@@ -1068,14 +1068,33 @@ fingerprint and none of those facts (a new untracked file, or an unstaged edit o
 which the snapshotter does not read) reaches the store with the next one that does, or with the
 keepalive. A failed attempt never gates the next.
 
+A scan that does run reads with Git only what changed. What it read of a clone (its status and
+tracking) is kept for as long as the clone's change fingerprint stays the same and for less than the
+keepalive, and taken again by the next scan, so a scan made because one repository changed reads
+that one with Git and not the fleet; a read that failed, and a clone whose fingerprint cannot be
+computed, are never kept. And when the snapshotter's change token is the one the last scan was made
+for, and that scan is younger than the keepalive, the attempt takes that scan again and runs none:
+only the agents moved, which the scan does not read, so an agents-only change, and each attempt made
+while one is held back, costs no scan. What is kept is bounded by the same rule as the gate: a
+change no fingerprint sees reaches the store with the next change of that clone, or with the
+keepalive, whose scan reads every repository. The worktree inventory is not kept: it reads state
+that no fingerprint covers (heartbeats, manifests, owners) and is made anew by every scan.
+
 A failed publish is a typed diagnostic (`collect_failed`, `store_unavailable`, `publish_failed` or
 `optional_fields_dropped`, a code and never the text of an error), logged when it changes, shown as
 `publish_error` on this machine's own entry (REQ:home-fleet-health) and absent when healthy or when
-publishing is off. One rule governs it: `publish_error` is the code of the last completed outcome
-against the store. A failure sets its code; a publish that carried the optional fields clears it and
-resets the failure count; a publish that had to leave them out sets `optional_fields_dropped`, which
-stays until a publish that carried them succeeds; a gated, skipped or held-back attempt never changes
-it. A failed publish is retried after the interval, then after twice, four times and so on up to one
+publishing is off. One rule governs it: a failure's code stays until the step that failed has worked
+again, and no longer. A failure sets its code. `collect_failed` is cleared by the next scan that
+works, whatever that attempt then does (publish, skip or hold back), and resets the failure count.
+`store_unavailable` and `publish_failed` are cleared by the next publish that reaches the store,
+and so that there is one, the attempt made while either stands is never gated, skipped or held back:
+it publishes, even a snapshot that says what the last published one said. An attempt made while
+`collect_failed` stands is never gated either. A publish that carried the optional fields clears
+every code and resets the failure count; a publish that had to leave them out sets
+`optional_fields_dropped`, which stays until a publish that carried them succeeds (a failure's code
+takes its place while the failure stands, and it returns when a scan that works clears
+`collect_failed`); a gated, skipped or held-back attempt never changes a code other than
+`collect_failed`. A failed publish is retried after the interval, then after twice, four times and so on up to one
 hour while it keeps failing; it never ends the daemon and never delays the local snapshot. After an
 older hub's refusal has been remembered for 24 hours (REQ:remote-snapshot-agents-and-metrics) the
 next attempt is forced to publish the full payload, bypassing the gate and the digest skip once, so

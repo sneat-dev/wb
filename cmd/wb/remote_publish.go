@@ -59,7 +59,7 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	}
 	identity := publishIdentity(cfg, login, deps.now())
 	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, inv.nonInteractive))
-	snapshot, err := collectSnapshot(context.Background(), projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
+	snapshot, err := collectSnapshot(context.Background(), projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress, nil)
 	if err != nil {
 		progress.fail(err)
 		return err
@@ -131,15 +131,41 @@ const hardwareNote = "wb: this publish also includes this machine's os, arch, cp
 // succeeded ("" when there is nothing to record), so a publish that fails does
 // not use the note up.
 func noteHardware(configPath string, out io.Writer) (marker string) {
+	if marker = hardwareNoteMarker(configPath); marker != "" {
+		_, _ = io.WriteString(out, hardwareNote)
+	}
+	return marker
+}
+
+// hardwareNoteMarker is the file that records that the hardware note was said,
+// or "" when it was (or when there is no configuration to keep it beside).
+func hardwareNoteMarker(configPath string) string {
 	if configPath == "" {
 		return ""
 	}
-	marker = filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
+	marker := filepath.Join(filepath.Dir(configPath), ".wb-remote-publish-hardware-noted")
 	if _, err := os.Stat(marker); err == nil {
 		return ""
 	}
-	_, _ = io.WriteString(out, hardwareNote)
 	return marker
+}
+
+// periodicHardwareNote is hardwareNote as the daemon's log says it, when the
+// first publish that sends the hardware facts is the periodic one.
+const periodicHardwareNote = "remote publish: the snapshot now also carries this machine's os, arch, cpu_count and boot_time (new in this version)"
+
+// notePeriodicHardware says periodicHardwareNote in the daemon's log after a
+// periodic publish that reached the store, unless the note was already said by
+// an earlier publish, by hand or periodic.
+func notePeriodicHardware(configPath string, logf func(string, ...any)) {
+	marker := hardwareNoteMarker(configPath)
+	if marker == "" {
+		return
+	}
+	if logf != nil {
+		logf("%s", periodicHardwareNote)
+	}
+	recordHardwareNoted(marker)
 }
 
 // recordHardwareNoted writes the marker noteHardware returned. A marker that

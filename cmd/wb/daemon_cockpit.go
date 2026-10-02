@@ -338,8 +338,15 @@ const periodicScanWorkers = 2
 // it then.
 func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot string, logf func(string, ...any), learned func(login string)) *periodic.Publisher {
 	var login string
+	// What a scan read of a clone is kept while the clone's fingerprint stays the
+	// same, and no longer than the keepalive.
+	scans := &repositoryScans{read: deps.readRepository, fingerprint: cockpitfleet.Fingerprint, maxAge: max(periodic.DefaultKeepalive, cfg.Publish.PublishEvery())}
+	if scans.read == nil {
+		scans.read = readRepositoryWithGit
+	}
 	return periodic.New(periodic.Options{
 		Every: cfg.Publish.PublishEvery(), Agents: cfg.Publish.Agents, Metrics: cfg.Publish.Metrics, Logf: logf, Now: deps.now,
+		Published: func() { notePeriodicHardware(deps.configPath, logf) },
 		Collect: func(ctx context.Context, now time.Time) (remotestate.Snapshot, error) {
 			if login == "" {
 				found, err := deps.login()
@@ -351,7 +358,7 @@ func newPeriodicPublisher(deps remoteDeps, cfg remotestate.Config, projectsRoot 
 					learned(login)
 				}
 			}
-			return collectSnapshot(ctx, projectsRoot, "", periodicScanWorkers, publishIdentity(cfg, login, now), cfg.Publish.Unpushed, nil)
+			return collectSnapshot(ctx, projectsRoot, "", periodicScanWorkers, publishIdentity(cfg, login, now), cfg.Publish.Unpushed, nil, scans)
 		},
 		Open: func() (remotestate.Provider, error) { return deps.open(cfg, projectsRoot) },
 	})
