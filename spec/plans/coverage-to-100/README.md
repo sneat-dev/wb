@@ -625,6 +625,29 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 
 Promote the changed-package computation that today lives embedded as shell inside the pre-commit hook template (`internal/hooks/config.go:476`) into a first-class, tested Go verb per issue #570, and expose it as `wb run --changed -- <command>`. Wire `wb coverage --changed` to reuse the same changed-package detection so task-20's pre-push invocation has one implementation to call. This is test-scoping (which packages a local run touches), distinct from task-3's changed-*statement* ratchet design — see task-3's citation note.
 
+### Approved CI scope update (2026-10-02)
+
+The current CI implementation measures coverage for changed packages and their
+transitive reverse dependents across the union of merge-base/head default and
+native E2E import and test-import graphs. Baseline and head use the same logical
+selection; absent new/deleted packages contribute no statements at that revision.
+Nested fixtures, embedded assets and generated inputs retain their package's
+uncovered-count ratchet. Shared module/build/workflow inputs select all packages;
+unknown inputs select all and discovery errors fail closed. Different default/
+native package membership selects full-module measurement. Reports retain exact
+base/head revisions, tags, logical package membership and a private hash of the
+effective Go build environment; mismatched versions or flags fail comparison. Changed statements
+still require 100% coverage and changed-package uncovered counts may not rise.
+Selected profiles never establish a repository-global floor or summary and do
+not reuse full-module nightly baselines. A missing selected baseline measures
+only that selection. Main can reuse an exact trusted PR receipt; other events
+compare a resolved earlier revision with the same selected ratchets. Full-module
+coverage, the existing 94% floor, baseline and summary artifacts remain in daily
+nightly coverage and manual nightly dispatch from main. This update supersedes
+Task 3's full-PR/full-main producer policy for the interim ratchet; Task 20's
+future 100% repository-wide goal remains unchanged. No CI latency result is
+claimed; changes to core dependencies can still select much of the module.
+
 ### Task 20: Hard 100% gate
 
 **Id:** task-20

@@ -1875,10 +1875,10 @@
             {
               "path": "wb coverage",
               "flags": [
+                "--affected-packages",
                 "--baseline-file",
                 "--baseline-timeout",
                 "--changed",
-                "--changed-packages-only",
                 "--ci",
                 "--coverage-profile",
                 "--include-e2e",
@@ -1902,8 +1902,7 @@
                 "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
                 "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
                 "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications.",
-                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line.",
-                "--changed-packages-only (local mode, requires --changed) measures only the packages the diff touches, so a loaded machine does not measure every package; its output states that unrelated-package drift was not measured and that CI's full run remains the gate. CI does not use it."
+                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
               ]
             }
           ],
@@ -2020,7 +2019,7 @@
                 "--sha"
               ],
               "modes": [
-                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON go-ci's coverage job publishes as a build artifact on every push to main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
+                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON nightly coverage publishes as a full-module build artifact on main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
               ]
             }
           ],

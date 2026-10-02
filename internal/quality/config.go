@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -88,68 +87,4 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 		base.GoLintCommands = append(base.GoLintCommands, append([]string(nil), command...))
 	}
 	return base, nil
-}
-
-// ScopeShardPolicyToPackages narrows a repository-owned shard policy to a run
-// that was explicitly limited to GoTestPackages. The sharded runner rejects a
-// shard package outside the selected scope, so a scoped run that carried the
-// whole policy would fail instead of measuring the packages it was asked for.
-// Shard packages the scope covers keep their sharding; when none are left the
-// run is unsharded. Without GoTestPackages, or without a policy, it returns
-// the options unchanged.
-func ScopeShardPolicyToPackages(options RunOptions) RunOptions {
-	if len(options.GoTestPackages) == 0 || len(options.GoShardPackages) == 0 {
-		return options
-	}
-	var kept []string
-	for _, shardPackage := range options.GoShardPackages {
-		for _, pattern := range options.GoTestPackages {
-			if packagePatternCovers(pattern, shardPackage) {
-				kept = append(kept, shardPackage)
-				break
-			}
-		}
-	}
-	options.GoShardPackages = kept
-	if len(kept) == 0 {
-		options.GoTestShards = 1
-	}
-	return options
-}
-
-// packagePatternCovers reports whether one `go test` package pattern selects
-// the single package named by target. Both are module-relative; only the
-// forms the changed-package scope produces are understood: an exact directory
-// and a "/..." subtree.
-func packagePatternCovers(pattern, target string) bool {
-	pattern = path.Clean(strings.TrimSpace(pattern))
-	target = path.Clean(strings.TrimSpace(target))
-	if pattern == target {
-		return true
-	}
-	if pattern == "..." {
-		return true
-	}
-	if root, ok := strings.CutSuffix(pattern, "/..."); ok {
-		return root == "." || target == root || strings.HasPrefix(target, root+"/")
-	}
-	return false
-}
-
-// existingPackagePatterns keeps the patterns whose directory exists under
-// root. A package a change adds has no directory at its merge base, so a
-// merge-base measurement scoped to the changed packages must skip it: its
-// baseline is then absent, which the ratchet treats as zero uncovered.
-func existingPackagePatterns(root string, patterns []string) []string {
-	var existing []string
-	for _, pattern := range patterns {
-		directory := strings.TrimSuffix(strings.TrimSpace(pattern), "/...")
-		if directory == "..." {
-			directory = "."
-		}
-		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(directory))); err == nil && info.IsDir() {
-			existing = append(existing, pattern)
-		}
-	}
-	return existing
 }

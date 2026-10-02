@@ -56,10 +56,6 @@ Fleet coverage MUST aggregate Go coverage by covered statements divided by all i
 
 The Workbench Hub MUST subscribe to `workflow_run.completed` GitHub webhook events on default branches, download the `wb-coverage-summary` artifact using the GitHub App token, and persist the coverage record to the repository coverage store.
 
-#### REQ: local-changed-coverage-scope
-
-`wb coverage --changed` MAY be narrowed with `--changed-packages-only`, which requires `--changed` (usage error, exit `2`, without it) and measures only the Go packages the diff touches. A narrowed run MUST state in its output that coverage drift in unrelated packages was not measured and that CI's full run remains the gate. CI MUST NOT use the flag, and a run without it MUST measure every package exactly as before.
-
 #### REQ: host-independent-deadcode
 
 `wb deadcode` MUST give the same verdict on every host. It MUST analyse each supported platform (`linux`, `darwin`, `windows`) with a fixed architecture and cgo disabled, and MUST report a function as unreachable only when it is unreachable on every one of them. Functions that exist in files built for a single OS, or that are reachable only with cgo enabled, are therefore not reported.
@@ -191,14 +187,6 @@ without emitting a graduation receipt.
 **Given** a repository coverage summary artifact published by GitHub Actions on push/merge to default branch and harvested by Workbench Hub into the coverage store
 **When** `wb coverage [repo] --ci` or `wb fleet coverage` is executed
 **Then** latest test coverage statements and percentage are reported instantaneously (<100ms) without executing local `go test` runs.
-
-### AC: changed-coverage-local-scope
-
-**Requirements:** fleet-quality#req:local-changed-coverage-scope
-
-**Given** a diff that touches one Go package, an unrelated package whose tests fail, and `--changed-packages-only`
-**When** `wb coverage --changed --changed-packages-only --target <ref>` runs
-**Then** only the touched package is measured and ratcheted, a newly uncovered statement in it still fails with its `file:line`, the unrelated package's failure is never reached, and the output says unrelated-package drift was not measured and CI's full run remains the gate.
 
 ### AC: deadcode-same-verdict-on-every-host
 

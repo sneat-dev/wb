@@ -90,6 +90,36 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 	if err != nil {
 		return err
 	}
+	var changedOwners []string
+	var scopeReason string
+	var scopeIdentity *quality.CoverageScopeIdentity
+	if options.affectedPackages {
+		selection, err := quality.AffectedCoverageScope(ctx, repoPath, mergeBase, touchedFiles, options.includeE2E)
+		if err != nil {
+			return err
+		}
+		options.packagePatterns = selection.Packages
+		changedOwners = selection.ChangedPackages
+		scopeReason = selection.Reason
+		scopeIdentity = selection.Identity
+		options.explicitGoTestPackages = true
+	}
+	logicalPackages := append([]string(nil), options.packagePatterns...)
+	if options.explicitGoTestPackages {
+		options.packagePatterns, err = quality.ExistingCoveragePackages(repoPath, logicalPackages)
+		if err != nil {
+			return err
+		}
+		if len(options.packagePatterns) == 0 {
+			if options.coverageProfile != "" {
+				if err := filewrite.WriteBytesAtomic(filepath.Dir(options.coverageProfile), filepath.Base(options.coverageProfile), []byte("mode: set\n"), 0o644); err != nil {
+					return err
+				}
+			}
+			return writeChangedCoverageOutputTo(cmd.OutOrStdout(), changedCoverageReport{MergeBase: mergeBase, Target: options.target, Scope: logicalPackages, ScopeReason: scopeReason, ChangedScope: changedOwners, ScopeIdentity: scopeIdentity}, options.format, options.reportDir)
+		}
+	}
+
 	// lineOffsets lets a count-only rise (review B2) name the current
 	// file:line of a pre-existing statement whose file the PR also edited
 	// elsewhere, instead of treating every uncovered block in that file as
@@ -112,30 +142,16 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 	// that keeps .wb/quality.yaml's shard policy, --timeout/--retry, and
 	// coverage-diagnostics-on-failure working for --changed too
 	// (spec/plans/coverage-to-100/README.md task-3, review item 5).
-	base := runOptions(options)
+	base := coverageOptionsForCommand(options)
 	base.CoverageProfile = profilePath
-	var scope *changedCoverageScope
-	if options.changedPackagesOnly {
-		changedPackages, err := quality.ChangedPackages(ctx, repoPath, options.target)
-		if err != nil {
-			return err
-		}
-		scope = newChangedCoverageScope(changedPackages.Packages)
-		options.scopePackages = changedPackages.Packages
-		if len(changedPackages.Packages) == 0 {
-			// Nothing Go-buildable changed, so there is nothing to measure;
-			// running `go test` with no packages would measure everything.
-			return writeChangedCoverageOutputTo(cmd.OutOrStdout(), changedCoverageReport{
-				MergeBase: mergeBase, Target: options.target, Packages: []quality.PackageRatchet{}, Warnings: []quality.RatchetWarning{}, Scope: scope,
-			}, options.format, options.reportDir)
-		}
-		base.GoTestPackages = changedPackages.Packages
-	}
 	runOpts, err := quality.RepositoryRunOptions(repoPath, base)
 	if err != nil {
 		return err
 	}
-	runOpts = quality.ScopeShardPolicyToPackages(runOpts)
+	if options.explicitGoTestPackages {
+		runOpts = quality.SelectedCoverageOptions(runOpts, options.packagePatterns)
+	}
+
 	coverageReport := quality.CoverWithOptions(ctx, filepath.Base(repoPath), repoPath, runOpts)
 	if coverageReport.Status == quality.StatusFailed {
 		message := "coverage could not be measured: " + coverageReport.Error
@@ -158,19 +174,22 @@ func runChangedCoverage(cmd *cobra.Command, path string, options qualityOptions)
 		return fmt.Errorf("parse coverage profile %s produced by go test: %w", profilePath, err)
 	}
 
+	options.packagePatterns = logicalPackages
 	baseline, err := loadOrMeasureBaseline(ctx, cmd.ErrOrStderr(), repoPath, mergeBase, options)
 	if err != nil {
 		return err
 	}
 
-	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath)
+	results, warnings := quality.EvaluateRatchet(blocks, changedLines, touchedFiles, lineOffsets, baseline, modulePath, changedOwners)
 
 	report := changedCoverageReport{
-		MergeBase: mergeBase,
-		Target:    options.target,
-		Packages:  results,
-		Warnings:  warnings,
-		Scope:     scope,
+		MergeBase:    mergeBase,
+		Target:       options.target,
+		Scope:        logicalPackages,
+		ScopeReason:  scopeReason,
+		ChangedScope: changedOwners, ScopeIdentity: scopeIdentity,
+		Packages: results,
+		Warnings: warnings,
 	}
 	if err := writeChangedCoverageOutputTo(cmd.OutOrStdout(), report, options.format, options.reportDir); err != nil {
 		return err
@@ -215,7 +234,7 @@ func changedCoverageProfilePathInjected(existing string, inj *filewrite.Injector
 // merge base directly, bounded by options.baselineTimeout
 // (spec/plans/coverage-to-100/README.md task-3(b)).
 func loadOrMeasureBaseline(ctx context.Context, stderr io.Writer, repoPath, mergeBase string, options qualityOptions) (quality.PackageBaseline, error) {
-	if options.baselineFile != "" {
+	if options.baselineFile != "" && !options.explicitGoTestPackages {
 		baseline, err := quality.LoadBaseline(options.baselineFile)
 		switch {
 		case err == nil:
@@ -238,41 +257,20 @@ func loadOrMeasureBaseline(ctx context.Context, stderr io.Writer, repoPath, merg
 			return quality.PackageBaseline{}, fmt.Errorf("--baseline-file %s: %w", options.baselineFile, err)
 		}
 	}
-	baselineOptions := runOptions(options)
-	baselineOptions.GoTestPackages = append([]string(nil), options.scopePackages...)
-	return quality.ComputeBaselineAtRef(ctx, repoPath, mergeBase, options.baselineTimeout, baselineOptions)
+	return quality.ComputeBaselineAtRef(ctx, repoPath, mergeBase, options.baselineTimeout, coverageOptionsForCommand(options))
 }
 
 type changedCoverageReport struct {
-	MergeBase string                   `yaml:"merge_base" json:"merge_base"`
-	Target    string                   `yaml:"target" json:"target"`
-	Packages  []quality.PackageRatchet `yaml:"packages" json:"packages"`
+	ScopeIdentity *quality.CoverageScopeIdentity `yaml:"scope_identity,omitempty" json:"scope_identity,omitempty"`
+	ScopeReason   string                         `yaml:"scope_reason,omitempty" json:"scope_reason,omitempty"`
+	ChangedScope  []string                       `yaml:"changed_scope,omitempty" json:"changed_scope,omitempty"`
+	Scope         []string                       `yaml:"scope,omitempty" json:"scope,omitempty"`
+	MergeBase     string                         `yaml:"merge_base" json:"merge_base"`
+	Target        string                         `yaml:"target" json:"target"`
+	Packages      []quality.PackageRatchet       `yaml:"packages" json:"packages"`
 	// Warnings are count rises in packages the PR did not itself change
 	// (founder decision 2026-09-23, review B1): reported, never failed on.
 	Warnings []quality.RatchetWarning `yaml:"warnings" json:"warnings"`
-	// Scope is set only for --changed-packages-only, and says what was left
-	// unmeasured so a passing local result is not read as the CI verdict.
-	Scope *changedCoverageScope `yaml:"scope,omitempty" json:"scope,omitempty"`
-}
-
-// changedCoverageScope describes a --changed-packages-only run.
-type changedCoverageScope struct {
-	ChangedPackagesOnly bool     `yaml:"changed_packages_only" json:"changed_packages_only"`
-	MeasuredPackages    []string `yaml:"measured_packages" json:"measured_packages"`
-	Note                string   `yaml:"note" json:"note"`
-}
-
-// changedPackagesOnlyNote is the plain statement every scoped run carries.
-const changedPackagesOnlyNote = "Only the packages this diff touches were measured. Coverage drift in unrelated " +
-	"packages, and in packages touched only through non-Go files, was not measured; " +
-	"CI's full run remains the gate."
-
-func newChangedCoverageScope(packages []string) *changedCoverageScope {
-	return &changedCoverageScope{
-		ChangedPackagesOnly: true,
-		MeasuredPackages:    append([]string{}, packages...),
-		Note:                changedPackagesOnlyNote,
-	}
 }
 
 func changedCoverageRatchetError(results []quality.PackageRatchet) error {
@@ -343,9 +341,6 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		return encoder.Encode(report)
 	}
 	_, _ = fmt.Fprintf(out, "coverage ratchet against %s (merge base %s)\n", report.Target, report.MergeBase)
-	if report.Scope != nil {
-		_, _ = fmt.Fprintf(out, "  scope: %s\n  measured: %s\n", report.Scope.Note, scopeMeasuredText(report.Scope.MeasuredPackages))
-	}
 	for _, result := range report.Packages {
 		status := "PASS"
 		if !result.Pass {
@@ -364,11 +359,4 @@ func writeChangedCoverageOutputTo(out io.Writer, report changedCoverageReport, f
 		_, _ = fmt.Fprintf(out, "  WARN %s %s:%d: %s\n", warning.Package, warning.File, warning.Line, warning.Reason)
 	}
 	return nil
-}
-
-func scopeMeasuredText(packages []string) string {
-	if len(packages) == 0 {
-		return "no packages (the diff touches no Go package)"
-	}
-	return strings.Join(packages, " ")
 }
