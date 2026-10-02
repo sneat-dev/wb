@@ -3,7 +3,7 @@ import { otherConsoleErrors, unexplainedViolations, type Violation } from './vio
 
 // What the stubbed end-to-end tests share: a fleet document and the stubs of the
 // daemon's routes, and the watcher that fails a test on a console error or a
-// policy violation beyond the PrimeUI licence banner this build is known to show.
+// policy violation.
 
 export const observed = new Date(Date.now() - 12 * 60_000).toISOString()
 export const now = new Date().toISOString()
@@ -65,8 +65,7 @@ export async function watch(page: Page) {
     const store = window as unknown as { __violations: unknown[] }
     store.__violations = []
     document.addEventListener('securitypolicyviolation', (event) => {
-      const inLicenseBanner = event.composedPath().some((node) => (node as Element).id === 'p-license-host')
-      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI, inLicenseBanner })
+      store.__violations.push({ directive: event.violatedDirective, blockedURI: event.blockedURI })
     })
   })
   return async () => {

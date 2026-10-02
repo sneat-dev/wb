@@ -6,7 +6,7 @@ import { galleryRoutes } from './gallery/gallery-routes'
 // replaces the body of its file under pages/<name>/ without editing either.
 // A page keeps the exported class name its route imports.
 //
-// No page uses PrimeNG: every route is a plain lazy `page(...)`.
+// Every route is a plain lazy `page(...)`.
 //
 // Titles are the page names: the document title and the visually hidden `h1`
 // of the shell. `/dashboard` is the old name of Home and shows it. A detail

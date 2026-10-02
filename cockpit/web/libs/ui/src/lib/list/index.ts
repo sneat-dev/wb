@@ -1,5 +1,5 @@
-// The entry point `@cockpit/ui/list`: the shared list and what its cells use. It has no PrimeNG
-// component, so a page built on it loads without PrimeNG; the barrel `@cockpit/ui` does not export it.
+// The entry point `@cockpit/ui/list`: the shared list and what its cells use. The barrel
+// `@cockpit/ui` does not export it.
 export * from './list-state'
 export * from './list-cell'
 export * from './page-defaults'

@@ -99,8 +99,7 @@ function staticClosure(outputs, names) {
 
 // The scripts needed to render the page whose source file ends with `entry`:
 // the initial scripts, the page's own chunk with what it imports statically, and
-// the lazy chunks that load it (the route's own, such as the PrimeNG theme of a
-// legacy page). Needs the metafile the production build writes; without it, or
+// the lazy chunks that load it (the route's own). Needs the metafile the production build writes; without it, or
 // when no output is that page, it fails closed.
 export function firstPageScripts(dist, initial, entry) {
   const statsPath = join(dist, 'stats.json')
@@ -180,7 +179,7 @@ export function finishBuild(dist, log, report = () => {}) {
   const detail = size.firstPage.files.map((file) => `${file.name} ${kilobytes(file.bytes)}`).join(', ')
   report(`initial static JavaScript ${kilobytes(size.initial.total)}; first page (Home) ${kilobytes(size.firstPage.total)} of ${kilobytes(size.budget)} (${detail})`)
   if (size.firstPage.total > size.budget) {
-    log(`cockpit/web first-page JavaScript is ${kilobytes(size.firstPage.total)}, over the budget of ${kilobytes(size.budget)} (${detail}); load page code lazily and keep PrimeNG out of the first page`)
+    log(`cockpit/web first-page JavaScript is ${kilobytes(size.firstPage.total)}, over the budget of ${kilobytes(size.budget)} (${detail}); load page code lazily`)
     return 1
   }
   rmSync(join(dist, 'stats.json'), { force: true })

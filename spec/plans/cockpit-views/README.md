@@ -311,7 +311,6 @@ Verification (allmust pass before the task is complete), in `cockpit/web`: `pnpm
 - Which remote store is the fleet's shared one (the Mac reads the git store, the VM
   publishes to its own hub) is undecided; periodic publish uses what each machine has
   configured, as the fallback for machines without an SSH route.
-- The PrimeUI licence key is a pending founder decision outside this plan.
 - Whether Stop and Reply for hand-started sessions should be built on herdr prompts is
   undecided.
 - Whether the owner process liveness of every local worktree is cheap enough for the

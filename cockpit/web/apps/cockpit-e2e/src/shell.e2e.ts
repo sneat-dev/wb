@@ -15,15 +15,9 @@ test('the built shell loads under /cockpit/ with no console errors and no CSP vi
     const store = window as unknown as { __violations: unknown[] }
     store.__violations = []
     document.addEventListener('securitypolicyviolation', (event) => {
-      // The licence banner lives in a closed shadow root, so the event is
-      // retargeted to its host, which is in the composed path.
-      const inLicenseBanner = event
-        .composedPath()
-        .some((node) => (node as Element).id === 'p-license-host')
       store.__violations.push({
         directive: event.violatedDirective,
         blockedURI: event.blockedURI,
-        inLicenseBanner,
       })
     })
   })
