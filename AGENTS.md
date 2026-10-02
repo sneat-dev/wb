@@ -88,8 +88,10 @@ public WB repository as a fleet tracker or mirror upstream issues.
   statement count must never rise. Unchanged packages only warn on a rise.
   As a stopgap, `.wb/coverage-ratchet.yaml` (read from the head checkout)
   lets a listed package exceed its baseline by a few timing-dependent
-  statements on lines the change did not touch; each use prints a `WARNING`.
-  Remove an entry once its branches are deterministic; never raise one to fit.
+  statements, only inside the functions the entry names and only on lines the
+  change did not add, modify or move; each use prints a `WARNING`. The policy
+  is pinned by a test. Remove an entry once its branches are deterministic;
+  never widen one to fit.
   Base and head measure the same logical changed-package and reverse-dependent
   selection, including test imports and all production/test embedding consumers.
   Shared inputs and differing default/native package membership select the

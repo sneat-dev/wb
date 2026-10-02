@@ -18,8 +18,8 @@ func toleratedPackageResults() []quality.PackageRatchet {
 			Package: "internal/orchestrate", Uncovered: 1562, BaselineUncovered: 1560, HasBaseline: true, Changed: true, Pass: true,
 			Tolerance: 2,
 			Tolerated: []quality.ToleratedStatement{
-				{File: "internal/orchestrate/ciwait.go", Line: 458, Reason: "timing-dependent branches"},
-				{File: "internal/orchestrate/worktree_merge.go", Line: 4168, Reason: "timing-dependent branches"},
+				{File: "internal/orchestrate/ciwait.go", Line: 458, Function: "waitForCommitChecksWith", Reason: "timing-dependent\nbranches"},
+				{File: "internal/orchestrate/worktree_merge.go", Line: 4168, Function: "verifyWorktreeMergeTargetChecks", Reason: "timing-dependent\nbranches"},
 			},
 		},
 	}
@@ -28,24 +28,54 @@ func toleratedPackageResults() []quality.PackageRatchet {
 func TestWarnToleratedCoverageNamesThePackageAllowanceStatementsAndReason(t *testing.T) {
 	t.Parallel()
 	var stderr bytes.Buffer
-	warnToleratedCoverage(&stderr, toleratedPackageResults()[:1])
+	warnToleratedCoverage(&stderr, toleratedPackageResults()[:1], true)
 	if stderr.Len() != 0 {
 		t.Fatalf("a run that needed no tolerance printed %q", stderr.String())
 	}
-	warnToleratedCoverage(&stderr, toleratedPackageResults())
-	if strings.Count(stderr.String(), "WARNING:") != 1 {
-		t.Fatalf("warning = %q, want exactly one WARNING line", stderr.String())
+	warnToleratedCoverage(&stderr, toleratedPackageResults(), false)
+	if strings.Count(stderr.String(), "WARNING:") != 1 || strings.Contains(stderr.String(), "::warning") {
+		t.Fatalf("warning = %q, want exactly one WARNING line and no workflow command", stderr.String())
 	}
 	for _, want := range []string{
 		"WARNING: coverage ratchet tolerance used for internal/orchestrate",
 		"uncovered count 1562 is above baseline 1560",
 		"tolerance of 2 statement(s)",
-		"Reason: timing-dependent branches",
-		"tolerated: internal/orchestrate/ciwait.go:458: newly uncovered (was covered at base)",
-		"tolerated: internal/orchestrate/worktree_merge.go:4168: newly uncovered (was covered at base)",
+		"Reason: timing-dependent\nbranches",
+		"tolerated: internal/orchestrate/ciwait.go:458 (in waitForCommitChecksWith): newly uncovered (was covered at base)",
+		"tolerated: internal/orchestrate/worktree_merge.go:4168 (in verifyWorktreeMergeTargetChecks): newly uncovered (was covered at base)",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("warning = %q, want it to contain %q", stderr.String(), want)
+		}
+	}
+}
+
+func TestWarnToleratedCoverageAnnotatesTheRunOnlyUnderGitHubActions(t *testing.T) {
+	t.Parallel()
+	var plain, annotated bytes.Buffer
+	warnToleratedCoverage(&plain, toleratedPackageResults(), false)
+	warnToleratedCoverage(&annotated, toleratedPackageResults(), true)
+	firstLine, rest, _ := strings.Cut(annotated.String(), "\n")
+	want := "::warning title=Coverage ratchet tolerance used::internal/orchestrate: uncovered count 1562 is above baseline 1560, within the configured tolerance of 2 statement(s). Tolerated: internal/orchestrate/ciwait.go:458 (waitForCommitChecksWith), internal/orchestrate/worktree_merge.go:4168 (verifyWorktreeMergeTargetChecks). Reason: timing-dependent%0Abranches"
+	if firstLine != want {
+		t.Fatalf("annotation = %q, want one escaped line %q", firstLine, want)
+	}
+	if rest != plain.String() {
+		t.Fatalf("the annotation replaced the plain warning: %q", rest)
+	}
+}
+
+func TestGitHubActionsEnabledReadsTheRunnerVariable(t *testing.T) {
+	t.Parallel()
+	for value, want := range map[string]bool{"true": true, "": false, "false": false} {
+		got := githubActionsEnabled(func(name string) string {
+			if name != "GITHUB_ACTIONS" {
+				t.Fatalf("read %q, want GITHUB_ACTIONS", name)
+			}
+			return value
+		})
+		if got != want {
+			t.Fatalf("GITHUB_ACTIONS=%q: enabled = %t, want %t", value, got, want)
 		}
 	}
 }
@@ -81,15 +111,12 @@ func TestChangedCoverageReportsCarryTheToleranceUsed(t *testing.T) {
 		if string(decoded.Packages[1]["tolerance"]) != "2" {
 			t.Fatalf("%s: tolerance = %s, want 2", name, decoded.Packages[1]["tolerance"])
 		}
-		var tolerated []quality.ToleratedStatement
+		var tolerated []map[string]any
 		if err := json.Unmarshal(decoded.Packages[1]["tolerated"], &tolerated); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if len(tolerated) != 2 || tolerated[0].File != "internal/orchestrate/ciwait.go" || tolerated[0].Line != 458 || tolerated[0].Reason != "timing-dependent branches" {
+		if len(tolerated) != 2 || tolerated[0]["file"] != "internal/orchestrate/ciwait.go" || tolerated[0]["line"] != float64(458) || tolerated[0]["function"] != "waitForCommitChecksWith" || tolerated[0]["reason"] != "timing-dependent\nbranches" {
 			t.Fatalf("%s: tolerated = %+v", name, tolerated)
-		}
-		if !strings.Contains(string(encoded), `"file": "internal/orchestrate/ciwait.go"`) || !strings.Contains(string(encoded), `"line": 458`) {
-			t.Fatalf("%s: tolerated entries are not keyed file/line/reason: %s", name, encoded)
 		}
 	}
 
@@ -97,7 +124,7 @@ func TestChangedCoverageReportsCarryTheToleranceUsed(t *testing.T) {
 	if err := writeChangedCoverageOutputTo(&out, report, "markdown", ""); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "TOLERATED (tolerance 2) internal/orchestrate/worktree_merge.go:4168: timing-dependent branches") {
+	if !strings.Contains(out.String(), "TOLERATED (tolerance 2) internal/orchestrate/worktree_merge.go:4168 (in verifyWorktreeMergeTargetChecks): timing-dependent") {
 		t.Fatalf("text report = %q, want the tolerated statement listed", out.String())
 	}
 	if err := changedCoverageRatchetError(report.Packages); err != nil {
@@ -114,7 +141,7 @@ func TestCoverageChangedRejectsAMalformedTolerancePolicyBeforeMeasuring(t *testi
 	if err := os.MkdirAll(filepath.Join(dir, ".wb"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	policy := "version: 1\ntiming_tolerance:\n  - package: internal/orchestrate\n    statements: 2\n"
+	policy := "version: 1\ntiming_tolerance:\n  - package: .\n    statements: 2\n"
 	if err := os.WriteFile(filepath.Join(dir, ".wb", "coverage-ratchet.yaml"), []byte(policy), 0o644); err != nil {
 		t.Fatal(err)
 	}

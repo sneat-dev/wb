@@ -667,8 +667,9 @@ type PackageRatchet struct {
 //
 // tolerances (task-3 (b3), from LoadRatchetTolerances on the head checkout)
 // loosens only the count rule, only for the changed packages it names, and
-// only for statements on lines the change did not add or modify; see
-// toleratedStatements. A package that passes this way has Rose false and
+// only for statements inside the functions an entry lists, on lines the
+// change did not add, modify or move (lineOffsets supplies the moved lines
+// that changed leaves out); see toleratedStatements. A package that passes this way has Rose false and
 // carries Tolerance and Tolerated so the caller can warn about it. Pass nil
 // for the strict ratchet.
 func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string, tolerances RatchetTolerances, changedOwners ...[]string) ([]PackageRatchet, []RatchetWarning) {
@@ -804,7 +805,7 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 				}
 			}
 			tolerance, configured := tolerances[pkg]
-			tolerated = toleratedStatements(tolerance, configured, count, baselineCount, newlyUncovered, changed, modulePath)
+			tolerated = toleratedStatements(tolerance, configured, count, baselineCount, newlyUncovered, changed, lineOffsets, modulePath)
 			if tolerated != nil {
 				rose = false
 			} else {
