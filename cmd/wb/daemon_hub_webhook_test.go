@@ -278,6 +278,8 @@ func TestConnectRoutesAnswer503WithoutAnOAuthVerifier(t *testing.T) {
 	if mount.Webhook.Installations() == nil {
 		t.Fatal("webhook mode must wire the installation service")
 	}
+	// The route is the owner's alone; the limit is what the owner is told.
+	mount.authorizeOwnerWith(func(*http.Request) bool { return true })
 	handler := mount.handlers()[hub.APIPrefix+"/"]
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, hub.InstallationConnectPath, strings.NewReader("{}"))
