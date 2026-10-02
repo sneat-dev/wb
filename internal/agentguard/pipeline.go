@@ -115,7 +115,7 @@ func MaskedPipelineVerbPaths() [][]string {
 var valueFlags = setOf(
 	"--absorbed-by", "--actor", "--add", "--agent", "--agent-id", "--agent-runtime", "--approved-by",
 	"--base", "--body", "--body-file", "--branch", "--branch-prefix", "--changed", "--check-interval",
-	"--check-timeout", "--checks", "--claim", "--cli", "--closes", "--config", "--context-file",
+	"--check-timeout", "--checks", "--claim", "--closed-pr", "--cli", "--closes", "--config", "--context-file",
 	"--defer-direct-ci-pr", "--disposition", "--effort", "--exclude", "--filter", "--format",
 	"--github-dir", "--go-private", "--handover-file", "--harness", "--hold", "--include-task",
 	"--initiator", "--keep-commits", "--lane-reason", "--library", "--manifest", "--match",
