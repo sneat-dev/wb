@@ -4,7 +4,6 @@ import { agent, fleetDocument, repository, worktree } from '@cockpit/fleet-data/
 import { NOW } from '../pages/test-harness'
 import { PALETTE_KINDS, PaletteGroup, RESULTS_PER_KIND, resolveResult, searchPalette } from './palette-search'
 
-
 function groupOf(groups: PaletteGroup[], kind: string): PaletteGroup {
   const found = groups.find((group) => group.kind === kind)
   if (found === undefined) throw new Error(`no ${kind} group in ${groups.map((group) => group.kind).join(', ')}`)
