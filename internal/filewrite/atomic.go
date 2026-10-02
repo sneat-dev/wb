@@ -85,16 +85,6 @@ func ReadJSONAt(directory *os.File, name string, target any) error {
 	return json.Unmarshal(content, target)
 }
 
-// WriteJSONAtomic encodes value as indented JSON followed by a newline and
-// atomically replaces path, creating its parent directory when necessary.
-func WriteJSONAtomic(path string, value any, mode os.FileMode) error {
-	content, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
-	}
-	return WriteBytesAtomic(filepath.Dir(path), filepath.Base(path), append(content, '\n'), mode)
-}
-
 // WriteJSONAtomicAt encodes value as indented JSON followed by a newline and
 // atomically replaces name below directory.
 func WriteJSONAtomicAt(directory *os.File, name string, value any, mode os.FileMode) error {

@@ -3,8 +3,10 @@ package worktrees
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
@@ -89,5 +91,9 @@ func sessionReceiveRepositoryFromRemote(remote string) (string, error) {
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
-	return filewrite.WriteJSONAtomic(path, value, mode)
+	content, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	return filewrite.WriteBytesAtomic(filepath.Dir(path), filepath.Base(path), append(content, '\n'), mode)
 }
