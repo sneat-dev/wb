@@ -157,7 +157,7 @@ func TestCoverageScopeFixtureOwnershipRatchet(t *testing.T) {
 	t.Parallel()
 	blocks := []CoverageBlock{{File: "m/core/core.go", StartLine: 2, EndLine: 2, Statements: 1}}
 	baseline := BaselineFromProfile([]CoverageBlock{{File: "m/core/core.go", StartLine: 2, EndLine: 2, Statements: 1, Count: 1}}, "m", "base")
-	results, _ := EvaluateRatchet(blocks, nil, map[string]bool{"core/testdata/input.json": true}, nil, baseline, "m", []string{"./core"})
+	results, _ := EvaluateRatchet(blocks, nil, map[string]bool{"core/testdata/input.json": true}, nil, baseline, "m", nil, []string{"./core"})
 	if len(results) != 1 || !results[0].Changed || !results[0].Rose {
 		t.Fatalf("fixture ratchet=%+v", results)
 	}

@@ -1,0 +1,44 @@
+version: 1
+
+# Timing tolerance for the per-change coverage ratchet (`wb coverage --changed`).
+#
+# STOPGAP (founder, 2026-10-02: "Give rachet a tolerance for them for now").
+# A few branches are executed or not depending on which goroutine or timer
+# wins, so the same commit measures a different uncovered count from one run
+# to the next and pull requests that never touched those lines failed at
+# random. Each entry below must be deleted once its branches are made
+# deterministic under test; the aim is an empty list, not a longer one.
+#
+# For a listed package that a change touches, the count rule passes only when
+# all of these hold: the uncovered count is at most the merge-base count plus
+# `statements`; every newly uncovered statement lies inside one of the listed
+# `functions`; none of them is on a line the change added, modified or moved;
+# and together they hold at most `statements` statements. Anything else fails
+# and names every newly uncovered statement. A statement the change adds or
+# modifies must still be covered, and every package not listed here keeps the
+# strict rule. Every use prints a WARNING (and a GitHub Actions annotation in
+# CI) and is recorded in the JSON report.
+#
+# This file is read from the checkout being judged (the pull request's head),
+# never from the merge base. At most 3 entries. `package` is the directory
+# relative to the module root, spelled exactly as on disk. `statements` is a
+# plain integer from 1 to 5. `functions` lists 1 to 5 `file.go:Function` or
+# `file.go:Type.Method` names that must exist in that package; a renamed or
+# deleted function fails the run until its entry is corrected. `reason` is
+# required.
+#
+# The content of this file is pinned by
+# TestRepositoryRatchetPolicyIsExactlyTheReviewedTolerance
+# (internal/quality/ratchet_tolerance_test.go): widening it means editing
+# that test in the same pull request.
+timing_tolerance:
+  - package: internal/orchestrate
+    statements: 2
+    functions:
+      # ciwait.go:458, the context.DeadlineExceeded branch of the wait loop.
+      - ciwait.go:waitForCommitChecksWith
+      # worktree_merge.go:4168, the fall-through after a validation-cache miss.
+      - worktree_merge.go:verifyWorktreeMergeTargetChecks
+    reason: >-
+      timing-dependent branches not yet deterministic under test: the wait
+      loop's deadline branch and the validation-cache miss fall-through
