@@ -384,6 +384,10 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassContained
 		entry.Eligible = true
 		entry.Reason = "head is contained in the fetched origin target"
+		if result.IntegrationProof != "" {
+			// The recorded base did not prove this; say which target did.
+			entry.Reason = "head is " + result.IntegrationProof
+		}
 	case result.Landing != nil && result.Landing.Truncated:
 		entry.Class = GCClassUnmerged
 		entry.Reason = "the landing walk reached its --residue-depth bound without finding a landed ancestor, " +
@@ -402,6 +406,10 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	default:
 		entry.Class = GCClassUnmerged
 		entry.Reason = "head is not integrated into the exact origin target"
+		if result.Base != "" && result.RemoteTargetSHA != "" {
+			entry.Reason += " origin/" + result.Base + " at " + shortSHA(result.RemoteTargetSHA)
+		}
+		entry.Reason += targetRefusalDetail(result)
 		entry.SanctionedCommand = "wb worktree merge " + result.Task + " --route auto"
 	}
 	if options.OlderThan > 0 && entry.Eligible && result.MergedPullRequest != nil &&
