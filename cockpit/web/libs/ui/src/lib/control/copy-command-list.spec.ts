@@ -84,7 +84,7 @@ describe('CopyCommandList', () => {
   })
 
   it('marks a command that needs editing: a "Copy template" button, a longer announcement and the library\'s placeholders marked, and nothing else', async () => {
-    const create = pullRequestCreate('fix-ci')
+    const create = pullRequestCreate('fix-ci', {})
     const plain = worktreeList('fix-ci')
     const { items } = await render([
       { title: 'Commit and open pull request', command: create },
@@ -103,7 +103,7 @@ describe('CopyCommandList', () => {
   })
 
   it('announces that the parts are to be edited once a template is copied', async () => {
-    const { fixture, items } = await render([{ title: 'Commit and open pull request', command: pullRequestCreate('fix-ci') }])
+    const { fixture, items } = await render([{ title: 'Commit and open pull request', command: pullRequestCreate('fix-ci', {}) }])
     ;(items[0].querySelector('app-copy-button button') as HTMLButtonElement).click()
     await vi.waitFor(() => {
       fixture.detectChanges()
@@ -112,7 +112,7 @@ describe('CopyCommandList', () => {
   })
 
   it('marks only the placeholder values the library writes, not any <word> that is part of a quoted value', async () => {
-    const { items } = await render([{ title: 'List worktrees', command: worktreeList('<script>') }, { title: 'Create', command: pullRequestCreate('<<<edit:message>>>') }])
+    const { items } = await render([{ title: 'List worktrees', command: worktreeList('<script>') }, { title: 'Create', command: pullRequestCreate('<<<edit:message>>>', {}) }])
     expect(text(items[0].querySelector('code'))).toBe("wb worktree list '<script>'")
     expect(items[0].querySelector('mark')).toBeNull()
     expect(items[0].querySelector('.edit')).toBeNull()

@@ -682,7 +682,9 @@ Only the commands of this machine change anything: a command that creates, chang
 create`, `wb pr land`, `wb worktree create`, `wb agent stop`, `wb session send`, the dispatch forms) is offered
 for an entity of this machine only, because the SSH form of it would act on a checkout the operator did not choose;
 for an entity of another machine the panel offers the read-only entries (`list`, `status`, `logs`) and says in
-words to run the changing command in a terminal on that machine. A pull request another machine reported has no
+words to run the changing command in a terminal on that machine. The command builders enforce this: each one that changes
+something takes the entity's target (where it runs) as a required argument and refuses another machine's, so no page, Home's
+"In flight" and "Needs you" included, can build one without saying whose entity it is for. A pull request another machine reported has no
 land command. A blocked session's next step names `wb session send` with the message left to edit, and a session
 that is not blocked, or has no recorded id, has no send entry. A button that copies reads "Copy" (a command with a
 part to edit: "Copy template"), and its accessible name begins with that word, then the verb and what it is for
