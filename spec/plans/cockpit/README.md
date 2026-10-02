@@ -247,10 +247,9 @@ longer the owner's: the documentation names the file and the two headers.
 
 The key is readable by every page of the origin, so the review's second round
 closed the ways a script could be injected into one: the dashboard's `/` and
-`/metrics` pages build what they show from elements and text
-(`internal/dashboard/assets`, tested in jsdom by
-`cockpit/web/tools/dashboard-pages.spec.mjs`), their scripts are files of the
-origin and the listener's policy refuses inline script, and the hub refuses a
+`/metrics` pages built what they showed from elements and text, with scripts
+that were files of the origin (both pages and their jsdom test were retired on
+2026-10-02), the listener's policy refuses inline script, and the hub refuses a
 metric or coverage record that holds markup (`hub/record_validation.go`). The
 login URL is printed only on a terminal or with `--print-url`, and a daemon too
 old to issue a key is refused.

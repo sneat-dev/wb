@@ -39,6 +39,35 @@ func TestRootRedirectsToHomeAndNothingElseIsServedAtTheRoot(t *testing.T) {
 	}
 }
 
+// A path nothing owns answers 404 on a loopback Host and, like every route of
+// the listener, 421 on any other, so the listener does not tell a rebinding
+// page which paths exist. A non-GET request there gets the mux's 405.
+func TestUnownedPathsAnswerOnlyOnALoopbackHost(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{Version: "9.9.9-marker", Home: "/cockpit/"})
+	for _, target := range []string{"/metrics", "/nowhere", "/api/v1/overview"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, loopbackRequest(target))
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("%s on a loopback host = %d, want 404", target, recorder.Code)
+		}
+		foreign := httptest.NewRequest(http.MethodGet, target, nil)
+		foreign.Host = "attacker.example:8766"
+		recorder = httptest.NewRecorder()
+		handler.ServeHTTP(recorder, foreign)
+		if recorder.Code != http.StatusMisdirectedRequest || !strings.Contains(recorder.Body.String(), `"error":"misdirected_request"`) {
+			t.Errorf("%s on a foreign host = %d %s, want 421 misdirected_request", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	post := httptest.NewRequest(http.MethodPost, "/nowhere", nil)
+	post.Host = "127.0.0.1:8766"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, post)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST to an unowned path = %d, want 405", recorder.Code)
+	}
+}
+
 func TestRootIsNotRoutedWithoutAHome(t *testing.T) {
 	t.Parallel()
 	response := httptest.NewRecorder()

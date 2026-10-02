@@ -192,11 +192,10 @@ func TestMountsWithKeepsTheOthersAndDoesNotModifyThem(t *testing.T) {
 
 // TestExistingRoutesAnswerAsBeforeWithCockpitMounted compares every existing
 // dashboard route that remains (and the retired ones, which stay 404), with and
-// without Cockpit mounted, byte for byte including the complete header map
-// (cockpit#ac:legacy-dashboard-is-retired), both with a hub's mounts and with
-// none (the no-hub path is the one that changed).
-// `wb dashboard --local` reads none of these mounts and is covered by
-// cmd/wb's dashboard tests.
+// without Cockpit mounted, byte for byte including the complete header map,
+// both with a hub's mounts and with none (the no-hub path is the one that
+// changed). `wb dashboard --local` reads none of these mounts and is covered
+// by cmd/wb's dashboard tests.
 func TestExistingRoutesAnswerAsBeforeWithCockpitMounted(t *testing.T) {
 	t.Parallel()
 	options := func(mounts map[string]http.Handler) dashboard.Options {
@@ -212,10 +211,10 @@ func TestExistingRoutesAnswerAsBeforeWithCockpitMounted(t *testing.T) {
 				t.Errorf("%s: %s changed: %d %q %v -> %d %q %v", name, target, want.Code, want.Body.String(), want.Header(), got.Code, got.Body.String(), got.Header())
 			}
 		}
-		// Every dashboard route that answers the machine's own pages and data
-		// carries the Host check of its own (cockpit#req:cockpit-mount), Cockpit
-		// mounted or not.
-		for _, target := range []string{"/", "/api/v1/health"} {
+		// Every route of the listener outside Cockpit's subtrees, owned or not,
+		// carries the Host check (cockpit#req:cockpit-mount), Cockpit mounted or
+		// not.
+		for _, target := range []string{"/", "/api/v1/health", "/metrics", "/nowhere"} {
 			for _, handler := range []http.Handler{before, after} {
 				if recorder := do(handler, "attacker.example:8766", target); recorder.Code != http.StatusMisdirectedRequest || strings.Contains(recorder.Body.String(), "1.2.3") {
 					t.Errorf("%s: %s with a foreign host = %d %s, want 421 and nothing of the machine", name, target, recorder.Code, recorder.Body.String())

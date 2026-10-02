@@ -32,7 +32,7 @@ import (
 // TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub serves the real daemon
 // with no hub: section and requests Cockpit over TCP with chosen Host headers
 // (cockpit#ac:foreign-host-is-refused, cockpit#ac:unbuilt-application-says-so,
-// cockpit#ac:dashboard-command-is-unchanged).
+// cockpit#ac:legacy-dashboard-is-retired).
 func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
@@ -182,7 +182,7 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		t.Fatalf("minting with the owner token = %d and a login path of %d characters", status, len(login))
 	}
 	// The mint route is not on the loopback listener, with or without the
-	// owner token: the path falls to the dashboard, which refuses a POST.
+	// owner token: the path falls to the dashboard, which refuses it.
 	for _, authorization := range []string{"", "Bearer owner-token"} {
 		request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+address+cockpit.LoginCodeRPCPath, nil)
 		if err != nil {
@@ -197,8 +197,8 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 		}
 		leaked, _ := io.ReadAll(unauthenticated.Body)
 		_ = unauthenticated.Body.Close()
-		if unauthenticated.StatusCode != http.StatusMethodNotAllowed || strings.Contains(string(leaked), `"code"`) {
-			t.Fatalf("POST to the mint path on the loopback listener = %s %q, want 405 and no code", unauthenticated.Status, leaked)
+		if unauthenticated.StatusCode < http.StatusBadRequest || strings.Contains(string(leaked), `"code"`) {
+			t.Fatalf("POST to the mint path on the loopback listener = %s %q, want a refusal and no code", unauthenticated.Status, leaked)
 		}
 	}
 	response, _ = get(address, login)

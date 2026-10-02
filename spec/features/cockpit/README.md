@@ -394,18 +394,13 @@ read the owner token; that is outside what a loopback service defends.
 
 The key is in storage that every page of the daemon's origin can read, so a
 script injected into any of them would have it. Every page the daemon's listener
-serves is therefore held to three rules.
+serves is therefore held to two rules.
 
-- No data becomes markup. (The daemon's own pages `/` and `/metrics`, which
-  this rule was first written for, are retired: cockpit#req:legacy-dashboard-retired.
-  It still binds the pages that remain, the hub's under `/workbench/`.) A page MUST build
-  what it shows with `createElement` and `textContent`: no value read from a
-  route is concatenated into HTML, a class name is chosen from a closed set (an
-  unknown status is shown as `neutral`), a link's address is either built by the
-  page as `https://` and a repository name or accepted only when it parses as
-  `https`, and there is no inline event handler: a control names what it acts on
-  in `data-` attributes that one listener reads. This holds for any stored
-  value, including records written before the write side validated anything.
+- (A rule that no data becomes markup was written here for the daemon's own
+  pages `/` and `/metrics`. Its only browser test, in jsdom, read only those
+  pages' files, and both were retired with them: cockpit#req:legacy-dashboard-retired.
+  The rule is dropped from this Feature rather than left bound to pages it has
+  no test for. The hub pages under `/workbench/` are not covered by it.)
 - No inline script runs. Every response of the listener that does not set its
   own policy carries `script-src 'self'` with no `'unsafe-inline'`,
   `object-src 'none'` and `base-uri 'self'`. The GitHub installation opener page

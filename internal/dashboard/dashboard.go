@@ -57,8 +57,8 @@ type Options struct {
 	// caller always supplies one, backed by an empty-list source when this
 	// daemon has no hub mounted, so a laptop-only install answers "no
 	// downstream peers" instead of answering 404.
-	// A nil value keeps the previous behaviour (unmounted, 404s into the
-	// index) purely as a defensive default; every real caller sets it.
+	// A nil value leaves the route unmounted (404) purely as a defensive
+	// default; every real caller sets it.
 	Peers http.Handler
 }
 
@@ -127,18 +127,18 @@ func NewHandler(options Options) http.Handler {
 	if options.Home != "" {
 		mux.HandleFunc("GET /{$}", loopbackOnly(server.root))
 	}
+	// Every other GET is answered 404, but only on a loopback Host: a request
+	// on another host name gets the 421 every route of this listener gives, so
+	// the listener never tells a rebinding page which paths exist. A
+	// non-GET request on a path nothing owns gets the mux's own 405.
+	mux.HandleFunc("GET /", loopbackOnly(notFound))
 	mux.HandleFunc("GET /api/v1/health", loopbackOnly(server.health))
 	mux.HandleFunc("GET /api/v1/log", server.log)
 	if options.Peers != nil {
-		// GET-qualified patterns: an unqualified "/api/v1/peers" pattern
-		// conflicts with the mux's own "GET /" catch-all registered above
-		// ("matches more methods... but has a more specific path" — Go
-		// 1.22's ServeMux refuses that ambiguity outright, panicking at
-		// startup). options.Peers already answers 405 to a non-GET request
-		// on its own (internal/peers.NewHandler's method check); a
-		// non-GET request that never reaches it instead gets the mux's
-		// ordinary 404, which is an acceptable, harmless difference for a
-		// route with no non-GET method at all.
+		// GET-qualified patterns, like every other route here: options.Peers
+		// already answers 405 to a non-GET request on its own
+		// (internal/peers.NewHandler's method check); one that never reaches
+		// it gets the mux's ordinary 405 for a path with no non-GET route.
 		mux.Handle("GET /api/v1/peers", options.Peers)
 		mux.Handle("GET /api/v1/peers/", options.Peers)
 	}
@@ -207,11 +207,16 @@ func (server *service) health(writer http.ResponseWriter, request *http.Request)
 // with.
 const misdirected = "this route answers only on a loopback host name"
 
+// notFound is the answer for a path this listener does not own.
+func notFound(writer http.ResponseWriter, request *http.Request) {
+	http.NotFound(writer, request)
+}
+
 // loopbackOnly refuses a request whose Host header does not name a loopback
 // host with status 421, before next runs (cockpit#req:host-header-check): the
-// dashboard's own JSON routes hold the machine's name, its daemon's process id
-// and the names of its worktrees, and a page that rebinds DNS to the loopback
-// address must not read them. The rule is the one Cockpit's guard applies.
+// health route holds the machine's name and its daemon's process id, and a
+// page that rebinds DNS to the loopback address must not read it, nor learn by
+// the answer to any path which ones exist. The rule is the one Cockpit's guard applies.
 func loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if !loopbackhost.Request(request) {

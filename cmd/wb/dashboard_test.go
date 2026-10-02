@@ -157,6 +157,11 @@ func TestDashboardHasNoFlagForTheRetiredPages(t *testing.T) {
 		if newDashboardCmd(&invocation{}).Flags().Lookup(flag) != nil {
 			t.Errorf("wb dashboard still has --%s", flag)
 		}
+		// Parsing fails before the command runs, so nothing is started.
+		var stdout, stderr bytes.Buffer
+		if got := run([]string{"dashboard", "--" + flag}, &stdout, &stderr); got != exitUsage || !strings.Contains(stderr.String(), "unknown flag") {
+			t.Errorf("wb dashboard --%s exited %d with %q, want the usage exit %d and an unknown flag", flag, got, stderr.String(), exitUsage)
+		}
 	}
 }
 
