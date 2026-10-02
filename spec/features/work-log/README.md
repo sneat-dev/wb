@@ -151,6 +151,70 @@ worktree, because a finished effort requires the worktree to be removed.
 Cleanup MUST NOT delete an unsealed journal. A failed seal MUST leave both the
 worktree and its journal intact and report the precise non-terminal state.
 
+#### REQ: terminal-disposition-vocabulary
+
+A claim ends in exactly one immutable terminal record
+(`<WB_HOME>/worklogs/<effort-id>/runs/<run>/terminals/<claim id>.json`) whose
+`worktree_disposition` says how the work ended. The vocabulary is closed, and
+each value has one sealer:
+
+| `worktree_disposition` | Sealed by | Means |
+|---|---|---|
+| `landed` | cleanup, with a `landed` proof; or `wb worktree log finalize --apply --result success`, without one | the work is on its target |
+| `removed` | cleanup | the worktree was removed and there is no landing to record |
+| `not_landed` | `wb worktree log finalize --apply --result failure`; `wb worktree abort --disposition not_landed` | the work ended without landing and a successor may continue it |
+| `discarded` | `wb worktree abort --disposition discarded`; a replaced merge candidate | the work was thrown away |
+| `superseded` | cleanup or abort with a reviewed supersession receipt | other work replaced it |
+| `handoff`, `external_handoff` | `wb worktree abort --disposition handoff`; a session move | the work continues under a successor claim |
+| `orphaned` | `wb worktree abort --disposition orphaned` | the worktree, its branches and its registration were all gone |
+| `retired` | `wb worktree retire` | unlanded work was archived and its worktree removed |
+| `recycled`, `recycle_failed` | `wb worktree rename` | the worktree was reused under another task, or that reuse was rolled back |
+| `create_failed` | recovery of a failed `wb worktree create` | the worktree was never usable |
+
+Cleanup is the one path every landing ends in: `wb worktree land` (`wb land`),
+`wb pr land`, `wb pr create --land`, `wb worktree merge`, `wb worktree end`,
+`wb worktree cleanup` and `wb worktree gc` all remove a worktree through it, and
+it is also what removes a worktree whose pull request was merged on GitHub by
+hand or by an auto-merge that completed after the verb exited. Cleanup therefore
+decides between `landed` and `removed` from what it proved, never from which
+verb called it:
+
+- Cleanup MUST seal `landed` when the checks that made the worktree eligible
+  proved its head's work is on the target, and the claim made that work: the
+  head is neither the claim's `base_sha` nor an ancestor of it, the checkout has
+  a branch, and the branch is not a `wb/integration/` candidate of
+  `wb worktree merge` (a candidate carries its sources' work, and each source
+  is sealed in its own right).
+- A `landed` terminal that cleanup seals MUST carry `landed`: `target` (the
+  branch that received the work), `landed_sha` (the commit on that branch that
+  carries it) and `proof`, one of `contained` (the head is an ancestor of the
+  fetched target; `landed_sha` is the head), `merged_pull_request` (the same,
+  and GitHub reports a merged pull request for that head), `rebase_merged` (a
+  merged pull request replayed the commits; `landed_sha` is its merge commit) or
+  `absorbed` (a squash merge, a batched integration or an acknowledged
+  absorption; `landed_sha` is the absorbing commit, or the proved target head
+  when the acknowledgement names none). `pull_request` is the merged pull
+  request's number when one is known. The outbox receipt of the seal carries
+  the same `landed` object: a target and a commit are public Git facts.
+- Cleanup MUST seal `removed` in every other case: a worktree that never
+  committed, a detached review checkout, an integration candidate, a candidate
+  cleaned for a deleted integration target's acknowledgement, a worktree
+  removed past residual commits, or ancestry that could not be read. `removed`
+  never carries `landed`, and no other disposition does.
+- A terminal is immutable. A claim that `wb worktree log finalize` already
+  sealed keeps that terminal when cleanup later removes its worktree: a
+  finalize-sealed `landed` is the agent's own declaration and carries no
+  `landed` proof. Records sealed before this requirement are not rewritten, so
+  most merged work before it reads `removed`.
+- A reader that needs proof that cleanup removed a worktree (the resume of a
+  landed `wb worktree merge`) MUST accept `removed`, and `landed` only with a
+  complete `landed` proof.
+
+Known limit: a worktree whose branch was only fast-forwarded to a newer target
+commit, with no commit of its own, has a head past its `base_sha` and is sealed
+`landed` with proof `contained`. Git cannot tell that from a direct push of the
+claim's own commits.
+
 #### REQ: commit-admission-gate
 
 The managed worktree guard MUST refuse a commit in any WB-managed worktree that
@@ -478,6 +542,32 @@ server was unreachable
 each server-reported replica's purpose, cursor, health, and lag without WB
 directly writing Git state or another replica; retrying the same outbox changes
 creates no duplicate operational record.
+
+### AC: cleanup-seals-proved-landings-as-landed
+
+**Requirements:** work-log#req:terminal-disposition-vocabulary
+
+**Given** a worktree whose branch has a commit past its claim's base and was
+merged into `main`, with GitHub reporting the merged pull request, and a second
+worktree that never committed
+**When** cleanup removes both
+**Then** the first claim's terminal and its outbox receipt say `landed` and
+carry `landed` with `target` `main`, the head as `landed_sha`, `proof`
+`merged_pull_request` and the pull request's number, that terminal proves the
+removal to a reader that requires it, and the second claim's terminal says
+`removed` with no `landed` object.
+
+### AC: landed-proof-is-refused-where-it-proves-nothing
+
+**Requirements:** work-log#req:terminal-disposition-vocabulary
+
+**Given** a seal request that carries a `landed` proof
+**When** its disposition is not `landed`, or the proof lacks a target, a full
+commit id or a known `proof`
+**Then** the seal is refused before anything is written; an integration
+candidate, a head equal to or behind the claim's base, and a `landed` terminal
+without a proof read back as not proving a cleanup removal are each sealed or
+judged `removed`, not `landed`.
 
 ### AC: safe-terminal-retention
 
