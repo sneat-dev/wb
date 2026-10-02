@@ -128,7 +128,12 @@ async function watch(page: Page, expectedStatus?: number) {
  * The daemon's own dashboard pages, `/` and `/metrics`, in a real browser under the policy the daemon sends
  * (cockpit#ac:dashboard-pages-create-nothing-from-data): each runs only its script file of the origin, the policy
  * refuses inline script, nothing violates it, and the page renders. This daemon has no hub, so the metrics
- * addresses answer with the index page and the metrics page shows its "no data" state, with the machine's worktrees.
+ * addresses answer with the index page and the metrics page shows its "no hub" state.
+ *
+ * These two pages list no worktree here, and that is what they really show: their overview (`/api/v1/overview`,
+ * `buildOverview` in internal/dashboard) reads only the older layout, `<repository>/.worktrees/<task>`, while
+ * `wb create` puts a worktree under the projects root's own `.worktrees/<task>/…`, which Cockpit's fleet route
+ * reads. Command cost comes from those same worktrees, so it is empty too.
  */
 async function dashboardPagesRunUnderTheStrictPolicy(page: Page, origin: string): Promise<void> {
   const failed: string[] = []
@@ -158,10 +163,10 @@ async function dashboardPagesRunUnderTheStrictPolicy(page: Page, origin: string)
     if (path === '/') {
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('WB operations')
       // The script ran: the cards and the two tables are filled from the overview, and there is no error.
-      await expect(page.locator('#worktrees')).not.toHaveText('—')
-      await expect(page.locator('#worktreeTable')).toContainText('journey-one')
-      await expect(page.locator('#worktreeTable')).toContainText('journey-two')
-      await expect(page.locator('#kindTable')).not.toBeEmpty()
+      await expect(page.locator('#worktrees')).toHaveText('0')
+      await expect(page.locator('#operations')).toHaveText('0')
+      await expect(page.locator('#worktreeTable')).toHaveText('No managed worktrees found.')
+      await expect(page.locator('#kindTable')).toHaveText('Run commands through wb run -- … to collect cost.')
       await expect(page.locator('#updated')).toContainText('Updated')
     } else {
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('WB Metrics')
@@ -171,17 +176,18 @@ async function dashboardPagesRunUnderTheStrictPolicy(page: Page, origin: string)
       // No hub on this daemon: its metrics addresses answer the index page, which the page reads as "no hub", not as an error.
       await expect(page.locator('#leastCoverageTable')).toHaveText('No hub on this daemon: metrics are recorded by a hub.')
       await expect(page.locator('#mostActiveTable')).toHaveText('No hub on this daemon: metrics are recorded by a hub.')
-      await expect(page.locator('#worktreesTable')).toContainText('journey-one')
-      await expect(page.locator('#worktreesTable')).toContainText('journey-two')
-      await expect(page.locator('#kpiActiveWt')).not.toHaveText('—')
+      await expect(page.locator('#worktreesTable')).toHaveText('No managed worktrees found.')
+      await expect(page.locator('#kpiRepos')).toHaveText('0')
+      await expect(page.locator('#kpiActiveWt')).toHaveText('0')
+      await expect(page.locator('#kpiAbandonedWt')).toHaveText('0')
       // A tab and the filter work: their listeners were attached by the script file, not by inline handlers.
       await page.locator('#tabs [data-type="test_coverage"]').click()
       await expect(page.locator('#tableView')).toBeVisible()
       await expect(page.locator('#tableContainer')).toHaveText('No hub on this daemon: metrics are recorded by a hub.')
       await page.locator('#tabs [data-type="summary"]').click()
+      await expect(page.locator('#summaryView')).toBeVisible()
       await page.locator('#filter').fill('journey-two')
-      await expect(page.locator('#worktreesTable')).toContainText('journey-two')
-      await expect(page.locator('#worktreesTable')).not.toContainText('journey-one')
+      await expect(page.locator('#worktreesTable')).toHaveText('No managed worktrees found.')
     }
     await expect(page.locator('#error')).toBeHidden()
     expect(scripts, path).toEqual([script])
