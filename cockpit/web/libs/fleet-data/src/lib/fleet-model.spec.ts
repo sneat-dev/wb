@@ -404,6 +404,21 @@ describe('machine load', () => {
     expect(machineLoad({ machine: 'm', route: 'none', samples: [], reason: 'unsupported' })).toEqual({ state: 'not-reported', route: 'none' })
     expect(machineLoad(metrics('local', sample(10, 10, 0)))).toEqual({ state: 'not-reported', route: 'local' })
   })
+
+  // cockpit-views#ac:in-flight-machine-load-indicator: the first sample after a daemon start has no cpu_percent
+  it('says not reported, never free and never a guessed busy, when the latest sample lacks the CPU or a memory value', () => {
+    const full = sample(10, 10)
+    const without = (field: keyof typeof full) => {
+      const { [field]: _removed, ...rest } = full
+      return rest as typeof full
+    }
+    for (const field of ['cpu_percent', 'memory_used_bytes', 'memory_total_bytes'] as const) {
+      expect(machineLoad(metrics('local', without(field)))).toEqual({ state: 'not-reported', route: 'local' })
+    }
+    // Even a sample that would be busy by its memory says so only with a CPU reading; an earlier full sample does not count.
+    expect(machineLoad(metrics('local', sample(10, 10), without('cpu_percent')))).toEqual({ state: 'not-reported', route: 'local' })
+    expect(machineLoad(metrics('local', { ...full, cpu_percent: Number.NaN }))).toEqual({ state: 'not-reported', route: 'local' })
+  })
 })
 
 describe('Resume and Cleanup', () => {

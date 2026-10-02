@@ -276,14 +276,18 @@ export interface BranchesResponse {
 /** Where a machine's samples came from (REQ:machine-metrics-route). */
 export type MetricsRoute = 'local' | 'live-remote' | 'cached' | 'none'
 
-/** One metrics sample, and nothing else. */
+/**
+ * One metrics sample, and nothing else. Every measurement is optional, as the daemon omits what could not be read
+ * (REQ:machine-metrics-route): `cpu_percent` on the first sample after a start, a pair of totals that could not be read.
+ * An absent one is "not reported", never a zero.
+ */
 export interface MetricsSample {
-  cpu_percent: number
-  load1: number
-  memory_used_bytes: number
-  memory_total_bytes: number
-  disk_free_bytes: number
-  disk_total_bytes: number
+  cpu_percent?: number
+  load1?: number
+  memory_used_bytes?: number
+  memory_total_bytes?: number
+  disk_free_bytes?: number
+  disk_total_bytes?: number
   sampled_at: string
 }
 

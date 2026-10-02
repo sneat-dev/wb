@@ -40,14 +40,15 @@ export interface Latest {
   disk: string
 }
 
-const finite = (value: number): boolean => Number.isFinite(value)
+const finite = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
 
 export function latestWords(sample: MetricsSample): Latest {
-  const memory = sample.memory_total_bytes > 0 && finite(sample.memory_used_bytes) ? `${gigabytes(sample.memory_used_bytes)} of ${gigabytes(sample.memory_total_bytes)} (${percent((sample.memory_used_bytes / sample.memory_total_bytes) * 100)}%)` : 'not reported'
-  const disk = sample.disk_total_bytes > 0 && finite(sample.disk_free_bytes) ? `${gigabytes(sample.disk_free_bytes)} free of ${gigabytes(sample.disk_total_bytes)}` : 'not reported'
+  const { memory_used_bytes: used, memory_total_bytes: total, disk_free_bytes: free, disk_total_bytes: diskTotal, cpu_percent: cpu, load1 } = sample
+  const memory = finite(total) && total > 0 && finite(used) ? `${gigabytes(used)} of ${gigabytes(total)} (${percent((used / total) * 100)}%)` : 'not reported'
+  const disk = finite(diskTotal) && diskTotal > 0 && finite(free) ? `${gigabytes(free)} free of ${gigabytes(diskTotal)}` : 'not reported'
   return {
-    cpu: finite(sample.cpu_percent) ? `${percent(sample.cpu_percent)}%` : 'not reported',
-    load: finite(sample.load1) ? String(Math.round(sample.load1 * 100) / 100) : 'not reported',
+    cpu: finite(cpu) ? `${percent(cpu)}%` : 'not reported',
+    load: finite(load1) ? String(Math.round(load1 * 100) / 100) : 'not reported',
     memory,
     disk,
   }

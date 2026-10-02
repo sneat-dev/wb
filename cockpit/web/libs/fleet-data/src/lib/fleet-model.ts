@@ -155,7 +155,12 @@ export function compareVersions(a: number[], b: number[]): number {
 /** The latest sample's verdict: free below 70 percent CPU and 80 percent memory, busy otherwise. */
 export function machineLoad(metrics: MachineMetrics | undefined): MachineLoad {
   const sample = metrics?.samples[metrics.samples.length - 1]
-  if (metrics === undefined || sample === undefined || sample.memory_total_bytes <= 0) return { state: 'not-reported', route: metrics?.route ?? 'none' }
+  const reported = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
+  // `unknown`, never `free` (and not a guess of `busy`), without the CPU or the memory of the sample: the first sample
+  // after a daemon start has no `cpu_percent`.
+  if (metrics === undefined || sample === undefined || !reported(sample.cpu_percent) || !reported(sample.memory_used_bytes) || !reported(sample.memory_total_bytes) || sample.memory_total_bytes <= 0) {
+    return { state: 'not-reported', route: metrics?.route ?? 'none' }
+  }
   const memoryPercent = (sample.memory_used_bytes / sample.memory_total_bytes) * 100
   return {
     state: sample.cpu_percent < 70 && memoryPercent < 80 ? 'free' : 'busy',
