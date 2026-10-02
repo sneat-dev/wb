@@ -2,9 +2,13 @@ package fleet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -127,6 +131,11 @@ type Options struct {
 	// Metrics are the sources of the machine-metrics route for other machines,
 	// asked in order (the live remote, then the cached source).
 	Metrics []MetricsSource
+	// Publisher publishes this machine's snapshot to the remote store after a
+	// successful pass (cockpit-views#req:periodic-remote-publish); nil, the
+	// default, publishes nothing. It is called off the pass, in a goroutine of
+	// its own, and decides for itself whether the time has come.
+	Publisher RemotePublisher
 	// Remotes are the other machines the local configuration names, each read
 	// in the background through Transports, in that order
 	// (cockpit-views#req:remote-exporter-transports). With no transport nothing
@@ -170,6 +179,16 @@ type Options struct {
 	TerminalTotalLimit int
 	// Logf reports a refresh that failed, in whole or in part; nil discards.
 	Logf func(format string, args ...any)
+}
+
+// RemotePublisher is the periodic remote publisher the snapshotter hands the
+// end of each successful pass to. The snapshotter is the source it asks for the
+// extras it publishes and for the change token that lets it skip a scan.
+// Diagnostic is the code of its last attempt ("" when healthy), which the
+// document shows on this machine's entry as publish_error.
+type RemotePublisher interface {
+	Publish(ctx context.Context, source remotestate.PublishSource)
+	Diagnostic() string
 }
 
 // repoState is what the snapshotter keeps of one local repository between
@@ -264,6 +283,9 @@ type Snapshotter struct {
 	spent     []time.Time
 	throttled bool
 	remote    remoteView
+	// remoteSampleVersion changes whenever the published metrics samples of the
+	// other machines do; it is the version of the cached metrics source.
+	remoteSampleVersion uint64
 	// remoteBranches holds the prepared empty branch lists of the repositories
 	// cached from other machines, dropped whenever remote is replaced.
 	remoteBranches map[string]cockpit.Payload
@@ -304,6 +326,13 @@ type Snapshotter struct {
 	throughputs    *throughputCollector
 	throughputBusy atomic.Bool
 	throughput     *Throughput
+
+	// publisher is the periodic remote publisher (nil without one) and
+	// publishBusy keeps one hand-off running at a time, like remoteBusy.
+	publisher   RemotePublisher
+	publishBusy atomic.Bool
+	// publishDiag is the publisher's diagnostic as of its last attempt.
+	publishDiag string
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -328,6 +357,7 @@ func New(options Options) *Snapshotter {
 		snapshotter.pullTimeout = defaultPullRequestTimeout
 	}
 	snapshotter.sampler = options.Sampler
+	snapshotter.publisher = options.Publisher
 	snapshotter.live, snapshotter.transports, snapshotter.remoteTick = map[string]*liveMachine{}, slices.Clone(options.Transports), options.RemoteTick
 	if len(snapshotter.transports) > 0 {
 		for _, target := range options.Remotes {
@@ -342,6 +372,9 @@ func New(options Options) *Snapshotter {
 	if len(snapshotter.liveKeys) > 0 {
 		snapshotter.metricsSources = append([]MetricsSource{liveMetrics{snapshotter: snapshotter}}, snapshotter.metricsSources...)
 	}
+	// The cached source answers last, after the live remote one (in front of
+	// Metrics) and any other source in Metrics.
+	snapshotter.metricsSources = append(snapshotter.metricsSources, cachedMetricsSource{snapshotter})
 	if snapshotter.remoteTick == nil {
 		snapshotter.remoteTick = tickEvery
 	}
@@ -615,6 +648,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	}
 	s.complete = true
 	s.publishLocked()
+	s.startPublish(ctx)
 	return errors.Join(append(failures, machineFailures...)...)
 }
 
@@ -1071,9 +1105,145 @@ func (s *Snapshotter) startRemote(ctx context.Context) {
 		view := mapRemote(s.machine, s.login, s.projectsRoot, entries, s.now())
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if !maps.EqualFunc(s.remote.samples, view.samples, sameSample) {
+			s.remoteSampleVersion++
+		}
 		s.remote, s.remoteBranches = view, nil
 		s.publishMaybeLocked()
 	}()
+}
+
+// startPublish hands the end of a successful pass to the periodic remote
+// publisher, in a goroutine of its own that the pass does not wait for, unless a
+// hand-off is still running. A successful pass is one that listed the
+// repositories and ended uncancelled; a repository that failed carries its
+// error code and does not hold the publication back, as in `wb remote publish`.
+func (s *Snapshotter) startPublish(ctx context.Context) {
+	if s.publisher == nil || !s.publishBusy.CompareAndSwap(false, true) {
+		return
+	}
+	s.side.Add(1)
+	go func() {
+		defer s.side.Done()
+		defer s.publishBusy.Store(false)
+		_ = catch(func() error { s.publisher.Publish(ctx, s); return nil })
+		diagnostic := s.publisher.Diagnostic()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !slices.Contains(publishErrorCodes, diagnostic) {
+			diagnostic = ""
+		}
+		if diagnostic != s.publishDiag {
+			s.publishDiag = diagnostic
+			s.publishMaybeLocked()
+		}
+	}()
+}
+
+// ChangeToken is the same string for as long as nothing the snapshotter
+// observes of this machine's repositories and worktrees has changed: the change
+// fingerprint of each clone (which it already computes to skip Git work) and the
+// worktree and pull-request facts it reads on every pass outside Git (owner
+// state, lifecycle, ahead and behind, pull-request state, and the last activity at
+// remotestate.ActivityBucket granularity). It is empty, which opens the publisher's
+// gate, until a full pass has completed and whenever a clone's fingerprint could
+// not be computed.
+//
+// The invariant is a property of the fields it takes, not of the whole snapshot:
+// for those fields the token moves exactly when the published digest would
+// (remotestate.Snapshot.Digest truncates the same last-activity time to the same
+// bucket, so a heartbeat inside a bucket moves neither), and an edit that moves
+// none of them (a new untracked file, an unstaged edit of a tracked file, which
+// no fingerprint and no fact the snapshotter reads sees) waits for the next change
+// of one, or for the keepalive.
+func (s *Snapshotter) ChangeToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.complete {
+		return ""
+	}
+	ids := make([]string, 0, len(s.repos))
+	for id := range s.repos {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	sum := sha256.New()
+	for _, id := range ids {
+		state := s.repos[id]
+		if state.fingerprint == "" {
+			return ""
+		}
+		_, _ = fmt.Fprintf(sum, "repo\x00%s\x00%s\x00%s\n", id, state.fingerprint, state.entries.repository.Error)
+		for _, worktree := range state.entries.worktrees {
+			facts, _ := json.Marshal([]any{worktree.ID, worktree.Branch, worktree.Lifecycle, worktree.OwnerState, worktree.LastActivityAt.UTC().Truncate(remotestate.ActivityBucket), worktree.Ahead, worktree.Behind, worktree.UpstreamGone, worktree.HasUpstream})
+			_, _ = fmt.Fprintf(sum, "wt\x00%s\n", facts)
+		}
+	}
+	for _, pull := range s.doc.PullRequests {
+		if pull.Route == RouteLocal {
+			_, _ = fmt.Fprintf(sum, "pr\x00%s\x00%d\x00%s\n", pull.ID, pull.Number, pull.State)
+		}
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// PublishExtras is this machine's agents and its latest metrics sample, as
+// the publisher may add them to a snapshot: only the entries and the sample the
+// document already carries, with the repository of an agent named by the
+// repository's name (owner/name), never its id or its path.
+func (s *Snapshotter) PublishExtras() remotestate.Extras {
+	s.mu.RLock()
+	document := s.doc
+	s.mu.RUnlock()
+	names := map[string]string{}
+	for _, repository := range document.Repositories {
+		if repository.Route == RouteLocal {
+			names[repository.ID] = repository.Name
+		}
+	}
+	var extras remotestate.Extras
+	for _, agent := range document.Agents {
+		if agent.Route != RouteLocal {
+			continue
+		}
+		extras.Agents = append(extras.Agents, remotestate.AgentState{
+			Kind: agent.Kind, SessionID: agent.SessionID, RunID: agent.RunID, Runtime: agent.Runtime, Model: agent.Model,
+			State: agent.State, Activity: agent.Activity, Task: agent.Task, Repository: names[agent.Repository], StartedAt: agent.StartedAt,
+		})
+	}
+	if s.sampler != nil {
+		if samples := s.sampler.Snapshot().Samples; len(samples) > 0 && samples[len(samples)-1].HasData() {
+			latest := samples[len(samples)-1]
+			extras.Metrics = &remotestate.MetricsSample{
+				CPUPercent: latest.CPUPercent, Load1: latest.Load1, MemoryUsedBytes: latest.MemoryUsedBytes, MemoryTotalBytes: latest.MemoryTotalBytes,
+				DiskFreeBytes: latest.DiskFreeBytes, DiskTotalBytes: latest.DiskTotalBytes, SampledAt: latest.SampledAt,
+			}
+		}
+	}
+	return extras
+}
+
+// cachedMetricsSource answers the machine-metrics route from the latest
+// sample another machine published (cockpit-views#req:machine-metrics-route's
+// `cached` route): one sample, from memory only, with the sample's own time.
+// A sample older than MaxCachedSampleAge is not served: the answer is `none`
+// with the reason `stale`, so a month-old sample is never drawn as a current one.
+type cachedMetricsSource struct{ snapshotter *Snapshotter }
+
+// MaxCachedSampleAge is the age after which a published sample is expired.
+const MaxCachedSampleAge = 24 * time.Hour
+
+func (c cachedMetricsSource) MachineMetrics(machineID string) (MetricsAnswer, bool) {
+	c.snapshotter.mu.RLock()
+	defer c.snapshotter.mu.RUnlock()
+	sample, found := c.snapshotter.remote.samples[machineID]
+	if !found {
+		return MetricsAnswer{}, false
+	}
+	if c.snapshotter.now().Sub(sample.SampledAt) > MaxCachedSampleAge {
+		return MetricsAnswer{Route: RouteNone, Reason: ReasonStale, Version: c.snapshotter.remoteSampleVersion}, true
+	}
+	return MetricsAnswer{Route: RouteCached, Samples: []machinemetrics.Sample{sample}, Version: c.snapshotter.remoteSampleVersion}, true
 }
 
 // startActivity lists herdr's agents in a goroutine of its own, once per
@@ -1244,6 +1414,7 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		Entry:     localEntry(localMachineID(s.machine), s.machine, now),
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
+		PublishError: s.publishDiag,
 	})
 	localHosts := map[string]bool{}
 	for _, repository := range document.Repositories {
@@ -1267,4 +1438,14 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, liveBytes int
 		return document, 0, true
 	}
 	return document, liveBytes, false
+}
+
+// sameSample compares two samples by value: a sample holds pointers, which a
+// plain comparison would take as different on every read.
+func sameSample(a, b machinemetrics.Sample) bool {
+	if !a.SampledAt.Equal(b.SampledAt) {
+		return false
+	}
+	a.SampledAt, b.SampledAt = time.Time{}, time.Time{}
+	return reflect.DeepEqual(a, b)
 }

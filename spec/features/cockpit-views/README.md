@@ -452,7 +452,12 @@ theme's colours in light and dark.
 Serves J7. The sixth section, "Fleet health", MUST be shown only when something is not OK, as
 one line per problem: a stale machine (state older than 24 hours), a machine running an older
 WB than the newest in the fleet, a scan error, a machine's `remote_error`
-(REQ:remote-error-is-visible), or a machine whose `export_dropped` is above zero ("N entries left out of <machine>'s export", with the export command to try). Each has a "Copy fix command": `wb remote publish` labelled "run
+(REQ:remote-error-is-visible), this machine's `publish_error` (a typed code, with its fixing
+guidance: `collect_failed`, "the scan or the GitHub login failed: run `gh auth status` and `wb remote
+publish --dry-run`"; `store_unavailable`, "the remote store cannot be opened: check `wb remote
+status`"; `publish_failed`, "the store refused or could not be reached: run `wb remote publish` and
+read its error"; `optional_fields_dropped`, "the hub is older than this wb and does not take agents,
+metrics or hardware: update the hub"), or a machine whose `export_dropped` is above zero ("N entries left out of <machine>'s export", with the export command to try). Each has a "Copy fix command": `wb remote publish` labelled "run
 on <machine>" for a stale machine, `wb self-update` labelled "run on <machine>" for an older WB,
 `wb fleet status --filter=<owner/repository>` for a scan error, and the command of
 REQ:remote-error-is-visible for a remote error.
@@ -759,7 +764,8 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `transport` | string `http`\|`ssh` | opt. | the live-remote exporter | live-remote only |
 | `remote_error` | string, a code of REQ:remote-error-is-visible | opt. | the live-remote exporter | live-remote and cached |
 | `export_dropped` | int | opt. | the number of that machine's entries its export left out (REQ:cockpit-export-verb) plus those this daemon cut at its caps (REQ:remote-entries-replace-cached); set only by the reader, refused in an export | live-remote only |
-| `agents_truncated` | bool | opt. | that machine's agents were cut, by it or by this daemon's cap | live-remote only |
+| `publish_error` | string, `collect_failed`\|`store_unavailable`\|`publish_failed`\|`optional_fields_dropped` | opt. | the periodic publisher's last diagnostic; absent when healthy and when publishing is off | local only |
+| `agents_truncated` | bool | opt. | that machine's agents were cut, by it, by its publisher or by this daemon's cap; carried by that machine's entry only | live-remote and cached |
 
 | Repository field | Type | Opt. | Source | Local/cached |
 |---|---|---|---|---|
@@ -806,7 +812,7 @@ object opt. (below); `agents_truncated` bool opt.; `pull_requests_throttled` boo
 | `session_id`, `run_id` | string | opt. | record | both |
 | `runtime`, `model` | string | opt. | record | both |
 | `state` | string: a session `live`\|`parked`; a run `running`\|`completed`\|`failed`\|`timeout`\|`abandoned` | no | record | both |
-| `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr | local only |
+| `activity` | string `working`\|`blocked`\|`idle`\|`done`\|`unknown` | opt. | herdr; the snapshot's value only if in the set | local, and cached when published |
 | `repository`, `task` | string | opt. | run record; for a session, the declared owner process of its worktrees | both |
 | `worktrees` | list of entry ids | opt. | as above | both |
 | `started_at` | time | opt. | record | both |
@@ -825,7 +831,7 @@ Local only.
 **Metrics payload** (`machine-metrics`): `machine` string, the machine id (not its name); `route`
 string, `local`, `live-remote`, `cached` or `none`; `fetched_at` time, opt. (`live-remote` only);
 `samples` list, at most 360, oldest first; `reason` string, opt., one of `no_source`, `unsupported`
-or `unavailable`. A sample has `sampled_at` time (not in the future, strictly later than the sample
+`unavailable` or `stale` (a published sample older than 24 hours). A sample has `sampled_at` time (not in the future, strictly later than the sample
 before it) and these measurements, each optional (a part that could not be read is absent, never
 zero): `cpu_percent` number (0 to 100), `load1` number (0 or more), `memory_used_bytes` and
 `memory_total_bytes` ints, `disk_free_bytes` and `disk_total_bytes` ints (each pair present
@@ -994,9 +1000,49 @@ snapshot, memoised on the identity of the fleet document, not on every render.
 #### REQ: periodic-remote-publish
 
 The daemon MAY publish this machine's snapshot to the remote store after a successful local scan,
-by the same publish path as `wb remote publish`. It is opt-in: it runs only when
-`remote.publish.interval` is set (minimum 5 minutes); with no value nothing is published. A failed
-publish is retried at the next interval and never delays the local snapshot.
+by the same publish path as `wb remote publish` (the same snapshot builder and the same provider,
+`gitrepo` or `hub`; there is no second publisher). It is opt-in: it runs only when
+`remote.publish.interval` is set (a duration, minimum 5 minutes: a shorter value is raised to 5
+minutes, a negative one is a configuration error); with no value, or no remote store, nothing is
+published, exactly as before, and a machine that only ever published by hand does not start
+publishing because it was upgraded. A scan is successful when it listed the repositories and was not
+cancelled (a repository that failed carries its error code in the snapshot, as in `wb remote
+publish`). The publish runs off the request path and off the scan, in a goroutine of its own, at
+most once at a time, under a bound of 5 minutes for the scan and the publish together, and never
+more often than the interval. It is skipped when the snapshot says what the last published one said
+(the same digest, apart from the publish time, the metrics sample, the agents' `activity` and a
+worktree's last-activity time within 15 minutes), so a git store gains no commit for an idle machine
+or for a heartbeat, except that an unchanged snapshot is published anyway once `max(6 hours, the
+interval)` has passed, so an idle machine is not taken for a stale one (`wb remote machines` marks a
+snapshot stale after 24 hours). A change of the agents alone (an agent started or ended, a state
+changed; an `activity` flap is not a change) is held back until `max(interval, 15 minutes)` has
+passed since the last publish, so agents add at most one commit per `max(interval, 15 minutes)`
+(at most 96 a day), where any other change publishes at once.
+
+The scan itself is gated: the publisher does not scan at all (the scan reads the git status of every
+repository and duplicates the fleet snapshotter's) while the snapshotter's change token, made of
+each clone's change fingerprint and the worktree and pull-request facts it reads on every pass (the
+last-activity time at the same 15-minute granularity as the digest), and the digest of the agents
+when they are published, are those of the last publish (or of the last scan that found nothing
+changed) and the keepalive has not passed. For those fields the token moves exactly when the digest
+would. A repository whose fingerprint cannot be computed opens the gate. A change that moves no
+fingerprint and none of those facts (a new untracked file, or an unstaged edit of a tracked file,
+which the snapshotter does not read) reaches the store with the next one that does, or with the
+keepalive. A failed attempt never gates the next.
+
+A failed publish is a typed diagnostic (`collect_failed`, `store_unavailable`, `publish_failed` or
+`optional_fields_dropped`, a code and never the text of an error), logged when it changes, shown as
+`publish_error` on this machine's own entry (REQ:home-fleet-health) and absent when healthy or when
+publishing is off. One rule governs it: `publish_error` is the code of the last completed outcome
+against the store. A failure sets its code; a publish that carried the optional fields clears it and
+resets the failure count; a publish that had to leave them out sets `optional_fields_dropped`, which
+stays until a publish that carried them succeeds; a gated, skipped or held-back attempt never changes
+it. A failed publish is retried after the interval, then after twice, four times and so on up to one
+hour while it keeps failing; it never ends the daemon and never delays the local snapshot. After an
+older hub's refusal has been remembered for 24 hours (REQ:remote-snapshot-agents-and-metrics) the
+next attempt is forced to publish the full payload, bypassing the gate and the digest skip once, so
+an upgraded hub is noticed within 24 hours. The scan reads two repositories at a time, where the
+snapshotter reads up to eight (the CPU count, at most eight) and `wb remote publish` eight.
 [remote-state](../remote-state/README.md)#req:remote-publish-periodic specifies the behaviour;
 until the founder settles which remote store is the fleet's shared one (Open Questions), each
 machine publishes to whatever it has configured. It stays as the fallback for machines without a
@@ -1006,16 +1052,51 @@ while fresh.
 #### REQ: remote-snapshot-agents-and-metrics
 
 The published remote snapshot MAY carry optional `agents` (at most 200 entries, each with
-runtime, model, task, repository, `activity` when known, `started_at` and the run or session
-identifier) and `metrics` (the latest sample of REQ:machine-metrics-route), and its machine entry
-MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents are published only with
+`kind`, `state`, runtime, model, task, repository name, `activity` when known, `started_at` and the
+`session_id` or `run_id`) and `metrics` (the latest sample of REQ:machine-metrics-route), and its
+machine entry MAY carry `os`, `arch`, `cpu_count` and `boot_time`. Agents are published only with
 `remote.publish.agents: true` and metrics only with `remote.publish.metrics: true`; both default to
-off. All are optional and `schema_version` does not change: an older reader decodes the YAML
-snapshot without strict field checking and ignores them. The hub provider's HTTP snapshot model
-(`api/githubapp/machinesnapshot.Snapshot`) is decoded with unknown fields refused, so it MUST accept
-the same optional fields in the same task; a publisher refused with status 400 by an older hub
-retries once without the optional fields and records a diagnostic. The fleet document shows another
-machine's agents as `cached` with the age of the snapshot and with no actions.
+off, as does the interval of REQ:periodic-remote-publish. All are optional and `schema_version`
+does not change: an older reader decodes the YAML snapshot without strict field checking and
+ignores them. The hub provider's HTTP snapshot model (`api/githubapp/machinesnapshot.Snapshot`) is
+decoded with unknown fields refused, so it MUST accept the same optional fields in the same task; a
+publisher refused with status 400 by an older hub retries once without the optional fields (the
+hardware, the agents and the sample) and records the diagnostic `optional_fields_dropped`; the retry
+is made for `wb remote publish` as well, and the refusal is remembered for 24 hours for the life of
+that provider (a daemon restart forgets it), during which the optional fields are left out at once. The fleet document shows another machine's agents as
+`cached` with the age of the snapshot, with no actions, at most 200 for each machine, and sets
+`agents_truncated` on that machine's entry (never on this machine's own document, and hidden with the
+machine when a live read replaces it) when more valid agents were published or the snapshot says so.
+Agent strings are validated, not repaired, by one set of rules shared by the publisher, the hub model
+and this reader and equal to the export decoder's: the `session_id`, `run_id` and `runtime` match the
+token pattern, the `model` the model pattern (so not a path), the `kind`, `state` (by kind) and
+`activity` are closed lists, the `repository` is `owner/name`, and the `task` is a task name (letters,
+digits, dots, underscores, dashes and slashes, not starting with a separator). An agent whose `kind`,
+`state` or identifier fails is dropped, any other failing field is blanked, and an invalid agent
+beyond the cap is not a cut. The publisher applies the rules before sending, so a hub's 400 is never
+caused by its own values; it also publishes an explicit truncated marker (a boolean) when it cut
+valid agents, blanks a `boot_time`, `started_at` or sample time in the future, and the hub model
+refuses the same. The machine's published sample is the
+`cached` source of REQ:machine-metrics-route, served through the same source seam as the live
+remote one and after it, and only while the sample is at most 24 hours old: an older sample is
+answered as `none` with the reason `stale`, never drawn as a current bar (the page shows the age of
+a younger one).
+
+What leaves the machine, by mode (nothing else is in the part this REQ adds, and none of it is a
+path, a command line, an environment value, a prompt, a process list or a check's text):
+
+| Mode | Added to the snapshot |
+|---|---|
+| Interval unset | nothing is published by the daemon |
+| Interval set, `agents` and `metrics` false | `os`, `arch`, `cpu_count`, `boot_time` of the machine entry |
+| `wb remote publish` (by hand, whatever the config) | the same `os`, `arch`, `cpu_count`, `boot_time`, which this command did not publish before; never agents or metrics. Its help says so, and the first real publish after the upgrade prints one line saying so |
+| `agents: true` | and `agents`: for each of at most 200 local sessions and runs, `kind` (`session` or `run`), `state`, `runtime`, `model`, `activity` when herdr reports one, `task`, the repository's name as `owner/name`, `started_at`, and the `session_id` or `run_id`, every string cleaned of control characters and cut at 200 characters |
+| `metrics: true` | and `metrics`: one sample, `cpu_percent`, `load1`, `memory_used_bytes`, `memory_total_bytes`, `disk_free_bytes`, `disk_total_bytes` and `sampled_at`, each measurement only when known |
+
+The rest of the snapshot is what `wb remote publish` publishes today and is unchanged: the hub
+provider publishes only its allowlist (no path, no projects root, no commit subject), and the git
+provider's file is the owner's own private store, which carries the paths of its checkouts as it
+always has, redacted by `remote.publish.unpushed` (`subjects` or `counts`) as before.
 
 #### REQ: throughput-block
 
@@ -2376,7 +2457,7 @@ Then the running run has `worktrees`, `task`, `repository` and `started_at`, the
 Scenario: 500 agents from a snapshot, and at publish
 Given a published snapshot of machine `vm` with 500 agents with 5,000-character strings, and a local machine with 500 agents publishing with `remote.publish.agents` true
 When the fleet document is read and a snapshot is published
-Then at most 200 `vm` agents are in the document and at most 200 are published, every string is length-capped, and `agents_truncated` is set
+Then at most 200 `vm` agents are in the document and at most 200 are published, every string is length-capped or blanked, and `agents_truncated` is set on the `vm` machine entry (and the published snapshot carries the truncated marker) but not on this machine's document
 
 ### AC: machine-entries-carry-hardware-and-no-metrics
 

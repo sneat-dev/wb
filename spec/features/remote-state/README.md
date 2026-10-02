@@ -125,9 +125,17 @@ new credential without operator guesswork.
 
 The daemon MAY publish the machine's snapshot after a successful local scan by
 the same publish path as `wb remote publish`. It is opt-in: it runs only when
-`remote.publish.interval` is set (minimum 5 minutes), and publishes nothing
-otherwise. A failed publish is retried at the next interval and never delays the
-local fleet snapshot.
+`remote.publish.interval` is set (minimum 5 minutes; a shorter value is raised
+to it) and publishes nothing otherwise, so a machine that only publishes by hand
+is unchanged by an upgrade. It publishes no more often than the interval, skips
+a snapshot that says what the last published one said (a git store gains no
+commit for an idle machine; an unchanged snapshot is still published once
+max(6 hours, the interval) have passed), does not even scan while the daemon's
+change fingerprints are unchanged, runs one publish at a time under a time bound, and a failed
+publish is a typed diagnostic retried at the next interval, then with a doubling
+backoff of at most one hour, and never delays the local fleet snapshot.
+[cockpit-views](../cockpit-views/README.md)#req:periodic-remote-publish is the
+full statement.
 
 #### REQ: remote-snapshot-optional-fields
 
@@ -142,7 +150,14 @@ optional and `schema_version` does not change, so an older reader that decodes
 without strict field checking ignores them. The hub provider's own snapshot model
 refuses unknown fields and MUST be extended to accept them before a publisher
 emits them; a publisher refused with status 400 by an older hub retries once
-without the optional fields and records a diagnostic.
+without the optional fields and records a diagnostic, remembering the refusal
+for 24 hours for the life of that provider. `wb remote publish`, run by hand,
+publishes the machine's `os`, `arch`, `cpu_count` and `boot_time` as well (it did
+not before; its help says so and the first publish after the upgrade prints one
+line) and never agents or metrics. The part of a snapshot these
+fields add carries no path, command line, environment value or free text
+([cockpit-views](../cockpit-views/README.md)#req:remote-snapshot-agents-and-metrics
+lists what is published in each mode).
 
 ## Acceptance Criteria
 

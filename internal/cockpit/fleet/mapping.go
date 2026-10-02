@@ -10,7 +10,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sneat-dev/wb/internal/agentfields"
 	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
@@ -196,9 +198,7 @@ func plainTextMax(text string, limit int) string {
 
 // unsafeRune reports whether character is one plainText removes: a control or
 // format character, or a line or paragraph separator.
-func unsafeRune(character rune) bool {
-	return unicode.IsControl(character) || unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp)
-}
+func unsafeRune(character rune) bool { return agentfields.UnsafeRune(character) }
 
 // remoteLifecycles are the lifecycle values a published snapshot is built with.
 var remoteLifecycles = []string{"working", "review", "merged", "superseded"}
@@ -526,7 +526,11 @@ type remoteView struct {
 	repositories []Repository
 	worktrees    []Worktree
 	pullRequests []PullRequest
-	named        map[string][]publishedMachine
+	agents       []Agent
+	// samples is the latest published metrics sample of each machine that
+	// published one, by machine id.
+	samples map[string]machinemetrics.Sample
+	named   map[string][]publishedMachine
 }
 
 // publishedMachine is a published-store machine entry's id and the login it was
@@ -603,6 +607,14 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 			open := countWhere(pullRequests, func(item PullRequest) bool { return item.Repository == repositories[index].ID })
 			repositories[index].OpenPullRequestCount = &open
 		}
+		agentViews, agentsCut := mapRemoteAgents(snapshot.Agents, key, machineName, machineID, published, now, repositoryIDs)
+		view.agents = append(view.agents, agentViews...)
+		if sample, ok := publishedSample(snapshot.Metrics, now); ok {
+			if view.samples == nil {
+				view.samples = map[string]machinemetrics.Sample{}
+			}
+			view.samples[machineID] = sample
+		}
 		if view.named == nil {
 			view.named = map[string][]publishedMachine{}
 		}
@@ -613,13 +625,70 @@ func mapRemote(local, login, projectsRoot string, entries []remotestate.Entry, n
 			Entry: cached(machineID), WBVersion: plainText(snapshot.WBVersion),
 			RepositoryCount: len(repositories), WorktreeCount: len(worktreeViews),
 			OS: shortName(snapshot.OS), Arch: shortName(snapshot.Arch), CPUCount: cpuCount(snapshot.CPUCount), BootTime: publishedBootTime(snapshot.BootTime, now),
+			// The cut is carried by the machine it cut, whether the publisher said
+			// so or this reader did, so hiding the machine hides the flag.
+			AgentsTruncated: snapshot.AgentsTruncated || agentsCut,
 		})
 		view.repositories = append(view.repositories, repositories...)
 		view.worktrees = append(view.worktrees, worktreeViews...)
 		view.pullRequests = append(view.pullRequests, pullRequests...)
 	}
 	view.machines = uniqueByID(view.machines, func(item Machine) string { return item.ID })
+	view.agents = uniqueByID(view.agents, func(item Agent) string { return item.ID })
 	return view
+}
+
+// mapRemoteAgents maps the agents another machine published as `cached` entries
+// observed at the snapshot's time, with no action, at most agentCap of them (the
+// second result is true when the cap cut valid ones). Every string is read by
+// the same rules as the export decoder's and the publisher's (package
+// agentfields; the task by the task-name rule, stricter than the decoder's text
+// rule so that prose cannot be planted in it): an agent whose kind, state or
+// identifier fails is dropped, any other failing field is blanked, so prose, a
+// path or an environment value planted in a snapshot never renders. An invalid
+// agent beyond the cap is not a cut. The repository is the id of the machine's
+// repository entry of that name, or none. An agent that names neither a session
+// nor a run keeps its position in the snapshot as its identity.
+func mapRemoteAgents(states []remotestate.AgentState, key, machineName, machineID string, published, now time.Time, repositoryIDs map[string]string) (mapped []Agent, truncated bool) {
+	for position, state := range states {
+		fields, ok := agentfields.Clean(agentfields.Agent{
+			Kind: state.Kind, SessionID: state.SessionID, RunID: state.RunID, Runtime: state.Runtime, Model: state.Model, State: state.State,
+			Activity: state.Activity, Task: state.Task, Repository: state.Repository,
+		}, agentfields.IsTaskName)
+		if !ok {
+			continue
+		}
+		if len(mapped) == agentCap {
+			return mapped, true
+		}
+		identity := firstNonEmpty(fields.SessionID, fields.RunID, "n"+strconv.Itoa(position))
+		agent := Agent{
+			Entry: Entry{ID: entryID(kindAgent, key, fields.Kind, identity), Machine: machineName, MachineID: machineID, Route: RouteCached, ObservedAt: published},
+			Kind:  fields.Kind, SessionID: fields.SessionID, RunID: fields.RunID, Runtime: fields.Runtime, Model: fields.Model, State: fields.State,
+			Activity: fields.Activity, Task: fields.Task, Repository: repositoryIDs[fields.Repository],
+		}
+		if !state.StartedAt.IsZero() && !state.StartedAt.After(now) {
+			agent.StartedAt = state.StartedAt
+		}
+		mapped = append(mapped, agent)
+	}
+	return mapped, false
+}
+
+// publishedSample is the metrics sample another machine published, made fit to
+// serve: it needs a time that is neither missing nor in the future, and drops
+// every figure that is out of range (sanitizeMetrics applies the same rules
+// again on the way out). It reports false for a snapshot with no usable sample.
+func publishedSample(published *remotestate.MetricsSample, now time.Time) (machinemetrics.Sample, bool) {
+	if published == nil || published.SampledAt.IsZero() || published.SampledAt.After(now.Add(maxSkew)) {
+		return machinemetrics.Sample{}, false
+	}
+	sample := cleanSample(machinemetrics.Sample{
+		CPUPercent: published.CPUPercent, Load1: published.Load1,
+		MemoryUsedBytes: published.MemoryUsedBytes, MemoryTotalBytes: published.MemoryTotalBytes,
+		DiskFreeBytes: published.DiskFreeBytes, DiskTotalBytes: published.DiskTotalBytes, SampledAt: published.SampledAt,
+	})
+	return sample, sample.HasData()
 }
 
 // uniqueByID keeps the first of any items sharing an id, so an id is unique

@@ -9,6 +9,9 @@ remote:
   machine: <unique-name>        # required; unique per GitHub login
   publish:
     unpushed: subjects          # or counts, to hide commit subjects
+    # interval: 15m             # opt in: the daemon publishes after a local scan (min 5m; unset = never)
+    # agents: false             # opt in: add this machine's agents to the daemon's periodic publish
+    # metrics: false            # opt in: add this machine's latest metrics sample
 ```
 
 | Need | Command |

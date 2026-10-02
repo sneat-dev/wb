@@ -152,6 +152,11 @@ func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 	// machine's throughput is read from that machine, never merged.
 	own.Throughput = nil
 	own.Machines = keepLocal(document.Machines, func(machine Machine) Entry { return machine.Entry })
+	// The code of this machine's own failed publish is shown by the daemon that
+	// has it, not exported (the strict decoder refuses it).
+	for index := range own.Machines {
+		own.Machines[index].PublishError = ""
+	}
 	machineID := ""
 	if len(own.Machines) > 0 {
 		machineID = own.Machines[0].ID
@@ -231,7 +236,7 @@ func exportMetrics(response MetricsResponse) *EnvelopeMetrics {
 		}
 		return &EnvelopeMetrics{Route: RouteLocal, Samples: samples}
 	case RouteNone:
-		if slices.Contains([]string{ReasonNoSource, ReasonUnsupported, ReasonUnavailable}, response.Reason) {
+		if slices.Contains([]string{ReasonNoSource, ReasonUnsupported, ReasonUnavailable, ReasonStale}, response.Reason) {
 			return &EnvelopeMetrics{Route: RouteNone, Samples: []machinemetrics.Sample{}, Reason: response.Reason}
 		}
 	}

@@ -26,6 +26,9 @@ const (
 	ReasonNoSource    = "no_source"
 	ReasonUnsupported = "unsupported"
 	ReasonUnavailable = "unavailable"
+	// ReasonStale is the reason of a machine whose only data is a published
+	// sample older than MaxCachedSampleAge.
+	ReasonStale = "stale"
 )
 
 // MetricsResponse is the body of the machine-metrics route
@@ -111,7 +114,7 @@ func sanitizeMetrics(answer MetricsAnswer, now time.Time) MetricsAnswer {
 			return none(ReasonUnavailable)
 		}
 	case RouteNone:
-		if answer.Reason != ReasonUnsupported && answer.Reason != ReasonUnavailable {
+		if answer.Reason != ReasonUnsupported && answer.Reason != ReasonUnavailable && answer.Reason != ReasonStale {
 			answer.Reason = ReasonNoSource
 		}
 		return none(answer.Reason)
