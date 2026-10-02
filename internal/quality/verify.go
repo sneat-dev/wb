@@ -71,6 +71,10 @@ type RunOptions struct {
 	IncludeE2E bool
 	// coverPackages is internal instrumentation scope for a combined run.
 	coverPackages []string
+	// redBase is set only while a per-change ratchet measures its merge base.
+	// It lets a coverage command whose only failure is a failing test still
+	// contribute its profile, and records which tests failed.
+	redBase *redBaseRecorder
 	// CoverageDiagnosticsDir retains raw output from failed process-isolated
 	// coverage jobs beside the durable coverage report. The human-facing error
 	// remains bounded; this private artifact is the lossless recovery path.
