@@ -153,6 +153,11 @@ func dirtyCapturePaths(ctx context.Context, worktree string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect untracked dirty paths: %w", err)
 	}
+	return parseDirtyCapturePaths(tracked, untracked)
+}
+
+// parseDirtyCapturePaths validates and deduplicates NUL-delimited Git path records.
+func parseDirtyCapturePaths(tracked, untracked string) ([]string, error) {
 	seen := make(map[string]struct{})
 	paths := make([]string, 0)
 	for _, output := range []string{tracked, untracked} {

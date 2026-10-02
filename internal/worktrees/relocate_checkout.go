@@ -93,17 +93,21 @@ func claimForRelocationAcrossHomes(resolution wbhome.Resolution, worktree string
 // task lock and its destination already existing are checked by
 // RelocateCheckout itself, not here.
 func checkoutSafetyRefusal(ctx context.Context, projectsRoot, worktree string) (string, error) {
+	return checkoutSafetyRefusalWithChecks(ctx, projectsRoot, worktree, BusyProcessCheckSupported, BusyProcessReason, ParkedSessionReason)
+}
+
+func checkoutSafetyRefusalWithChecks(ctx context.Context, projectsRoot, worktree string, busySupported bool, busy func([]string) string, parked func(string, []string) string) (string, error) {
 	if reason, err := GitOperationInProgress(ctx, worktree); err != nil {
 		return "", fmt.Errorf("cannot inspect Git state: %w", err)
 	} else if reason != "" {
 		return reason, nil
 	}
-	if BusyProcessCheckSupported {
-		if reason := BusyProcessReason([]string{worktree}); reason != "" {
+	if busySupported {
+		if reason := busy([]string{worktree}); reason != "" {
 			return reason, nil
 		}
 	}
-	if reason := ParkedSessionReason(projectsRoot, []string{worktree}); reason != "" {
+	if reason := parked(projectsRoot, []string{worktree}); reason != "" {
 		return reason, nil
 	}
 	return "", nil

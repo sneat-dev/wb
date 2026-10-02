@@ -52,11 +52,18 @@ func worktreeRemovalLeftResidue(ctx context.Context, canonical *canonicalReposit
 // worktreeStillRegistered answers the same question for a caller that holds a
 // backlog record rather than an open canonical repository.
 func worktreeStillRegistered(ctx context.Context, canonicalDir, worktreePath string) (bool, error) {
+	return worktreeStillRegisteredObserved(ctx, canonicalDir, worktreePath, nil)
+}
+
+func worktreeStillRegisteredObserved(ctx context.Context, canonicalDir, worktreePath string, afterOpen func(*canonicalRepository)) (bool, error) {
 	canonical, err := openCanonicalRepository(canonicalDir)
 	if err != nil {
 		return false, err
 	}
 	defer canonical.close()
+	if afterOpen != nil {
+		afterOpen(canonical)
+	}
 	if err := canonical.validate(); err != nil {
 		return false, err
 	}
@@ -72,17 +79,49 @@ func worktreeStillRegistered(ctx context.Context, canonicalDir, worktreePath str
 // worktree WB validated rather than to a name that could be replaced under it.
 // The caller must have established that the path still exists and that Git no
 // longer registers it.
+type residueRemovalPhase string
+
+const (
+	residueAfterValidation   residueRemovalPhase = "after_validation"
+	residueBeforeRootRemoval residueRemovalPhase = "before_root_removal"
+)
+
 func removeWorktreeResidue(handle *cleanupWorktreeHandle) error {
+	return removeWorktreeResidueObserved(handle, nil)
+}
+
+func removeWorktreeResidueObserved(handle *cleanupWorktreeHandle, observe func(residueRemovalPhase, *cleanupWorktreeHandle)) error {
 	if handle == nil || handle.parent == nil || handle.worktree == nil {
 		return fmt.Errorf("cleanup worktree descriptor is unavailable")
 	}
 	if err := handle.validate(); err != nil {
 		return err
 	}
+	if observe != nil {
+		observe(residueAfterValidation, handle)
+	}
 	if err := removeDirectoryContentsAt(handle.worktree, handle.worktreePath, 0); err != nil {
 		return err
 	}
 	name := filepath.Base(handle.worktreePath)
+	if observe != nil {
+		observe(residueBeforeRootRemoval, handle)
+	}
+	// Reauthorize the final entry after recursive cleanup: an empty replacement
+	// is not this invocation's owned checkout. This check narrows namespace
+	// drift before unlink; it does not make identity-check plus unlink atomic.
+	if !directoryEntryStillMatches(handle.parent, name, handle.worktree) {
+		// Metadata inspection must not open a substituted FIFO or other device.
+		var entry unix.Stat_t
+		inspectErr := unix.Fstatat(int(handle.parent.Fd()), name, &entry, unix.AT_SYMLINK_NOFOLLOW)
+		if errors.Is(inspectErr, unix.ENOENT) {
+			return nil // Another remover already retired the owned empty entry.
+		}
+		if inspectErr != nil {
+			return fmt.Errorf("remove residual worktree %s: inspect final entry: %w", handle.worktreePath, inspectErr)
+		}
+		return fmt.Errorf("remove residual worktree %s: directory identity changed before retirement", handle.worktreePath)
+	}
 	if err := unix.Unlinkat(int(handle.parent.Fd()), name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("remove residual worktree %s: %w", handle.worktreePath, err)
 	}

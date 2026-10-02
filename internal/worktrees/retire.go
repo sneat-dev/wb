@@ -300,21 +300,30 @@ func retireCheckOwner(entry ListResult) error {
 }
 
 func retireReadClaim(home, worktree string) (workLogClaim, workLogProjection, error) {
+	return retireReadClaimObserved(home, worktree, nil)
+}
+
+// retireReadClaimObserved observes actual private authority between the original rereads.
+func retireReadClaimObserved(home, worktree string, observe func(string, workLogProjection, *os.File)) (workLogClaim, workLogProjection, error) {
 	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
 	if err != nil {
 		return workLogClaim{}, projection, err
 	}
-	if projection.Lifecycle != "active" && projection.Lifecycle != "terminal" {
-		return workLogClaim{}, projection, fmt.Errorf("work log has unsupported lifecycle %s", projection.Lifecycle)
-	}
+	// Both admitted current and legacy projections already passed validateProjection.
 	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
 		return workLogClaim{}, projection, err
+	}
+	if observe != nil {
+		observe("after_corroboration", projection, nil)
 	}
 	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
 		return workLogClaim{}, projection, err
 	}
 	defer func() { _ = run.Close() }()
+	if observe != nil {
+		observe("before_claim_reread", projection, run)
+	}
 	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
 		return workLogClaim{}, projection, err

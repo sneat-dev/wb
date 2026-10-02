@@ -55,6 +55,10 @@ type TerminalCleanupProof struct {
 // Absence is never evidence: only a structurally valid applied cleanup receipt
 // with the expected repository, target, task, path, and branch is accepted.
 func FindTerminalCleanupProof(projectsRoot, repository, target, task, worktree, branch string) (*TerminalCleanupProof, error) {
+	return findTerminalCleanupProofWithReadDir(projectsRoot, repository, target, task, worktree, branch, os.ReadDir)
+}
+
+func findTerminalCleanupProofWithReadDir(projectsRoot, repository, target, task, worktree, branch string, readDir func(string) ([]os.DirEntry, error)) (*TerminalCleanupProof, error) {
 	if _, _, err := splitRepository(repository); err != nil {
 		return nil, fmt.Errorf("invalid terminal cleanup repository: %w", err)
 	}
@@ -85,7 +89,7 @@ func FindTerminalCleanupProof(projectsRoot, repository, target, task, worktree, 
 		if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("terminal cleanup report root %s is not a real directory", reportsRoot)
 		}
-		entries, readErr := os.ReadDir(reportsRoot)
+		entries, readErr := readDir(reportsRoot)
 		if readErr != nil {
 			return nil, fmt.Errorf("read terminal cleanup report root %s: %w", reportsRoot, readErr)
 		}

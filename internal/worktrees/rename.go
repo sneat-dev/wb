@@ -88,11 +88,18 @@ func runSecureRenameGitBytesWithHeldWorktree(
 	worktree *os.File,
 	gitArgs ...string,
 ) ([]byte, error) {
+	return runSecureRenameGitWithObservation(ctx, canonicalDir, worktreesRoot, worktreePath, worktree, nil, os.Executable, trustedGitExecutable, gitArgs...)
+}
+
+func runSecureRenameGitWithObservation(ctx context.Context, canonicalDir, worktreesRoot, worktreePath string, worktree *os.File, afterOpen func(), self, gitPath func() (string, error), gitArgs ...string) ([]byte, error) {
 	canonical, err := openCanonicalRepository(canonicalDir)
 	if err != nil {
 		return nil, err
 	}
 	defer canonical.close()
+	if afterOpen != nil {
+		afterOpen()
+	}
 	if err := canonical.authorizeForGit(); err != nil {
 		return nil, fmt.Errorf("canonical repository path changed before rename Git operation: %w", err)
 	}
@@ -109,11 +116,11 @@ func runSecureRenameGitBytesWithHeldWorktree(
 		return nil, fmt.Errorf("retain linked worktree Git metadata for rename: %w", err)
 	}
 	defer linked.close()
-	executable, err := os.Executable()
+	executable, err := secureHelperExecutable(self, "rename Git")
 	if err != nil {
-		return nil, fmt.Errorf("locate WB rename Git helper: %w", err)
+		return nil, err
 	}
-	gitExecutable, err := trustedGitExecutable()
+	gitExecutable, err := gitPath()
 	if err != nil {
 		return nil, err
 	}

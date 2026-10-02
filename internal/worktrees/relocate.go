@@ -76,21 +76,8 @@ type RelocateResult struct {
 // the home under which the claim was found so callers write any new
 // relocation record to that same home.
 func activeWorkLogClaimAcrossHomes(resolution wbhome.Resolution, worktree string) (workLogClaim, workLogProjection, string, string, error) {
-	homes := make([]string, 0, len(resolution.Read)+1)
-	tried := map[string]bool{}
-	addHome := func(home string) {
-		if home == "" || tried[home] {
-			return
-		}
-		tried[home] = true
-		homes = append(homes, home)
-	}
-	addHome(resolution.Write.Home)
-	for _, layout := range resolution.Read {
-		addHome(layout.Home)
-	}
 	var lastErr error
-	for _, home := range homes {
+	for _, home := range resolvedClaimHomes(resolution) {
 		claim, projection, claimPath, err := activeWorkLogClaim(home, worktree)
 		if err == nil {
 			return claim, projection, claimPath, home, nil

@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -52,14 +53,25 @@ func isRetiredWorktreeOperationLock(name string) bool {
 //   - a lock is removed only when it is a plain single-link regular file, the
 //     exact shape this package itself writes (see quarantineLockEntry).
 func purgeTerminalArtefacts(worktreesRoot, task string) []PurgedArtefact {
+	return purgeTerminalArtefactsObserved(worktreesRoot, task, nil)
+}
+
+// Observations retain the actual opened task and never replace native results.
+func purgeTerminalArtefactsObserved(worktreesRoot, task string, observe func(string, *os.File, PurgedArtefact)) []PurgedArtefact {
 	taskPath := filepath.Join(worktreesRoot, task)
 	directory, err := openAbsoluteDirectoryNoFollow(taskPath, false)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = directory.Close() }()
+	if observe != nil {
+		observe("before_seek", directory, PurgedArtefact{})
+	}
 	if _, err := directory.Seek(0, 0); err != nil {
 		return nil
+	}
+	if observe != nil {
+		observe("before_read", directory, PurgedArtefact{})
 	}
 	entries, err := directory.ReadDir(-1)
 	if err != nil {
@@ -89,6 +101,9 @@ func purgeTerminalArtefacts(worktreesRoot, task string) []PurgedArtefact {
 	purged := make([]PurgedArtefact, 0, len(candidates))
 	for _, candidate := range candidates {
 		name := filepath.Base(candidate.Path)
+		if observe != nil {
+			observe("before_stat", directory, candidate)
+		}
 		var stat unix.Stat_t
 		if statErr := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
 			continue
@@ -104,6 +119,9 @@ func purgeTerminalArtefacts(worktreesRoot, task string) []PurgedArtefact {
 		case purgedRetiredLock:
 			if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 				continue
+			}
+			if observe != nil {
+				observe("before_lock_unlink", directory, candidate)
 			}
 			if unix.Unlinkat(int(directory.Fd()), name, 0) != nil {
 				continue
