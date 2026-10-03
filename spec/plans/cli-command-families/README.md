@@ -142,9 +142,16 @@ operations or introducing plugin registration. Replace those adapters and move
 final root composition to `internal/cli` after family cutover. Test shared policy
 once and retain small registration and end-to-end executable checks.
 
+The first shared-contract batch is committed as `2034043a`: a lazy invocation
+snapshot and the existing root coded-error factory serve layout and subsequent
+families; one format validator serves both extracted and legacy callers. Shared
+and layout suites have 100% statement coverage. Independent review found no
+remaining issues. Root composition remains queued until constructors can be
+imported; this task is therefore still in progress.
+
 ### Task 4: Extract independent maintenance and inspection families
 
-**Status:** queued
+**Status:** in_progress
 **Verifies:** User journey steps 1–4.
 
 Follow the dependency map for disk, archive, layout, installation/version and
@@ -152,15 +159,43 @@ other independent reporting families; group by domain, not file/function count.
 Move complete family tests and reuse established CLI contracts. Keep newly
 extracted packages at 100% coverage.
 
+Disk extraction passed independent review with 30/30 statements covered and a
+0.288s family suite. Six former root tests using collector/environment fixtures
+now exercise the family through a fake collection operation; two production
+wiring checks remain (0.630s test execution, 13s governed command including
+compilation). After a genuine disk-only test-source change, an identical ordinary
+two-family run reused layout from cache and reran disk in 0.283s. This verifies
+one concrete sibling-cache case, not all coverage modes or whole CI timing.
+Archive extraction measures 64/64 covered statements and a 0.249s family suite.
+The retained real archive authorization journey now supplies PATH, projects root
+and HOME only to child processes and can run in parallel. One executable runner
+replaces duplicated subprocess setup in the smoke and layout helpers. Focused
+archive/root/smoke/layout journeys passed in 4.268s; lint and vet passed. Archive
+text output now propagates writer errors while retaining successful output bytes.
+Independent reviews r3 (disk) and r5 (archive/runner) accepted the batch with no
+remaining findings. Publication remains deferred while reviewed commits accumulate.
+
 ### Task 5: Extract quality and change command families
 
-**Status:** queued
+**Status:** in_progress
 **Verifies:** User journey steps 1–4.
 
 Extract coverage/check/verify/CI and dependency/migration/run domains in their
 reviewed dependency order. Keep reusable output and progress helpers separate
 from root composition, and retain genuine subprocess/Git tests at service
 boundaries rather than in every argument test.
+
+CI wait/audit implementation uses the established runtime, shared JSON flag
+binding and a leaf progress renderer that remaining landing commands can reuse.
+Repository selection and audit comparison/sorting move to `ciaudit.AuditBatch`.
+Focused coverage measures cmdci 159/159 statements, shared progress 142/142,
+shared contracts 19/19 and ciaudit 489/489 (including existing audit operations).
+Family execution is 0.327s; genuine observer assertions remain operational tests,
+and representative executable/root journeys remain at composition. These are
+scoped implementation receipts; independent review r4 accepted the CI extraction
+with no remaining findings. A combined race run over all six extracted/shared CLI
+packages also passed. These checks do not constitute a new repository-wide
+coverage measurement; quality adapters and final root composition remain queued.
 
 ### Task 6: Extract orchestration command families
 

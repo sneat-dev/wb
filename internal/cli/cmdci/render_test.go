@@ -1,11 +1,8 @@
-package main
+package cmdci
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +18,7 @@ import (
 // refused before any git subprocess runs.
 func TestValidateCIWaitInputsRejectsBadRepository(t *testing.T) {
 	t.Parallel()
-	err := validateCIWaitInputs("not-a-repo-shape", "", "main", strings.Repeat("a", 40), time.Minute, time.Second)
+	err := validateCIWaitInputs("not-a-repo-shape", "", "main", strings.Repeat("a", 40), time.Minute, time.Second, func(string) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "--repo must be owner/repository") {
 		t.Fatalf("error = %v; want a --repo shape refusal", err)
 	}
@@ -33,7 +30,7 @@ func TestValidateCIWaitInputsRejectsBadRepository(t *testing.T) {
 func TestValidateCIWaitInputsRejectsBlankTarget(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"", "  main", "main  "} {
-		err := validateCIWaitInputs("acme/app", "", target, strings.Repeat("a", 40), time.Minute, time.Second)
+		err := validateCIWaitInputs("acme/app", "", target, strings.Repeat("a", 40), time.Minute, time.Second, func(string) error { return nil })
 		if err == nil || !strings.Contains(err.Error(), "--target is required") {
 			t.Fatalf("target=%q error = %v; want a --target refusal", target, err)
 		}
@@ -47,7 +44,7 @@ func TestPrintCIWaitRendersResumeArgsAndPullRequestPrefix(t *testing.T) {
 	command := &cobra.Command{}
 	var out bytes.Buffer
 	command.SetOut(&out)
-	output := ciWaitOutput{
+	output := WaitOutput{
 		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
 			Status: orchestrate.PullRequestWaitPending, Repository: "acme/app",
 			PullRequest: "42", Target: "main", Head: strings.Repeat("a", 40), Reason: "not yet green",
@@ -75,7 +72,7 @@ func TestPrintCIWaitRendersFailureDetails(t *testing.T) {
 	command := &cobra.Command{}
 	var out bytes.Buffer
 	command.SetOut(&out)
-	output := ciWaitOutput{
+	output := WaitOutput{
 		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
 			Status: orchestrate.PullRequestWaitFailed, Repository: "acme/app",
 			Target: "main", Head: strings.Repeat("a", 40), Reason: "checks failed",
@@ -134,7 +131,7 @@ func (w *failAfterNWriter) Write(p []byte) (int, error) {
 // diagnostic reason.
 func TestPrintCIWaitPropagatesEveryWriteFailure(t *testing.T) {
 	t.Parallel()
-	output := ciWaitOutput{
+	output := WaitOutput{
 		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
 			Status: orchestrate.PullRequestWaitFailed, Repository: "acme/app",
 			Target: "main", Head: strings.Repeat("a", 40), Reason: "checks failed",
@@ -166,9 +163,9 @@ func TestPrintCIWaitPropagatesEveryWriteFailure(t *testing.T) {
 // TestPrintCIAuditRendersEveryBranch drives every rendering branch of
 // printCIAudit: the no-policy-applies short circuit, each of the three
 // threshold checkmarks, and both the with-file and without-file finding
-// lines. Uses the package's stdout-capture helper (printCIAudit writes with
-// fmt.Println/fmt.Printf directly), so this test is not parallel.
+// lines. A local buffer verifies the command output without process-global state.
 func TestPrintCIAuditRendersEveryBranch(t *testing.T) {
+	t.Parallel()
 	reports := []ciaudit.Report{
 		{Path: "acme/no-policy"},
 		{
@@ -182,7 +179,11 @@ func TestPrintCIAuditRendersEveryBranch(t *testing.T) {
 			},
 		},
 	}
-	output := cwCovCaptureStdout(t, func() { printCIAudit(reports) })
+	var out bytes.Buffer
+	if err := printCIAudit(&out, reports); err != nil {
+		t.Fatal(err)
+	}
+	output := out.String()
 	for _, want := range []string{
 		"acme/no-policy",
 		"– no Go/frontend/deploy CI policy applies",
@@ -199,130 +200,55 @@ func TestPrintCIAuditRendersEveryBranch(t *testing.T) {
 	}
 }
 
-// TestRunCIAuditFleetModeFiltersAndReportsFindings drives runCIAudit's
-// fleet-discovery loop (range + the filter's strings.Contains, both
-// branches), the jsonOut branch, the findings-count range, and the
-// strict-with-findings branch. Uses the package's stdout-capture helper, so
-// this test is not parallel.
-func TestRunCIAuditFleetModeFiltersAndReportsFindings(t *testing.T) {
-	root := t.TempDir()
-	writeRepo := func(owner, name string, withGoFile bool) {
-		repoPath := filepath.Join(root, owner, name)
-		if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if withGoFile {
-			if err := os.WriteFile(filepath.Join(repoPath, "main.go"), []byte("package main\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	// "app" matches the --filter substring and carries a .go file with no CI
-	// coverage threshold, so it must produce a "go-coverage-threshold"
-	// finding; "skip" does not match the filter and must be excluded by the
-	// strings.Contains branch's continue.
-	writeRepo("acme", "app", true)
-	writeRepo("acme", "skip", false)
-
-	var code int
-	var err error
-	output := cwCovCaptureStdout(t, func() {
-		code, err = runCIAudit(".", root, "app", "", true, true, false)
-	})
-	if err != nil {
-		t.Fatalf("runCIAudit() error = %v", err)
-	}
-	if code != 1 {
-		t.Fatalf("code = %d; want 1 for a strict run with findings", code)
-	}
-	if !strings.Contains(output, "acme/app") || strings.Contains(output, "acme/skip") {
-		t.Fatalf("text output = %q; want only the filtered acme/app repository", output)
-	}
-	if !strings.Contains(output, "go-coverage-threshold") {
-		t.Fatalf("text output = %q; want the go-coverage-threshold finding", output)
-	}
-
-	// The same fleet, non-strict: findings are still reported but the exit
-	// code must stay 0.
-	var nonStrictCode int
-	_ = cwCovCaptureStdout(t, func() {
-		nonStrictCode, err = runCIAudit(".", root, "app", "", true, false, false)
-	})
-	if err != nil {
-		t.Fatalf("runCIAudit(non-strict) error = %v", err)
-	}
-	if nonStrictCode != 0 {
-		t.Fatalf("non-strict code = %d; want 0", nonStrictCode)
-	}
-
-	// jsonOut writes the same reports as JSON to stdout instead of the text
-	// renderer.
-	var jsonCode int
-	jsonOutput := cwCovCaptureStdout(t, func() {
-		jsonCode, err = runCIAudit(".", root, "app", "", true, false, true)
-	})
-	if err != nil {
-		t.Fatalf("runCIAudit(json) error = %v", err)
-	}
-	if jsonCode != 0 {
-		t.Fatalf("json code = %d; want 0", jsonCode)
-	}
-	var reports []ciaudit.Report
-	if err := json.Unmarshal([]byte(jsonOutput), &reports); err != nil {
-		t.Fatalf("decode JSON reports: %v; body=%s", err, jsonOutput)
-	}
-	if len(reports) != 1 || !strings.HasSuffix(reports[0].Path, filepath.Join("acme", "app")) {
-		t.Fatalf("reports = %+v; want exactly the filtered acme/app repository", reports)
-	}
-}
-
-// TestAuditReportsSortsTargetFindingsAndReports drives auditReports' two
-// sort.Slice comparators: the per-report findings tie-break on matching code
-// (falling back to File) and the outer reports-by-path ordering.
-func TestAuditReportsSortsTargetFindingsAndReports(t *testing.T) {
+func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
 	t.Parallel()
-	first, second := t.TempDir(), t.TempDir()
-	// second/first: intentionally out of alphabetical Path order so the
-	// outer sort.Slice comparator (reports[i].Path < reports[j].Path) has
-	// something to swap.
-	compare := func(root, target string) ([]ciaudit.Finding, error) {
-		return []ciaudit.Finding{
-			{Code: "z-code", Message: "z finding", File: "z.yml"},
-			// Same code as above with a lexically earlier file: exercises the
-			// tie-break branch (Findings[i].Code == Findings[j].Code).
-			{Code: "z-code", Message: "z finding earlier file", File: "a.yml"},
-		}, nil
-	}
-	reports, err := auditReports([]string{second, first}, "main", compare)
-	if err != nil {
-		t.Fatalf("auditReports() error = %v", err)
-	}
-	if len(reports) != 2 || reports[0].Path >= reports[1].Path {
-		t.Fatalf("reports paths = [%q, %q]; want ascending order", reports[0].Path, reports[1].Path)
-	}
-	findings := reports[0].Findings
-	if len(findings) != 2 || findings[0].File != "a.yml" || findings[1].File != "z.yml" {
-		t.Fatalf("findings = %+v; want the same-code tie broken by File", findings)
-	}
-}
-
-// TestCIAuditCmdAcceptsExplicitPathAndReportsFindingsAsExitError drives the
-// RunE `len(args) == 1` branch (an explicit repository-path argument) and the
-// `code != 0` branch that turns a strict finding into an *exitError.
-func TestCIAuditCmdAcceptsExplicitPathAndReportsFindingsAsExitError(t *testing.T) {
-	repoPath := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repoPath, "main.go"), []byte("package main\n"), 0o600); err != nil {
+	command := &cobra.Command{}
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := printCIWait(command, WaitOutput{
+		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
+			Status:     orchestrate.PullRequestWaitPending,
+			Repository: "acme/app",
+			Target:     "feature/$(touch-pwned)",
+			Head:       testHead,
+			Reason:     "resume",
+		},
+		ResumeArgs: []string{"wb", "ci", "wait", "--target", "feature/$(touch-pwned)", "--pr", "https://example.test/pr/1?x='y'"},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	command := newCIAuditCmd(&invocation{})
-	command.SetArgs([]string{"--strict", repoPath})
-	var err error
-	cwCovCaptureStdout(t, func() { err = command.Execute() })
-	var exit *exitError
-	if err == nil || !errors.As(err, &exit) {
-		t.Fatalf("Execute() error = %v; want an *exitError", err)
+	got := output.String()
+	for _, quoted := range []string{`'feature/$(touch-pwned)'`, `'https://example.test/pr/1?x='"'"'y'"'"''`} {
+		if !strings.Contains(got, quoted) {
+			t.Fatalf("human resume command is not shell-safe; missing %q in %q", quoted, got)
+		}
 	}
-	if exit.code != 1 {
-		t.Fatalf("exit.code = %d; want 1", exit.code)
+}
+
+func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
+	t.Parallel()
+	command := &cobra.Command{}
+	var output bytes.Buffer
+	command.SetOut(&output)
+	err := printCIWait(command, WaitOutput{PullRequestWaitResult: orchestrate.PullRequestWaitResult{
+		Status:     orchestrate.PullRequestWaitFailed,
+		Repository: "acme/app",
+		Target:     "main",
+		Head:       testHead,
+		Reason:     "check failed",
+		FailureDetails: []orchestrate.CIFailureDetail{{
+			Check: "check-run:test", RunURL: "https://github.com/acme/app/actions/runs/123",
+			JobURL:      "https://github.com/acme/app/actions/runs/123/job/456",
+			Annotations: []orchestrate.CIFailureAnnotation{{Path: "cmd/wb/ci.go", StartLine: 17, Message: "unchecked error"}},
+			Excerpt:     "compile failed",
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"failed check-run:test", "run: https://github.com/acme/app/actions/runs/123", "job: https://github.com/acme/app/actions/runs/123/job/456", "annotation: cmd/wb/ci.go:17: unchecked error", "failed-step tail:\ncompile failed"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("failure output missing %q: %s", want, output.String())
+		}
 	}
 }

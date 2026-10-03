@@ -1,4 +1,4 @@
-package main
+package progress
 
 import (
 	"bytes"
@@ -12,12 +12,12 @@ import (
 func TestLiveProgressUpdateAfterFinishIsANoOp(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newLiveProgress(&out, true)
-	progress.start("work: starting")
-	progress.finish("work: done")
+	progress := NewLive(&out, true)
+	progress.Start("work: starting")
+	progress.Finish("work: done")
 	afterFinishLength := out.Len()
 
-	progress.update("work: should be ignored")
+	progress.Update("work: should be ignored")
 	if out.Len() != afterFinishLength {
 		t.Fatalf("update after finish appended output: before=%d after=%d (%q)",
 			afterFinishLength, out.Len(), out.String())
@@ -25,13 +25,13 @@ func TestLiveProgressUpdateAfterFinishIsANoOp(t *testing.T) {
 }
 
 // TestProgressOutputInteractiveReturnsTheWriterUnwrapped drives the
-// "interactive" branch of progressOutput: an interactive caller gets the
+// "interactive" branch of Output: an interactive caller gets the
 // raw writer back, not the carriage-return-folding progressLineWriter.
 func TestProgressOutputInteractiveReturnsTheWriterUnwrapped(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	writer := progressOutput(&out, true)
+	writer := Output(&out, true)
 	if writer != io.Writer(&out) {
-		t.Fatal("progressOutput(interactive=true) wrapped the writer instead of returning it")
+		t.Fatal("Output(interactive=true) wrapped the writer instead of returning it")
 	}
 }

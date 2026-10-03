@@ -1,4 +1,4 @@
-package main
+package progress
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newCIWaitProgress(&out, true)
-	progress.start("acme/app", "42", "main", ciWaitHead)
-	progress.report(orchestrate.PullRequestWaitProgress{
+	progress := NewChecks(&out, true)
+	progress.Start("acme/app", "42", "main", "0123456789012345678901234567890123456789")
+	progress.Report(orchestrate.PullRequestWaitProgress{
 		Observation: 1,
 		NextPoll:    30 * time.Second,
 		Result: orchestrate.PullRequestWaitResult{Checks: []orchestrate.RemoteCheck{
@@ -27,14 +27,14 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 			{Name: "check-run:release", Bucket: "pending"},
 		}},
 	})
-	progress.report(orchestrate.PullRequestWaitProgress{
+	progress.Report(orchestrate.PullRequestWaitProgress{
 		Observation: 2,
 		Result: orchestrate.PullRequestWaitResult{StableObservations: 2, Checks: []orchestrate.RemoteCheck{
 			{Name: "lint", Bucket: "pass"},
 			{Name: "test", Bucket: "pass"},
 		}},
 	})
-	progress.finish(orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed, Checks: make([]orchestrate.RemoteCheck, 2)})
+	progress.Finish(orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed, Checks: make([]orchestrate.RemoteCheck, 2)})
 
 	rendered := out.String()
 	for _, want := range []string{
@@ -59,8 +59,8 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 func TestCIWaitProgressFailReportsTheUnderlyingError(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newCIWaitProgress(&out, true)
-	progress.fail(errors.New("check wait slice must be positive and at most 9m0s"))
+	progress := NewChecks(&out, true)
+	progress.Fail(errors.New("check wait slice must be positive and at most 9m0s"))
 	rendered := out.String()
 	if !strings.Contains(rendered, "ci wait: failed: check wait slice must be positive and at most 9m0s") {
 		t.Fatalf("fail did not report the underlying error: %q", rendered)
@@ -72,8 +72,8 @@ func TestCIWaitProgressFailReportsTheUnderlyingError(t *testing.T) {
 func TestCIWaitProgressFailOmitsTrailingColonForABlankError(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newCIWaitProgress(&out, true)
-	progress.fail(errors.New(""))
+	progress := NewChecks(&out, true)
+	progress.Fail(errors.New(""))
 	rendered := out.String()
 	if !strings.Contains(rendered, "ci wait: failed") {
 		t.Fatalf("fail did not report anything: %q", rendered)
@@ -86,11 +86,11 @@ func TestCIWaitProgressFailOmitsTrailingColonForABlankError(t *testing.T) {
 func TestCIWaitOperationProgressUsesCallerLabel(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newCIWaitProgress(&out, true)
-	progress.operationReporter("ci wait")(progresspkg.Event{
+	progress := NewChecks(&out, true)
+	progress.OperationReporter("ci wait")(progresspkg.Event{
 		Phase: "retry", Detail: "attempt 1/4 failed: HTTP 502; retrying in 250ms", State: progresspkg.Waiting,
 	})
-	progress.finishOperation("ci wait: complete")
+	progress.FinishOperation("ci wait: complete")
 
 	rendered := out.String()
 	if !strings.Contains(rendered, "ci wait: retry: attempt 1/4 failed: HTTP 502; retrying in 250ms: waiting") {

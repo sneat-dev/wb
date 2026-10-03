@@ -1,139 +1,30 @@
 package main
 
 import (
-	"fmt"
-	"io"
-	"strings"
-	"time"
-
+	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	progresspkg "github.com/sneat-dev/wb/internal/progress"
+	"io"
 )
 
-type ciWaitProgress struct {
-	live         *liveProgress
-	observations int
-}
+type ciWaitProgress cliprogress.Checks
 
 func newCIWaitProgress(out io.Writer, enabled bool) *ciWaitProgress {
-	return newCIWaitProgressWithHeartbeat(out, enabled, universalProgressHeartbeat)
+	return (*ciWaitProgress)(cliprogress.NewChecks(out, enabled))
 }
 
-func newCIWaitProgressWithHeartbeat(out io.Writer, enabled bool, heartbeat time.Duration) *ciWaitProgress {
-	return &ciWaitProgress{live: newLiveProgressWithHeartbeat(out, enabled, heartbeat)}
+func (p *ciWaitProgress) report(event orchestrate.PullRequestWaitProgress) {
+	(*cliprogress.Checks)(p).Report(event)
 }
+func (p *ciWaitProgress) operationReporter(operation string) progresspkg.Reporter {
+	return (*cliprogress.Checks)(p).OperationReporter(operation)
+}
+func (p *ciWaitProgress) finishOperation(message string) {
+	(*cliprogress.Checks)(p).FinishOperation(message)
+}
+func (p *ciWaitProgress) start(repository, pullRequest, target, head string) {
+	(*cliprogress.Checks)(p).Start(repository, pullRequest, target, head)
+}
+func (p *ciWaitProgress) fail(err error) { (*cliprogress.Checks)(p).Fail(err) }
 
-func (progress *ciWaitProgress) start(repository, pullRequest, target, head string) {
-	identity := repository
-	if target != "" || head != "" {
-		identity += " " + target + "@" + shortRevision(head)
-	}
-	if pullRequest != "" && (target != "" || head != "") {
-		identity = repository + " PR " + pullRequest + " → " + target + "@" + shortRevision(head)
-	} else if pullRequest != "" {
-		identity = repository + " PR " + pullRequest
-	}
-	progress.live.start("ci wait: observing " + identity)
-}
-
-func (progress *ciWaitProgress) report(event orchestrate.PullRequestWaitProgress) {
-	progress.observations = event.Observation
-	passed, pending, failed := checkBucketCounts(event.Result.Checks)
-	completed := passed + failed
-	message := fmt.Sprintf("ci wait: poll %d; checks %d/%d completed", event.Observation, completed, len(event.Result.Checks))
-	if names := activeCheckNames(event.Result.Checks, 3); names != "" {
-		message += "; running: " + names
-	}
-	if failed > 0 {
-		message += fmt.Sprintf("; %d failed", failed)
-	} else if pending > 0 {
-		message += fmt.Sprintf("; %d pending", pending)
-	}
-	if event.Result.StableObservations > 0 {
-		message += fmt.Sprintf("; stable %d/2", event.Result.StableObservations)
-	}
-	if event.NextPoll > 0 {
-		message += "; next poll in " + event.NextPoll.String()
-	}
-	progress.live.update(message)
-}
-
-func activeCheckNames(checks []orchestrate.RemoteCheck, limit int) string {
-	names := make([]string, 0, limit)
-	remaining := 0
-	for _, check := range checks {
-		if check.Bucket == "pass" || check.Bucket == "skipping" || check.Bucket == "fail" || check.Bucket == "cancel" {
-			continue
-		}
-		name := strings.TrimPrefix(check.Name, "check-run:")
-		name = strings.TrimPrefix(name, "status:")
-		if len(names) < limit {
-			names = append(names, name)
-		} else {
-			remaining++
-		}
-	}
-	if remaining > 0 {
-		names = append(names, fmt.Sprintf("+%d more", remaining))
-	}
-	return strings.Join(names, ", ")
-}
-
-func (progress *ciWaitProgress) finish(result orchestrate.PullRequestWaitResult) {
-	progress.live.finish(fmt.Sprintf(
-		"ci wait: %s after %d polls; %d checks observed",
-		result.Status, progress.observations, len(result.Checks),
-	))
-}
-
-func (progress *ciWaitProgress) finishOperation(message string) {
-	progress.live.finish(message)
-}
-
-func (progress *ciWaitProgress) operationReporter(operation string) progresspkg.Reporter {
-	return func(event progresspkg.Event) {
-		parts := []string{operation}
-		if event.Phase != "" {
-			parts = append(parts, strings.ReplaceAll(event.Phase, "_", " "))
-		}
-		if event.Completed > 0 || event.Total > 0 {
-			parts = append(parts, fmt.Sprintf("%d/%d", event.Completed, event.Total))
-		}
-		if event.Detail != "" {
-			parts = append(parts, event.Detail)
-		}
-		if event.State != "" && event.State != progresspkg.Running {
-			parts = append(parts, string(event.State))
-		}
-		progress.live.update(strings.Join(parts, ": "))
-	}
-}
-
-func (progress *ciWaitProgress) fail(err error) {
-	message := "ci wait: failed"
-	if err != nil && strings.TrimSpace(err.Error()) != "" {
-		message += ": " + err.Error()
-	}
-	progress.live.finish(message)
-}
-
-func checkBucketCounts(checks []orchestrate.RemoteCheck) (passed, pending, failed int) {
-	for _, check := range checks {
-		switch check.Bucket {
-		case "pass", "skipping":
-			passed++
-		case "fail", "cancel":
-			failed++
-		default:
-			pending++
-		}
-	}
-	return passed, pending, failed
-}
-
-func shortRevision(revision string) string {
-	if len(revision) > 12 {
-		return revision[:12]
-	}
-	return revision
-}
+func (p *ciWaitProgress) update(message string) { (*cliprogress.Checks)(p).Update(message) }

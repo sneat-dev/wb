@@ -87,6 +87,20 @@ func runWB(t *testing.T, args ...string) smokeResult {
 // cwd they would operate on the wb checkout itself.
 func runWBIn(t *testing.T, dir string, args ...string) smokeResult {
 	t.Helper()
+	return runWBInEnvironment(t, dir, wbTestEnvironment(), args...)
+}
+
+// wbTestEnvironment preserves inherited state and the executable harness defaults.
+func wbTestEnvironment() []string {
+	return append(os.Environ(), "TERM=dumb",
+		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.com",
+		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.com")
+}
+
+// runWBInEnvironment runs a child with an explicit complete environment. It never
+// changes the test process environment; callers may append their own overrides.
+func runWBInEnvironment(t *testing.T, dir string, childEnv []string, args ...string) smokeResult {
+	t.Helper()
 	binary := buildWB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), smokeDeadline)
@@ -104,13 +118,7 @@ func runWBIn(t *testing.T, dir string, args ...string) smokeResult {
 	command.Stdin = devNull // never a terminal, and already at EOF
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	// A terminal-detecting command must see no terminal here, and must not be
-	// nudged into interactive mode by the developer's own environment. The git
-	// identity keeps `wb repo init-remote` from depending on whether the
-	// machine running the suite has one configured.
-	command.Env = append(os.Environ(), "TERM=dumb",
-		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.com",
-		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.com")
+	command.Env = childEnv
 
 	started := time.Now()
 	runErr := command.Run()

@@ -18,7 +18,14 @@ func TestMain(m *testing.M) {
 	}
 	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
 	// before any orchestrate test (including merge recovery) runs.
+	testenv.IsolateHarnessProcess()
 	testenv.IsolateProcess()
+	// Moved observer journeys must not resolve the operator's config or claim store.
+	removeUserState, userStateErr := testenv.IsolateUserState()
+	if userStateErr != nil {
+		_, _ = os.Stderr.WriteString("isolate orchestrate test user: " + userStateErr.Error() + "\n")
+		os.Exit(1)
+	}
 	// Disable git's detached gc/maintenance for every git this binary
 	// starts, including the engine's own fixture clones and pushes, so no
 	// background writer can race t.TempDir() cleanup (task-21). Bare
@@ -32,6 +39,7 @@ func TestMain(m *testing.M) {
 	}
 	engineGitSeeds.root = seedRoot
 	code := m.Run()
+	removeUserState()
 	if err := os.RemoveAll(seedRoot); err != nil {
 		_, _ = os.Stderr.WriteString("remove engine Git seed root: " + err.Error() + "\n")
 		code = 1

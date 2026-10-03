@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/cli/cmdci"
 	"io"
 	"os"
 	"sort"
@@ -747,11 +748,7 @@ wb wait list --json`,
 // commit's checks — "ci" names a domain, not a thing a caller can point at.
 // This remains the authoritative merge-evidence waiter; `wb wait pr` does not.
 func newWaitChecksCmd(inv *invocation) *cobra.Command {
-	command := newCIWaitCmd(inv)
-	command.Use = strings.Replace(command.Use, "wait ", "checks ", 1)
-	command.Short = "Wait one bounded slice for checks on an exact head (was: wb ci wait)"
-	command.Aliases = append(command.Aliases, "ci")
-	return command
+	return cmdci.NewChecks(newCLIRuntime(inv), ciDependencies())
 }
 
 // newWaitAgentCmd is `wb agent await` under the verb. `await` is kept as an

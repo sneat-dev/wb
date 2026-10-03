@@ -1,4 +1,4 @@
-package main
+package progress
 
 import (
 	"bytes"
@@ -10,11 +10,11 @@ import (
 func TestLiveProgressReplacesAndTerminatesLine(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newLiveProgress(&out, true)
-	progress.start("work: starting")
-	progress.update("work: one")
-	progress.update("work: two")
-	progress.finish("work: done")
+	progress := NewLive(&out, true)
+	progress.Start("work: starting")
+	progress.Update("work: one")
+	progress.Update("work: two")
+	progress.Finish("work: done")
 
 	rendered := out.String()
 	for _, want := range []string{"work: starting", "work: one (", "work: two (", "work: done ("} {
@@ -28,11 +28,12 @@ func TestLiveProgressReplacesAndTerminatesLine(t *testing.T) {
 }
 
 func TestLiveProgressHeartbeatsWhileOperationIsBlocked(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
-	progress := newLiveProgressWithHeartbeat(&out, true, 5*time.Millisecond)
-	progress.start("cleanup: alive")
+	progress := NewLiveWithHeartbeat(&out, true, 5*time.Millisecond)
+	progress.Start("cleanup: alive")
 	time.Sleep(18 * time.Millisecond)
-	progress.finish("cleanup: complete")
+	progress.Finish("cleanup: complete")
 	finishedLength := out.Len()
 
 	if count := strings.Count(out.String(), "cleanup: alive"); count < 3 {
@@ -45,18 +46,19 @@ func TestLiveProgressHeartbeatsWhileOperationIsBlocked(t *testing.T) {
 }
 
 func TestUniversalProgressHeartbeatIsTenSeconds(t *testing.T) {
-	if universalProgressHeartbeat != 10*time.Second {
-		t.Fatalf("universal progress heartbeat = %s, want 10s", universalProgressHeartbeat)
+	t.Parallel()
+	if Heartbeat != 10*time.Second {
+		t.Fatalf("universal progress heartbeat = %s, want 10s", Heartbeat)
 	}
 }
 
 func TestLiveProgressCanBeDisabled(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newLiveProgress(&out, false)
-	progress.start("starting")
-	progress.update("working")
-	progress.finish("done")
+	progress := NewLive(&out, false)
+	progress.Start("starting")
+	progress.Update("working")
+	progress.Finish("done")
 	if out.Len() != 0 {
 		t.Fatalf("disabled progress wrote %q", out.String())
 	}

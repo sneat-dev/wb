@@ -39,7 +39,7 @@ func newCampaignProgressWithHeartbeat(out io.Writer, enabled bool, operation str
 }
 
 func (p *campaignProgress) reporter() progress.Reporter {
-	if p == nil || p.live == nil || !p.live.enabled {
+	if p == nil || p.live == nil || !p.live.Enabled() {
 		return nil
 	}
 	return p.report
@@ -84,7 +84,7 @@ func (p *campaignProgress) report(event progress.Event) {
 }
 
 func (p *campaignProgress) finish(message string) {
-	if p == nil || p.live == nil || !p.live.enabled {
+	if p == nil || p.live == nil || !p.live.Enabled() {
 		return
 	}
 	p.finishOnce.Do(func() {

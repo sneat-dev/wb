@@ -15,8 +15,7 @@ import (
 // ordinary --apply preserves it, and the narrow explicit flag deletes only
 // that planned path before pruning the clone.
 func TestArchiveCleanCLI(t *testing.T) {
-	// Not t.Parallel(): this test uses t.Setenv for PATH and WB_PROJECTS_ROOT, which
-	// Go's testing package forbids combining with parallel execution.
+	t.Parallel()
 	root := t.TempDir()
 	remotesRoot := t.TempDir()
 
@@ -26,10 +25,10 @@ func TestArchiveCleanCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	installArchivedFakeGh(t)
-	t.Setenv("WB_PROJECTS_ROOT", root)
+	bin := installArchivedFakeGh(t)
+	childEnv := append(wbTestEnvironment(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "WB_PROJECTS_ROOT="+root, "HOME="+t.TempDir())
 
-	plan := runWB(t, "archive", "clean", "--projects-root", root, "--filter", "acme")
+	plan := runWBInEnvironment(t, "", childEnv, "archive", "clean", "--projects-root", root, "--filter", "acme")
 	if plan.exitCode != exitOK {
 		t.Fatalf("dry-run exit = %d stderr=%s stdout=%s", plan.exitCode, plan.stderr, plan.stdout)
 	}
@@ -49,7 +48,7 @@ func TestArchiveCleanCLI(t *testing.T) {
 		t.Fatal("dry-run deleted the dirty clone")
 	}
 
-	applied := runWB(t, "archive", "clean", "--projects-root", root, "--filter", "acme", "--apply")
+	applied := runWBInEnvironment(t, "", childEnv, "archive", "clean", "--projects-root", root, "--filter", "acme", "--apply")
 	if applied.exitCode != exitOK {
 		t.Fatalf("apply exit = %d stderr=%s stdout=%s", applied.exitCode, applied.stderr, applied.stdout)
 	}
@@ -66,7 +65,7 @@ func TestArchiveCleanCLI(t *testing.T) {
 		t.Fatal("apply deleted the dirty clone")
 	}
 
-	authorised := runWB(t, "archive", "clean", "--projects-root", root, "--filter", "dirty-repo", "--apply", "--delete-untracked")
+	authorised := runWBInEnvironment(t, "", childEnv, "archive", "clean", "--projects-root", root, "--filter", "dirty-repo", "--apply", "--delete-untracked")
 	if authorised.exitCode != exitOK {
 		t.Fatalf("authorised untracked deletion exit = %d stderr=%s stdout=%s", authorised.exitCode, authorised.stderr, authorised.stdout)
 	}
@@ -107,10 +106,10 @@ func initArchivableClone(t *testing.T, projectsRoot, remotesRoot, owner, name st
 	return canonical
 }
 
-// installArchivedFakeGh puts a fake `gh` on PATH that reports every
+// installArchivedFakeGh returns a private directory containing a fake `gh` that reports every
 // repository as archived, so this test never depends on network access or
 // real GitHub credentials.
-func installArchivedFakeGh(t *testing.T) {
+func installArchivedFakeGh(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
@@ -118,5 +117,5 @@ func installArchivedFakeGh(t *testing.T) {
 	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return binDir
 }

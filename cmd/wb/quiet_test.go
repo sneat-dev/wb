@@ -197,7 +197,7 @@ func TestLandingProgressIsSilentUnderQuiet(t *testing.T) {
 			command.SetErr(&stderr)
 			progressSink := newLandingProgress(&invocation{quiet: test.quiet}, command, true)
 			progressSink.start("acme/app", "7", "", "")
-			progressSink.live.update("pr land: local link preflight: acme/app: started")
+			progressSink.update("pr land: local link preflight: acme/app: started")
 			progressSink.report(orchestrate.PullRequestWaitProgress{Observation: 1})
 			progressSink.operationReporter("pr land")(progress.Event{Phase: "merge"})
 			progressSink.finishOperation("pr land: landed")

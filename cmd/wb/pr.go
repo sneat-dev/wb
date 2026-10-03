@@ -192,12 +192,12 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			// The landing guard runs before anything else, including the
 			// GitHub read: a worktree of this repository still building against
 			// an unpublished tree makes every check observation meaningless.
-			progress.live.update("pr land: local link preflight: " + repository + ": started")
+			progress.update("pr land: local link preflight: " + repository + ": started")
 			if err := refuseLinkedRepositoryWorktrees(inv, repository); err != nil {
 				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
 				return err
 			}
-			progress.live.update("pr land: local link preflight: " + repository + ": completed")
+			progress.update("pr land: local link preflight: " + repository + ": completed")
 			events, streamName := landingEventLog(inv, repository)
 			result, err := landPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:          repository,

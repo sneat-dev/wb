@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,122 +16,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sneat-dev/wb/internal/archiveprune"
 	"github.com/sneat-dev/wb/internal/daemon"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/runqueue"
 )
-
-func TestCwCovArchiveCleanCommandInProcess(t *testing.T) {
-	root := t.TempDir()
-	remotesRoot := t.TempDir()
-	clean := initArchivableClone(t, root, remotesRoot, "acme", "clean-repo")
-	dirty := initArchivableClone(t, root, remotesRoot, "acme", "dirty-repo")
-	if err := os.WriteFile(filepath.Join(dirty, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	installArchivedFakeGh(t)
-	t.Setenv("WB_HOME", t.TempDir())
-
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) })
-	if code := exitCodeOf(t, err); code != exitOK {
-		t.Fatalf("dry-run exit = %d\n%s", code, stdout)
-	}
-	for _, want := range []string{
-		"would delete acme/clean-repo",
-		"skipped      acme/dirty-repo",
-		"untracked file untracked.txt (4 bytes)",
-		"1 eligible, 1 skipped; dry-run only, pass --apply to delete",
-	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("dry-run report missing %q:\n%s", want, stdout)
-		}
-	}
-	if _, err := os.Stat(clean); err != nil {
-		t.Fatal("dry-run deleted the deletable clone")
-	}
-
-	// JSON and YAML carry the same outcome machine-readably.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--format", "json")
-	if code := exitCodeOf(t, err); code != exitOK {
-		t.Fatalf("json exit = %d", code)
-	}
-	var outcome archiveprune.Outcome
-	if err := json.Unmarshal([]byte(stdout), &outcome); err != nil {
-		t.Fatalf("json outcome: %v\n%s", err, stdout)
-	}
-	if len(outcome.Results) != 2 || outcome.Apply {
-		t.Fatalf("outcome = %+v", outcome)
-	}
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--format", "yaml")
-	if code := exitCodeOf(t, err); code != exitOK || !strings.Contains(stdout, "results:") {
-		t.Fatalf("yaml exit = %d\n%s", code, stdout)
-	}
-
-	// An unknown format is refused before anything is inspected.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--format", "toml"); err == nil ||
-		!strings.Contains(err.Error(), `unsupported format "toml"`) {
-		t.Fatalf("unknown format error = %v", err)
-	}
-
-	// --apply deletes the eligible clone and preserves the refused one.
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newArchiveCleanCmd(&invocation{projectsRoot: root}) }, "--apply")
-	if code := exitCodeOf(t, err); code != exitOK {
-		t.Fatalf("apply exit = %d\n%s", code, stdout)
-	}
-	if !strings.Contains(stdout, "deleted      acme/clean-repo") || !strings.Contains(stdout, "1 deleted, 1 skipped") {
-		t.Errorf("apply report = %s", stdout)
-	}
-	if _, err := os.Stat(clean); !os.IsNotExist(err) {
-		t.Fatalf("--apply did not remove the eligible clone: %v", err)
-	}
-	if _, err := os.Stat(dirty); err != nil {
-		t.Fatalf("--apply removed the refused clone: %v", err)
-	}
-}
-
-func TestCwCovArchiveCleanFailedAndPrintArchiveClean(t *testing.T) {
-	outcome := archiveprune.Outcome{
-		Apply: true,
-		Results: []archiveprune.Result{
-			{Repository: "acme/deleted", Applied: true, Reason: "archived and clean"},
-			{Repository: "acme/would", Eligible: true, Reason: "archived and clean"},
-			{Repository: "acme/skipped", Reason: "unpushed commits"},
-			{Repository: "acme/broken", Eligible: true, Error: "permission denied"},
-			{Repository: "acme/untracked", Reason: "contains untracked files", Untracked: []archiveprune.UntrackedEntry{
-				{Kind: "file", Path: "notes.txt", Size: 12},
-			}, ReceiptPath: "/tmp/receipt.json"},
-		},
-	}
-	command := newArchiveCleanCmd(&invocation{})
-	var out bytes.Buffer
-	command.SetOut(&out)
-	printArchiveClean(command, outcome)
-	text := out.String()
-	for _, want := range []string{
-		"deleted      acme/deleted", "failed       acme/broken",
-		"would delete acme/would", "skipped      acme/skipped",
-		"untracked file notes.txt (12 bytes)", "receipt /tmp/receipt.json",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("archive report missing %q:\n%s", want, text)
-		}
-	}
-	if !archiveCleanFailed(outcome) {
-		t.Error("archiveCleanFailed missed a deletion error")
-	}
-	if archiveCleanFailed(archiveprune.Outcome{Results: []archiveprune.Result{{Eligible: true}}}) {
-		t.Error("a planned dry-run result must not count as a failure")
-	}
-
-	// An empty sweep says so rather than printing an empty list.
-	out.Reset()
-	printArchiveClean(command, archiveprune.Outcome{})
-	if !strings.Contains(out.String(), "no local clones matched") {
-		t.Errorf("empty archive report = %q", out.String())
-	}
-}
 
 func TestCwCovCanonicalWorkerRootsAndPermissions(t *testing.T) {
 	root := t.TempDir()
