@@ -210,6 +210,22 @@ before/after timing or whole-CI speedup is claimed. Independent review r19
 accepted the exact source, original assertion migration, metadata and evidence
 with no remaining findings.
 
+Independent architecture review r26 approved the complete wait family and its
+Cobra-free polling/registry composition. Fresh root factories supply the
+existing checks, agent and operation commands, avoiding sibling imports and
+shared Cobra instances. The cohort also fixes two verified issues: warning
+writer failure must finish/join started progress before releasing registration;
+the read forecast uses the snapshot reader's six calls for an ordinary complete
+observation. Early failures can use fewer and red-head detail can use more, so
+the forecast is not a universal minimum or a billed-cost guarantee. Preserve
+real identity/required-check and registry/liveness obligations. Extracted race
+suites passed with 318/318 statements covered (175 command, 143 service),
+including the native registry suite. Vet and lint passed. The combined root
+gate passed all 22 selected tests in 3.103 seconds and covered the wait root
+adapter at 17/17 statements. Independent implementation review r28 accepted
+the exact source, all 31 original test responsibilities, moved capability
+references and affected CI routing, with no remaining findings.
+
 ### Task 5: Extract quality and change command families
 
 **Status:** in_progress
@@ -326,6 +342,23 @@ It caught a private fixture's reliance on ambient Git identity and missing
 bare-origin maintenance configuration; the setup was corrected and the one
 affected native race test passed. The review has no remaining findings. No
 matched runtime saving or repository-wide percentage is claimed.
+
+Independent architecture review r27 approved the complete stream family and
+neutral service composition. Existing stream/worktree/link/hook engines retain
+authority; a service outside `streams` avoids the existing worktrees-to-streams
+dependency cycle. All six verbs share that boundary. Preserve partial
+persistence, failure identity and the exact missing-graph transitive-membership
+finding after successful start. Named status and end-preview operations fetch
+refs, so their fixtures remain privately writable. Only proven immutable
+list/graph inputs are shared. Extracted race suites passed with 622/622
+statements covered (425 command, 197 service). The new store helper is covered
+at 7/7 statements; existing native stream/streamsync authority checks also
+passed. Vet and lint passed. The same combined root gate covered the stream
+root adapter at 7/7 statements. These scoped profiles do not establish a new
+repository-wide percentage or a matched runtime saving. Independent
+implementation review r29 accepted the exact source, all 52 original test
+responsibilities, 21 unchanged protected bodies and native evidence, with no
+remaining findings.
 
 ### Task 7: Separate daemon runtime from CLI adapters
 

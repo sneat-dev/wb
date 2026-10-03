@@ -12565,12 +12565,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/integration/list_test.go",
               "name": "TestWaitListTellsAQuietSessionApartFromAStoppedOne",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/integration/list_test.go",
               "name": "TestWaitListReportsAStaleWaiterInJSON",
               "kind": "integration"
             },
@@ -12733,52 +12733,52 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRSettlesOnlyWhenEveryTargetIsTerminal",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/command_test.go",
               "name": "TestWaitPRPendingResumesOnlyTheUnsettledTargets",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRChangedComparesOnlyActionableFacts",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRClosedIgnoresChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRTransientReadStaysPendingRatherThanErroring",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRErroredTargetNeverSettles",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/command_test.go",
               "name": "TestWaitPRDeduplicatesRepeatedTargets",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/command_test.go",
               "name": "TestWaitPRRejectsUnusableInvocations",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/reader_test.go",
               "name": "TestWaitPRReadsGitHubForARealTarget",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/render_test.go",
               "name": "TestWaitPRResumeLineQuotesSelectorsForAShell",
               "kind": "integration"
             }

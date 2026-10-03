@@ -1,10 +1,8 @@
-package main
+package cmdstream
 
 import (
 	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,7 +40,7 @@ func TestStreamStartOutputTextListsMembers(t *testing.T) {
 			{Repository: "acme/lib", Role: streams.RoleConsumer, Worktree: "/wt/lib", PullRequestError: "no token"},
 		}},
 	}
-	if err := streamStartOutput(command, "start", "text", result); err != nil {
+	if err := streamStartOutput(testRuntime(), command, "start", "text", result); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := out.String()
@@ -70,7 +68,7 @@ func TestStreamEndOutputTextReportsMembersPullRequestsAndErrors(t *testing.T) {
 		}},
 		Errors: []string{"could not delete remote branch"},
 	}
-	err := streamEndOutput(command, "text", result)
+	err := streamEndOutput(testRuntime(), command, "text", result)
 	if err == nil {
 		t.Fatalf("want a findings error because result.Errors is non-empty")
 	}
@@ -88,25 +86,12 @@ func TestStreamEndOutputTextReportsMembersPullRequestsAndErrors(t *testing.T) {
 
 func TestStreamListOutputTextListsStreamsAndUnreadableEntries(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	store := streams.OpenAt(root)
-	if _, err := store.Create(streams.Stream{
-		Name:    "demo",
-		Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleLibrary}},
-	}); err != nil {
-		t.Fatalf("create stream: %v", err)
-	}
-	if err := os.MkdirAll(store.Dir("broken"), 0o755); err != nil {
-		t.Fatalf("mkdir broken stream dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(store.Dir("broken"), "stream.json"), []byte("not json"), 0o644); err != nil {
-		t.Fatalf("write broken stream state: %v", err)
-	}
-	engine := &streams.Engine{Store: store}
+	all := []streams.Stream{{Name: "demo", Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleLibrary}}}}
+	unreadable := []streams.Unreadable{{Name: "broken", Reason: "invalid json"}}
 	command := &cobra.Command{}
 	var out bytes.Buffer
 	command.SetOut(&out)
-	if err := streamListOutput(command, "text", engine); err != nil {
+	if err := streamListOutput(command, "text", all, unreadable); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := out.String()
@@ -136,7 +121,7 @@ func TestStreamStatusOutputTextReportsMissingPullRequestsAndEmptyGaps(t *testing
 		OpenAgentPullRequests: []streams.AgentPullRequest{{Repository: "acme/app", Number: 5, Title: "fix", Head: "stream/demo"}},
 		Unknowns:              []string{"could not determine base branch"},
 	}
-	err := streamStatusOutput(command, "text", status)
+	err := streamStatusOutput(testRuntime(), command, "text", status)
 	if err == nil {
 		t.Fatalf("want a findings error because members are missing pull requests")
 	}
@@ -170,7 +155,7 @@ func TestStreamStartOutputTextSurfacesWriteFailureAtEveryStatement(t *testing.T)
 		writer := &pkp00FailingWriter{failOn: failOn}
 		command := &cobra.Command{}
 		command.SetOut(writer)
-		err := streamStartOutput(command, "start", "text", result)
+		err := streamStartOutput(testRuntime(), command, "start", "text", result)
 		if err == nil || !strings.Contains(err.Error(), "pkp00 simulated write failure") {
 			t.Fatalf("failOn=%d: want the simulated write failure surfaced, got %v", failOn, err)
 		}
@@ -198,7 +183,7 @@ func TestStreamEndOutputTextSurfacesWriteFailureAtEveryStatement(t *testing.T) {
 		writer := &pkp00FailingWriter{failOn: failOn}
 		command := &cobra.Command{}
 		command.SetOut(writer)
-		err := streamEndOutput(command, "text", result)
+		err := streamEndOutput(testRuntime(), command, "text", result)
 		if err == nil || !strings.Contains(err.Error(), "pkp00 simulated write failure") {
 			t.Fatalf("failOn=%d: want the simulated write failure surfaced, got %v", failOn, err)
 		}
@@ -209,26 +194,13 @@ func TestStreamEndOutputTextSurfacesWriteFailureAtEveryStatement(t *testing.T) {
 // unreadable-stream row.
 func TestStreamListOutputTextSurfacesWriteFailureAtEveryStatement(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	store := streams.OpenAt(root)
-	if _, err := store.Create(streams.Stream{
-		Name:    "demo",
-		Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleLibrary}},
-	}); err != nil {
-		t.Fatalf("create stream: %v", err)
-	}
-	if err := os.MkdirAll(store.Dir("broken"), 0o755); err != nil {
-		t.Fatalf("mkdir broken stream dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(store.Dir("broken"), "stream.json"), []byte("not json"), 0o644); err != nil {
-		t.Fatalf("write broken stream state: %v", err)
-	}
-	engine := &streams.Engine{Store: store}
+	all := []streams.Stream{{Name: "demo", Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleLibrary}}}}
+	unreadable := []streams.Unreadable{{Name: "broken", Reason: "invalid json"}}
 	for failOn := 1; failOn <= 2; failOn++ {
 		writer := &pkp00FailingWriter{failOn: failOn}
 		command := &cobra.Command{}
 		command.SetOut(writer)
-		err := streamListOutput(command, "text", engine)
+		err := streamListOutput(command, "text", all, unreadable)
 		if err == nil || !strings.Contains(err.Error(), "pkp00 simulated write failure") {
 			t.Fatalf("failOn=%d: want the simulated write failure surfaced, got %v", failOn, err)
 		}
@@ -254,7 +226,7 @@ func TestStreamStatusOutputTextSurfacesWriteFailureAtEveryStatement(t *testing.T
 		writer := &pkp00FailingWriter{failOn: failOn}
 		command := &cobra.Command{}
 		command.SetOut(writer)
-		err := streamStatusOutput(command, "text", status)
+		err := streamStatusOutput(testRuntime(), command, "text", status)
 		if err == nil || !strings.Contains(err.Error(), "pkp00 simulated write failure") {
 			t.Fatalf("failOn=%d: want the simulated write failure surfaced, got %v", failOn, err)
 		}
@@ -276,7 +248,7 @@ func TestStreamStatusOutputTextSurfacesWriteFailureInPopulatedGapSections(t *tes
 		writer := &pkp00FailingWriter{failOn: failOn}
 		command := &cobra.Command{}
 		command.SetOut(writer)
-		err := streamStatusOutput(command, "text", status)
+		err := streamStatusOutput(testRuntime(), command, "text", status)
 		if err == nil || !strings.Contains(err.Error(), "pkp00 simulated write failure") {
 			t.Fatalf("failOn=%d: want the simulated write failure surfaced, got %v", failOn, err)
 		}
@@ -301,7 +273,7 @@ func TestStreamStatusOutputTextReportsPopulatedGaps(t *testing.T) {
 			Repository: "acme/app", Identity: "go", Manifest: "go.mod", Declared: "v1.0.0", Published: "v1.1.0",
 		}},
 	}
-	if err := streamStatusOutput(command, "text", status); err != nil {
+	if err := streamStatusOutput(testRuntime(), command, "text", status); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := out.String()

@@ -1,29 +1,20 @@
-package main
+package cmdstream
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/ciaudit"
-	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/streamrun"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/streamsync"
 	"github.com/spf13/cobra"
 )
 
-func newStreamSyncCmd(inv *invocation) *cobra.Command {
-	return newStreamSyncCmdWithRunner(inv, nil)
-}
-
-// streamSyncRunner lets command tests observe the options passed to the engine
-// without starting Git or the verification toolchain.
-type streamSyncRunner func(context.Context, streamsync.Options) (streamsync.Result, error)
-
-func newStreamSyncCmdWithRunner(inv *invocation, runner streamSyncRunner) *cobra.Command {
+func newStreamSyncCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var (
 		format, base, reason string
 		libraries            []string
@@ -89,78 +80,26 @@ wb stream sync checkout-rewrite --library github.com/acme/library/backend@v0.6.0
 wb stream sync checkout-rewrite --push --reason "handing off to the release lane"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format, "text", "json"); err != nil {
+			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
 			parsed, err := parseLibraryTargets(libraries)
 			if err != nil {
-				return &exitError{code: exitUsage, message: err.Error()}
-			}
-			store, err := streams.Open(inv.projectsRoot)
-			if err != nil {
-				return err
-			}
-			stream, err := store.Load(args[0])
-			if err != nil {
-				return err
+				return runtime.ExitError(shared.ExitUsage, err.Error())
 			}
 			trigger := streamsync.PushTrigger("")
 			if push {
 				trigger = streamsync.TriggerExplicit
 			}
-
-			sync := runner
-			if sync == nil {
-				engine := &streamsync.Engine{
-					Git:      streamsync.ExecGit{Timeout: timeout},
-					Bumper:   streamsync.ExecBumper{Timeout: timeout},
-					Verifier: batchVerifier{timeout: timeout},
-					CI:       workflowMechanisms{},
-					Events:   streamEventSink{log: store.EventLog(args[0])},
+			results, err := deps.Sync(command.Context(), streamrun.SyncRequest{ProjectsRoot: runtime.Flags().ProjectsRoot, Name: args[0], Base: base, Libraries: parsed, Verify: verify, AllowMidReview: allowMidReview, PushTrigger: trigger, PushReason: reason, Timeout: timeout})
+			if err != nil {
+				var refusal *streamrun.SyncRefusal
+				if errors.As(err, &refusal) {
+					return runtime.ExitError(shared.ExitUsage, refusal.Error())
 				}
-				sync = engine.Sync
+				return err
 			}
-
-			results := make([]streamsync.Result, 0, len(stream.Members))
-			// Every MEMBER, not only the consumers: the library has its own
-			// stream/<name> branch and its base moves too. The bumps are
-			// consumer-only, but the rebase is not — an empty Libraries set
-			// makes the library's bump phase a no-op by itself.
-			for _, member := range stream.Members {
-				if member.Worktree == "" {
-					continue
-				}
-				memberBase := member.Base
-				if base != "" {
-					memberBase = base
-				}
-				memberLibraries := parsed
-				if member.Role == streams.RoleLibrary {
-					// A library does not bump itself to its own version.
-					memberLibraries = nil
-				}
-				result, syncErr := sync(command.Context(), streamsync.Options{
-					Stream: stream.Name, Worktree: member.Worktree, Repository: member.Repository,
-					Branch: member.Branch, Base: memberBase, Libraries: memberLibraries,
-					RecordedRemoteHead: member.Lease.RecordedHead,
-					Verify:             verify, AllowMidReview: allowMidReview,
-					PushTrigger: trigger, PushReason: reason, Timeout: timeout,
-				})
-				if syncErr != nil {
-					var refusal *streamsync.Refusal
-					if errors.As(syncErr, &refusal) {
-						return &exitError{code: exitUsage, message: member.Repository + ": " + refusal.Error()}
-					}
-					return syncErr
-				}
-				if result.RecordedRemoteHead != "" {
-					if err := recordStreamSyncRemoteHead(store, stream.Name, member.Repository, result.RecordedRemoteHead); err != nil {
-						return fmt.Errorf("record fetched %s head for %s: %w", result.StreamRebase.Branch, member.Repository, err)
-					}
-				}
-				results = append(results, result)
-			}
-			return printStreamSync(command, format, results)
+			return printStreamSync(runtime, command, format, results)
 		},
 	}
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -196,7 +135,7 @@ func parseLibraryTargets(values []string) ([]streamsync.Library, error) {
 	return libraries, nil
 }
 
-func printStreamSync(command *cobra.Command, format string, results []streamsync.Result) error {
+func printStreamSync(runtime shared.Runtime, command *cobra.Command, format string, results []streamsync.Result) error {
 	failed := false
 	for _, result := range results {
 		if result.Failed() {
@@ -262,26 +201,9 @@ func printStreamSync(command *cobra.Command, format string, results []streamsync
 		}
 	}
 	if failed {
-		return &exitError{code: exitFindings, message: "stream sync reported findings; see the report above"}
+		return runtime.ExitError(shared.ExitFindings, "stream sync reported findings; see the report above")
 	}
 	return nil
-}
-
-// recordStreamSyncRemoteHead persists the fetched stream branch head after a
-// successful reconciliation. The stored value is the lease for a later
-// --force-with-lease and the value stream status displays, so leaving it stale
-// would make a successful sync set up the next non-fast-forward push.
-func recordStreamSyncRemoteHead(store *streams.Store, streamName, repository, head string) error {
-	_, err := store.Update(streamName, func(stream *streams.Stream) error {
-		for index := range stream.Members {
-			if strings.EqualFold(stream.Members[index].Repository, repository) {
-				stream.Members[index].Lease.RecordedHead = head
-				return nil
-			}
-		}
-		return fmt.Errorf("stream member %q not found", repository)
-	})
-	return err
 }
 
 func printBatch(out interface{ Write([]byte) (int, error) }, batch streamsync.BatchResult) error {
@@ -328,86 +250,4 @@ func printBatch(out interface{ Write([]byte) (int, error) }, batch streamsync.Ba
 		}
 	}
 	return nil
-}
-
-// batchVerifier runs the existing wb verify profiles, single-worker, and
-// names the mechanisms it did not run so they can be checked against CI.
-type batchVerifier struct {
-	timeout time.Duration
-	verify  func(context.Context, string, string, []quality.Check, quality.RunOptions) quality.VerificationReport
-}
-
-func (verifier batchVerifier) Verify(ctx context.Context, dir string) (streamsync.VerificationRun, error) {
-	started := time.Now()
-	verify := verifier.verify
-	if verify == nil {
-		verify = quality.VerifyWithOptions
-	}
-	report := verify(ctx, dir, dir, []quality.Check{
-		quality.CheckLint, quality.CheckBuild, quality.CheckTest,
-	}, quality.RunOptions{
-		Timeout: verifier.timeout, SingleWorker: true,
-		Env: append(quality.SingleWorkerNodeEnv(), "CI=1"),
-	})
-	run := streamsync.VerificationRun{
-		Passed: report.Status != quality.StatusFailed, Duration: time.Since(started),
-		// Single-worker verification runs Go without -race by design, so this
-		// claim is printed routinely — and only ever alongside evidence that
-		// CI actually carries it.
-		Skipped: []string{"-race"},
-	}
-	commands := make([]string, 0, len(report.Results))
-	for _, entry := range report.Results {
-		if entry.Status == quality.StatusSkipped {
-			continue
-		}
-		commands = append(commands, entry.Command)
-		if entry.Status == quality.StatusFailed {
-			run.Details = append(run.Details, fmt.Sprintf("%s %s: %s", entry.Module, entry.Check, entry.Detail))
-		}
-	}
-	run.Command = strings.Join(commands, "; ")
-	return run, nil
-}
-
-// workflowMechanisms reads which CI mechanisms a member's stream-PR workflows
-// actually carry, so "CI owns it" is evidence rather than an assumption.
-type workflowMechanisms struct{}
-
-func (workflowMechanisms) Present(dir string) (map[string]bool, bool, error) {
-	workflows, err := ciaudit.StreamConcurrency(dir)
-	if err != nil {
-		return nil, false, err
-	}
-	present := map[string]bool{}
-	opaque := false
-	for _, workflow := range workflows {
-		if !workflow.PullRequest {
-			continue
-		}
-		mechanisms, reusable, err := ciaudit.WorkflowMechanismsWithReuse(dir, workflow.Workflow)
-		if err != nil {
-			return nil, false, err
-		}
-		if reusable {
-			// A reusable workflow's body is in another repository, so WB
-			// cannot prove what it runs.
-			opaque = true
-		}
-		for mechanism := range mechanisms {
-			present[mechanism] = true
-		}
-	}
-	return present, opaque, nil
-}
-
-// streamEventSink adapts the stream event log to the sync engine.
-type streamEventSink struct{ log *streams.FileEventLog }
-
-func (sink streamEventSink) Append(event streamsync.Event) error {
-	return sink.log.Append(streams.Event{
-		Stream: event.Stream, Verb: event.Verb, Phase: event.Phase,
-		Repository: event.Repository, Outcome: event.Outcome,
-		Detail: event.Detail, Evidence: event.Evidence,
-	})
 }

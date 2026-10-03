@@ -1,4 +1,4 @@
-package main
+package cmdstream
 
 import (
 	"testing"
@@ -74,7 +74,7 @@ func TestPrintStreamSyncPropagatesEachLineWriteFailure(t *testing.T) {
 			command := &cobra.Command{}
 			w := &failAfterWriter{allowedWrites: testCase.allowedWrites}
 			command.SetOut(w)
-			err := printStreamSync(command, "text", []streamsync.Result{testCase.result})
+			err := printStreamSync(testRuntime(), command, "text", []streamsync.Result{testCase.result})
 			if err == nil {
 				t.Fatalf("expected the write failure on %s to propagate", testCase.name)
 			}

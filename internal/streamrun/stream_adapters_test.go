@@ -1,7 +1,8 @@
-package main
+package streamrun
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,10 +77,8 @@ func TestStreamWorktreesRefusesAnInvalidConfiguredRoot(t *testing.T) {
 }
 
 func TestStreamWorktreesPassesExactSquashReceiptToCleanup(t *testing.T) {
-	previous := streamWorktreeCleanup
-	t.Cleanup(func() { streamWorktreeCleanup = previous })
 	var got worktrees.CleanupOptions
-	streamWorktreeCleanup = func(_ context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
+	cleanup := func(_ context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
 		got = options
 		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{
 			ListResult: worktrees.ListResult{Repository: "acme/app"}, Applied: true,
@@ -90,7 +89,7 @@ func TestStreamWorktreesPassesExactSquashReceiptToCleanup(t *testing.T) {
 		CandidateSHA: "8def8def8def8def8def8def8def8def8def8def", LandingSHA: "8d0e8d0e8d0e8d0e8d0e8d0e8d0e8d0e8d0e8d0e",
 	}
 	worktree := "/worktrees/incidentius/acme/app"
-	if err := (&streamWorktrees{projectsRoot: t.TempDir()}).Remove(context.Background(), "incidentius", "acme/app", worktree, receipt); err != nil {
+	if err := (&streamWorktrees{projectsRoot: "/fixture", cleanup: cleanup}).Remove(context.Background(), "incidentius", "acme/app", worktree, receipt); err != nil {
 		t.Fatal(err)
 	}
 	if len(got.MergeReceiptProofs) != 1 {
@@ -101,5 +100,22 @@ func TestStreamWorktreesPassesExactSquashReceiptToCleanup(t *testing.T) {
 		proof.SourceWorktree != worktree || proof.SourceBranch != receipt.SourceBranch || proof.SourceSHA != receipt.SourceSHA ||
 		proof.CandidateSHA != receipt.CandidateSHA || proof.LandingSHA != receipt.LandingSHA {
 		t.Fatalf("cleanup proof = %#v, want exact receipt mapping", proof)
+	}
+}
+func TestAdapterValidationAndCreateErrorsPreserveIdentity(t *testing.T) {
+	t.Parallel()
+	adapter := streamWorktrees{projectsRoot: t.TempDir()}
+	if _, err := adapter.PlannedWorktree("task", "acme/app/extra"); err == nil {
+		t.Fatal("malformed slug accepted")
+	}
+	failure := errors.New("create failed")
+	adapter.create = func(ctx context.Context, repos []string, options worktrees.CreateOptions) ([]worktrees.CreateResult, error) {
+		if !options.Resume || !options.BranchChosen || options.Operation != "task" || options.Branch != "stream/task" || len(repos) != 1 {
+			t.Fatal(options, repos)
+		}
+		return nil, failure
+	}
+	if _, err := adapter.Create(context.Background(), "task", "stream/task", []string{"acme/app"}); !errors.Is(err, failure) {
+		t.Fatal(err)
 	}
 }

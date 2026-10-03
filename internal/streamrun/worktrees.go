@@ -1,4 +1,4 @@
-package main
+package streamrun
 
 import (
 	"context"
@@ -25,9 +25,9 @@ type streamWorktrees struct {
 	workLog      worktrees.WorkLogOptions
 	sessionMode  bool
 	base         string
+	cleanup      func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error)
+	create       func(context.Context, []string, worktrees.CreateOptions) ([]worktrees.CreateResult, error)
 }
-
-var streamWorktreeCleanup = worktrees.Cleanup
 
 // PlannedWorktree is where Create will publish one repository's checkout,
 // derived from WB's own layout without touching the filesystem.
@@ -59,7 +59,7 @@ func (adapter *streamWorktrees) Create(ctx context.Context, task, branch string,
 	// Resume is on because `wb stream join` adds a repository to a task that
 	// already exists. Creation still refuses to reuse an existing branch or
 	// checkout it did not record, so this widens nothing else.
-	results, err := worktrees.Create(ctx, repositories, worktrees.CreateOptions{
+	results, err := adapter.create(ctx, repositories, worktrees.CreateOptions{
 		ProjectsRoot:    adapter.projectsRoot,
 		Operation:       task,
 		Branch:          branch,
@@ -95,7 +95,7 @@ func (adapter *streamWorktrees) Remove(ctx context.Context, task, repository, wo
 			LandingSHA: receipt.LandingSHA,
 		}}
 	}
-	outcome, err := streamWorktreeCleanup(ctx, worktrees.CleanupOptions{
+	outcome, err := adapter.cleanup(ctx, worktrees.CleanupOptions{
 		ProjectsRoot:       adapter.projectsRoot,
 		Task:               task,
 		ExactRepository:    repository,
@@ -120,33 +120,6 @@ func (adapter *streamWorktrees) Remove(ctx context.Context, task, repository, wo
 		return fmt.Errorf("cleanup did not retire %s: %s", worktree, reason)
 	}
 	return fmt.Errorf("cleanup reported no candidate for %s at %s", repository, worktree)
-}
-
-// streamLeaseIdentity reads the login and machine the stream lease records. It
-// reuses the remote-claim configuration rather than inventing a second notion
-// of who holds work, and degrades to an unattributed lease rather than
-// failing: a fleet that never opted into `wb remote` still gets streams.
-func streamLeaseIdentity(dependencies remoteDeps, projectsRoot string) (login, machine string) {
-	config, _, err := loadRemote(dependencies, projectsRoot)
-	if err != nil {
-		return "", ""
-	}
-	machine = config.Machine
-	if resolved, err := dependencies.login(); err == nil {
-		login = resolved
-	}
-	return login, machine
-}
-
-// streamSessionIdentity is the live registered session a lease is bound to.
-// `claims-carry-a-session-identity` makes session scope the intra-machine
-// unit, so the stream records it at start rather than deriving it later.
-func streamSessionIdentity() string {
-	identity, ok := worktrees.RegisteredIdentity()
-	if !ok {
-		return ""
-	}
-	return identity.WBSessionID
 }
 
 // proposedTransitiveConsumers reads the transitive consumers of the proposed

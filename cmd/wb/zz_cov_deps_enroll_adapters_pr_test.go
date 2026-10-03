@@ -13,9 +13,9 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/streamrun"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func cwDepsEnrollDeps(t *testing.T, verifyErr error) (remoteEnrollDeps, string) {
@@ -179,99 +179,6 @@ func TestCwDepsRestartDaemonAfterRemoteEnrollSurfacesTheChildFailure(t *testing.
 	}
 }
 
-func TestCwDepsStreamWorktreeAdapterCreateAndRemove(t *testing.T) {
-	root := t.TempDir()
-	seeds := t.TempDir()
-	clone := filepath.Join(root, "acme", "app")
-	cwCovCloneWithOrigin(t, seeds, "app", clone)
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
-
-	// A stream carries a task's provenance, so the Work Log options are the
-	// same ones `wb stream start` prepares.
-	command := cwDepsNewOutCommand(&bytes.Buffer{})
-	command.SetIn(strings.NewReader("the exact task request\n"))
-	workLog, _, err := streamWorkLog(&invocation{}, command, "cw-stream", workLogFlags{
-		mode: "manual", initiator: "me@example.com", model: "unknown", originalPrompt: "-",
-	})
-	if err != nil {
-		t.Fatalf("prepare work log: %v", err)
-	}
-	adapter := &streamWorktrees{projectsRoot: root, workLog: workLog, base: "main"}
-	created, err := adapter.Create(context.Background(), "cw-stream", "stream/cw-stream", []string{"acme/app"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if len(created) != 1 || created[0].Repository != "acme/app" || created[0].Branch != "stream/cw-stream" || created[0].Worktree == "" {
-		t.Fatalf("created = %+v", created)
-	}
-	if _, err := adapter.PlannedWorktree("cw-stream", "not-a-slug"); err == nil ||
-		!strings.Contains(err.Error(), "must be owner/name") {
-		t.Fatalf("PlannedWorktree on a bad slug = %v", err)
-	}
-	planned, err := adapter.PlannedWorktree("cw-stream", "acme/app")
-	if err != nil || planned == "" {
-		t.Fatalf("PlannedWorktree = %q, %v", planned, err)
-	}
-
-	// Remove delegates to the worktrees cleanup seam; stub it so every outcome
-	// shape is reachable without touching the filesystem.
-	previousCleanup := streamWorktreeCleanup
-	t.Cleanup(func() { streamWorktreeCleanup = previousCleanup })
-	applied := true
-	streamWorktreeCleanup = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{Repository: "acme/app", Applied: applied}}}, nil
-	}
-	if err := adapter.Remove(context.Background(), "cw-stream", "acme/app", "/tmp/wt", nil); err != nil {
-		t.Fatalf("Remove applied: %v", err)
-	}
-	// A receipt is translated into the proof cleanup needs.
-	var captured worktrees.CleanupOptions
-	streamWorktreeCleanup = func(_ context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		captured = options
-		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{Repository: "acme/app", WorktreeGone: true}}}, nil
-	}
-	receipt := &streams.SquashAbsorptionReceipt{Target: "main", SourceBranch: "stream/cw", SourceSHA: "a", CandidateSHA: "b", LandingSHA: "c"}
-	if err := adapter.Remove(context.Background(), "cw-stream", "acme/app", "/tmp/wt", receipt); err != nil {
-		t.Fatalf("Remove with receipt: %v", err)
-	}
-	if len(captured.MergeReceiptProofs) != 1 || captured.MergeReceiptProofs[0].LandingSHA != "c" ||
-		captured.MergeReceiptProofs[0].SourceWorktree != "/tmp/wt" {
-		t.Fatalf("cleanup options = %+v", captured)
-	}
-
-	// Cleanup that refused without a reason still says why it could not retire.
-	streamWorktreeCleanup = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{Repository: "acme/app"}}}, nil
-	}
-	if err := adapter.Remove(context.Background(), "cw-stream", "acme/app", "/tmp/wt", nil); err == nil ||
-		!strings.Contains(err.Error(), "cleanup reported no reason") {
-		t.Fatalf("reasonless refusal = %v", err)
-	}
-	streamWorktreeCleanup = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{Repository: "acme/app", Reason: "worktree busy"}}}, nil
-	}
-	if err := adapter.Remove(context.Background(), "cw-stream", "acme/app", "/tmp/wt", nil); err == nil ||
-		!strings.Contains(err.Error(), "worktree busy") {
-		t.Fatalf("refusal with reason = %v", err)
-	}
-	// No result for the requested repository at all is a refusal.
-	streamWorktreeCleanup = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		return worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{{Repository: "other/repo", Applied: true}}}, nil
-	}
-	if err := adapter.Remove(context.Background(), "cw-stream", "acme/app", "/tmp/wt", nil); err == nil ||
-		!strings.Contains(err.Error(), "cleanup reported no candidate") {
-		t.Fatalf("missing candidate = %v", err)
-	}
-	// A cleanup error is surfaced unchanged.
-	streamWorktreeCleanup = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		return worktrees.CleanupOutcome{}, errors.New("cleanup exploded")
-	}
-	if err := adapter.Remove(context.Background(), "cw-stream", "acme/app", "/tmp/wt", nil); err == nil ||
-		!strings.Contains(err.Error(), "cleanup exploded") {
-		t.Fatalf("cleanup error = %v", err)
-	}
-}
-
 func TestCwDepsStreamLeaseAndSessionIdentity(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	projectsRoot := t.TempDir()
@@ -280,26 +187,26 @@ func TestCwDepsStreamLeaseAndSessionIdentity(t *testing.T) {
 	// resolved login, without publishing anything.
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	cwCovWriteFile(t, configPath, "remote:\n  repo: acme/state\n  machine: studio-mac\n")
-	login, machine := streamLeaseIdentity(remoteDeps{
+	login, machine := newStreamService(remoteDeps{
 		configPath: configPath,
 		open:       func(remotestate.Config, string) (remotestate.Provider, error) { return nil, nil },
 		login:      func() (string, error) { return "cwcov-user", nil },
-	}, projectsRoot)
+	}).Identity(projectsRoot)
 	if login != "cwcov-user" || machine != "studio-mac" {
 		t.Fatalf("lease identity = %q, %q", login, machine)
 	}
 	// A fleet that never opted into `wb remote` gets an unattributed lease
 	// rather than a failure.
-	login, machine = streamLeaseIdentity(remoteDeps{
+	login, machine = newStreamService(remoteDeps{
 		configPath: filepath.Join(t.TempDir(), "absent.yaml"),
 		open:       func(remotestate.Config, string) (remotestate.Provider, error) { return nil, nil },
 		login:      func() (string, error) { return "", errors.New("no gh") },
-	}, projectsRoot)
+	}).Identity(projectsRoot)
 	if login != "" || machine != "" {
 		t.Fatalf("unconfigured lease identity = %q, %q", login, machine)
 	}
 	// No registered session means no session identity is invented.
-	if identity := streamSessionIdentity(); identity != "" {
+	if identity := streamrun.SessionIdentity(); identity != "" {
 		// A live registered session in the ambient environment is acceptable;
 		// what must never happen is a fabricated value.
 		t.Logf("ambient registered session: %q", identity)

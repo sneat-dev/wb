@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -609,4 +609,18 @@ func normalizePath(path string) string {
 		return filepath.Clean(resolved)
 	}
 	return filepath.Clean(trimmed)
+}
+
+// RecordRemoteHead persists the fetched branch head for the next status and push lease.
+func (store *Store) RecordRemoteHead(streamName, repository, head string) error {
+	_, err := store.Update(streamName, func(stream *Stream) error {
+		for index := range stream.Members {
+			if strings.EqualFold(stream.Members[index].Repository, repository) {
+				stream.Members[index].Lease.RecordedHead = head
+				return nil
+			}
+		}
+		return fmt.Errorf("stream member %q not found", repository)
+	})
+	return err
 }
