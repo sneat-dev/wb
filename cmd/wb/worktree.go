@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
+	"github.com/sneat-dev/wb/internal/continuationinput"
 	"io"
 	"os"
 	"sort"
@@ -860,7 +861,7 @@ report is accepted but not persisted.`,
 			var report []byte
 			switch {
 			case reportStdin:
-				report, err = readBounded(command.InOrStdin(), worktrees.MaxFinalizeReportBytes, "finalize report")
+				report, err = continuationinput.ReadBounded(command.InOrStdin(), worktrees.MaxFinalizeReportBytes, "finalize report")
 				if err != nil {
 					return err
 				}

@@ -9597,7 +9597,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_list_test.go",
+              "path": "internal/cli/cmdsession/integration/list_test.go",
               "name": "TestSessionListJSONExposesParkedSessionIDForResume",
               "kind": "integration"
             }
@@ -9698,27 +9698,27 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveSameMachineUsesLoopbackCourier",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveCommandCheckpointsThenDeliversThroughSSH",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveRefusesHandoverContainingNamedSecretPattern",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory",
               "kind": "unit"
             },
@@ -9848,32 +9848,32 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkRejectsContentBearingContinuationFlags",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkMissingContextFilePromptsJudgmentChecklist",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkRefusesContinuationContainingNamedSecretPattern",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory",
               "kind": "unit"
             },
@@ -9888,12 +9888,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkRegistersAnUnregisteredSessionBeforeParking",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering",
               "kind": "integration"
             },
@@ -10029,7 +10029,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_message_test.go",
+              "path": "internal/cli/cmdsession/integration/message_test.go",
               "name": "TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume",
               "kind": "unit"
             },
@@ -10101,7 +10101,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_receive_test.go",
+              "path": "internal/cli/cmdsession/session_receive_test.go",
               "name": "TestSessionReceiveCommandUsesConfiguredMachineAndExactStdinBytes",
               "kind": "unit"
             },
@@ -10185,7 +10185,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_message_test.go",
+              "path": "internal/cli/cmdsession/integration/message_test.go",
               "name": "TestSessionReceiveMessageReturnsCanonicalReceiptOnly",
               "kind": "unit"
             },
@@ -10260,12 +10260,12 @@
           "status": "Partial",
           "references": [
             {
-              "path": "cmd/wb/session_receive_park_test.go",
+              "path": "internal/cli/cmdsession/session_receive_park_test.go",
               "name": "TestSessionReceiveParkPassesExactEnvelopeAndPrintsOnlyReceipt",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_receive_park_test.go",
+              "path": "internal/cli/cmdsession/session_receive_park_test.go",
               "name": "TestSessionReceiveParkJSONDoesNotDiscloseContinuation",
               "kind": "unit"
             },
@@ -10452,22 +10452,22 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "cmd/wb/session_park_native_test.go",
               "name": "TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute",
-              "kind": "unit"
+              "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody",
               "kind": "unit"
             },
@@ -10482,22 +10482,22 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteSingleWorktreeReachesTransport",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteBundleReachesTransport",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery",
               "kind": "unit"
             },
@@ -10573,7 +10573,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_message_test.go",
+              "path": "internal/cli/cmdsession/integration/message_test.go",
               "name": "TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage",
               "kind": "unit"
             },
@@ -11855,7 +11855,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/task_test.go",
+              "path": "internal/taskrun/task_test.go",
               "name": "TestTaskOffloadLaunchesSuccessor",
               "kind": "unit"
             }
@@ -11923,7 +11923,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/task_test.go",
+              "path": "internal/taskrun/task_test.go",
               "name": "TestTaskParkCreatesWorktreeWithoutLaunch",
               "kind": "unit"
             }
@@ -11990,7 +11990,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/task_test.go",
+              "path": "internal/taskrun/task_test.go",
               "name": "TestTaskPickupLaunchesParkedTask",
               "kind": "unit"
             }

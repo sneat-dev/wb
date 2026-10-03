@@ -470,9 +470,56 @@ instead of executing a sibling Cobra command. Preserve move output before
 pickup persistence, the existing detached task-launch and listing contexts,
 and park's post-persistence warnings and registration details. Only the public
 park output is serialized. Native descriptor, ownership, custody, transport
-and persistence guarantees remain genuine tests. Implementation is queued;
-all owned and shared source bindings must be refreshed after the combined
-agent/fleet checkpoint before starting it.
+and persistence guarantees remain genuine tests. The agent/fleet cohort is
+committed locally as `75545ab895d5442a47a352c29eacf8bde10541a8`; the r38
+checkpoint review verified all 28 owned and six shared source bindings against
+that commit. The full session implementation now separates command boundaries
+from neutral operations and presentation. Independent review r39
+accepted a disjoint task lane owning its four existing files and the new task
+service/command packages, with all 13 original test responsibilities mapped.
+The session lane owns the shared input, move service and presentation code;
+the task lane must consume the actual root move-service factory after its
+explicit API handoff. Both lanes batch leaf validation, followed by one shared
+root gate and implementation review before the next substantial local commit.
+Independent review r40 also approved a bounded continuation-reader effect seam:
+instance-local path resolution, descriptor traversal/stat, owned file access
+and the separate handover open policy. Native security assertions remain;
+deterministic tests exercise actual I/O error, release and tamper boundaries.
+The immediate nil-file branch after a successful native open was proved
+unreachable on Unix and Windows and removed. This preserves inherited Windows
+identity/link behavior; it does not establish new Windows hardlink protection.
+The current session/input/presentation/producer-helper/snapshot scope is
+1,162/1,162 statements; the task leaf scope is 150/150. Fresh profiles exclude
+shifted list/resume source coordinates and combine identical blocks by maximum
+hit count. Race, vet and lint pass for these leaf scopes. The combined root gate
+covered its 22 designated statements and passed 18 selected checks, but caught
+a native park/resume fixture mismatch. Creation records AgentID separately from
+the claim session link, so the initial fixture selection missed members with
+real PID/time custody. The corrected fixture selects its exact two known source
+paths, verifies identity and custody, and preserves all capture, immutable retry,
+transport and receipt assertions. The sole affected native retry passed with
+race enabled (26.838 seconds package time; 33.376 seconds including admission
+and build). The initial failed execution remains recorded, alongside the
+18 passing combined checks; no repeated whole-root suite was needed. These scoped counts do not
+establish a new repository-wide percentage or net coverage gain.
+
+The extraction also reuses the existing process-owned source executable build
+for the cross-process journey and moves tree snapshots into the existing
+internal test support package. Pure boundary tests use per-instance operations;
+native stateful fixtures remain private. Read-only sharing is appropriate only
+when the full call path has no writes, cleanup or discovery side effects.
+
+Native package extraction exposed a test-process isolation gap: the moved
+session integration package initially omitted root TestMain's user-state
+isolation. Real worktree discovery consequently scanned configured shared
+roots, including cleanup-capable inventory. That run has no mutation receipt,
+so it does not prove ambient housekeeping left user state unchanged. The
+existing user, harness and process isolation is now restored before native
+tests run. A focused three-case retry passed in 0.675 seconds; earlier case
+times were 7.55, 13.73 and 7.58 seconds in the larger unisolated batch, not a
+controlled benchmark. Future extraction proposals must account for TestMain
+and process isolation before the first native run, including configuration
+sources beyond an explicit projects root.
 
 ### Task 7: Separate daemon runtime from CLI adapters
 

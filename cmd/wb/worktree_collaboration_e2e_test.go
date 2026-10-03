@@ -12,7 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdsession"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionrun"
 )
 
 func TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree(t *testing.T) {
@@ -23,11 +25,15 @@ func TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree(t *testing.T) {
 	if err != nil || strings.Contains(canonicalInfo, `"collaboration"`) {
 		t.Fatalf("canonical info lost pre-existing behavior or claimed linked coordination = %q, %v", canonicalInfo, err)
 	}
-	previousPID, previousRuntime := sessionRegisterCurrentPID, sessionRegisterRuntimeProcess
-	sessionRegisterCurrentPID = func() int { return -1 }
-	sessionRegisterRuntimeProcess = func(int, string) bool { return true }
-	t.Cleanup(func() { sessionRegisterCurrentPID, sessionRegisterRuntimeProcess = previousPID, previousRuntime })
-	ownerRegister := newSessionRegisterCmd(inv)
+	makeRegister := func() *cobra.Command {
+		deps := newSessionDependencies(inv)
+		registrar := sessionrun.DefaultRegisterDependencies()
+		registrar.CurrentPID = func() int { return -1 }
+		registrar.RuntimeProcess = func(int, string) bool { return true }
+		deps.Register = sessionrun.NewRegister(registrar).Register
+		return cmdsession.NewRegister(newCLIRuntime(inv), deps)
+	}
+	ownerRegister := makeRegister()
 	if _, err := executeCollaborationCommand(t, ownerRegister, "--pid", strconv.Itoa(os.Getpid()), "--runtime", "codex", "--native-harness-id", "collab-owner", "--wb-session-id", "wbs-owner"); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +66,7 @@ func TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree(t *testing.T) {
 	if _, err := executeCollaborationCommand(t, newWorktreeTakeOwnershipCmd(collaborationFactory(inv)), checkout.ID, "--expected-owner", legacy.ID, "--force", "--reason", "reviewed"); err != nil {
 		t.Fatalf("owner took exact legacy observation: %v", err)
 	}
-	peerRegister := newSessionRegisterCmd(inv)
+	peerRegister := makeRegister()
 	output, err := executeCollaborationCommand(t, peerRegister, "--pid", strconv.Itoa(os.Getpid()), "--runtime", "codex", "--native-harness-id", "collab-peer", "--wb-session-id", "wbs-peer", "--join", worktree)
 	if err != nil || !strings.Contains(output, "joined") {
 		t.Fatalf("registered peer join = %q, %v", output, err)
@@ -72,7 +78,7 @@ func TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree(t *testing.T) {
 	if _, err := executeCollaborationCommand(t, newWorktreeTransferOwnershipCmd(collaborationFactory(inv)), worktree, "--to-session", "wbs-peer"); err == nil {
 		t.Fatal("peer transferred ownership without being owner")
 	}
-	failedRegister := newSessionRegisterCmd(inv)
+	failedRegister := makeRegister()
 	output, err = executeCollaborationCommand(t, failedRegister, "--pid", strconv.Itoa(os.Getpid()), "--runtime", "codex", "--native-harness-id", "collab-third", "--wb-session-id", "wbs-third", "--join", filepath.Join(t.TempDir(), "missing"))
 	if err == nil || !strings.Contains(err.Error(), "registered but not joined") || !strings.Contains(output, "registered") {
 		t.Fatalf("partial registration = %q, %v", output, err)
