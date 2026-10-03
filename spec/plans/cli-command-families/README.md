@@ -81,6 +81,9 @@ Moving a command changes its importing root package, so root tests can still
 be invalidated. The improvement depends on making those tests cheap and keeping
 sibling-family tests independent. Existing affected-package CI and ratchets
 remain in force; do not weaken them to make the extraction pass.
+Concrete unaffected-sibling cache verification requires two extracted families
+and belongs to the next adapter stage; the one-family pilot proves its dependency
+boundary and isolated execution cost.
 
 ## Tasks
 
@@ -112,7 +115,7 @@ authorization therefore applies to the remaining rollout.
 
 ### Task 2: Inventory families and shared dependencies
 
-**Status:** in_progress
+**Status:** complete
 **Verifies:** User journey step 4 and package contracts above.
 
 Map every production file and test group in `cmd/wb` to a command family,
@@ -128,13 +131,16 @@ the grouped stages below describe the full scope rather than a rigid order.
 
 ### Task 3: Consolidate shared CLI contracts and root composition
 
-**Status:** queued
+**Status:** in_progress
 **Verifies:** User journey steps 1–4.
 
-After the pilot passes, move invocation/exit/flag/help contracts to shared CLI
-packages with clear dependency direction. Replace temporary root adapters as
-their callers migrate. Test shared policy once and retain small registration
-and end-to-end executable checks.
+After the pilot passes, establish invocation/exit/flag/help contracts in the
+shared leaf with clear dependency direction. Keep the explicit registration
+table in `cmd/wb` while remaining constructors are in package `main`; a normal
+import cannot call them. Use bounded temporary adapters without duplicating
+operations or introducing plugin registration. Replace those adapters and move
+final root composition to `internal/cli` after family cutover. Test shared policy
+once and retain small registration and end-to-end executable checks.
 
 ### Task 4: Extract independent maintenance and inspection families
 

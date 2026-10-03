@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/orchestrate"
@@ -2775,12 +2776,7 @@ func validateWorktreeBranchFlags(command *cobra.Command, branch string) error {
 }
 
 func requireOutputFormat(value string, allowed ...string) error {
-	for _, candidate := range allowed {
-		if value == candidate {
-			return nil
-		}
-	}
-	return fmt.Errorf("unsupported format %q; use %s", value, strings.Join(allowed, " or "))
+	return shared.RequireOutputFormat(value, allowed...)
 }
 
 func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) error {

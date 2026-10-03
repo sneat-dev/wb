@@ -11,7 +11,7 @@ import (
 
 func TestLayoutOutputAndReportFiles(t *testing.T) {
 	t.Parallel()
-	command := newAuditCmd(func() string { return "fixture" }, testDependencies())
+	command := newAuditCmd(testRuntime(func() string { return "fixture" }), testDependencies())
 	var out bytes.Buffer
 	command.SetOut(&out)
 	if err := writeLayoutOutput(command, "markdown", "# report\n", map[string]int{"x": 1}); err != nil {

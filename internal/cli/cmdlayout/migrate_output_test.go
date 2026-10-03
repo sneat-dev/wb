@@ -27,7 +27,7 @@ func TestLayoutMigratePublishesReportFilesAndSelectedOutput(t *testing.T) {
 			}
 			root := t.TempDir()
 			reportDir := filepath.Join(root, "reports")
-			command := newMigrateCmd(func() string { return root }, deps)
+			command := newMigrateCmd(testRuntime(func() string { return root }), deps)
 			var stdout bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetArgs([]string{"acme/app", "--clones-only", "--include-task=task-one", "--format=" + format, "--report-dir=" + reportDir})
@@ -64,7 +64,7 @@ func TestLayoutMigratePreservesPartialReportOnFailure(t *testing.T) {
 	deps.Migrate = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 		return layout.MigrateReport{SchemaVersion: 1, Clones: []layout.MigrateClone{{Repository: "acme/app", Status: "done"}}}, want
 	}
-	command := newMigrateCmd(func() string { return "fixture-root" }, deps)
+	command := newMigrateCmd(testRuntime(func() string { return "fixture-root" }), deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
@@ -88,7 +88,7 @@ func TestLayoutMigrateClassifiesInvalidInclusionAsUsage(t *testing.T) {
 		deps.Migrate = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 			return layout.MigrateReport{}, failure
 		}
-		command := newMigrateCmd(func() string { return "fixture-root" }, deps)
+		command := newMigrateCmd(testRuntime(func() string { return "fixture-root" }), deps)
 		command.SilenceUsage, command.SilenceErrors = true, true
 		var stdout bytes.Buffer
 		command.SetOut(&stdout)
@@ -109,7 +109,7 @@ func TestLayoutMigrateReportsSkippedCloneAsFindings(t *testing.T) {
 	deps.Migrate = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 		return layout.MigrateReport{SchemaVersion: 1, Clones: []layout.MigrateClone{{Repository: "acme/app", Status: "skipped", Reason: "active claim"}}}, nil
 	}
-	command := newMigrateCmd(func() string { return "fixture-root" }, deps)
+	command := newMigrateCmd(testRuntime(func() string { return "fixture-root" }), deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)

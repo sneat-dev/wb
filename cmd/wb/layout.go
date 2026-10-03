@@ -7,8 +7,7 @@ import (
 )
 
 func newLayoutCmd(inv *invocation) *cobra.Command {
-	return cmdlayout.New(func() string { return inv.projectsRoot }, cmdlayout.Dependencies{
+	return cmdlayout.New(newCLIRuntime(inv), cmdlayout.Dependencies{
 		Audit: layout.Audit, Clean: layout.Clean, Migrate: layout.Migrate,
-		ExitError: func(code int, message string) error { return &exitError{code: code, message: message} },
 	})
 }

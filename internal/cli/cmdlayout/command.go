@@ -11,10 +11,11 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/layout"
 )
 
-func New(projectsRoot func() string, deps Dependencies) *cobra.Command {
+func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "layout",
 		Short: "Audit and clean local clone placement under --projects-root",
@@ -31,13 +32,13 @@ still read in place at the legacy {owner}/{repository} placement, so a fleet
 that has not moved yet stays auditable and nothing is "fixed" for it. Linked
 worktrees are ignored.`,
 	}
-	command.AddCommand(newAuditCmd(projectsRoot, deps))
-	command.AddCommand(newCleanCmd(projectsRoot, deps))
-	command.AddCommand(newMigrateCmd(projectsRoot, deps))
+	command.AddCommand(newAuditCmd(runtime, deps))
+	command.AddCommand(newCleanCmd(runtime, deps))
+	command.AddCommand(newMigrateCmd(runtime, deps))
 	return command
 }
 
-func newAuditCmd(projectsRoot func() string, deps Dependencies) *cobra.Command {
+func newAuditCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var format, reportDir string
 	command := &cobra.Command{
 		Use:   "audit",
@@ -53,7 +54,7 @@ reports the host its origin remote already names, which is the host level it
 must move under.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := deps.Audit(cmd.Context(), projectsRoot())
+			report, err := deps.Audit(cmd.Context(), runtime.Flags().ProjectsRoot)
 			if err != nil {
 				return err
 			}
@@ -66,7 +67,7 @@ must move under.`,
 				return err
 			}
 			if layout.Failed(report) {
-				return deps.ExitError(1, "layout findings reported; see the audit above")
+				return runtime.ExitError(shared.ExitFindings, "layout findings reported; see the audit above")
 			}
 			return nil
 		},
@@ -76,7 +77,7 @@ must move under.`,
 	return command
 }
 
-func newCleanCmd(projectsRoot func() string, deps Dependencies) *cobra.Command {
+func newCleanCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var (
 		format, reportDir     string
 		apply                 bool
@@ -94,7 +95,7 @@ delete. A legacy {owner}/{repository} first level is never treated as a
 removable top-level clone.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := deps.Clean(cmd.Context(), projectsRoot(), layout.CleanOptions{
+			report, err := deps.Clean(cmd.Context(), runtime.Flags().ProjectsRoot, layout.CleanOptions{
 				Apply:                 apply,
 				AllowMissingCanonical: allowMissingCanonical,
 			})
@@ -110,7 +111,7 @@ removable top-level clone.`,
 				return err
 			}
 			if layout.CleanFailed(report) {
-				return deps.ExitError(1, "layout clean reported errors; see the actions above")
+				return runtime.ExitError(shared.ExitFindings, "layout clean reported errors; see the actions above")
 			}
 			return nil
 		},
@@ -122,7 +123,7 @@ removable top-level clone.`,
 	return command
 }
 
-func newMigrateCmd(projectsRoot func() string, deps Dependencies) *cobra.Command {
+func newMigrateCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var (
 		format, reportDir, undoID string
 		apply, clonesOnly         bool
@@ -183,10 +184,10 @@ clone moves they depend on. --undo honours exactly the inclusions its
 manifest recorded; passing --include-task or --include-active-tasks together
 with --undo is a usage error, since undo does not accept new inclusions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format); err != nil {
+			if err := shared.RequireOutputFormat(format, "markdown", "yaml", "json"); err != nil {
 				return err
 			}
-			report, err := deps.Migrate(cmd.Context(), projectsRoot(), layout.MigrateOptions{
+			report, err := deps.Migrate(cmd.Context(), runtime.Flags().ProjectsRoot, layout.MigrateOptions{
 				Repositories:       args,
 				Apply:              apply,
 				ClonesOnly:         clonesOnly,
@@ -197,11 +198,11 @@ with --undo is a usage error, since undo does not accept new inclusions.`,
 			if err != nil {
 				var unknownTask *layout.UnknownIncludeTaskError
 				if errors.As(err, &unknownTask) {
-					return deps.ExitError(2, err.Error())
+					return runtime.ExitError(shared.ExitUsage, err.Error())
 				}
 				var undoIncludeFlags *layout.UndoIncludeFlagsError
 				if errors.As(err, &undoIncludeFlags) {
-					return deps.ExitError(2, err.Error())
+					return runtime.ExitError(shared.ExitUsage, err.Error())
 				}
 				// A manifest-write failure returns the partial report built
 				// so far alongside the error: what was already recorded and
@@ -223,7 +224,7 @@ with --undo is a usage error, since undo does not accept new inclusions.`,
 				return err
 			}
 			if layout.MigrateFailed(report) {
-				return deps.ExitError(1, "layout migrate reported findings; see the plan above")
+				return runtime.ExitError(shared.ExitFindings, "layout migrate reported findings; see the plan above")
 			}
 			return nil
 		},
@@ -262,19 +263,9 @@ func writeLayoutOutput(cmd *cobra.Command, format, markdown string, value any) e
 // Dependencies contains only the operations this command family delegates.
 // Each invocation receives its own functions; flag values never live in globals.
 type Dependencies struct {
-	Audit     func(context.Context, string) (layout.Report, error)
-	Clean     func(context.Context, string, layout.CleanOptions) (layout.CleanReport, error)
-	Migrate   func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error)
-	ExitError func(code int, message string) error
-}
-
-func requireOutputFormat(format string) error {
-	switch format {
-	case "markdown", "yaml", "json":
-		return nil
-	default:
-		return fmt.Errorf("unsupported format %q; use markdown or yaml or json", format)
-	}
+	Audit   func(context.Context, string) (layout.Report, error)
+	Clean   func(context.Context, string, layout.CleanOptions) (layout.CleanReport, error)
+	Migrate func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error)
 }
 
 func writeReports(directory, family, markdown string, report any) error {

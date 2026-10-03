@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/layout"
 	"github.com/spf13/cobra"
 )
@@ -33,7 +34,6 @@ func testDependencies() Dependencies {
 		Migrate: func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 			return layout.MigrateReport{}, nil
 		},
-		ExitError: func(code int, message string) error { return &codedError{code, message} },
 	}
 }
 func execute(command *cobra.Command, args ...string) (string, error) {
@@ -78,7 +78,7 @@ func TestFlagsReachOperationsAfterParsing(t *testing.T) {
 				}
 				return layout.MigrateReport{}, nil
 			}
-			cmd := New(func() string { return root }, deps)
+			cmd := New(testRuntime(func() string { return root }), deps)
 			cmd.PersistentFlags().StringVar(&root, "projects-root", root, "")
 			cmd.SetContext(context.WithValue(context.Background(), contextKey("key"), "value"))
 			args := []string{leaf, "--projects-root=after", "--format=json"}
@@ -109,7 +109,7 @@ func TestCommandsPreserveDelegatedErrorsAndCancellation(t *testing.T) {
 			deps.Migrate = func(ctx context.Context, _ string, _ layout.MigrateOptions) (layout.MigrateReport, error) {
 				return layout.MigrateReport{}, ctx.Err()
 			}
-			cmd := New(func() string { return "root" }, deps)
+			cmd := New(testRuntime(func() string { return "root" }), deps)
 			cmd.SetContext(ctx)
 			if _, err := execute(cmd, leaf); !errors.Is(err, context.Canceled) {
 				t.Fatalf("error=%v", err)
@@ -137,7 +137,7 @@ func TestInvalidArgumentsDoNotCallOperations(t *testing.T) {
 			if leaf == "migrate" {
 				args = []string{leaf, "--format=toml"}
 			}
-			if _, err := execute(New(func() string { return "root" }, deps), args...); err == nil || called {
+			if _, err := execute(New(testRuntime(func() string { return "root" }), deps), args...); err == nil || called {
 				t.Fatalf("called=%t err=%v", called, err)
 			}
 		})
@@ -160,7 +160,7 @@ func TestOutputFailureAndPartialMigrationJoin(t *testing.T) {
 						return layout.MigrateReport{SchemaVersion: 1}, want
 					}
 				}
-				cmd := New(func() string { return "root" }, deps)
+				cmd := New(testRuntime(func() string { return "root" }), deps)
 				cmd.SetOut(failingWriter{})
 				cmd.SetErr(io.Discard)
 				cmd.SilenceUsage = true
@@ -186,7 +186,7 @@ func TestReportDirectoryFailureStopsEachCommand(t *testing.T) {
 			if err := os.WriteFile(blocked, nil, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := execute(New(func() string { return "root" }, testDependencies()), leaf, "--report-dir="+filepath.Join(blocked, "child")); err == nil {
+			if _, err := execute(New(testRuntime(func() string { return "root" }), testDependencies()), leaf, "--report-dir="+filepath.Join(blocked, "child")); err == nil {
 				t.Fatal("expected report failure")
 			}
 		})
@@ -202,7 +202,7 @@ func TestAuditAndCleanFindings(t *testing.T) {
 		return layout.CleanReport{Actions: []layout.CleanAction{{Status: "error"}}}, nil
 	}
 	for _, leaf := range []string{"audit", "clean"} {
-		out, err := execute(New(func() string { return "root" }, deps), leaf)
+		out, err := execute(New(testRuntime(func() string { return "root" }), deps), leaf)
 		var coded *codedError
 		if !errors.As(err, &coded) || coded.code != 1 || strings.TrimSpace(out) == "" {
 			t.Fatalf("%s output=%q err=%v", leaf, out, err)
@@ -225,7 +225,7 @@ func TestInstancesKeepTheirOwnFlagValues(t *testing.T) {
 			if apply {
 				args = append(args, "--apply")
 			}
-			if _, err := execute(New(func() string { return "root" }, deps), args...); err != nil {
+			if _, err := execute(New(testRuntime(func() string { return "root" }), deps), args...); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -254,9 +254,16 @@ func TestCommandsDelegateDefaultOptions(t *testing.T) {
 				}
 				return layout.MigrateReport{}, nil
 			}
-			if _, err := execute(New(func() string { return "root" }, deps), leaf); err != nil || calls != 1 {
+			if _, err := execute(New(testRuntime(func() string { return "root" }), deps), leaf); err != nil || calls != 1 {
 				t.Fatalf("calls = %d, error = %v", calls, err)
 			}
 		})
+	}
+}
+
+func testRuntime(projectsRoot func() string) shared.Runtime {
+	return shared.Runtime{
+		Flags:     func() shared.Flags { return shared.Flags{ProjectsRoot: projectsRoot()} },
+		ExitError: func(code int, message string) error { return &codedError{code, message} },
 	}
 }
