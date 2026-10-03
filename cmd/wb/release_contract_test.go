@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/wbupdate"
+
 	"github.com/sneat-dev/wb/internal/testenv"
 	"gopkg.in/yaml.v3"
 )
@@ -70,7 +72,7 @@ func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
 	}
 	contents := string(readme)
 	for _, command := range []string{
-		selfUpdateHomebrewInstallCommand,
+		wbupdate.HomebrewInstallCommand,
 		"curl -fsSL https://sneat.work/bench/install/get-cli | sh",
 		"go install github.com/sneat-dev/wb/cmd/wb@latest",
 	} {

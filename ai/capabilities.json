@@ -1057,67 +1057,67 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitWaitsForStableRereadAfterLateSuiteRegistration",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitDirectTargetHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitPullRequestHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitFreshPullRequestDoesNotWaitForRedTargetCI",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsStalePullRequestBeforeChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsPullRequestWithoutServerFreshnessFence",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsEmptyStrictFreshnessPolicy",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsTargetAdvanceAfterStablePullRequestChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness",
               "kind": "integration"
             },
@@ -1132,27 +1132,27 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitCannotPassWithoutAuthoritativeBranchRules",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitCannotClaimAuthorityForRequiredWorkflowRule",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsIncompleteDirectCheckPagination",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsIncompleteDirectStatusPagination",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
+              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
               "name": "TestCIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
             },
@@ -2052,17 +2052,17 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/coverage_ratchet_test.go",
+              "path": "internal/qualityrun/baseline_test.go",
               "name": "TestCoverageBaselineWritesPerPackageUncoveredCounts",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/coverage_ratchet_test.go",
+              "path": "internal/qualityrun/baseline_test.go",
               "name": "TestCoverageBaselineRejectsMissingProfile",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/coverage_ratchet_test.go",
+              "path": "internal/qualityrun/baseline_test.go",
               "name": "TestCoverageBaselineRejectsMissingGoMod",
               "kind": "unit"
             }
@@ -2122,7 +2122,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/coverage_summary_test.go",
+              "path": "internal/qualityrun/summary_test.go",
               "name": "TestCoverageSummaryCmd",
               "kind": "unit"
             }
@@ -2189,13 +2189,8 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/coverage_worklist_test.go",
-              "name": "TestCoverageWorklistWritesTextOutputAndNamesSharedFiles",
-              "kind": "integration"
-            },
-            {
-              "path": "cmd/wb/coverage_worklist_test.go",
-              "name": "TestCoverageWorklistWritesJSONOutput",
+              "path": "internal/qualityrun/worklist_test.go",
+              "name": "TestCoverageWorklistReadOnlyReports",
               "kind": "integration"
             }
           ],
@@ -5009,8 +5004,18 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/fleet_coverage_test.go",
-              "name": "TestFleetCoverageCmd_Populated",
+              "path": "internal/cli/cmdquality/operations_test.go",
+              "name": "TestStoredCoverageCommandsTranslateRequestsAndPreserveEmptyOrder",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/qualityrun/stored_test.go",
+              "name": "TestStoredCoverageReadsParentOwnedMemoryStore",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdquality/operations_test.go",
+              "name": "TestCoverageFormatsAndLateAdmissionUseActualArtifactReferences",
               "kind": "unit"
             }
           ],
@@ -6827,7 +6832,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/install_test.go",
+              "path": "internal/cli/cmdinstall/install_test.go",
               "name": "TestInstallErrors_FailureExitCodes",
               "kind": "unit"
             }
@@ -9082,13 +9087,13 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/quality_test.go",
-              "name": "TestQualityTargetsSupportsGlobAndRegex",
+              "path": "internal/reposelection/selection_test.go",
+              "name": "TestSelectionSupportsRealFleetGlobRegexFilterAndSorting",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/quality_test.go",
-              "name": "TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths",
+              "path": "internal/reposelection/selection_test.go",
+              "name": "TestDirectPathRejectsOwnerRepositorySelectors",
               "kind": "unit"
             }
           ],
@@ -9509,12 +9514,12 @@
           "status": "Partial",
           "references": [
             {
-              "path": "cmd/wb/selfupdate_test.go",
+              "path": "internal/wbupdate/config_test.go",
               "name": "TestNewSelfUpdateConfigHomebrewOnly",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/selfupdate_test.go",
+              "path": "internal/cli/cmdinstall/selfupdate_test.go",
               "name": "TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew",
               "kind": "unit"
             }
@@ -10637,12 +10642,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/skills_hook_test.go",
+              "path": "internal/claudesettings/session_start_test.go",
               "name": "TestMergeSkillsHookSettingsIsIdempotent",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/skills_hook_test.go",
+              "path": "internal/claudesettings/hook_integration_test.go",
               "name": "TestNewSkillsHookInstallCmdWritesThenReportsAlreadyRegistered",
               "kind": "unit"
             }
@@ -10700,7 +10705,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/skills_hook_test.go",
+              "path": "internal/cli/cmdskills/hook_test.go",
               "name": "TestNewSkillsHookPrintCmdPrintsAPasteableSnippet",
               "kind": "unit"
             }
@@ -10773,27 +10778,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent",
+              "path": "internal/wbskills/sync_integration_test.go",
+              "name": "TestEmbeddedSkillsHarnessJourneys",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdHarnessFlagInstallsIntoCursor",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdReportsConflictsAsFindings",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/skills_sync_test.go",
+              "path": "internal/wbskills/embedded_test.go",
               "name": "TestNewSkillsSyncConfigBindsTheEmbeddedWBPluginToThisBuild",
               "kind": "unit"
             }
@@ -12068,17 +12058,17 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/upgrade_test.go",
+              "path": "internal/cli/cmdinstall/upgrade_test.go",
               "name": "TestUpgradeErrors_FailureExitCodes",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/upgrade_test.go",
+              "path": "internal/wbupdate/parity_test.go",
               "name": "TestSelfUpdateAndUpgradeSelf_ReachSameCheckVerdict",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/upgrade_test.go",
+              "path": "internal/cli/cmdinstall/upgrade_test.go",
               "name": "TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput",
               "kind": "unit"
             }

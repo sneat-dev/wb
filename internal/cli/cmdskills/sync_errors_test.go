@@ -1,4 +1,4 @@
-package main
+package cmdskills
 
 import (
 	"bytes"
@@ -7,16 +7,10 @@ import (
 	"testing"
 
 	"github.com/strongo/cli-helpers/skillsync"
-	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd"
+	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd" // AC: cov-rwi-03 unit03 seam list, cmd/wb/skills_sync.go
+	// skillsSyncErrors.Failure. A *skillscmd.UsageError cause must surface as
+	// exitUsage, distinct from every other failure which is exitFindings.
 )
-
-// failAfterWriter fails every Write once more than allowedWrites writes have
-// been made, so a caller can force a specific fmt.Fprintf call inside a
-// print function to observe an error and take its error-return branch.
-type failAfterWriter struct {
-	allowedWrites int
-	calls         int
-}
 
 func (w *failAfterWriter) Write(p []byte) (int, error) {
 	w.calls++
@@ -26,13 +20,10 @@ func (w *failAfterWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// AC: cov-rwi-03 unit03 seam list, cmd/wb/skills_sync.go
-// skillsSyncErrors.Failure. A *skillscmd.UsageError cause must surface as
-// exitUsage, distinct from every other failure which is exitFindings.
 func TestSkillsSyncErrorsFailureMapsAUsageErrorToExitUsage(t *testing.T) {
 	t.Parallel()
 	cause := &skillscmd.UsageError{Err: errors.New("--dir and --harness are mutually exclusive")}
-	err := skillsSyncErrors{}.Failure(cause)
+	err := skillsSyncErrors{runtime: testRuntime()}.Failure(cause)
 	var coded *exitError
 	if !errors.As(err, &coded) {
 		t.Fatalf("err = %v, not an *exitError", err)
@@ -44,7 +35,7 @@ func TestSkillsSyncErrorsFailureMapsAUsageErrorToExitUsage(t *testing.T) {
 
 func TestSkillsSyncErrorsFailureMapsAnOrdinaryErrorToExitFindings(t *testing.T) {
 	t.Parallel()
-	err := skillsSyncErrors{}.Failure(errors.New("legacy marker unreadable"))
+	err := skillsSyncErrors{runtime: testRuntime()}.Failure(errors.New("legacy marker unreadable"))
 	var coded *exitError
 	if !errors.As(err, &coded) {
 		t.Fatalf("err = %v, not an *exitError", err)

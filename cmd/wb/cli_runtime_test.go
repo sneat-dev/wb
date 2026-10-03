@@ -44,14 +44,19 @@ func TestCLIRuntimeInstancesKeepSeparateFlags(t *testing.T) {
 
 func TestCLIRuntimePreservesRootCodedErrorIdentity(t *testing.T) {
 	t.Parallel()
-	runtime := newCLIRuntime(&invocation{})
-	for _, code := range []int{exitFindings, exitUsage} {
-		err := runtime.ExitError(code, "specific diagnostic")
-		var coded *exitError
-		if !errors.As(err, &coded) || coded.code != code || err.Error() != "specific diagnostic" || exitCodeFor(err, false) != code {
-			t.Fatalf("code=%d error=%v", code, err)
+	for _, runtime := range []shared.Runtime{newCLIRuntime(&invocation{}), newCLIErrorRuntime()} {
+		for _, code := range []int{exitFindings, exitUsage} {
+			err := runtime.ExitError(code, "specific diagnostic")
+			var coded *exitError
+			if !errors.As(err, &coded) || coded.code != code || err.Error() != "specific diagnostic" || exitCodeFor(err, false) != code {
+				t.Fatalf("code=%d error=%v", code, err)
+			}
 		}
 	}
+	if newCLIErrorRuntime().Flags != nil {
+		t.Fatal("error-only runtime exposes invocation flags")
+	}
+
 }
 
 func TestCLIRuntimeOutputFormatBridgePreservesDiagnostic(t *testing.T) {

@@ -175,6 +175,19 @@ text output now propagates writer errors while retaining successful output bytes
 Independent reviews r3 (disk) and r5 (archive/runner) accepted the batch with no
 remaining findings. Publication remains deferred while reviewed commits accumulate.
 
+Maintenance now separates `cmdinstall` and `cmdskills` from the Cobra-free
+`wbupdate`, `wbskills` and `claudesettings` operations. Scoped profiles cover
+333/333 statements, and the five-package race check, affected vet and lint pass.
+The selected root production footprint shrank from 1660 to 554 lines. Pure
+skills command tests execute in 0.267s; genuine embedded-bundle journeys remain
+below the CLI and take 13.746s. These are different responsibilities, not a
+matched before/after benchmark. One immutable parent source descriptor serves
+eight real harness subtests; every child retains its own writable target and
+upstream safety validation. The existing engine is reused rather than copied.
+Root preserves real shell quoting, lazy daemon timeout bounds and exact exit
+error identity. Capability evidence references follow the migrated tests;
+focused root guards and independent review remain required before acceptance.
+
 ### Task 5: Extract quality and change command families
 
 **Status:** in_progress

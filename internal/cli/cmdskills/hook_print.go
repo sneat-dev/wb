@@ -1,4 +1,4 @@
-package main
+package cmdskills
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newSkillsHookPrintCmd() *cobra.Command {
+func newSkillsHookPrintCmd(deps HookDependencies) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "print",
 		Short: "Print the Claude Code SessionStart hook snippet for ~/.claude/settings.json",
@@ -28,12 +28,13 @@ never blocks the session on any exit code. What it prints:
     ('wb skills sync')`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			document, err := json.MarshalIndent(skillsHookSettingsSnippet(hookExecutable()), "", "  ")
-			if err != nil {
+			encoder := json.NewEncoder(cmd.OutOrStdout())
+			encoder.SetIndent("", "  ")
+			if err := encoder.Encode(skillsHookSettingsSnippet(deps.Executable(), deps.Quote)); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(),
-				"%s\n\nMerge this into ~/.claude/settings.json's \"hooks\" key (preserving any\nother hooks already there), or run: wb skills hook install\n", document)
+			_, err := fmt.Fprintf(cmd.OutOrStdout(),
+				"\nMerge this into ~/.claude/settings.json's \"hooks\" key (preserving any\nother hooks already there), or run: wb skills hook install\n")
 			return err
 		},
 	}

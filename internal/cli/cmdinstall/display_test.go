@@ -1,4 +1,4 @@
-package main
+package cmdinstall
 
 import (
 	"bytes"
@@ -8,16 +8,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/wbupdate"
 )
 
-type selfUpdateReleaseTransport func(*http.Request) (*http.Response, error)
-
+// Exercise the actual command binding with a hermetic release transport.
 func (f selfUpdateReleaseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// Exercise WB's actual command binding without a real Homebrew process or
-// network. Only the test executable's install classification is configured.
 func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -27,12 +26,7 @@ func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
 		name        string
 		current     string
 		unavailable bool
-	}{
-		{name: "newer", current: "0.81.1"},
-		{name: "equal", current: "0.92.3"},
-		{name: "unknown", current: "(devel)"},
-		{name: "unavailable", current: "0.81.1", unavailable: true},
-	} {
+	}{{name: "newer", current: "0.81.1"}, {name: "equal", current: "0.92.3"}, {name: "unknown", current: "(devel)"}, {name: "unavailable", current: "0.81.1", unavailable: true}} {
 		for _, format := range []string{"text", "json"} {
 			t.Run(tc.name+"/"+format, func(t *testing.T) {
 				cfg := newSelfUpdateConfig()
@@ -75,7 +69,7 @@ func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
 					}
 					for key, want := range map[string]string{
 						"current": tc.current, "action": "planned",
-						"manager": "Homebrew", "command": selfUpdateHomebrewUpgradeCommand,
+						"manager": "Homebrew", "command": wbupdate.HomebrewUpgradeCommand,
 					} {
 						if result[key] != want {
 							t.Errorf("%s = %v, want %s", key, result[key], want)
@@ -93,7 +87,7 @@ func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
 					if tc.unavailable {
 						latest = "unavailable"
 					}
-					for _, want := range []string{"Current", "Latest", tc.current, latest, "Homebrew", selfUpdateHomebrewUpgradeCommand} {
+					for _, want := range []string{"Current", "Latest", tc.current, latest, "Homebrew", wbupdate.HomebrewUpgradeCommand} {
 						if !strings.Contains(out.String(), want) {
 							t.Errorf("missing %q in output:\n%s", want, out.String())
 						}

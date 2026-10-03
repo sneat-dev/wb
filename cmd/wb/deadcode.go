@@ -6,5 +6,5 @@ import (
 )
 
 func newDeadcodeCmd() *cobra.Command {
-	return cmdquality.NewDeadcode(newCLIRuntime(&invocation{}), qualityCommandDependencies())
+	return cmdquality.NewDeadcode(newCLIErrorRuntime(), qualityCommandDependencies())
 }

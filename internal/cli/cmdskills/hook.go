@@ -1,4 +1,4 @@
-package main
+package cmdskills
 
 import (
 	"fmt"
@@ -15,14 +15,14 @@ import (
 // register itself with WB and that its skills might be stale. Nothing here
 // ever edits a settings file except the explicit 'install' subcommand --
 // 'print' only prints, and 'run' only prints session-start context.
-func newSkillsHookCmd() *cobra.Command {
+func newSkillsHookCmd(deps HookDependencies) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "hook",
 		Short: "Print, install, or run WB's Claude Code SessionStart hook",
 	}
-	command.AddCommand(newSkillsHookPrintCmd())
-	command.AddCommand(newSkillsHookInstallCmd())
-	command.AddCommand(newSkillsHookRunCmd())
+	command.AddCommand(newSkillsHookPrintCmd(deps))
+	command.AddCommand(newSkillsHookInstallCmd(deps))
+	command.AddCommand(newSkillsHookRunCmd(deps))
 	return command
 }
 
@@ -36,14 +36,14 @@ const skillsHookInvocation = "skills hook run"
 // SessionStart hook cannot block the session on any exit code, but a wb too
 // old to know this subcommand should still degrade to silence rather than
 // print cobra's own usage error into the new session's context.
-func skillsHookShellCommand(executable string) string {
-	return fmt.Sprintf("%s %s 2>/dev/null; exit 0", shellQuote(executable), skillsHookInvocation)
+func skillsHookShellCommand(executable string, quote func(string) string) string {
+	return fmt.Sprintf("%s %s 2>/dev/null; exit 0", quote(executable), skillsHookInvocation)
 }
 
 // skillsHookSettingsSnippet is the JSON document 'wb skills hook print' and
 // 'wb skills hook install' both build from, so the two can never drift
 // apart on the shape they merge or print.
-func skillsHookSettingsSnippet(executable string) map[string]any {
+func skillsHookSettingsSnippet(executable string, quote func(string) string) map[string]any {
 	return map[string]any{
 		"hooks": map[string]any{
 			"SessionStart": []any{
@@ -51,7 +51,7 @@ func skillsHookSettingsSnippet(executable string) map[string]any {
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
-							"command": skillsHookShellCommand(executable),
+							"command": skillsHookShellCommand(executable, quote),
 							"timeout": 10,
 						},
 					},

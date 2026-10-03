@@ -3,14 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/claudesettings"
+
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -424,7 +424,7 @@ func TestMergeAgentHookSettingsCreatesAMissingFile(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("merge on a missing file: changed=%v err=%v", changed, err)
 	}
-	if err := writeSettingsAtomically(path, document); err != nil {
+	if err := claudesettings.WriteAtomically(path, document); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -517,71 +517,5 @@ func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if got := resolveWBExecutableForHook(missing); got != missing {
 		t.Fatalf("resolveWBExecutableForHook(%q) = %q, want %q (self unchanged)", missing, got, missing)
-	}
-}
-
-// The following tests exercise writeSettingsAtomicallyInjected's
-// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
-// path is already covered above, but reaching a create, write, close,
-// chmod, or rename failure deterministically needs the injector.
-
-func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
-	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
-		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
-	}
-}
-
-func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
-	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
-		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
-	}
-}
-
-func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
-	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
-		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
-	}
-	assertNoLeftoverSettingsTempFile(t, dir)
-}
-
-func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
-	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
-		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
-	}
-}
-
-func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
-	if err := writeSettingsAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForCmdWB) {
-		t.Fatalf("writeSettingsAtomicallyInjected error = %v", err)
-	}
-	assertNoLeftoverSettingsTempFile(t, dir)
-}
-
-// assertNoLeftoverSettingsTempFile asserts writeSettingsAtomicallyInjected's
-// defer os.Remove(name) ran: no ".wb-settings-*" staging file survives a
-// close or rename failure. Mutation evidence (task-9 PR-2 review, B2):
-// deleting that defer at sibling call sites survived every test that only
-// asserted the returned error, since the staging file's mode (0600) leaves
-// it invisible to anything but a directory listing.
-func assertNoLeftoverSettingsTempFile(t *testing.T, dir string) {
-	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, ".wb-settings-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("leftover settings temp file(s) after failure: %v", matches)
 	}
 }

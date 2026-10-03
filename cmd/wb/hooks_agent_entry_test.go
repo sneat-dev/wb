@@ -25,31 +25,6 @@ func TestMergeAgentHookSettingsSurfacesNonNotExistReadErrors(t *testing.T) {
 	}
 }
 
-// TestAgentHookEntryPresentRejectsNonObjectEntry proves the top-level
-// `entry.(map[string]any)` !ok branch returns false rather than panicking.
-func TestAgentHookEntryPresentRejectsNonObjectEntry(t *testing.T) {
-	t.Parallel()
-	if agentHookEntryPresent("not-an-object", "wb hooks agent guard") {
-		t.Fatal("want false for a non-object entry")
-	}
-}
-
-// TestAgentHookEntryPresentSkipsNonObjectHandlers proves a non-object
-// handler element is skipped (continue), while a sibling matching handler
-// still yields true.
-func TestAgentHookEntryPresentSkipsNonObjectHandlers(t *testing.T) {
-	t.Parallel()
-	entry := map[string]any{
-		"hooks": []any{
-			"not-an-object-handler",
-			map[string]any{"command": "wb hooks agent guard"},
-		},
-	}
-	if !agentHookEntryPresent(entry, "wb hooks agent guard") {
-		t.Fatal("want true: a later valid handler entry should still match")
-	}
-}
-
 // TestAgentHookEntryMatcherStaleRejectsNonObjectEntry proves the
 // `entry.(map[string]any)` !ok branch in agentHookEntryMatcherStale returns
 // false rather than panicking on a malformed settings document.

@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/claudesettings"
+
 	"github.com/sneat-dev/wb/internal/agentguard"
-	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/spf13/cobra"
 )
 
@@ -355,7 +356,7 @@ document without writing it.`,
 			if !changed {
 				return writeFormat(cmd.OutOrStdout(), "%s: pre-tool-use guard already registered\n", path)
 			}
-			if err := writeSettingsAtomically(path, document); err != nil {
+			if err := claudesettings.WriteAtomically(path, document); err != nil {
 				return err
 			}
 			return writeFormat(cmd.OutOrStdout(), "%s: pre-tool-use guard registered\n%s\n", path, shellCommand)
@@ -396,11 +397,11 @@ func mergeAgentHookSettings(path, shellCommand string) ([]byte, bool, error) {
 	}
 	entries, _ := hooks["PreToolUse"].([]any)
 	for _, entry := range entries {
-		if !agentHookEntryPresent(entry, shellCommand) {
+		if !claudesettings.EntryPresent(entry, shellCommand) {
 			continue
 		}
 		if !agentHookEntryMatcherStale(entry) {
-			encoded, err := encodeSettings(settings)
+			encoded, err := claudesettings.Encode(settings)
 			return encoded, false, err
 		}
 		// The command is already registered but under an older, narrower
@@ -412,7 +413,7 @@ func mergeAgentHookSettings(path, shellCommand string) ([]byte, bool, error) {
 		entry.(map[string]any)["matcher"] = agentHookMatcher
 		hooks["PreToolUse"] = entries
 		settings["hooks"] = hooks
-		encoded, err := encodeSettings(settings)
+		encoded, err := claudesettings.Encode(settings)
 		return encoded, true, err
 	}
 	entries = append(entries, map[string]any{
@@ -425,35 +426,13 @@ func mergeAgentHookSettings(path, shellCommand string) ([]byte, bool, error) {
 	})
 	hooks["PreToolUse"] = entries
 	settings["hooks"] = hooks
-	encoded, err := encodeSettings(settings)
+	encoded, err := claudesettings.Encode(settings)
 	return encoded, true, err
-}
-
-// agentHookEntryPresent reports whether one hooks-list entry already carries
-// a handler running shellCommand. It only inspects the "hooks" handlers, not
-// "matcher", so it applies to any hook event's entry shape — SessionStart's
-// entries carry no matcher at all (see skills_hook_install.go).
-func agentHookEntryPresent(entry any, shellCommand string) bool {
-	object, ok := entry.(map[string]any)
-	if !ok {
-		return false
-	}
-	handlers, _ := object["hooks"].([]any)
-	for _, handler := range handlers {
-		handlerObject, ok := handler.(map[string]any)
-		if !ok {
-			continue
-		}
-		if command, ok := handlerObject["command"].(string); ok && command == shellCommand {
-			return true
-		}
-	}
-	return false
 }
 
 // agentHookEntryMatcherStale reports whether a PreToolUse entry's matcher is
 // narrower than the one this install would write. Call only after
-// agentHookEntryPresent has confirmed the entry is WB's own.
+// claudesettings.EntryPresent has confirmed the entry is WB's own.
 func agentHookEntryMatcherStale(entry any) bool {
 	object, ok := entry.(map[string]any)
 	if !ok {
@@ -461,54 +440,4 @@ func agentHookEntryMatcherStale(entry any) bool {
 	}
 	matcher, _ := object["matcher"].(string)
 	return matcher != agentHookMatcher
-}
-
-func encodeSettings(settings map[string]any) ([]byte, error) {
-	encoded, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(encoded, '\n'), nil
-}
-
-// writeSettingsAtomically replaces the settings file through a temporary file
-// in the same directory, so an interrupted write can never leave the user
-// without a settings file.
-func writeSettingsAtomically(path string, document []byte) error {
-	return writeSettingsAtomicallyInjected(path, document, nil)
-}
-
-// writeSettingsAtomicallyInjected is writeSettingsAtomically's test seam
-// (task-9 PR-2): every production call site reaches it only through
-// writeSettingsAtomically, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged; a test passes its own Injector
-// directly to reach a create/write/close/chmod/rename failure branch
-// deterministically. The chmod runs path-based, after close, exactly as
-// before -- unlike this PR's other sites, which chmod the still-open fd
-// -- so it uses filewrite.ChmodPath rather than filewrite.Chmod.
-func writeSettingsAtomicallyInjected(path string, document []byte, inj *filewrite.Injector) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", directory, err)
-	}
-	temporary, err := filewrite.CreateTemp(directory, ".wb-settings-*", inj)
-	if err != nil {
-		return fmt.Errorf("stage a replacement for %s: %w", path, err)
-	}
-	name := temporary.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := filewrite.Write(temporary, document, name, inj); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write %s: %w", name, err)
-	}
-	if err := filewrite.Close(temporary, name, inj); err != nil {
-		return fmt.Errorf("close %s: %w", name, err)
-	}
-	if err := filewrite.ChmodPath(name, 0o600, inj); err != nil {
-		return fmt.Errorf("secure %s: %w", name, err)
-	}
-	if err := filewrite.Rename(name, path, inj); err != nil {
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	return nil
 }

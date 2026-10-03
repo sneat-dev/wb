@@ -3,8 +3,6 @@ package main
 import (
 	"testing"
 
-	"github.com/strongo/cli-helpers/skillsync"
-
 	"github.com/sneat-dev/wb/internal/session"
 )
 
@@ -50,58 +48,5 @@ func TestSessionLabelIsAnUnnamedSessionWithNeitherRuntimeNorID(t *testing.T) {
 	got := sessionLabel(session.Record{})
 	if want := "an unnamed session"; got != want {
 		t.Errorf("sessionLabel = %q, want %q", got, want)
-	}
-}
-
-// AC: cov-rwi-03 unit03 seam list, cmd/wb/skills.go syncedSkillsWBVersion.
-// It reports the wb version that last synced a harness's skills directory,
-// reading it out of the plugin-scoped supplier-version map skillsync.Status
-// carries, and reports "not installed" whenever any layer of that lookup is
-// missing.
-func TestSyncedSkillsWBVersionReadsThePluginSuppliedVersion(t *testing.T) {
-	t.Parallel()
-	plugin := wbSkillsPlugin.String()
-	cli := wbSkillsCLI.String()
-	status := skillsync.Status{
-		Installed: true,
-		Plugins:   map[string]skillsync.Source{plugin: {}},
-		SupplierCLIVersions: map[string]map[string]string{
-			plugin: {cli: "0.150.2"},
-		},
-	}
-	version, installed := syncedSkillsWBVersion(status)
-	if !installed || version != "0.150.2" {
-		t.Errorf("syncedSkillsWBVersion = (%q, %v), want (\"0.150.2\", true)", version, installed)
-	}
-}
-
-func TestSyncedSkillsWBVersionReportsNotInstalledWhenStatusSaysSo(t *testing.T) {
-	t.Parallel()
-	version, installed := syncedSkillsWBVersion(skillsync.Status{Installed: false})
-	if installed || version != "" {
-		t.Errorf("syncedSkillsWBVersion = (%q, %v), want (\"\", false)", version, installed)
-	}
-}
-
-func TestSyncedSkillsWBVersionReportsNotInstalledWhenPluginIsAbsent(t *testing.T) {
-	t.Parallel()
-	status := skillsync.Status{Installed: true, Plugins: map[string]skillsync.Source{}}
-	version, installed := syncedSkillsWBVersion(status)
-	if installed || version != "" {
-		t.Errorf("syncedSkillsWBVersion = (%q, %v), want (\"\", false)", version, installed)
-	}
-}
-
-func TestSyncedSkillsWBVersionReportsNotInstalledWhenTheCLIVersionIsEmpty(t *testing.T) {
-	t.Parallel()
-	plugin := wbSkillsPlugin.String()
-	status := skillsync.Status{
-		Installed:           true,
-		Plugins:             map[string]skillsync.Source{plugin: {}},
-		SupplierCLIVersions: map[string]map[string]string{plugin: {}},
-	}
-	version, installed := syncedSkillsWBVersion(status)
-	if installed || version != "" {
-		t.Errorf("syncedSkillsWBVersion = (%q, %v), want (\"\", false)", version, installed)
 	}
 }

@@ -1,11 +1,11 @@
-package main
+package cmdskills
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
+
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,26 +13,17 @@ import (
 	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd"
 	"github.com/strongo/cli-helpers/skillsync/githubrelease"
 
-	"github.com/sneat-dev/wb/ai"
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/wbskills"
 )
 
-const (
-	wbSkillsLegacyMarker  = ".wb-skills-sync.json"
-	wbSkillsPluginVersion = "0.0.0"
-	wbSkillsUnknownSource = "0000000000000000000000000000000000000000"
-)
-
-var (
-	wbSkillsCLI    = skillsync.Identity{Publisher: "sneat-dev", Name: "wb"}
-	wbSkillsPlugin = skillsync.PluginIdentity{Publisher: "sneat-dev", Name: "wb"}
-)
-
-func newSkillsSyncCmd() *cobra.Command {
-	cfg, cfgErr := newSkillsSyncConfig()
+func newSkillsSyncCmd(runtime shared.Runtime, deps SyncDependencies) *cobra.Command {
+	cfg, cfgErr := deps.Config()
 	options := skillscmd.CommandOptions{
+		Home: deps.Home, Getenv: deps.Getenv,
 		Short:  "Install or update WB's Agent Skills in a harness skills directory",
-		Errors: skillsSyncErrors{},
-		Legacy: skillsync.LegacyImport{MarkerFile: wbSkillsLegacyMarker, Plugin: wbSkillsPlugin},
+		Errors: skillsSyncErrors{runtime: runtime},
+		Legacy: skillsync.LegacyImport{MarkerFile: wbskills.LegacyMarker, Plugin: wbskills.PluginIdentity()},
 		Resolver: skillsync.ReleaseResolver{
 			Source:         githubrelease.Source{},
 			CurrentVersion: cfg.CurrentVersion,
@@ -64,64 +55,26 @@ replacement, and provider-neutral state. WB supplies only its embedded plugin,
 command wording, JSON compatibility, and exit-code mapping.`
 	if cfgErr != nil {
 		command.RunE = func(*cobra.Command, []string) error {
-			return skillsSyncErrors{}.Failure(fmt.Errorf("prepare embedded WB skills: %w", cfgErr))
+			return skillsSyncErrors{runtime: runtime}.Failure(fmt.Errorf("prepare embedded WB skills: %w", cfgErr))
 		}
 	}
 	return command
 }
 
-func newSkillsSyncConfig() (skillsync.Config, error) {
-	source, err := fs.Sub(ai.SkillsFS, "skills")
-	if err != nil {
-		return skillsync.Config{}, err
-	}
-	digest, err := skillsync.Digest(source)
-	if err != nil {
-		return skillsync.Config{}, err
-	}
-	build := collectVersion()
-	revision := build.Revision
-	if len(revision) != 40 {
-		revision = wbSkillsUnknownSource
-	}
-	pluginVersion := build.Version
-	if _, err := skillsync.CompareVersions(pluginVersion, pluginVersion); err != nil {
-		pluginVersion = wbSkillsPluginVersion
-	}
-	bundle, err := skillsync.EmbeddedBundle(skillsync.BundleDescriptor{
-		Plugin: wbSkillsPlugin,
-		Source: skillsync.Source{
-			Repository: "github.com/sneat-dev/wb",
-			Path:       "ai/skills",
-			Revision:   revision,
-			Version:    pluginVersion,
-			Digest:     digest,
-		},
-	}, source)
-	if err != nil {
-		return skillsync.Config{}, err
-	}
-	return skillsync.Config{
-		CLI:            wbSkillsCLI,
-		CurrentVersion: build.Version,
-		Bundles:        []skillsync.Bundle{bundle},
-	}, nil
-}
+type skillsSyncErrors struct{ runtime shared.Runtime }
 
-type skillsSyncErrors struct{}
-
-func (skillsSyncErrors) Failure(err error) error {
+func (e skillsSyncErrors) Failure(err error) error {
 	var usage *skillscmd.UsageError
 	if errors.As(err, &usage) {
-		return &exitError{code: exitUsage, message: err.Error()}
+		return e.runtime.ExitError(shared.ExitUsage, err.Error())
 	}
-	return &exitError{code: exitFindings, message: "skills sync: " + err.Error()}
+	return e.runtime.ExitError(shared.ExitFindings, "skills sync: "+err.Error())
 }
 
-func (skillsSyncErrors) Conflict(report skillsync.Report) error {
-	return &exitError{code: exitFindings, message: fmt.Sprintf(
+func (e skillsSyncErrors) Conflict(report skillsync.Report) error {
+	return e.runtime.ExitError(shared.ExitFindings, fmt.Sprintf(
 		"skills sync: %d skill(s) could not be installed because another plugin or an unmanaged directory already owns the name; see %s",
-		len(report.Names(skillsync.Conflict)), report.Dir)}
+		len(report.Names(skillsync.Conflict)), report.Dir))
 }
 
 func writeSkillsSyncReports(out io.Writer, results []skillscmd.TargetResult, format string) error {
@@ -227,7 +180,7 @@ func skillsSyncPayload(result skillscmd.TargetResult) skillsSyncJSON {
 
 func priorSkillsWBVersion(report skillsync.Report) string {
 	for _, bundle := range report.Bundles {
-		if bundle.Plugin == wbSkillsPlugin {
+		if bundle.Plugin == wbskills.PluginIdentity() {
 			return bundle.PriorCLIVersion
 		}
 	}
