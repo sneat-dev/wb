@@ -8,19 +8,15 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/sneat-dev/wb/internal/console"
-	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -384,77 +380,6 @@ func bindQualityScopeFlags(command *cobra.Command, options *qualityOptions) {
 	command.Flags().BoolVar(&options.resume, "resume", false, "rerun only repositories that failed in the report directory")
 }
 
-func qualityTargets(singlePath, root, filter string, options qualityOptions) ([]qualityTarget, error) {
-	if options.parallel < 1 {
-		return nil, fmt.Errorf("parallelism must be at least 1")
-	}
-	if options.retry < 0 {
-		return nil, fmt.Errorf("retry count must not be negative")
-	}
-	if options.timeout < 0 {
-		return nil, fmt.Errorf("timeout must not be negative")
-	}
-	var expression *regexp.Regexp
-	if options.regex != "" {
-		compiled, err := regexp.Compile(options.regex)
-		if err != nil {
-			return nil, fmt.Errorf("invalid --regex: %w", err)
-		}
-		expression = compiled
-	}
-	if options.match != "" {
-		if _, err := path.Match(options.match, ""); err != nil {
-			return nil, fmt.Errorf("invalid --match: %w", err)
-		}
-	}
-	if !options.fleet {
-		if filter != "" {
-			return nil, fmt.Errorf("--filter requires fleet mode for owner/repository selection")
-		}
-		if options.match != "" || options.regex != "" {
-			return nil, fmt.Errorf("--match and --regex require fleet mode because a direct repository path has no guaranteed owner/repository identity")
-		}
-		absolute, err := filepath.Abs(singlePath)
-		if err != nil {
-			return nil, err
-		}
-		target := qualityTarget{repository: filepath.Base(absolute), path: absolute}
-		if !matchesQualityTarget(target.repository, filter, options.match, expression) {
-			return nil, fmt.Errorf("repository %s does not match the selected filters", target.repository)
-		}
-		return []qualityTarget{target}, nil
-	}
-	repositories, err := discover.ScanLocal(root)
-	if err != nil {
-		return nil, err
-	}
-	targets := make([]qualityTarget, 0, len(repositories))
-	for _, repository := range repositories {
-		if !matchesQualityTarget(repository.Slug(), filter, options.match, expression) {
-			continue
-		}
-		targets = append(targets, qualityTarget{repository: repository.Slug(), path: repository.Path})
-	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].repository < targets[j].repository })
-	if len(targets) == 0 && !options.allowEmpty {
-		return nil, fmt.Errorf("no local repositories match the selected filters")
-	}
-	return targets, nil
-}
-
-func matchesQualityTarget(repository, filter, glob string, expression *regexp.Regexp) bool {
-	if filter != "" && !strings.Contains(repository, filter) {
-		return false
-	}
-	if glob != "" {
-		matched, err := path.Match(glob, repository)
-		if err != nil || !matched {
-			return false
-		}
-	}
-	return expression == nil || expression.MatchString(repository)
-}
-
 var coverWithOptions = quality.CoverWithOptions
 
 func runCoverageTargets(targets []qualityTarget, parallel int, options quality.RunOptions) []quality.RepositoryCoverage {
@@ -553,31 +478,6 @@ func reportQualityRepositoryCompleted(options quality.RunOptions, repository str
 	if options.Progress != nil {
 		options.Progress(quality.Progress{Repository: repository, State: quality.ProgressRepositoryCompleted, Status: status})
 	}
-}
-
-func runTargets(count, parallel int, run func(int)) {
-	if count == 0 {
-		return
-	}
-	if parallel > count {
-		parallel = count
-	}
-	jobs := make(chan int)
-	var group sync.WaitGroup
-	for range parallel {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			for index := range jobs {
-				run(index)
-			}
-		}()
-	}
-	for index := range count {
-		jobs <- index
-	}
-	close(jobs)
-	group.Wait()
 }
 
 func coverageFailed(report quality.CoverageReport) bool {

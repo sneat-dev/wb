@@ -15,36 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestQualityTargetsSupportsGlobAndRegex(t *testing.T) {
-	root := t.TempDir()
-	for _, repository := range []string{"sneat-co/bots", "sneat-co/core", "other/tools"} {
-		path := filepath.Join(root, repository, ".git")
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	targets, err := qualityTargets("", root, "", qualityOptions{fleet: true, match: "sneat-co/*", regex: "(bots|core)$", parallel: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := len(targets), 2; got != want {
-		t.Fatalf("targets = %v, want %d", targets, want)
-	}
-	filtered, err := qualityTargets("", root, "sneat-co/core", qualityOptions{fleet: true, parallel: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(filtered) != 1 || filtered[0].repository != "sneat-co/core" {
-		t.Fatalf("root --filter fleet targets = %#v, want only sneat-co/core", filtered)
-	}
-	if _, err := qualityTargets("", root, "", qualityOptions{fleet: true, regex: "[", parallel: 1}); err == nil {
-		t.Fatal("invalid regex should fail")
-	}
-	if _, err := qualityTargets("", root, "", qualityOptions{fleet: true, match: "[", parallel: 1}); err == nil {
-		t.Fatal("invalid glob should fail")
-	}
-}
-
 func TestCoverageShardingFlagsFailClosedOnAmbiguousScope(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -252,26 +222,6 @@ func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
 	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, []quality.Check{quality.CheckLint}, 1, quality.RunOptions{})
 	if len(reports) != 1 || reports[0].Status != quality.StatusFailed || len(reports[0].Results) != 1 || !strings.Contains(reports[0].Results[0].Detail, "field unknown not found") {
 		t.Fatalf("verification policy failure = %#v", reports)
-	}
-}
-
-func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	for _, test := range []struct {
-		name    string
-		filter  string
-		options qualityOptions
-	}{
-		{name: "root filter", filter: "acme/repo", options: qualityOptions{parallel: 1}},
-		{name: "match", options: qualityOptions{parallel: 1, match: "acme/*"}},
-		{name: "regex", options: qualityOptions{parallel: 1, regex: "^acme/"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := qualityTargets(root, t.TempDir(), test.filter, test.options); err == nil || !strings.Contains(err.Error(), "fleet mode") {
-				t.Fatalf("direct owner/repository selector error = %v", err)
-			}
-		})
 	}
 }
 

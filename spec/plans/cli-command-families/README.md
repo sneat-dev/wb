@@ -197,6 +197,23 @@ with no remaining findings. A combined race run over all six extracted/shared CL
 packages also passed. These checks do not constitute a new repository-wide
 coverage measurement; quality adapters and final root composition remain queued.
 
+The reusable `reposelection` prerequisite now owns selection and bounded
+dispatch for quality, status, fleet and remote consumers. It covers 70/70
+statements; race execution passed in 1.406s and focused root guards in 2.782s.
+Single-worker dispatch runs directly without a worker queue. Temporary root
+adapters preserve existing consumers until their family cutovers. Independent
+review r7 accepted the exact implementation without findings.
+
+Version parsing/rendering now lives in `cmdversion`, with one lazy metadata
+snapshot from the existing `buildinfo` package. Command tests need no executable,
+environment changes or Git fixtures: 27/27 family statements and 24/24 buildinfo
+statements are covered, with family execution in 0.285s. Genuine root heartbeat
+and production-consumer guards remain; focused root version checks passed in
+4.030s. Writer failures now correctly produce exit 1 on all four version paths,
+with a failing-before regression receipt. Independent review r8 accepted the
+implementation without findings. These scoped results do not update total
+repository coverage or establish a whole-CI timing comparison.
+
 ### Task 6: Extract orchestration command families
 
 **Status:** queued
