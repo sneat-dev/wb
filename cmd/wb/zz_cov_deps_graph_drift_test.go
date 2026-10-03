@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/prinventory"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/spf13/cobra"
 )
@@ -123,24 +121,5 @@ func TestCwDepsDriftCommandInProcess(t *testing.T) {
 	// --fail-on-behind requires an online query.
 	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newDepsDriftCmd(&invocation{projectsRoot: root}) }, "--fleet", "--fail-on-behind"); err == nil {
 		t.Log("--fail-on-behind was accepted offline; behaviour is the command's own contract")
-	}
-}
-
-func TestCwDepsWritePRInventoryOutputRefusesAnUnwritableReportDir(t *testing.T) {
-	blocker := filepath.Join(t.TempDir(), "a-file")
-	cwCovWriteFile(t, blocker, "not a directory\n")
-	report := prinventory.Report{SchemaVersion: 1, Complete: true, Diagnostics: []prinventory.Diagnostic{{Severity: "error", Message: "owner listing was partial"}}}
-	err := writePRInventoryOutput(cwDepsNewOutCommand(&bytes.Buffer{}), report, "markdown", filepath.Join(blocker, "reports"))
-	if err == nil {
-		t.Fatal("a report directory beneath a file must fail")
-	}
-	// A failed stdout write is surfaced too.
-	if err := writePRInventoryOutput(cwDepsNewOutCommand(cwDepsFailingWriter{}), report, "markdown", ""); err == nil ||
-		!strings.Contains(err.Error(), "write refused") {
-		t.Fatalf("failing writer = %v", err)
-	}
-	if err := writePRInventoryOutput(cwDepsNewOutCommand(cwDepsFailingWriter{}), report, "json", ""); err == nil ||
-		!strings.Contains(err.Error(), "write refused") {
-		t.Fatalf("failing json writer = %v", err)
 	}
 }

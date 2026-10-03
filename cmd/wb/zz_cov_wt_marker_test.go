@@ -315,27 +315,6 @@ func TestCwWtMarkCreatedRenamedRelocatedAndSynced(t *testing.T) {
 	command.SetOut(&strings.Builder{})
 	command.SetErr(&errOut)
 
-	// markCreatedCheckouts marks both the worktree and its canonical clone,
-	// and warns for a path it cannot describe.
-	markCreatedCheckouts(&invocation{projectsRoot: projects}, command, "main", []worktrees.CreateResult{
-		{Repository: "acme/app", WorktreeDir: clone, Base: "main"},
-		{Repository: "acme/app", WorktreeDir: filepath.Join(t.TempDir(), "missing")},
-	})
-	if _, err := os.Stat(filepath.Join(clone, checkoutmarker.FileName)); err != nil {
-		t.Fatalf("markCreatedCheckouts did not mark the clone: %v", err)
-	}
-	if !strings.Contains(errOut.String(), "warning: could not write") {
-		t.Fatalf("markCreatedCheckouts warnings = %q", errOut.String())
-	}
-
-	// A repository slug with no owner is skipped for the canonical path but
-	// the worktree itself is still marked.
-	errOut.Reset()
-	markCreatedCheckouts(&invocation{projectsRoot: projects}, command, "main", []worktrees.CreateResult{{Repository: "app", WorktreeDir: clone}})
-	if errOut.Len() != 0 {
-		t.Fatalf("markCreatedCheckouts errOut = %q", errOut.String())
-	}
-
 	// refreshSyncedCheckoutMarkers skips failed and unnamed results, and
 	// counts a clone it cannot describe.
 	errOut.Reset()

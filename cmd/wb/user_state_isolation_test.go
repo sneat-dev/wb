@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/agentrun"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
@@ -15,7 +16,7 @@ import (
 func TestThisTestBinaryCannotReachARealUsersConfigurationOrFleet(t *testing.T) {
 	t.Parallel()
 	violations := testenv.UserStateViolations(
-		wbconfig.DefaultPath(), defaultRemoteDeps().configPath, agentConfigPath(), defaultProjectsRoot(),
+		wbconfig.DefaultPath(), defaultRemoteDeps().configPath, agentrun.DefaultDependencies().ConfigPath(), defaultProjectsRoot(),
 	)
 	if len(violations) != 0 {
 		t.Fatalf("this test binary can reach real user state: %v", violations)

@@ -1,16 +1,12 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
-	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // errBoomPR9 is task-9 PR-9's sentinel injected failure, distinct from any
@@ -19,36 +15,6 @@ import (
 var errBoomPR9 = errors.New("pr9 boom")
 
 // --- defaultBranchReportPathInjected ---
-
-func TestDefaultBranchReportPathInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
-	t.Parallel()
-	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomPR9}
-	path, err := defaultBranchReportPathInjected(&invocation{}, t.TempDir(), inj)
-	if path != "" || !errors.Is(err, errBoomPR9) {
-		t.Fatalf("defaultBranchReportPathInjected with injected create failure = (%q, %v), want (\"\", errBoomPR9)", path, err)
-	}
-}
-
-func TestDefaultBranchReportPathInjectedLeavesTheReservationOnAnInjectedCloseFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomPR9}
-	path, err := defaultBranchReportPathInjected(&invocation{}, dir, inj)
-	if path != "" || !errors.Is(err, errBoomPR9) {
-		t.Fatalf("defaultBranchReportPathInjected with injected close failure = (%q, %v), want (\"\", errBoomPR9)", path, err)
-	}
-	// The original inline sequence never removed the reservation on a Close
-	// failure (only the later, deliberate os.Remove(path) freed the name on
-	// the success path); migrating to filewrite.CreateScratch preserves that
-	// exact on-disk-failure behaviour rather than tightening it.
-	matches, globErr := filepath.Glob(filepath.Join(dir, "default-branch-*.json"))
-	if globErr != nil {
-		t.Fatal(globErr)
-	}
-	if len(matches) != 1 {
-		t.Fatalf("reservation(s) after an injected close failure = %v, want exactly one left in place (original behaviour)", matches)
-	}
-}
 
 // --- applyClassicProtectionWithoutLinearHistoryInjected ---
 
@@ -62,53 +28,8 @@ func TestDefaultBranchReportPathInjectedLeavesTheReservationOnAnInjectedCloseFai
 // "leftover scratch file" failure — the same hazard
 // internal/locallink/execports_contenthash_filewrite_injected_test.go
 // documents and avoids the same way.
-func TestApplyClassicProtectionWithoutLinearHistoryInjectedHonoursInjectedFailures(t *testing.T) {
-	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepChmod, filewrite.StepWrite, filewrite.StepClose} {
-		step := step
-		t.Run(string(step), func(t *testing.T) {
-			inj := &filewrite.Injector{Step: step, Err: errBoomPR9}
-			err := applyClassicProtectionWithoutLinearHistoryInjected(context.Background(), "repos/acme/app/branches/main/protection", []byte("{}"), inj)
-			if !errors.Is(err, errBoomPR9) {
-				t.Fatalf("applyClassicProtectionWithoutLinearHistoryInjected(%s failure) = %v, want errBoomPR9", step, err)
-			}
-			matches, globErr := filepath.Glob(filepath.Join(os.TempDir(), "wb-merge-policy-protection-*.json"))
-			if globErr != nil {
-				t.Fatal(globErr)
-			}
-			if len(matches) != 0 {
-				t.Fatalf("leftover scratch file(s) after an injected %s failure: %v", step, matches)
-			}
-		})
-	}
-}
 
 // --- applySharedRulesetInjected ---
-
-func TestApplySharedRulesetInjectedHonoursInjectedFailures(t *testing.T) {
-	originalRead, originalExecute := mergePolicyRead, mergePolicyExecute
-	t.Cleanup(func() { mergePolicyRead, mergePolicyExecute = originalRead, originalExecute })
-	mergePolicyRead = func(context.Context, string) ([]byte, error) {
-		return []byte(`{"id":7,"name":"default","target":"branch","enforcement":"active","rules":[{"type":"required_linear_history"}]}`), nil
-	}
-	mergePolicyExecute = func(context.Context, ...string) githubobserver.CommandResponse {
-		t.Fatal("mergePolicyExecute must not run when the scratch write itself fails")
-		return githubobserver.CommandResponse{}
-	}
-	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepChmod, filewrite.StepWrite, filewrite.StepClose} {
-		inj := &filewrite.Injector{Step: step, Err: errBoomPR9}
-		err := applySharedRulesetInjected(context.Background(), mergePolicyRulesetChange{SourceType: "Repository", Source: "acme/app", ID: 7}, inj)
-		if !errors.Is(err, errBoomPR9) {
-			t.Fatalf("applySharedRulesetInjected(%s failure) = %v, want errBoomPR9", step, err)
-		}
-		matches, globErr := filepath.Glob(filepath.Join(os.TempDir(), "wb-merge-policy-ruleset-*.json"))
-		if globErr != nil {
-			t.Fatal(globErr)
-		}
-		if len(matches) != 0 {
-			t.Fatalf("leftover scratch file(s) after an injected %s failure: %v", step, matches)
-		}
-	}
-}
 
 // --- fetchPolicyInjected ---
 

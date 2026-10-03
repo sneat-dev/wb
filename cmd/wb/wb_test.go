@@ -10,7 +10,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktreeend"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
@@ -43,20 +42,5 @@ func TestWriteWorktreeMergeReceiptFindings(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "finding: c1: m1") {
 		t.Fatalf("expected finding line, got %q", buf.String())
-	}
-}
-
-func TestMarkCreatedCheckoutsEmptyPath(t *testing.T) {
-	t.Parallel()
-	inv := &invocation{}
-	command := &cobra.Command{}
-	errBuf := &bytes.Buffer{}
-	command.SetErr(errBuf)
-	results := []worktrees.CreateResult{
-		{Repository: "demo", WorktreeDir: "", CanonicalDir: ""},
-	}
-	markCreatedCheckouts(inv, command, "main", results)
-	if errBuf.Len() != 0 {
-		t.Fatalf("expected no warning for an entirely empty checkout path, got %q", errBuf.String())
 	}
 }

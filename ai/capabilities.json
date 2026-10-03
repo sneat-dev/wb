@@ -59,12 +59,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentAwaitReportsAnElapsedBoundAsAFinding",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentAwaitResolvesAnAbandonedRunInsteadOfBlocking",
               "kind": "integration"
             }
@@ -141,9 +141,9 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/arguments_test.go",
               "name": "TestAgentDispatchRefusesAmbiguousOrIncompleteInvocations",
-              "kind": "integration"
+              "kind": "unit"
             },
             {
               "path": "internal/agents/dispatch_test.go",
@@ -214,7 +214,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentListIsEmptyThenPopulated",
               "kind": "integration"
             }
@@ -279,7 +279,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentLogsLocatesTheTranscriptAndBoundsTheSummary",
               "kind": "integration"
             }
@@ -344,9 +344,9 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/arguments_test.go",
               "name": "TestAgentStatusRendersExecutionFactsWithoutThePrivateTask",
-              "kind": "integration"
+              "kind": "unit"
             },
             {
               "path": "internal/agents/run_test.go",
@@ -411,7 +411,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentStopRefusesTerminalAndUnknownRuns",
               "kind": "integration"
             },
@@ -5046,7 +5046,7 @@
         },
         "help": {"status":"Full","anchors":[{"command":"wb fleet default-branch --help","contains":["read-only","--all-orgs","--apply","never rewrites"]}],"limitation":null},
         "ai_skill": {"status":"Full","skills":[{"path":"ai/skills/wb-fleet/references/default-branch.md","marker":"# Audit and safely migrate GitHub default branches","examples":["wb fleet default-branch --all-orgs --format json"]}],"limitation":null},
-        "tests": {"status":"Full","references":[{"path":"cmd/wb/fleet_default_branch_test.go","name":"TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof","kind":"integration"}],"limitation":null}
+        "tests": {"status":"Full","references":[{"path":"internal/defaultbranch/fleet_default_branch_test.go","name":"TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof","kind":"integration"}],"limitation":null}
       },
       "notes": "Default branch changes are report-first, source/head-bound, and fail closed for unsafe migration effects. Workflow content is never rewritten; canonical clone reconciliation records dirty, unpublished, diverged, destination-conflicting, or linked-worktree state as a blocker."
     },
@@ -5123,42 +5123,42 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyRepositoryRulesetPreservesUnrelatedProtections",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestRunMergePolicyResumeCarriesPartialActions",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure",
               "kind": "unit"
             }

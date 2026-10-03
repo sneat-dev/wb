@@ -12,13 +12,12 @@ import (
 
 // qualityOptions temporarily preserves the selectors used by remaining root families.
 type qualityOptions struct {
-	fleet             bool
-	match, regex      string
-	parallel          int
-	format, reportDir string
-	timeout           time.Duration
-	retry             int
-	allowEmpty        bool
+	fleet        bool
+	match, regex string
+	parallel     int
+	timeout      time.Duration
+	retry        int
+	allowEmpty   bool
 }
 type qualityTarget struct {
 	repository string

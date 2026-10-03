@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/repostatus"
+
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +24,7 @@ func TestStatusCommandReportsTheFleetWorklistInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wb status: %v\n%s", err, stdout)
 	}
-	var report statusIndex
+	var report repostatus.Index
 	if jsonErr := json.Unmarshal([]byte(stdout), &report); jsonErr != nil {
 		t.Fatalf("status JSON: %v\n%s", jsonErr, stdout)
 	}
@@ -69,12 +71,12 @@ func TestStatusFiltersACleanFleetEndToEnd(t *testing.T) {
 	}
 }
 
-func decodeStatusIndex(t *testing.T, result smokeResult) statusIndex {
+func decodeStatusIndex(t *testing.T, result smokeResult) repostatus.Index {
 	t.Helper()
 	if result.exitCode != exitOK {
 		t.Fatalf("exit code = %d, want %d; stderr: %s", result.exitCode, exitOK, result.stderr)
 	}
-	var report statusIndex
+	var report repostatus.Index
 	if err := json.Unmarshal([]byte(result.stdout), &report); err != nil {
 		t.Fatalf("stdout is not a status index: %v\nstdout: %s", err, result.stdout)
 	}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/fleetinspect"
 )
 
 func TestFleetStatsCountsLocalRepositories(t *testing.T) {
@@ -21,7 +23,7 @@ func TestFleetStatsCountsLocalRepositories(t *testing.T) {
 	if result.exitCode != exitOK {
 		t.Fatalf("exit code = %d; stderr: %s", result.exitCode, result.stderr)
 	}
-	var report fleetStatsReport
+	var report fleetinspect.StatsReport
 	if err := json.Unmarshal([]byte(result.stdout), &report); err != nil {
 		t.Fatalf("decode stats: %v\n%s", err, result.stdout)
 	}
@@ -73,7 +75,7 @@ func TestFleetOverviewIncludesStatsAndAttention(t *testing.T) {
 		if result.exitCode != exitOK {
 			t.Fatalf("%v exit code = %d; stderr: %s", args, result.exitCode, result.stderr)
 		}
-		var report fleetOverviewReport
+		var report fleetinspect.OverviewReport
 		if err := json.Unmarshal([]byte(result.stdout), &report); err != nil {
 			t.Fatalf("%v decode: %v\n%s", args, err, result.stdout)
 		}

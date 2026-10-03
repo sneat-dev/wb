@@ -403,6 +403,77 @@ saving. Independent implementation review r33 accepted the exact source,
 all 56 original responsibilities, protected declarations and six actual test
 reference migrations (including branch), with no remaining findings.
 
+Independent architecture review r34 approved the complete agent family and
+private remote protocol at committed base `6bebf086`. Command adapters delegate
+to a Cobra-free agent service that retains existing dispatch, store, remote
+transport and process authorities. Dispatch and worktree creation share narrow
+checkout preparation helpers instead of constructing another command to run
+its operation. Await uses instance-bound clock and wait functions; native
+identity, cancellation, fixed SSH arguments and stdin privacy remain tested.
+Remote dispatch warnings use the bound stderr stream. Extracted race suites
+cover 487/487 statements (311 command, 150 service, 26 shared checkout setup);
+the actual native integration package also passed. Final isolated command
+tests independently cover 311/311 in 0.437 seconds without filesystem, config,
+Git or environment fixtures. Final targeted race checks, vet and lint passed.
+All 49 original agent responsibilities and three shared responsibilities have
+verified destinations; unrelated worktree helpers and mixed test fragments
+remain unchanged. The six actual agent/root safety cases passed in the shared
+root gate, covering its designated adapters at 16/16, for a total scope of
+503/503. The same gate's unrelated fleet fixture assertion failed and its
+one-case corrected retry passed; both receipts remain recorded. Root coverage
+uses identical-position block unions. These scopes do not establish a new
+repository-wide percentage or a matched runtime saving. Independent
+implementation review r36 accepted the exact frozen source, original tests,
+protected bodies, metadata and evidence bundle, with no remaining findings.
+
+Independent architecture review r35 approved the complete fleet family,
+including merge-policy and default-branch workflows. Neutral discovery and
+inspection owners serve real fleet, run, sync and dependency consumers; the
+existing quality-owned coverage child remains attached in root composition.
+Policy algorithms retain checkpoint ordering, archival restoration, remote
+mutation and atomic persistence guarantees. Report collection and file writes
+retain their existing ordering; concrete date-marshaling failures remain
+reachable tests. Stats and overview use command-bound output and propagate
+writer failures. A production-used, instance-bound persistence function makes
+specific checkpoint failures deterministic while retaining the existing
+atomic implementation and native tests. Only proven redundant serializer and
+control-flow branches were removed; real authority and checkpoint refusals
+remain tested.
+
+The final race profiles cover 2,635/2,635 designated leaf statements,
+including the six-statement shared GitHub diagnostic helper. The combined
+six-package profiles additionally cover 212 unchanged PR-inventory
+statements, kept separate from the new/moved scope. Root adapters cover 10/10,
+for a designated total of 2,645/2,645. Root-inclusive vet and lint passed.
+All 192 original test responsibilities have actual destinations, and protected
+mixed bodies remain unchanged. Historical root journeys retain real command
+dispatch, private working directories and bound output. The shared gate's
+one new binding fixture expected an error for an empty repository that the
+service correctly classified as blocked; only that corrected case was retried,
+and it passed. Final review caught a new heartbeat test waiting 9.25 seconds
+inside fake discovery. A controlled per-instance timer now exercises the real
+heartbeat path without that sleep, retaining the production nine-second
+interval and joining shutdown before return. The fresh merge-policy race
+profile covers 558/558 and replaces all prior merge-policy blocks; other
+package and root profiles remain unchanged. Its observed package time was
+1.823 seconds versus 12.153 in the earlier six-package batch, under different
+loads; this is not a controlled timing comparison or a whole-CI saving.
+The profile establishes scoped coverage, not a new repository-wide percentage.
+Independent implementation review r37 and its heartbeat amendment accepted
+the exact frozen source, original tests, protected scopes and validation
+receipts, with no remaining findings.
+
+Independent architecture review r38 approved the next complete session/task
+cohort, with neutral move/park composition above existing protocol packages
+and a shared bounded input reader. Task launch will consume the move operation
+instead of executing a sibling Cobra command. Preserve move output before
+pickup persistence, the existing detached task-launch and listing contexts,
+and park's post-persistence warnings and registration details. Only the public
+park output is serialized. Native descriptor, ownership, custody, transport
+and persistence guarantees remain genuine tests. Implementation is queued;
+all owned and shared source bindings must be refreshed after the combined
+agent/fleet checkpoint before starting it.
+
 ### Task 7: Separate daemon runtime from CLI adapters
 
 **Status:** queued

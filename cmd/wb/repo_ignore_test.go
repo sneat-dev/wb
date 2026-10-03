@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/repostatus"
+
 	"github.com/spf13/cobra"
 )
 
@@ -119,7 +121,7 @@ func TestRepoStatusCommandReportsOneRepositoryInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wb repo status: %v\n%s", err, stdout)
 	}
-	var report statusIndex
+	var report repostatus.Index
 	if jsonErr := json.Unmarshal([]byte(stdout), &report); jsonErr != nil {
 		t.Fatalf("repo status JSON: %v\n%s", jsonErr, stdout)
 	}

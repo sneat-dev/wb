@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"io"
 	"os"
 	"os/exec"
@@ -304,32 +305,7 @@ func markerSymbol(outcome markerOutcome) string {
 // not a reason to fail a checkout that already exists on disk and already
 // carries a claim.
 func markCreatedCheckouts(inv *invocation, command *cobra.Command, base string, results []worktrees.CreateResult) {
-	options := checkoutmarker.DescribeOptions{
-		ProjectsRoot: inv.projectsRoot,
-		BaseBranch:   base,
-		Version:      "wb " + buildinfo.Version(),
-	}
-	seen := map[string]bool{}
-	for _, result := range results {
-		paths := []string{result.WorktreeDir}
-		// The canonical clone's real path, exactly as create resolved and
-		// reported it: rebuilding a flat <root>/<owner>/<repository> here would
-		// skip every host-level clone and leave its .worktree.md unwritten,
-		// which is the marker AGENTS.md tells every agent to read first.
-		if result.CanonicalDir != "" {
-			paths = append(paths, result.CanonicalDir)
-		}
-		for _, path := range paths {
-			if path == "" || seen[path] {
-				continue
-			}
-			seen[path] = true
-			if outcome := applyCheckoutMarker(path, options, false); outcome.Error != "" {
-				_ = writeFormat(command.ErrOrStderr(), "warning: could not write %s in %s: %s\n",
-					checkoutmarker.FileName, path, outcome.Error)
-			}
-		}
-	}
+	checkoutsetup.AfterCreate(checkoutmarker.DescribeOptions{ProjectsRoot: inv.projectsRoot, BaseBranch: base, Version: "wb " + buildinfo.Version()}, command.ErrOrStderr(), results, checkoutsetup.DefaultMarkerDependencies())
 }
 
 // refreshSyncedCheckoutMarkers marks every canonical clone a sync touched.

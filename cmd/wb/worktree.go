@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"io"
 	"os"
 	"sort"
@@ -1469,22 +1470,7 @@ func newCreateCmd(inv *invocation) *cobra.Command {
 }
 
 func refreshManagedHooksBeforeWorktreeCreate(inv *invocation, repositories []string) error {
-	canonicalRepositories := make([]string, 0, len(repositories))
-	for _, repository := range repositories {
-		canonical, err := worktrees.CanonicalRepositoryPath(inv.projectsRoot, repository)
-		if err != nil {
-			return err
-		}
-		canonicalRepositories = append(canonicalRepositories, canonical)
-	}
-	for index, repository := range repositories {
-		canonical := canonicalRepositories[index]
-		_, err := hooks.RefreshManagedShims(canonical, "", hookExecutable(), inv.projectsRoot)
-		if err != nil {
-			return fmt.Errorf("verify hooks for %s before creating a worktree: %w", repository, err)
-		}
-	}
-	return nil
+	return checkoutsetup.BeforeCreate(inv.projectsRoot, repositories, checkoutsetup.DefaultHookDependencies(hookExecutable))
 }
 
 func newWorktreeGuardCmd(inv *invocation) *cobra.Command {
