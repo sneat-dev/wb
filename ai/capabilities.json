@@ -8820,9 +8820,9 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/repo_transfer_test.go",
+              "path": "internal/cli/cmdrepo/repo_test.go",
               "name": "TestRepoTransferCleanupRequiresReceiptAsUsage",
-              "kind": "integration"
+              "kind": "unit"
             },
             {
               "path": "internal/worktrees/repository_relocate_test.go",
@@ -10865,7 +10865,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/status_test.go",
+              "path": "internal/cli/statusview/moved_test.go",
               "name": "TestStatusMarkdownReportsAnAllCleanFleet",
               "kind": "unit"
             }

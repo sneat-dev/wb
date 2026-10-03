@@ -12,10 +12,12 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sneat-dev/wb/internal/cli/statusview"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/layout"
+	"github.com/sneat-dev/wb/internal/repostatus"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -67,18 +69,18 @@ type fleetDepthOptions struct {
 
 type fleetOverviewOptions struct {
 	inv     *invocation
-	status  qualityOptions
+	status  statusview.Options
 	all     bool
 	details bool
 	depth   fleetDepthOptions
 }
 
 func newFleetOverviewOptions(inv *invocation) *fleetOverviewOptions {
-	return &fleetOverviewOptions{inv: inv, status: qualityOptions{parallel: 4, fleet: true}}
+	return &fleetOverviewOptions{inv: inv, status: statusview.Options{Parallel: 4}}
 }
 
 func (options *fleetOverviewOptions) bind(command *cobra.Command) {
-	bindRepositoryStatusFlags(command, &options.status, &options.details, &options.all, true)
+	statusview.BindFlags(command, &options.status, &options.details, &options.all, true)
 	bindFleetDepthFlags(command, &options.depth)
 	if flag := command.Flags().Lookup("report-dir"); flag != nil {
 		flag.Usage = "write fleet-overview.md and fleet-overview.yaml to this directory"
@@ -86,14 +88,14 @@ func (options *fleetOverviewOptions) bind(command *cobra.Command) {
 }
 
 func (options *fleetOverviewOptions) run(cmd *cobra.Command, args []string) error {
-	report, err := collectFleetOverview(options.inv, options.inv.projectsRoot, options.inv.filterFlag, options.status, options.all, options.depth)
+	report, err := collectFleetOverview(options.inv, options.inv.projectsRoot, options.inv.filterFlag, statusOptionsForFleet(options.status), options.all, options.depth)
 	if err != nil {
 		return err
 	}
-	if err := writeFleetOverviewOutput(report, options.status.format, options.status.reportDir, options.details); err != nil {
+	if err := writeFleetOverviewOutput(report, options.status.Format, options.status.ReportDir, options.details); err != nil {
 		return err
 	}
-	if statusFailed(report.Status) || report.Stats.Git.Error > 0 {
+	if repostatus.Failed(report.Status) || report.Stats.Git.Error > 0 {
 		return &exitError{
 			code:    exitFindings,
 			message: "one or more repositories could not be inspected; see the report above",
@@ -147,40 +149,7 @@ func bindFleetDepthFlags(command *cobra.Command, depth *fleetDepthOptions) {
 }
 
 func newFleetStatusCmd(inv *invocation) *cobra.Command {
-	options := qualityOptions{parallel: 4, fleet: true}
-	var details bool
-	var all bool
-	command := &cobra.Command{
-		Use:   "status",
-		Short: "Report local Git state for repositories that need attention",
-		Long: `Report the fleet attention worklist: modified, untracked, conflicted,
-stashed, or unpushed checkouts under --projects-root.
-
-Clean repositories are counted rather than listed unless --all is set. This is
-the fleet-shaped form of the historical wb status command. A live completion
-counter is shown on stderr when attached to a terminal; --non-interactive
-disables it.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRepositoryStatus(repositoryStatusRequest{
-				inv:       inv,
-				path:      ".",
-				fleet:     true,
-				all:       all,
-				details:   details,
-				options:   options,
-				filter:    inv.filterFlag,
-				projects:  inv.projectsRoot,
-				titleKind: statusTitleFleet,
-				progress:  cmd.ErrOrStderr(),
-			})
-		},
-	}
-	bindRepositoryStatusFlags(command, &options, &details, &all, true)
-	if flag := command.Flags().Lookup("report-dir"); flag != nil {
-		flag.Usage = "write status.md and status.yaml to this directory"
-	}
-	return command
+	return statusview.NewFleet(newCLIRuntime(inv), statusCommandDependencies())
 }
 
 type fleetStatsReport struct {
@@ -259,7 +228,7 @@ func collectFleetOverview(inv *invocation, projects, filter string, options qual
 	}
 	status := fullStatus
 	if !all {
-		status = hideCleanRepositories(fullStatus)
+		status = repostatus.HideClean(fullStatus)
 	}
 	return fleetOverviewReport{
 		SchemaVersion: 1,
@@ -579,7 +548,7 @@ func fleetOverviewMarkdown(report fleetOverviewReport, details bool) string {
 		fmt.Fprintf(&out, "- hooks: %s\n", fleetHooksSummary(*report.Stats.Hooks))
 	}
 	out.WriteString("\n## Attention\n\n")
-	attention := strings.TrimPrefix(statusMarkdown(report.Status, details, "# WB fleet status\n\n"), "# WB fleet status\n\n")
+	attention := strings.TrimPrefix(statusview.Markdown(report.Status, details, "# WB fleet status\n\n"), "# WB fleet status\n\n")
 	out.WriteString(attention)
 	return out.String()
 }

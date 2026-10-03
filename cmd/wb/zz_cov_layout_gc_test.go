@@ -43,16 +43,6 @@ func cwCovExec(t *testing.T, projects string, build func() *cobra.Command, args 
 	return out.String(), errOut.String(), err
 }
 
-// cwCovCaptureStdoutInt captures os.Stdout while fn returns an exit code: the
-// migrate and campaign writers print with fmt.Print / os.Stdout and return a
-// code rather than an error.
-func cwCovCaptureStdoutInt(t *testing.T, fn func() int) int {
-	t.Helper()
-	var code int
-	cwCovCaptureStdout(t, func() { code = fn() })
-	return code
-}
-
 // cwCovCloneWithOrigin makes a bare origin and a clone of it at clonePath.
 func cwCovCloneWithOrigin(t *testing.T, seedRoot, name, clonePath string) string {
 	t.Helper()

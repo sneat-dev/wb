@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -40,36 +39,5 @@ func TestBranchArchiveTargetPropagatesWriteFailure(t *testing.T) {
 	command.SetArgs([]string{"--repo", "sneat-co/app"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "write refused") {
 		t.Fatalf("error = %v; want the underlying write failure to propagate", err)
-	}
-}
-
-// TestCampaignProgressReportsWaveNumber drives report()'s `event.Wave > 0`
-// branch: the rendered line must name the wave.
-func TestCampaignProgressReportsWaveNumber(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	p := newCampaignProgressWithHeartbeat(&out, true, "sync", 0)
-	p.report(progress.Event{Wave: 3, State: progress.Running})
-	if !strings.Contains(out.String(), "wave 3") {
-		t.Fatalf("output = %q; want it to name wave 3", out.String())
-	}
-}
-
-// TestCampaignProgressIgnoresReportsAfterFinish drives report()'s
-// `p.finished` guard: an event reported after finish() must not overwrite
-// the finished line.
-func TestCampaignProgressIgnoresReportsAfterFinish(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	p := newCampaignProgressWithHeartbeat(&out, true, "sync", 0)
-	p.report(progress.Event{Detail: "starting up"})
-	p.finish("done")
-	afterFinish := out.String()
-	p.report(progress.Event{Detail: "late event, must be dropped"})
-	if out.String() != afterFinish {
-		t.Fatalf("output changed after finish: before=%q after=%q", afterFinish, out.String())
-	}
-	if strings.Contains(out.String(), "late event") {
-		t.Fatalf("output = %q; a post-finish report must not render", out.String())
 	}
 }

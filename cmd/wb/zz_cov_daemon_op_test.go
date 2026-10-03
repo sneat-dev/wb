@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
-	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 func TestCwCovDaemonOperationTerminalAndState(t *testing.T) {
@@ -88,70 +87,6 @@ func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
 	}
 	if payload.StdoutTail != "hello\n" || payload.StderrTail != "warning\n" || payload.ArgumentCount != 2 {
 		t.Fatalf("payload tails = %+v", payload)
-	}
-}
-
-func TestCwCovStatusHiddenNoteAndDetails(t *testing.T) {
-	if got := statusHiddenNote(1); !strings.Contains(got, "1 clean repository hidden") || !strings.Contains(got, "include it") {
-		t.Errorf("statusHiddenNote(1) = %q", got)
-	}
-	if got := statusHiddenNote(4); !strings.Contains(got, "4 clean repositories hidden") || !strings.Contains(got, "include them") {
-		t.Errorf("statusHiddenNote(4) = %q", got)
-	}
-
-	var out strings.Builder
-	writeStatusDetails(&out, repositoryStatusInfo{
-		Repository: "acme/app",
-		Modified:   []string{"a.go"},
-		Untracked:  []string{"notes.txt"},
-		Conflicted: []string{"merge.go"},
-		Stashed:    []string{"stash@{0}"},
-	})
-	text := out.String()
-	for _, want := range []string{
-		"acme/app — Modified:", "- `a.go`",
-		"acme/app — Untracked:", "- `notes.txt`",
-		"acme/app — Conflicted:", "- `merge.go`",
-		"acme/app — Stashed:", "- `stash@{0}`",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("status details missing %q:\n%s", want, text)
-		}
-	}
-
-	// Unpushed commits render as a group when there is no branch detail, and
-	// as per-branch sections when there is.
-	out.Reset()
-	writeStatusDetails(&out, repositoryStatusInfo{Repository: "acme/app", Unpushed: []string{"deadbee"}})
-	if !strings.Contains(out.String(), "acme/app — Unpushed:") || !strings.Contains(out.String(), "- `deadbee`") {
-		t.Errorf("plain unpushed details = %q", out.String())
-	}
-
-	out.Reset()
-	writeStatusDetails(&out, repositoryStatusInfo{
-		Repository: "acme/app",
-		UnpushedBranches: []gitops.UnpushedBranch{
-			{Branch: "task/one", Worktree: "/tmp/wt/task-one", Commits: []string{"c1", "c2"}},
-			{Branch: "task/two"},
-		},
-	})
-	text = out.String()
-	for _, want := range []string{
-		"acme/app — Unpushed:",
-		"- Branch `task/one` in worktree `/tmp/wt/task-one`:",
-		"- `c1`", "- `c2`",
-		"- Branch `task/two`:",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("unpushed-branch details missing %q:\n%s", want, text)
-		}
-	}
-
-	// An empty detail set writes nothing at all.
-	out.Reset()
-	writeStatusDetails(&out, repositoryStatusInfo{Repository: "acme/clean"})
-	if out.Len() != 0 {
-		t.Errorf("empty details wrote %q", out.String())
 	}
 }
 

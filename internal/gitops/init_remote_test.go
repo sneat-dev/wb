@@ -1,12 +1,13 @@
-package main
+package gitops
 
 import (
 	"errors"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 type repoInitRemoteFake struct {
@@ -17,14 +18,14 @@ type repoInitRemoteFake struct {
 	commits bool
 }
 
-func (fake *repoInitRemoteFake) ops() repoInitRemoteOps {
+func (fake *repoInitRemoteFake) ops() initRemoteOps {
 	failed := func(step string) error {
 		if fake.failAt == step {
 			return errors.New(step + " failed")
 		}
 		return nil
 	}
-	return repoInitRemoteOps{
+	return initRemoteOps{
 		skipSync: func(path string) (bool, error) {
 			fake.calls = append(fake.calls, "skip:"+path)
 			return fake.skip, failed("skip")
@@ -53,6 +54,7 @@ func (fake *repoInitRemoteFake) ops() repoInitRemoteOps {
 }
 
 func TestRepoInitRemoteValidatesBeforeMutationAndStopsAtEachFailure(t *testing.T) {
+	t.Parallel()
 	const path = "fixture"
 	steps := []string{"skip:fixture", "origin:fixture", "branch:fixture", "commits:fixture", "commit:fixture:Initial commit", "push:fixture:main"}
 	for _, test := range []struct {
@@ -73,8 +75,9 @@ func TestRepoInitRemoteValidatesBeforeMutationAndStopsAtEachFailure(t *testing.T
 		{name: "push failure is returned", failAt: "push", branch: "main", wantError: "push failed", wantCalls: 6},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fake := &repoInitRemoteFake{failAt: test.failAt, skip: test.skip, branch: test.branch, commits: test.commits}
-			err := runRepoInitRemoteWithOps(path, fake.ops())
+			err := initRemoteWith(path, fake.ops(), nil)
 			if test.wantError == "" {
 				if err != nil {
 					t.Fatalf("init remote: %v", err)
@@ -93,37 +96,42 @@ func TestRepoInitRemoteValidatesBeforeMutationAndStopsAtEachFailure(t *testing.T
 	}
 }
 
-func TestRepoInitRemoteCommandDefaultsToCurrentDirectoryAndAcceptsExplicitPath(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		args []string
-		path string
-	}{
-		{name: "current directory", path: "."},
-		{name: "explicit path", args: []string{"/fixture/repo"}, path: "/fixture/repo"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fake := &repoInitRemoteFake{branch: "main", commits: true}
-			_, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command {
-				return newRepoInitRemoteCmdWithOps(fake.ops())
-			}, test.args...)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(fake.calls) != 5 || fake.calls[0] != "skip:"+test.path || fake.calls[4] != "push:"+test.path+":main" {
-				t.Fatalf("command passed operations %v, want path %q", fake.calls, test.path)
-			}
-		})
+func TestInitRemoteNotificationsFollowCompletedMutations(t *testing.T) {
+	t.Parallel()
+	fake := &repoInitRemoteFake{branch: "main"}
+	var notices []InitRemoteEvent
+	err := initRemoteWith("fixture", fake.ops(), func(event InitRemoteEvent) {
+		notices = append(notices, event)
+		if event.Kind == CreatedInitialCommit && len(fake.calls) != 5 {
+			t.Fatalf("commit notice calls=%v", fake.calls)
+		}
+		if event.Kind == Published && len(fake.calls) != 6 {
+			t.Fatalf("published notice calls=%v", fake.calls)
+		}
+	})
+	want := []InitRemoteEvent{{Kind: CreatedInitialCommit, Path: "fixture", Branch: "main"}, {Kind: Published, Path: "fixture", Branch: "main"}}
+	if err != nil || !reflect.DeepEqual(notices, want) {
+		t.Fatalf("notices=%v err=%v", notices, err)
 	}
 }
-
-func TestRepoInitRemoteIsRegisteredUnderRepoCommand(t *testing.T) {
-	root := t.TempDir()
-	repo := newRepoCmd(testInvocation(t, root))
-	for _, path := range [][]string{{"init-remote"}, {"status"}, {"ignore"}, {"transfer", "cleanup"}} {
-		command, remaining, err := repo.Find(path)
-		if err != nil || len(remaining) != 0 || command == nil || command.Name() != path[len(path)-1] {
-			t.Errorf("repo command %v = (%v, %v, %v)", path, command, remaining, err)
-		}
+func TestInitRemoteActualGitPublishesAndSetsUpstream(t *testing.T) {
+	t.Parallel()
+	origin, repo := t.TempDir(), t.TempDir()
+	git(t, origin, "init", "--bare", "-q")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
+	git(t, repo, "init", "-q", "-b", "main")
+	git(t, repo, "config", "user.name", "wb-test")
+	git(t, repo, "config", "user.email", "wb-test@example.com")
+	git(t, repo, "remote", "add", "origin", origin)
+	var notices []InitRemoteEvent
+	if err := InitRemote(repo, func(event InitRemoteEvent) { notices = append(notices, event) }); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := exec.Command("git", "-C", repo, "rev-parse", "--abbrev-ref", "main@{upstream}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("upstream: %v: %s", err, raw)
+	}
+	if len(notices) != 2 || notices[0].Kind != CreatedInitialCommit || notices[1].Kind != Published || strings.TrimSpace(string(raw)) != "origin/main" {
+		t.Fatal(notices)
 	}
 }

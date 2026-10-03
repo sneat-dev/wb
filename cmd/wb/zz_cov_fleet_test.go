@@ -471,9 +471,13 @@ func TestCwCovFleetCommandsEmitReportsInProcess(t *testing.T) {
 	}
 
 	// Status: the worklist is delivered on the command's own writer.
-	_, _, code = cwCovRun(t, "fleet", "status", "--projects-root", root, "--format", "json")
+	stdout, _, code = cwCovRun(t, "fleet", "status", "--projects-root", root, "--format", "json")
 	if code != exitOK {
 		t.Fatalf("fleet status exit = %d", code)
+	}
+
+	if !strings.Contains(stdout, `"repository": "acme/dirty"`) {
+		t.Fatalf("fleet status bound output = %s", stdout)
 	}
 
 	// YAML and unknown-format handling.

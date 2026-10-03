@@ -109,15 +109,13 @@ func TestRepoIgnoreAcceptsExplicitPath(t *testing.T) {
 }
 
 // TestRepoStatusCommandReportsOneRepositoryInProcess proves that "wb repo
-// status" reaches runRepositoryStatus through the real command tree,
+// status" reaches the shared collector through the real command tree,
 // threading its invocation into the progress reporter.
 func TestRepoStatusCommandReportsOneRepositoryInProcess(t *testing.T) {
 	dir := scratchRepo(t)
 	var stdout string
 	var err error
-	stdout = cwCovCaptureStdout(t, func() {
-		_, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRepoStatusCmd(&invocation{}) }, dir, "--format", "json")
-	})
+	stdout, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRepoCmd(&invocation{}) }, "status", dir, "--format", "json")
 	if err != nil {
 		t.Fatalf("wb repo status: %v\n%s", err, stdout)
 	}

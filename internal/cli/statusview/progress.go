@@ -1,4 +1,4 @@
-package main
+package statusview
 
 import (
 	"fmt"
@@ -6,6 +6,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/reposelection"
+	"github.com/sneat-dev/wb/internal/repostatus"
 )
 
 // statusProgress keeps a fleet status scan visibly alive without contaminating
@@ -55,14 +58,14 @@ func (progress *statusProgress) start(total int) {
 	}
 }
 
-func (progress *statusProgress) complete(target qualityTarget, report repositoryStatusInfo) {
+func (progress *statusProgress) complete(target reposelection.Target, report repostatus.Row) {
 	if progress == nil || !progress.enabled || progress.total == 0 {
 		return
 	}
 	progress.mu.Lock()
 	defer progress.mu.Unlock()
 	progress.completed++
-	progress.last = fmt.Sprintf("; %s: %s", target.repository, report.Status)
+	progress.last = fmt.Sprintf("; %s: %s", target.Repository, report.Status)
 	progress.renderCurrentLocked()
 }
 

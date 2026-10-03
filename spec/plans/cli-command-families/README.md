@@ -280,15 +280,52 @@ submission assertions remain at their actual boundaries. Independent review
 r20 accepted the exact source, original assertion migration, scoped profiles,
 native results and affected-CI test-import closure with no remaining findings.
 
+The next approved change cohort extracts the complete local and hierarchical
+migration command. `migraterun` sequences the existing migration effects;
+`cmdmigrate` owns arguments, output and exit policy. Shared campaign progress
+serves migration and the existing dependency/worktree consumers. Preserve
+cleanup's bypass of report setup, progress lookup timing, progress completion
+before persistence, and report/format errors before campaign execution errors.
+Independent architecture review r23 accepted this boundary. The implemented
+cohort has 219/219 new or moved adapter/service/progress statements covered,
+plus 7/7 root factory/forwarding statements. The selected combined root gate
+passed 36 top-level cases in 14.811s; one additional existing quiet-policy case
+completed the forwarding profile in 0.735s without another executable build.
+Full extracted race suites passed. Independent implementation review r24
+accepted the exact source, original assertions, native obligations, scoped
+profiles and logical root-profile union with no remaining findings. These
+scoped results are not a whole-repository measurement.
+
 ### Task 6: Extract orchestration command families
 
-**Status:** queued
+**Status:** in_progress
 **Verifies:** User journey steps 1–4.
 
 Extract worktree, branch/PR, session/agent/task, fleet/repository and stream
 domains in cohesive batches. Preserve aliases, ownership/landing safety,
 telemetry and error classification. Move shared operations to existing internal
 packages where possible instead of keeping command-to-command calls.
+
+The next approved cohort extracts the complete repository family and a shared
+status boundary. Cobra-free `repostatus` collects and filters results;
+`statusview` owns shared command presentation. Repository status, historical
+status, fleet status, overview and stats all consume those implementations.
+Preserve status report writes before stdout-format refusal, and keep
+init-remote notices non-returning so a closed output stream cannot newly stop
+an already-started publication. Native status fixtures remain privately
+writable because optional Git index writes have not been ruled out.
+Independent architecture review r22 accepted this boundary. Scoped profiles
+cover 306/306 new or moved statements across the repository adapter, shared
+status presentation/collector and Git init sequencing, plus 10/10 root adapter
+statements. All 43 original repository/status tests have recorded destinations,
+and the 59 protected declarations remain unchanged. Extracted race suites,
+actual Git/ignore/failure cases, vet and lint passed; the combined root gate
+above also serves this cohort. Independent implementation review r25 accepted
+the exact source, original assertions, profiles, metadata and native evidence.
+It caught a private fixture's reliance on ambient Git identity and missing
+bare-origin maintenance configuration; the setup was corrected and the one
+affected native race test passed. The review has no remaining findings. No
+matched runtime saving or repository-wide percentage is claimed.
 
 ### Task 7: Separate daemon runtime from CLI adapters
 
