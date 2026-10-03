@@ -56,32 +56,7 @@ func cwCovCaptureStdoutInt(t *testing.T, fn func() int) int {
 // cwCovCloneWithOrigin makes a bare origin and a clone of it at clonePath.
 func cwCovCloneWithOrigin(t *testing.T, seedRoot, name, clonePath string) string {
 	t.Helper()
-	seed := filepath.Join(seedRoot, name+"-seed")
-	if err := os.MkdirAll(seed, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, seed, "init", "-b", "main")
-	runGit(t, seed, "config", "user.email", "wb@example.test")
-	runGit(t, seed, "config", "user.name", "WB Test")
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte(name+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, seed, "add", ".")
-	runGit(t, seed, "commit", "-m", "init")
-
-	remote := filepath.Join(seedRoot, name+".git")
-	runGit(t, seedRoot, "clone", "--bare", seed, remote)
-	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, filepath.Dir(clonePath), "clone", remote, clonePath)
-	// `git clone` does not inherit the seed's local config, so the clone needs
-	// its own identity before anything here runs `git commit-tree` on it. CI
-	// runs with an empty HOME and user.useConfigOnly, where git otherwise fails
-	// with "Author identity unknown".
-	runGit(t, clonePath, "config", "user.email", "wb@example.test")
-	runGit(t, clonePath, "config", "user.name", "WB Test")
-	return remote
+	return testenv.CloneWithOrigin(t, seedRoot, name, clonePath)
 }
 
 // cwCovPointOriginAtForge makes a clone's configured origin name a literal

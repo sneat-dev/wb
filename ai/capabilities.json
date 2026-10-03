@@ -5509,12 +5509,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/claudesettings/agent_test.go",
               "name": "TestMergeAgentHookSettingsIsIdempotent",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/cli/cmdhooks/render_test.go",
               "name": "TestAgentHookShellCommandForcesExitZero",
               "kind": "unit"
             }
@@ -5747,12 +5747,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/agentguard/hooks_integration_test.go",
               "name": "TestAgentHookNeverExitsNonZero",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/agentguard/hooks_integration_test.go",
               "name": "TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall",
               "kind": "integration"
             }
@@ -5828,12 +5828,12 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/hooks_test.go",
+              "path": "internal/cli/cmdhooks/render_test.go",
               "name": "TestPrintHooksCheckShowsExplicitProfileExclusion",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_test.go",
+              "path": "internal/hooks/cli_integration_test.go",
               "name": "TestApplyAndCheckHooksFleet",
               "kind": "integration"
             }
@@ -6000,7 +6000,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories",
               "kind": "integration"
             },
@@ -6177,7 +6177,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories",
               "kind": "integration"
             },
@@ -6247,7 +6247,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleCheckCommandReportsTrustedExecutor",
               "kind": "unit"
             },
@@ -6390,7 +6390,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleResumeAndGCAreSafeOnEmptyState",
               "kind": "unit"
             }
@@ -6519,7 +6519,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry",
               "kind": "unit"
             },
@@ -6620,7 +6620,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_measure_test.go",
+              "path": "internal/hooks/cli_integration_test.go",
               "name": "TestHooksMeasureShowsTheStreamProfileDelta",
               "kind": "e2e"
             }
@@ -6692,7 +6692,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_test.go",
+              "path": "internal/cli/cmdhooks/render_test.go",
               "name": "TestPrintHookMetricsExplainsPushAttempts",
               "kind": "unit"
             }
@@ -9363,7 +9363,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/run_command_test.go",
+              "path": "internal/cli/cmdrun/admission_flags_test.go",
               "name": "TestRunAsyncFlagRequiresCommandMode",
               "kind": "unit"
             },
@@ -9398,17 +9398,17 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/run_queue_progress_test.go",
+              "path": "internal/cli/cmdrun/progress_test.go",
               "name": "TestRunQueueProgressFormatsQueuedHeartbeatAdmittedAndDoneLines",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
+              "path": "internal/runexec/admission_native_test.go",
               "name": "TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
+              "path": "internal/cli/cmdrun/integration/observer_test.go",
               "name": "TestRunCommandReportsQueueVisibilityOnStderr",
               "kind": "integration"
             },
@@ -9418,13 +9418,13 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
-              "name": "TestRunHistoryRecordsQueueWaitAndAdmissionTime",
+              "path": "internal/runexec/history_admission_native_test.go",
+              "name": "TestNativeHistoryRecordsQueueWaitAndAdmissionTime",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
-              "name": "TestRunQueueListsRunningAndWaitingEntries",
+              "path": "internal/cli/cmdrun/integration/queue_test.go",
+              "name": "TestQueueNativeListsRealRunningAndWaitingEntries",
               "kind": "integration"
             },
             {
@@ -9443,9 +9443,14 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/run_changed_test.go",
-              "name": "TestRunChangedExitsZeroWithoutRunningWhenNothingChanged",
+              "path": "internal/runexec/changed_native_test.go",
+              "name": "TestChangedNativeImmutableBaseNoWorkMissingDefaultAndInvalidTarget",
               "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdrun/command_test.go",
+              "name": "TestChangedOrderingNoWorkAndResolvedArguments",
+              "kind": "unit"
             },
             {
               "path": "internal/quality/changed_packages_test.go",

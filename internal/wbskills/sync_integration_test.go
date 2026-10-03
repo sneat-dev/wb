@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,14 +31,21 @@ func (e *exitError) Error() string { return e.message }
 func testRuntime() shared.Runtime {
 	return shared.Runtime{ExitError: func(code int, message string) error { return &exitError{code: code, message: message} }}
 }
-func testSyncDependencies(cfg skillsync.Config) cmdskills.SyncDependencies {
-	return cmdskills.SyncDependencies{Config: func() (skillsync.Config, error) { return cfg, nil }, Home: os.UserHomeDir, Getenv: os.Getenv}
+func testSyncDependencies(cfg skillsync.Config, home string) cmdskills.SyncDependencies {
+	deps := cmdskills.SyncDependencies{Config: func() (skillsync.Config, error) { return cfg, nil }, Home: os.UserHomeDir, Getenv: os.Getenv}
+	if home != "" {
+		deps.Home = func() (string, error) { return home, nil }
+		deps.Getenv = func(string) string { return "" }
+	}
+	return deps
 }
 func newSkillsSyncCmd(runtime shared.Runtime, deps cmdskills.SyncDependencies) *cobra.Command {
 	root := cmdskills.New(runtime, deps, cmdskills.HookDependencies{})
 	for _, c := range root.Commands() {
 		if c.Name() == "sync" {
 			root.RemoveCommand(c)
+			c.SetOut(io.Discard)
+			c.SetErr(io.Discard)
 			return c
 		}
 	}
@@ -45,7 +53,7 @@ func newSkillsSyncCmd(runtime shared.Runtime, deps cmdskills.SyncDependencies) *
 }
 func testNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t *testing.T, cfg skillsync.Config) {
 	dir := filepath.Join(t.TempDir(), "skills")
-	first := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	first := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, filepath.Dir(dir)))
 	first.SetArgs([]string{"--dir", dir})
 	var firstOut bytes.Buffer
 	first.SetOut(&firstOut)
@@ -62,7 +70,7 @@ func testNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t *testing.T, 
 		t.Fatalf("no marker written: %v", err)
 	}
 
-	second := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	second := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, filepath.Dir(dir)))
 	second.SetArgs([]string{"--dir", dir})
 	var secondOut bytes.Buffer
 	second.SetOut(&secondOut)
@@ -80,7 +88,7 @@ func testNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t *testing.T, 
 func testNewSkillsSyncCmdDryRunWritesNothing(t *testing.T, cfg skillsync.Config) {
 	dir := filepath.Join(t.TempDir(), "skills")
 
-	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, filepath.Dir(dir)))
 	command.SetArgs([]string{"--dir", dir, "--dry-run"})
 	var out bytes.Buffer
 	command.SetOut(&out)
@@ -104,7 +112,7 @@ func testNewSkillsSyncCmdReportsConflictsAsFindings(t *testing.T, cfg skillsync.
 		t.Fatal(err)
 	}
 
-	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, filepath.Dir(dir)))
 	command.SetArgs([]string{"--dir", dir})
 	var out bytes.Buffer
 	command.SetOut(&out)
@@ -130,7 +138,7 @@ func testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor(t *testing.T, cfg skillsy
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 
-	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, ""))
 	command.SetArgs([]string{"--harness", "cursor"})
 	var out bytes.Buffer
 	command.SetOut(&out)
@@ -151,11 +159,8 @@ func testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor(t *testing.T, cfg skillsy
 
 func testNewSkillsSyncCmdJSONReportsMultipleHarnessTargets(t *testing.T, cfg skillsync.Config) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
 
-	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, home))
 	command.SetArgs([]string{"--harness", "cursor,codex", "--format", "json"})
 	var out bytes.Buffer
 	command.SetOut(&out)
@@ -182,17 +187,14 @@ func testNewSkillsSyncCmdJSONReportsMultipleHarnessTargets(t *testing.T, cfg ski
 
 func testNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged(t *testing.T, cfg skillsync.Config) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
 
-	first := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	first := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, home))
 	first.SetArgs([]string{"--harness", "cursor,codex"})
 	if err := first.Execute(); err != nil {
 		t.Fatalf("initial sync: %v", err)
 	}
 
-	second := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	second := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, home))
 	second.SetArgs([]string{"--harness", "cursor,codex", "--format", "json"})
 	var out bytes.Buffer
 	second.SetOut(&out)
@@ -218,16 +220,13 @@ func testNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged(t *testing.T,
 
 func testNewSkillsSyncCmdDefaultSyncsEveryPresentHarness(t *testing.T, cfg skillsync.Config) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
 	for _, name := range []string{".claude", ".cursor"} {
 		if err := os.Mkdir(filepath.Join(home, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, home))
 	var out bytes.Buffer
 	command.SetOut(&out)
 	if err := command.Execute(); err != nil {
@@ -270,7 +269,7 @@ type skillsSyncMultiJSON struct {
 func testNewSkillsSyncCmdJSONFormatReportsEveryField(t *testing.T, cfg skillsync.Config) {
 	dir := filepath.Join(t.TempDir(), "skills")
 
-	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg))
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, filepath.Dir(dir)))
 	command.SetArgs([]string{"--dir", dir, "--format", "json"})
 	var out bytes.Buffer
 	command.SetOut(&out)
@@ -295,8 +294,9 @@ func testNewSkillsSyncCmdJSONFormatReportsEveryField(t *testing.T, cfg skillsync
 }
 
 // The embedded source is immutable; only the source/descriptor is shared.
-// Each child owns its HOME, command, reports and mutation target. These children
-// remain serial because the preserved harness binding fixtures use t.Setenv.
+// Each child owns its Home/Getenv callbacks, command, reports and mutation target.
+// The cursor journey retains the real environment binding and runs serially;
+// the other children run in parallel after its environment cleanup completes.
 func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 	start := time.Now()
 	cfg, err := wbskills.Config(ai.SkillsFS, buildinfo.Snapshot())
@@ -305,16 +305,19 @@ func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 	}
 	t.Logf("immutable source setup: %s", time.Since(start))
 	t.Run("TestNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 	t.Run("TestNewSkillsSyncCmdDryRunWritesNothing", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdDryRunWritesNothing(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 	t.Run("TestNewSkillsSyncCmdReportsConflictsAsFindings", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdReportsConflictsAsFindings(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
@@ -325,21 +328,25 @@ func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 	t.Run("TestNewSkillsSyncCmdJSONReportsMultipleHarnessTargets", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdJSONReportsMultipleHarnessTargets(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 	t.Run("TestNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 	t.Run("TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdDefaultSyncsEveryPresentHarness(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 	t.Run("TestNewSkillsSyncCmdJSONFormatReportsEveryField", func(t *testing.T) {
+		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdJSONFormatReportsEveryField(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))

@@ -186,7 +186,29 @@ eight real harness subtests; every child retains its own writable target and
 upstream safety validation. The existing engine is reused rather than copied.
 Root preserves real shell quoting, lazy daemon timeout bounds and exact exit
 error identity. Capability evidence references follow the migrated tests;
-focused root guards and independent review remain required before acceptance.
+its complete schema/runtime/evidence guard passed. Independent review r15
+accepted the exact source, assertion migration, metadata and documentation.
+
+A subsequent test-only improvement gives seven of the eight embedded harness
+journeys explicit per-command Home/Getenv callbacks and runs them in parallel,
+with separate writable targets and output state. The remaining serial cursor
+journey retains real process-environment binding. Every original assertion and
+upstream preparation/revalidation remains. The selected package race check
+passed in 14.017s. Go's parent-test elapsed field excludes parallel children,
+so it cannot establish an improvement over the earlier serial group. This
+change establishes safe fixture isolation and parallel execution; no measured
+speedup or production coverage change is claimed.
+
+The complete hooks family now delegates through `cmdhooks`, with reusable
+executable/quoting, settings merge, fleet discovery and lifecycle backfill
+operations below the command layer. Scoped profiles cover 587/587 new or moved
+statements and 21/21 root wiring statements. The 49 original tests have explicit
+destinations; real hook exit codes, settings permissions, lifecycle workers and
+agent security journeys remain. Isolated family tests avoid native setup, and
+native root journeys reuse the existing shared executable builder. No matched
+before/after timing or whole-CI speedup is claimed. Independent review r19
+accepted the exact source, original assertion migration, metadata and evidence
+with no remaining findings.
 
 ### Task 5: Extract quality and change command families
 
@@ -242,8 +264,21 @@ Two real read-only worklist fixtures now share one parent setup, reducing eight
 file writes to four; memory-store read tests share one populated parent fixture
 across four parallel children. Mutating workflows retain private writable
 fixtures. These are concrete setup reductions, with no measured elapsed saving
-or new whole-repository coverage percentage claimed. Install/skills and later
-domains remain in progress; final composition and delivery are still pending.
+or new whole-repository coverage percentage claimed. Install/skills are now
+extracted; later domains, final composition and delivery remain pending.
+
+The complete run family now owns argument handling and rendering in `cmdrun`,
+with Cobra-free execution, changed-package selection, recipes, history, queue
+and submission operations in `runexec`. Actual worker and daemon consumers
+share environment and operation-receipt helpers; shared Git and queue fixture
+helpers replace duplicate setup. Scoped profiles cover 499/499 new or moved
+service, adapter and helper statements, plus 13/13 root factory statements.
+The isolated command suite takes 0.593s and the execution-service race suite
+3.873s. These measure different responsibilities, not a before/after speedup.
+Native Git, admission, child streams/exit codes and authenticated daemon
+submission assertions remain at their actual boundaries. Independent review
+r20 accepted the exact source, original assertion migration, scoped profiles,
+native results and affected-CI test-import closure with no remaining findings.
 
 ### Task 6: Extract orchestration command families
 

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -414,46 +413,9 @@ func TestCwDepsRunSyncRefusesBrokenAuthentication(t *testing.T) {
 
 // TestCwDepsRunQueueSummaryKeepsTelemetryPrivate covers the privacy-safe label
 // derivation used by the CPU queue receipts.
-func TestCwDepsRunQueueSummaryKeepsTelemetryPrivate(t *testing.T) {
-	if got := runQueueSummary(nil); got != "unknown" {
-		t.Errorf("runQueueSummary(nil) = %q", got)
-	}
-	if got := runQueueSummary([]string{"/usr/local/bin/go", "test", "./..."}); got != "go test" {
-		t.Errorf("runQueueSummary(go test) = %q", got)
-	}
-	if got := runQueueSummary([]string{"go", "-race", "test"}); got != "go test" {
-		t.Errorf("runQueueSummary(skipping flags) = %q", got)
-	}
-	if got := runQueueSummary([]string{"/usr/bin/make"}); got != "make" {
-		t.Errorf("runQueueSummary(makeless) = %q", got)
-	}
-}
 
 // TestCwDepsPrintRunQueueRendersRunningAndWaitingSeats covers both queue
 // listing shapes in text and JSON.
-func TestCwDepsPrintRunQueueRendersRunningAndWaitingSeats(t *testing.T) {
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
-
-	var out bytes.Buffer
-	command := cwDepsNewOutCommand(&out)
-	if err := printRunQueue(&invocation{}, command, false); err != nil {
-		t.Fatalf("printRunQueue text: %v", err)
-	}
-	for _, want := range []string{"WB CPU queue", "running (", "waiting ("} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("queue listing missing %q:\n%s", want, out.String())
-		}
-	}
-	out.Reset()
-	command = cwDepsNewOutCommand(&out)
-	if err := printRunQueue(&invocation{}, command, true); err != nil {
-		t.Fatalf("printRunQueue json: %v", err)
-	}
-	var decoded map[string]json.RawMessage
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-		t.Fatalf("queue JSON: %v\n%s", err, out.String())
-	}
-}
 
 // cwCovWriteExecutable writes a small executable script for PATH scoping.
 func cwCovWriteExecutable(path, body string) error {

@@ -66,25 +66,6 @@ func TestCwCovCanonicalWorkerRootsAndPermissions(t *testing.T) {
 	}
 }
 
-func TestCwCovMergeWorkerEnvironmentReplacesEveryOccurrence(t *testing.T) {
-	environment := mergeWorkerEnvironment(
-		[]string{"PATH=/bin", "GOMAXPROCS=99", "GOMAXPROCS=98", "KEEP=1"},
-		map[string]string{"GOMAXPROCS": "4", "WB_CPU_UNITS": "4"},
-	)
-	joined := strings.Join(environment, "\n")
-	if strings.Contains(joined, "GOMAXPROCS=99") || strings.Contains(joined, "GOMAXPROCS=98") {
-		t.Fatalf("stale values survived: %v", environment)
-	}
-	if strings.Count(joined, "GOMAXPROCS=4") != 1 {
-		t.Fatalf("GOMAXPROCS was not set exactly once: %v", environment)
-	}
-	for _, want := range []string{"KEEP=1", "PATH=/bin", "WB_CPU_UNITS=4"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("environment lost %q: %v", want, environment)
-		}
-	}
-}
-
 func TestCwCovWorkerTailBufferKeepsTheTailBounded(t *testing.T) {
 	var buffer workerTailBuffer
 	chunk := bytes.Repeat([]byte("a"), 40<<10)

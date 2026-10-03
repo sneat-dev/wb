@@ -1,0 +1,183 @@
+package runexec
+
+import (
+	"context"
+	"github.com/sneat-dev/wb/internal/runqueue"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"os"
+	"testing"
+	"time"
+)
+
+const holderHoldDuration = AdmissionGrace + 150*time.Millisecond
+
+type eventRecorder struct{ events []QueueEvent }
+
+func (r *eventRecorder) report(event QueueEvent) { r.events = append(r.events, event) }
+func nativeAdmission(ctx context.Context, root string, args []string, self runqueue.Participant, observe func(QueueEvent)) (*runqueue.Lease, int, time.Duration, error) {
+	result, err := defaultAdmissionOperations().run(ctx, root, args, self, observe, 5*time.Millisecond)
+	return result.Lease, result.Units, result.Waited, err
+}
+func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.T) {
+	// Force the small-machine (N<8) legacy budget-sum pool so this test's
+	// manually-held lease deterministically blocks the admission under
+	// test, regardless of how many CPUs the machine running it actually
+	// has (a large machine would otherwise route "go build ./..." through
+	// the separate adaptive heavy-job pool this hold never touches).
+	defer runqueue.SetNumCPUForTest(4)()
+	root := t.TempDir()
+	budget := runqueue.Budget()
+	held, _, err := runqueue.Acquire(context.Background(), root, budget, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered PIDs are now liveness-checked (a killed process's ticket or
+	// holder record must not linger forever), so both self and the holder
+	// must carry a real, live PID; this test process's own PID qualifies for
+	// the whole test.
+	holderPID := os.Getpid()
+	holderAnnouncement := held.Announce(runqueue.Participant{PID: holderPID, Summary: "go build"})
+	released := make(chan struct{})
+	go func() {
+		// Hold from the moment the waiter is genuinely queued, and for longer
+		// than AdmissionGrace, so the wait goes through the
+		// queued+heartbeat path rather than resolving as immediate.
+		testenv.WaitForQueued(t, root, budget)
+		time.Sleep(holderHoldDuration)
+		holderAnnouncement.Cleanup()
+		held.Release()
+		close(released)
+	}()
+	t.Cleanup(func() { <-released })
+
+	var out eventRecorder
+	progress := out.report
+	self := runqueue.Participant{PID: os.Getpid(), Summary: "go test", Worktree: "/w/waiter"}
+
+	lease, _, waited, err := nativeAdmission(context.Background(), root, []string{"go", "test", "./..."}, self, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if waited < AdmissionGrace {
+		t.Fatalf("waited = %s, want at least the admission grace period", waited)
+	}
+
+	if len(out.events) < 4 || out.events[0].Kind != Queued {
+		t.Fatalf("queued events=%+v", out.events)
+	}
+	queued := out.events[0]
+	if queued.Summary != "go test" || queued.State.Position != 1 || queued.State.Total != 1 || len(queued.State.Holders) < 1 || queued.State.Holders[0].PID != holderPID || queued.State.Holders[0].Summary != "go build" {
+		t.Fatalf("queued state=%+v", queued)
+	}
+	heartbeats := 0
+	for _, event := range out.events {
+		if event.Kind == WaitingHeartbeat {
+			heartbeats++
+		}
+		if event.Kind == ImmediatelyAdmitted {
+			t.Fatal("a waiting command must not claim an empty queue")
+		}
+	}
+	if heartbeats < 2 {
+		t.Fatalf("heartbeats=%d want>=2", heartbeats)
+	}
+	if out.events[len(out.events)-1].Kind != AdmittedAfterWait {
+		t.Fatalf("missing final admitted event: %+v", out.events)
+	}
+}
+
+func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T) {
+	root := t.TempDir()
+	var out eventRecorder
+	progress := out.report
+	self := runqueue.Participant{PID: 1, Summary: "go test"}
+
+	lease, _, waited, err := nativeAdmission(context.Background(), root, []string{"go", "test", "./..."}, self, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if waited >= AdmissionGrace {
+		t.Fatalf("waited = %s, want an immediate admission on an empty queue", waited)
+	}
+	if len(out.events) != 1 || out.events[0].Kind != ImmediatelyAdmitted {
+		t.Fatalf("immediate events=%+v", out.events)
+	}
+}
+
+func TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool(t *testing.T) {
+	defer runqueue.SetNumCPUForTest(18)()
+	root := t.TempDir()
+	broadArgv := []string{"go", "test", "./..."}
+
+	var firstOut eventRecorder
+	firstProgress := firstOut.report
+	firstSelf := runqueue.Participant{PID: os.Getpid(), Summary: "first"}
+	firstLease, firstUnits, _, err := nativeAdmission(context.Background(), root, broadArgv, firstSelf, firstProgress)
+	if err != nil {
+		t.Fatalf("first admitWithQueueVisibility = %v", err)
+	}
+	defer firstLease.Release()
+	if firstUnits != 18 {
+		t.Fatalf("first alone = %d units, want 18 (the whole machine)", firstUnits)
+	}
+	if len(firstOut.events) != 1 || firstOut.events[0].Kind != ImmediatelyAdmitted {
+		t.Fatalf("first events=%+v: must not queue against own holder", firstOut.events)
+	}
+
+	var secondOut eventRecorder
+	secondProgress := secondOut.report
+	secondSelf := runqueue.Participant{PID: os.Getpid(), Summary: "second"}
+	secondLease, secondUnits, _, err := nativeAdmission(context.Background(), root, broadArgv, secondSelf, secondProgress)
+	if err != nil {
+		t.Fatalf("second admitWithQueueVisibility = %v", err)
+	}
+	defer secondLease.Release()
+	if secondUnits != 9 {
+		t.Fatalf("second while the first holds 18 = %d units, want min(12, 27-18) = 9", secondUnits)
+	}
+}
+
+func TestQueueStateHasAdmittedSelfRequiresTheExactSelfHolderAfterTicketRemoval(t *testing.T) {
+	self := runqueue.Participant{PID: 7, Summary: "go test", Worktree: "/worktree"}
+	if !queueStateHasAdmittedSelf(runqueue.State{Holders: []runqueue.Holder{{Participant: self}}}, self) {
+		t.Fatal("own holder after ticket removal must prove admission")
+	}
+	for name, state := range map[string]runqueue.State{
+		"still waiting":  {Total: 1, Holders: []runqueue.Holder{{Participant: self}}},
+		"other pid":      {Holders: []runqueue.Holder{{Participant: runqueue.Participant{PID: 8, Summary: self.Summary, Worktree: self.Worktree}}}},
+		"other summary":  {Holders: []runqueue.Holder{{Participant: runqueue.Participant{PID: self.PID, Summary: "go build", Worktree: self.Worktree}}}},
+		"other worktree": {Holders: []runqueue.Holder{{Participant: runqueue.Participant{PID: self.PID, Summary: self.Summary, Worktree: "/other"}}}},
+		"no visibility":  {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if queueStateHasAdmittedSelf(state, self) {
+				t.Fatalf("queueStateHasAdmittedSelf(%+v) = true", state)
+			}
+		})
+	}
+}
+
+func TestAcquireWithQueueVisibilitySkipsEverythingForKindNone(t *testing.T) {
+	root := t.TempDir()
+	var out eventRecorder
+	progress := out.report
+	lease, units, waited, err := nativeAdmission(context.Background(), root, []string{"git", "status"}, runqueue.Participant{PID: 1, Summary: "git status"}, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if units != 0 {
+		t.Fatalf("units = %d, want 0 for an ungoverned command", units)
+	}
+	if waited != 0 {
+		t.Fatalf("waited = %s, want 0 for an ungoverned command", waited)
+	}
+	if len(out.events) != 0 {
+		t.Fatalf("an ungoverned command must not publish any queue event: %+v", out.events)
+	}
+	if state := runqueue.Peek(root, 1); state.Total != 0 {
+		t.Fatalf("an ungoverned command must not register a waiting ticket: %+v", state)
+	}
+}

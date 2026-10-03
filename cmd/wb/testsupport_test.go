@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
@@ -39,10 +38,6 @@ func newDaemonOperationClient(root, token string) (daemonv1connect.DaemonService
 // invocation that is never read back.
 func newRootCmd() *cobra.Command {
 	return newRootCmdFor(&invocation{})
-}
-
-func newRunQueueProgress(out io.Writer, enabled bool, configPath string) *runQueueProgress {
-	return newRunQueueProgressWithHeartbeat(out, enabled, configPath, universalProgressHeartbeat)
 }
 
 // runPreparedNpmPublish drives the production entry point

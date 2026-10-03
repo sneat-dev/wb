@@ -340,11 +340,11 @@ func TestCwWtRequireDaemonRawExecutionPolicy(t *testing.T) {
 func TestCwWtSubmitWorkerOperationInProcess(t *testing.T) {
 	root, deps := cwWtDaemonOpFixture(t)
 	var out, errOut bytes.Buffer
-	command := &cobra.Command{}
-	command.SetContext(context.Background())
+	command := newRunCmdWithDaemonDependencies(&invocation{projectsRoot: root}, deps)
 	command.SetOut(&out)
 	command.SetErr(&errOut)
-	if err := submitWorkerOperation(&invocation{projectsRoot: root}, command, deps, "worker-cwwt", "cwWt-key", cwWtDaemonOpHelperArgv()); err != nil {
+	command.SetArgs(append([]string{"--async", "--worker", "worker-cwwt", "--idempotency-key", "cwWt-key", "--"}, cwWtDaemonOpHelperArgv()...))
+	if err := command.Execute(); err != nil {
 		t.Fatalf("submitWorkerOperation: %v (stderr=%s)", err, errOut.String())
 	}
 	var result daemonOperationResult
@@ -360,11 +360,8 @@ func TestCwWtSubmitWorkerOperationInProcess(t *testing.T) {
 	_ = time.Now()
 }
 
-// TestCwWtRunAsyncCLIWiresIntoSubmitWorkerOperation proves the RunE branch
-// that threads --async/--worker/--idempotency-key into submitWorkerOperation
-// (run.go:188) is reached from the real cobra command, not just
-// submitWorkerOperation called directly the way
-// TestCwWtSubmitWorkerOperationInProcess exercises it.
+// TestCwWtRunAsyncCLIWiresIntoSubmitWorkerOperation preserves the original
+// async journey through the actual command factory and authenticated transport.
 func TestCwWtRunAsyncCLIWiresIntoSubmitWorkerOperation(t *testing.T) {
 	root, deps := cwWtDaemonOpFixture(t)
 	command := newRunCmdWithDaemonDependencies(&invocation{projectsRoot: root}, deps)

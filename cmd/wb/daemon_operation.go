@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -13,28 +12,10 @@ import (
 
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
+	"github.com/sneat-dev/wb/internal/operationreceipt"
 )
 
-type daemonOperationResult struct {
-	OperationID           string `json:"operation_id"`
-	IdempotencyKey        string `json:"idempotency_key,omitempty"`
-	State                 string `json:"state"`
-	Cursor                string `json:"cursor"`
-	CommandKind           string `json:"command_kind"`
-	ArgsSHA256            string `json:"args_sha256"`
-	ArgumentCount         uint32 `json:"argument_count"`
-	CPUUnits              uint32 `json:"cpu_units"`
-	ExitCode              int32  `json:"exit_code,omitempty"`
-	SubmittedUnixMilli    int64  `json:"submitted_unix_milli"`
-	StartedUnixMilli      int64  `json:"started_unix_milli,omitempty"`
-	FinishedUnixMilli     int64  `json:"finished_unix_milli,omitempty"`
-	QueueWaitMilliseconds int64  `json:"queue_wait_milliseconds,omitempty"`
-	WallMilliseconds      int64  `json:"wall_milliseconds,omitempty"`
-	Error                 string `json:"error,omitempty"`
-	TargetWorkerID        string `json:"target_worker_id,omitempty"`
-	StdoutTail            string `json:"stdout_tail,omitempty"`
-	StderrTail            string `json:"stderr_tail,omitempty"`
-}
+type daemonOperationResult = operationreceipt.Receipt
 
 func newDaemonOperationCmd(inv *invocation, deps daemonDependencies) *cobra.Command {
 	command := &cobra.Command{Use: "operation", Short: "Submit and inspect authenticated local daemon operations"}
@@ -234,21 +215,11 @@ func daemonOperationTerminal(state daemonv1.OperationState) bool {
 }
 
 func daemonOperationState(state daemonv1.OperationState) string {
-	return strings.ToLower(strings.TrimPrefix(state.String(), "OPERATION_STATE_"))
+	return operationreceipt.StateName(state)
 }
 
 func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Operation) error {
-	result := daemonOperationResult{
-		OperationID: operation.OperationId, IdempotencyKey: operation.IdempotencyKey,
-		State: daemonOperationState(operation.State), Cursor: operation.Cursor,
-		CommandKind: operation.CommandKind, ArgsSHA256: operation.ArgsSha256,
-		ArgumentCount: operation.ArgumentCount, CPUUnits: operation.CpuUnits,
-		ExitCode: operation.ExitCode, SubmittedUnixMilli: operation.SubmittedUnixMilli,
-		StartedUnixMilli: operation.StartedUnixMilli, FinishedUnixMilli: operation.FinishedUnixMilli,
-		QueueWaitMilliseconds: operation.QueueWaitMilliseconds, WallMilliseconds: operation.WallMilliseconds,
-		Error: operation.Error, StdoutTail: string(operation.StdoutTail), StderrTail: string(operation.StderrTail),
-		TargetWorkerID: operation.TargetWorkerId,
-	}
+	result := operationreceipt.FromOperation(operation)
 	if format == "json" {
 		return writeJSONTo(out, result)
 	}
@@ -278,24 +249,6 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 		return err
 	}
 	return nil
-}
-
-func submitWorkerOperation(inv *invocation, command *cobra.Command, deps daemonDependencies, targetWorkerID, idempotencyKey string, args []string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
-	if err != nil {
-		return err
-	}
-	response, err := client.SubmitOperation(command.Context(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		WorkingDirectory: cwd, Argv: args, TargetWorkerId: targetWorkerID, IdempotencyKey: idempotencyKey,
-	}))
-	if err != nil {
-		return err
-	}
-	return writeDaemonOperation(command.OutOrStdout(), "json", response.Msg)
 }
 
 func requireDaemonRawExecutionPolicy(deps daemonDependencies, root string) error {

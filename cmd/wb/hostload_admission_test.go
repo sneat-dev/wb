@@ -15,12 +15,10 @@ import (
 	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/runlog"
 	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/testenv"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // withHostLoad temporarily replaces hostload.System, the Reader every
@@ -49,43 +47,6 @@ func trivialGoModule(t *testing.T, dir string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestRunCommandRefusesAdmissionWhenHostIsSaturated(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not on PATH")
-	}
-	dir := t.TempDir()
-	trivialGoModule(t, dir)
-	t.Chdir(dir)
-	withHostLoad(t, 999.0) // far above any real admission.load_floor
-
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--", "go", "vet", "./..."}, &stdout, &stderr)
-	if code == exitOK {
-		t.Fatalf("exit code = %d, want a refusal; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	for _, want := range []string{"999.00", "admission floor", "--allow-saturated-host"} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Errorf("stderr does not mention %q: %s", want, stderr.String())
-		}
-	}
-}
-
-func TestRunCommandAdmitsCPUHeavyWorkBelowFloor(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not on PATH")
-	}
-	dir := t.TempDir()
-	trivialGoModule(t, dir)
-	t.Chdir(dir)
-	withHostLoad(t, 0.01) // far below any real admission.load_floor
-
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--", "go", "vet", "./..."}, &stdout, &stderr)
-	if code != exitOK {
-		t.Fatalf("exit code = %d, want 0 when load is below the floor; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -243,7 +204,7 @@ func TestRunCommandHonorsExplicitProjectsRootForCPUAdmission(t *testing.T) {
 	// pass silently on a slow/cold run even when admission is miswired
 	// (review finding N2) — then confirm it has not been admitted while
 	// every slot under that exact root is still held.
-	waitForWaiterQueued(t, root, budget)
+	testenv.WaitForQueued(t, root, budget)
 	select {
 	case code := <-done:
 		drained = true
@@ -261,51 +222,6 @@ func TestRunCommandHonorsExplicitProjectsRootForCPUAdmission(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("inner `wb run --projects-root` never completed after the held slots were released")
-	}
-}
-
-func TestRunCommandAllowSaturatedHostOverridesRefusalAndIsRecorded(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not on PATH")
-	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	trivialGoModule(t, root)
-	git := exec.Command("git", "init", "-b", "main")
-	git.Dir = root
-	if output, err := git.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, output)
-	}
-	manifest := worktrees.Manifest{
-		Version: 1, EffortID: "hostload-override", EffortKind: worktrees.EffortKindFeature,
-		Repository: "acme/app", Worktree: root, Branch: "hostload-override", Base: "main",
-		BaseSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC(),
-		RunID: "run-1", ClaimID: strings.Repeat("b", 64), Provenance: worktrees.ProvenanceCreated,
-	}
-	if err := worktrees.WriteManifest(root, manifest); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(root)
-	withHostLoad(t, 999.0)
-
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--allow-saturated-host", "--", "go", "vet", "./..."}, &stdout, &stderr)
-	if code != exitOK {
-		t.Fatalf("exit code = %d, want 0 with --allow-saturated-host; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-
-	events, _, err := runlog.ReadCurrent(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) == 0 {
-		t.Fatal("no runlog events recorded for the overridden command")
-	}
-	last := events[len(events)-1]
-	if !last.LoadOverride {
-		t.Errorf("terminal event LoadOverride = false, want true for a --allow-saturated-host admission")
 	}
 }
 

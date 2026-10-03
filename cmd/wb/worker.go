@@ -20,6 +20,7 @@ import (
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/process"
+	"github.com/sneat-dev/wb/internal/runenv"
 	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
@@ -203,7 +204,7 @@ func executeWorkerAssignment(inv *invocation, command *cobra.Command, client dae
 	heartbeatDone := make(chan struct{})
 	go workerHeartbeatLoop(ctx, command.ErrOrStderr(), client, registration, assignment, &progress, cancel, heartbeatErrors, heartbeatDone)
 
-	self := runqueue.Participant{PID: os.Getpid(), Summary: runQueueSummary(assignment.Argv), Worktree: assignment.WorkingDirectory}
+	self := runqueue.Participant{PID: os.Getpid(), Summary: runqueue.Summary(assignment.Argv), Worktree: assignment.WorkingDirectory}
 	// Review finding (PR #628, M4): the daemon may hand a worker an
 	// explicit, caller-declared CpuUnits (the trusted raw-execution
 	// fallback); honor it directly via the plain budget-sum pool, the same
@@ -225,7 +226,7 @@ func executeWorkerAssignment(inv *invocation, command *cobra.Command, client dae
 	if err == nil {
 		child := process.CommandContext(ctx, assignment.Argv[0], assignment.Argv[1:]...)
 		child.Dir = assignment.WorkingDirectory
-		child.Env = workerChildEnvironment(os.Environ(), assignment.Argv, assignment.OperationId, units)
+		child.Env = runenv.Worker(os.Environ(), assignment.Argv, assignment.OperationId, units, runqueue.EffectiveGOFLAGS())
 		child.Stdout, child.Stderr = &stdout, &stderr
 		err = child.Run()
 		admission.Lease.Release()
@@ -338,32 +339,6 @@ func workerPermitsDirectory(roots []string, cwd string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-func workerChildEnvironment(base []string, argv []string, operationID string, units int) []string {
-	additions := map[string]string{
-		"GOMAXPROCS": runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units), "NX_PARALLEL": fmt.Sprint(units),
-		"WB_CPU_UNITS": fmt.Sprint(units), "WB_OPERATION_ID": operationID,
-	}
-	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
-		additions["GOFLAGS"] = goFlags
-	}
-	return mergeWorkerEnvironment(base, additions)
-}
-
-func mergeWorkerEnvironment(base []string, additions map[string]string) []string {
-	result := append([]string(nil), base...)
-	for key, value := range additions {
-		prefix := key + "="
-		filtered := result[:0]
-		for _, entry := range result {
-			if !strings.HasPrefix(entry, prefix) {
-				filtered = append(filtered, entry)
-			}
-		}
-		result = append(filtered, prefix+value)
-	}
-	return result
 }
 
 type workerTailBuffer struct{ bytes.Buffer }

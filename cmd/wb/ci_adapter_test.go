@@ -3,26 +3,17 @@ package main
 import (
 	"bytes"
 	"errors"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	progresspkg "github.com/sneat-dev/wb/internal/progress"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	progresspkg "github.com/sneat-dev/wb/internal/progress"
+	"github.com/spf13/cobra"
 )
 
-// failAfterNWriter is shared by root wiring tests that fail a specific output write.
-type failAfterNWriter struct{ writes, failAt int }
-
-func (w *failAfterNWriter) Write(p []byte) (int, error) {
-	w.writes++
-	if w.writes == w.failAt {
-		return 0, errors.New("write refused")
-	}
-	return len(p), nil
-}
 func TestCIProgressRootAdaptersShareRenderer(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer

@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/process"
+	"github.com/sneat-dev/wb/internal/runenv"
 	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
@@ -426,7 +427,7 @@ func (service *Service) execute(id string) {
 	service.notifyLocked()
 	argv := append([]string(nil), item.Argv...)
 	workingDir := item.WorkingDir
-	environment := governedChildEnvironment(os.Environ(), argv, item.Environment, id, units)
+	environment := runenv.Daemon(os.Environ(), argv, item.Environment, id, units, runqueue.EffectiveGOFLAGS())
 	service.mu.Unlock()
 
 	var stdout, stderr tailBuffer
@@ -641,36 +642,6 @@ func allowedEnvironment(input map[string]string) (map[string]string, error) {
 		result[key] = value
 	}
 	return result, nil
-}
-
-func governedChildEnvironment(base []string, argv []string, additions map[string]string, operationID string, units int) []string {
-	result := mergeEnvironment(base, additions)
-	cpuAdditions := map[string]string{
-		"GOMAXPROCS":      runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units),
-		"NX_PARALLEL":     fmt.Sprint(units),
-		"WB_CPU_UNITS":    fmt.Sprint(units),
-		"WB_OPERATION_ID": operationID,
-	}
-	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
-		cpuAdditions["GOFLAGS"] = goFlags
-	}
-	result = mergeEnvironment(result, cpuAdditions)
-	return result
-}
-
-func mergeEnvironment(base []string, additions map[string]string) []string {
-	result := append([]string(nil), base...)
-	for key, value := range additions {
-		prefix := key + "="
-		filtered := result[:0]
-		for _, entry := range result {
-			if !strings.HasPrefix(entry, prefix) {
-				filtered = append(filtered, entry)
-			}
-		}
-		result = append(filtered, prefix+value)
-	}
-	return result
 }
 
 type tailBuffer struct{ bytes.Buffer }
