@@ -1,4 +1,4 @@
-package main
+package cmdquality
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/qualityrun"
 )
 
 func TestWarnRedBaseNamesTheBaseCommitAndEveryFailedTest(t *testing.T) {
@@ -27,8 +28,8 @@ func TestWarnRedBaseNamesTheBaseCommitAndEveryFailedTest(t *testing.T) {
 func TestChangedCoverageJSONReportCarriesTheRedBase(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	report := changedCoverageReport{MergeBase: "abc123", Target: "origin/main", RedBase: &quality.RedBaseline{SHA: "abc123", FailedTests: []string{"example.test/a.TestOne"}}}
-	if err := writeChangedCoverageOutputTo(&out, report, "json", ""); err != nil {
+	report := qualityrun.ChangedReport{MergeBase: "abc123", Target: "origin/main", RedBase: &quality.RedBaseline{SHA: "abc123", FailedTests: []string{"example.test/a.TestOne"}}}
+	if err := writeChangedCoverageOutputTo(&out, report, "json"); err != nil {
 		t.Fatal(err)
 	}
 	var decoded struct {
@@ -41,7 +42,7 @@ func TestChangedCoverageJSONReportCarriesTheRedBase(t *testing.T) {
 		t.Fatalf("red_base = %+v in %s", decoded.RedBase, out.String())
 	}
 	out.Reset()
-	if err := writeChangedCoverageOutputTo(&out, changedCoverageReport{MergeBase: "abc123"}, "json", ""); err != nil {
+	if err := writeChangedCoverageOutputTo(&out, qualityrun.ChangedReport{MergeBase: "abc123"}, "json"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "red_base") {

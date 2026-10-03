@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 func TestE2ECoverageChangedAffectedScopeRejectsBrokenGraph(t *testing.T) {
@@ -30,34 +28,5 @@ func TestE2ECoverageChangedAffectedScopeRejectsBrokenGraph(t *testing.T) {
 	}
 	if _, err := os.Stat(profile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed graph produced a coverage profile: %v", err)
-	}
-}
-
-func TestE2ECoverageChangedRejectsUnreadableSelectedPackage(t *testing.T) {
-	t.Parallel()
-	repo := newRatchetFixtureRepo(t)
-	repo.writeFile("app.go", "package app\n")
-	base := repo.commitAll("base")
-	profile := filepath.Join(t.TempDir(), "coverage.out")
-	var output bytes.Buffer
-	command := &cobra.Command{}
-	command.SetContext(t.Context())
-	command.SetOut(&output)
-	// Exercise the internal resolved-selection boundary directly: public
-	// --changed --package remains forbidden. A regular file cannot be read as
-	// a package directory and must not be mistaken for an absent package.
-	err := runChangedCoverage(command, repo.dir, qualityOptions{
-		target: base, packagePatterns: []string{"./go.mod"}, explicitGoTestPackages: true,
-		coverageProfile: profile, format: "json",
-	})
-	var pathError *os.PathError
-	if !errors.As(err, &pathError) || !strings.Contains(err.Error(), "resolve coverage package ./go.mod") {
-		t.Fatalf("error=%v, want the package directory read failure", err)
-	}
-	if output.Len() != 0 {
-		t.Fatalf("unreadable selected package produced a success report: %s", &output)
-	}
-	if _, err := os.Stat(profile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unreadable selected package produced a coverage profile: %v", err)
 	}
 }

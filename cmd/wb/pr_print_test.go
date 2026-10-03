@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -368,37 +367,6 @@ func TestRenderSessionsPropagatesAWriteFailure(t *testing.T) {
 		err := renderSessions(&failAtCallWriter{failAt: 2}, rows)
 		if !errors.Is(err, errAtWrite) {
 			t.Fatalf("renderSessions (row) returned %v, want errAtWrite", err)
-		}
-	})
-}
-
-// TestWriteCoverageOutputToSummaryPropagatesAWriteFailure drives the two
-// "return err" branches inside writeCoverageOutputTo's --format=summary
-// case: the headline stats line and the diagnostics-index line (present
-// only when a repository carries a failed-run diagnostic).
-func TestWriteCoverageOutputToSummaryPropagatesAWriteFailure(t *testing.T) {
-	t.Parallel()
-	reportDir := t.TempDir()
-	report := quality.CoverageReport{
-		Statements: 10, Covered: 8, Percentage: 80,
-		Repositories: []quality.RepositoryCoverage{{
-			Repository: "acme/app", Statements: 10, Covered: 8,
-			Diagnostic: &quality.CoverageDiagnostic{Manifest: "manifest.json", SHA256: "abc"},
-		}},
-	}
-
-	t.Run("headline", func(t *testing.T) {
-		t.Parallel()
-		err := writeCoverageOutputTo(&failAtCallWriter{failAt: 1}, report, "summary", reportDir)
-		if !errors.Is(err, errAtWrite) {
-			t.Fatalf("writeCoverageOutputTo (headline) returned %v, want errAtWrite", err)
-		}
-	})
-	t.Run("diagnostics", func(t *testing.T) {
-		t.Parallel()
-		err := writeCoverageOutputTo(&failAtCallWriter{failAt: 2}, report, "summary", reportDir)
-		if !errors.Is(err, errAtWrite) {
-			t.Fatalf("writeCoverageOutputTo (diagnostics) returned %v, want errAtWrite", err)
 		}
 	})
 }

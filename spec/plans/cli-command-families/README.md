@@ -214,6 +214,24 @@ with a failing-before regression receipt. Independent review r8 accepted the
 implementation without findings. These scoped results do not update total
 repository coverage or establish a whole-CI timing comparison.
 
+The complete quality cohort now separates `cmdquality` adapters from the
+Cobra-free `qualityrun` service: coverage modes, baseline/summary/worklist,
+verify/check, deadcode and fleet stored coverage. Scoped race coverage measures
+435/435 adapter and 523/523 service statements; suites passed in 1.646s and
+5.925s. Focused root guards passed in 3.408s (9/9 new factory statements), and
+native journeys in 4.009s. Independent review r11 accepted the exact 64-path
+implementation and assertion migration without findings. Existing policy,
+Git/Go, durable-artifact and executable guarantees remain at their responsible
+boundaries. NoWork, NoRecords and worklist output now propagate writer failures.
+
+Adapter tests use no filesystem, environment mutation or subprocess fixtures.
+Two real read-only worklist fixtures now share one parent setup, reducing eight
+file writes to four; memory-store read tests share one populated parent fixture
+across four parallel children. Mutating workflows retain private writable
+fixtures. These are concrete setup reductions, with no measured elapsed saving
+or new whole-repository coverage percentage claimed. Install/skills and later
+domains remain in progress; final composition and delivery are still pending.
+
 ### Task 6: Extract orchestration command families
 
 **Status:** queued

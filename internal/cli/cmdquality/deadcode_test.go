@@ -1,11 +1,10 @@
-package main
+package cmdquality
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,8 +16,10 @@ import (
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
-func deadcodeTestCommand(analyze deadcodeAnalyzer, out *bytes.Buffer, args ...string) *cobra.Command {
-	command := newDeadcodeCmdWithAnalyzer(analyze)
+func deadcodeTestCommand(t *testing.T, analyze func(context.Context, string, quality.DeadcodeOptions) (quality.DeadcodeReport, error), out *bytes.Buffer, args ...string) *cobra.Command {
+	deps := testDependencies(t)
+	deps.Analyze = analyze
+	command := NewDeadcode(testRuntime(), deps)
 	command.SilenceUsage = true
 	command.SetOut(out)
 	command.SetErr(&bytes.Buffer{})
@@ -39,12 +40,12 @@ func TestDeadcodeCommandRejectsInvalidOptionsBeforeAnalysis(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			called := false
-			command := deadcodeTestCommand(func(context.Context, string, quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
+			command := deadcodeTestCommand(t, func(context.Context, string, quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
 				called = true
 				return quality.DeadcodeReport{}, nil
 			}, new(bytes.Buffer), tc.args...)
 			err := command.Execute()
-			var exit *exitError
+			var exit *testExitError
 			if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Execute() error = %v, want usage error containing %q", err, tc.want)
 			}
@@ -57,18 +58,18 @@ func TestDeadcodeCommandRejectsInvalidOptionsBeforeAnalysis(t *testing.T) {
 
 func TestDeadcodeCommandReportsNewFindingsWithExactAnalyzerOptions(t *testing.T) {
 	t.Parallel()
-	repository := t.TempDir()
+	repository := "/fixture/repository"
 	const identity = "example.com/repo/pkg.Unreachable"
 	finding := quality.DeadcodeFinding{Identity: identity, File: "pkg/a.go", Line: 17}
 	var gotPath string
 	var gotOptions quality.DeadcodeOptions
 	var output bytes.Buffer
-	command := deadcodeTestCommand(func(_ context.Context, path string, options quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
+	command := deadcodeTestCommand(t, func(_ context.Context, path string, options quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
 		gotPath, gotOptions = path, options
 		return quality.DeadcodeReport{Findings: []quality.DeadcodeFinding{finding}, New: []quality.DeadcodeFinding{finding}, BaselinePath: "baseline.txt"}, nil
 	}, &output, repository, "--baseline", "baseline.txt", "--filter", "pkg", "--generated", "--packages", "./cmd/...", "--timeout", "2s", "--format", "json")
 	err := command.Execute()
-	var exit *exitError
+	var exit *testExitError
 	if !errors.As(err, &exit) || exit.code != exitFindings || !strings.Contains(err.Error(), "1 function(s)") {
 		t.Fatalf("new finding error = %v, want findings exit", err)
 	}
@@ -84,7 +85,7 @@ func TestDeadcodeCommandReportsNewFindingsWithExactAnalyzerOptions(t *testing.T)
 func TestDeadcodeCommandWithoutBaselineRendersYAMLWithoutGating(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
-	command := deadcodeTestCommand(func(_ context.Context, _ string, options quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
+	command := deadcodeTestCommand(t, func(_ context.Context, _ string, options quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
 		if options.BaselinePath != "" {
 			t.Fatalf("--no-baseline passed %q to analyzer", options.BaselinePath)
 		}
@@ -101,31 +102,39 @@ func TestDeadcodeCommandWithoutBaselineRendersYAMLWithoutGating(t *testing.T) {
 
 func TestDeadcodeCommandUpdatesBaselineFromAnalyzerFindings(t *testing.T) {
 	t.Parallel()
-	repository := t.TempDir()
+	const repository = "/fixture/repository"
 	const identity = "example.com/repo/pkg.Helper"
 	var output bytes.Buffer
-	command := deadcodeTestCommand(func(_ context.Context, path string, options quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
+	deps := testDependencies(t)
+	deps.Analyze = func(_ context.Context, path string, options quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
 		if path != repository || options.BaselinePath != ".wb/deadcode-baseline.txt" {
-			t.Fatalf("analyzer received path %q and options %#v", path, options)
+			t.Fatalf("analyzer received %q %#v", path, options)
 		}
 		return quality.DeadcodeReport{Findings: []quality.DeadcodeFinding{{Identity: identity}}}, nil
-	}, &output, repository, "--update-baseline")
-	if err := command.Execute(); err != nil {
-		t.Fatalf("update baseline: %v", err)
 	}
-	baseline, err := os.ReadFile(filepath.Join(repository, ".wb", "deadcode-baseline.txt"))
-	if err != nil || !strings.Contains(string(baseline), identity) {
-		t.Fatalf("baseline bytes %q, error %v", baseline, err)
+	writes := 0
+	deps.WriteDeadcodeBaseline = func(path string, findings []quality.DeadcodeFinding) error {
+		writes++
+		if path != filepath.Join(repository, ".wb", "deadcode-baseline.txt") || len(findings) != 1 || findings[0].Identity != identity {
+			t.Fatalf("baseline request %q %+v", path, findings)
+		}
+		return nil
 	}
-	if !strings.Contains(output.String(), "recorded 1 unreachable function(s)") {
-		t.Fatalf("update output = %q", output.String())
+	cmd := NewDeadcode(testRuntime(), deps)
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{repository, "--update-baseline"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 1 || !strings.Contains(output.String(), "recorded 1 unreachable function(s)") {
+		t.Fatalf("writes=%d output=%q", writes, output.String())
 	}
 }
 
 func TestDeadcodeCommandPreservesAnalyzerError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("analyzer unavailable")
-	command := deadcodeTestCommand(func(context.Context, string, quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
+	command := deadcodeTestCommand(t, func(context.Context, string, quality.DeadcodeOptions) (quality.DeadcodeReport, error) {
 		return quality.DeadcodeReport{}, boom
 	}, new(bytes.Buffer))
 	if err := command.Execute(); !errors.Is(err, boom) {

@@ -1,7 +1,8 @@
-package main
+package qualityrun
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -63,8 +64,9 @@ func writeCoverageWorklistProfile(t *testing.T, dir, modulePath string) string {
 	return profilePath
 }
 
-func TestCoverageWorklistWritesTextOutputAndNamesSharedFiles(t *testing.T) {
-	t.Parallel()
+func TestCoverageWorklistReadOnlyReports(t *testing.T) {
+	// Worklist reads the module, source and profile only. The parent owns
+	// one immutable fixture; each child owns its DTOs and output buffers.
 	modulePath := "fixture.test/cliworklist"
 	dir := writeCoverageWorklistFixture(t, modulePath, map[string]string{
 		"pkg/a.go": coverageWorklistFixtureA,
@@ -72,48 +74,59 @@ func TestCoverageWorklistWritesTextOutputAndNamesSharedFiles(t *testing.T) {
 	})
 	profilePath := writeCoverageWorklistProfile(t, dir, modulePath)
 
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--unit-size", "12", "--non-interactive"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("code = %d, want 0\nstderr:\n%s", code, stderr.String())
-	}
-	output := stdout.String()
-	for _, want := range []string{
-		"worklist: 3 unit(s), 25 uncovered statement(s) (target unit size 12)",
-		"unit 0: 10 statement(s)",
-		"pkg/a.go",
-		"FuncA1",
-		"FuncA2",
-		"FuncB1",
-		"shares a file with unit",
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("output missing %q; got:\n%s", want, output)
+	t.Run("TestCoverageWorklistWritesTextOutputAndNamesSharedFiles", func(t *testing.T) {
+		t.Parallel()
+		var stdout, stderr bytes.Buffer
+		computed, err := Worklist(context.Background(), WorklistRequest{Profile: profilePath, Module: dir, UnitSize: 12})
+		code := 0
+		if err != nil {
+			code = 1
+			stderr.WriteString(err.Error())
+		} else {
+			stdout.WriteString(WorklistText(computed))
 		}
-	}
-}
-
-func TestCoverageWorklistWritesJSONOutput(t *testing.T) {
-	t.Parallel()
-	modulePath := "fixture.test/cliworklist"
-	dir := writeCoverageWorklistFixture(t, modulePath, map[string]string{
-		"pkg/a.go": coverageWorklistFixtureA,
-		"pkg/b.go": coverageWorklistFixtureB,
+		if code != 0 {
+			t.Fatalf("code = %d, want 0\nstderr:\n%s", code, stderr.String())
+		}
+		output := stdout.String()
+		for _, want := range []string{
+			"worklist: 3 unit(s), 25 uncovered statement(s) (target unit size 12)",
+			"unit 0: 10 statement(s)",
+			"pkg/a.go",
+			"FuncA1",
+			"FuncA2",
+			"FuncB1",
+			"shares a file with unit",
+		} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("output missing %q; got:\n%s", want, output)
+			}
+		}
 	})
-	profilePath := writeCoverageWorklistProfile(t, dir, modulePath)
-
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--unit-size", "12", "--format", "json", "--non-interactive"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("code = %d, want 0\nstderr:\n%s", code, stderr.String())
-	}
-	var worklist quality.Worklist
-	if err := json.Unmarshal(stdout.Bytes(), &worklist); err != nil {
-		t.Fatalf("decode JSON output: %v\noutput:\n%s", err, stdout.String())
-	}
-	if worklist.TotalUncoveredStatements != 25 || worklist.UnitSize != 12 || len(worklist.Units) != 3 {
-		t.Fatalf("worklist = %#v", worklist)
-	}
+	t.Run("TestCoverageWorklistWritesJSONOutput", func(t *testing.T) {
+		t.Parallel()
+		var stdout, stderr bytes.Buffer
+		computed, err := Worklist(context.Background(), WorklistRequest{Profile: profilePath, Module: dir, UnitSize: 12})
+		code := 0
+		if err != nil {
+			code = 1
+			stderr.WriteString(err.Error())
+		} else {
+			if err := json.NewEncoder(&stdout).Encode(computed); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if code != 0 {
+			t.Fatalf("code = %d, want 0\nstderr:\n%s", code, stderr.String())
+		}
+		var worklist quality.Worklist
+		if err := json.Unmarshal(stdout.Bytes(), &worklist); err != nil {
+			t.Fatalf("decode JSON output: %v\noutput:\n%s", err, stdout.String())
+		}
+		if worklist.TotalUncoveredStatements != 25 || worklist.UnitSize != 12 || len(worklist.Units) != 3 {
+			t.Fatalf("worklist = %#v", worklist)
+		}
+	})
 }
 
 func TestCoverageWorklistDefaultUnitSizeKeepsSmallFixtureInOneUnit(t *testing.T) {
@@ -129,7 +142,14 @@ func TestCoverageWorklistDefaultUnitSizeKeepsSmallFixtureInOneUnit(t *testing.T)
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--non-interactive"}, &stdout, &stderr)
+	computed, err := Worklist(context.Background(), WorklistRequest{Profile: profilePath, Module: dir, UnitSize: 300})
+	code := 0
+	if err != nil {
+		code = 1
+		stderr.WriteString(err.Error())
+	} else {
+		stdout.WriteString(WorklistText(computed))
+	}
 	if code != 0 {
 		t.Fatalf("code = %d, want 0\nstderr:\n%s", code, stderr.String())
 	}
@@ -141,27 +161,19 @@ func TestCoverageWorklistDefaultUnitSizeKeepsSmallFixtureInOneUnit(t *testing.T)
 	}
 }
 
-func TestCoverageWorklistRejectsInvalidFormat(t *testing.T) {
-	t.Parallel()
-	modulePath := "fixture.test/cliworklist"
-	dir := writeCoverageWorklistFixture(t, modulePath, nil)
-	profilePath := filepath.Join(dir, "profile.out")
-	if err := os.WriteFile(profilePath, []byte("mode: set\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--format", "yaml", "--non-interactive"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("code = %d, want exitUsage (%d)\nstderr:\n%s", code, exitUsage, stderr.String())
-	}
-}
-
 func TestCoverageWorklistRejectsMissingProfile(t *testing.T) {
 	t.Parallel()
 	modulePath := "fixture.test/cliworklist"
 	dir := writeCoverageWorklistFixture(t, modulePath, nil)
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", filepath.Join(dir, "missing.out"), "--module", dir, "--non-interactive"}, &stdout, &stderr)
+	computed, err := Worklist(context.Background(), WorklistRequest{Profile: filepath.Join(dir, "missing.out"), Module: dir, UnitSize: 300})
+	code := 0
+	if err != nil {
+		code = 1
+		stderr.WriteString(err.Error())
+	} else {
+		stdout.WriteString(WorklistText(computed))
+	}
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero for a missing coverage profile")
 	}
@@ -175,7 +187,14 @@ func TestCoverageWorklistRejectsMissingGoMod(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--non-interactive"}, &stdout, &stderr)
+	computed, err := Worklist(context.Background(), WorklistRequest{Profile: profilePath, Module: dir, UnitSize: 300})
+	code := 0
+	if err != nil {
+		code = 1
+		stderr.WriteString(err.Error())
+	} else {
+		stdout.WriteString(WorklistText(computed))
+	}
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero when --module has no go.mod")
 	}
@@ -190,7 +209,14 @@ func TestCoverageWorklistRejectsUnitSizeBelowOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--unit-size", "0", "--non-interactive"}, &stdout, &stderr)
+	computed, err := Worklist(context.Background(), WorklistRequest{Profile: profilePath, Module: dir, UnitSize: 0})
+	code := 0
+	if err != nil {
+		code = 1
+		stderr.WriteString(err.Error())
+	} else {
+		stdout.WriteString(WorklistText(computed))
+	}
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero for --unit-size 0")
 	}
@@ -208,7 +234,14 @@ func TestCoverageWorklistNamesFileLevelBlocksWithoutAnEnclosingFunction(t *testi
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"coverage", "worklist", profilePath, "--module", dir, "--non-interactive"}, &stdout, &stderr)
+	computed, err := Worklist(context.Background(), WorklistRequest{Profile: profilePath, Module: dir, UnitSize: 300})
+	code := 0
+	if err != nil {
+		code = 1
+		stderr.WriteString(err.Error())
+	} else {
+		stdout.WriteString(WorklistText(computed))
+	}
 	if code != 0 {
 		t.Fatalf("code = %d, want 0\nstderr:\n%s", code, stderr.String())
 	}

@@ -29,6 +29,15 @@ small genuine executable journey suite to check wiring. Do not duplicate every
 command test at the root or introduce shared test helpers that import all command
 families.
 
+When real read-only tests need the same repository, create it once in a parent
+test and reuse it across subtests. Finish setup before parallel subtests start,
+give each subtest its own command, options and output buffers, and use the
+parent's `t.TempDir` or `t.Cleanup` so cleanup runs after parallel children finish.
+Confirm the operation does not write files, Git metadata,
+configuration, caches or reports before sharing the directory. Mutating tests
+need their own writable fixture. Prefer injected operations for argument and
+rendering tests so they need no repository setup at all.
+
 Extract complete command families and their tests together. Shared helpers should
 have concrete consumers and one tested contract; avoid a generic command engine,
 copied per-family exit policies, and broad interfaces over unrelated services.
