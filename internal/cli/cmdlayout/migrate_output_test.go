@@ -1,4 +1,4 @@
-package main
+package cmdlayout
 
 import (
 	"bytes"
@@ -14,19 +14,20 @@ import (
 )
 
 func TestLayoutMigratePublishesReportFilesAndSelectedOutput(t *testing.T) {
-	previous := migrateLayout
-	t.Cleanup(func() { migrateLayout = previous })
-	report := layout.MigrateReport{SchemaVersion: 1, DryRun: true, Clones: []layout.MigrateClone{{Repository: "acme/app", Status: "planned", Source: "/legacy/app", Destination: "/canonical/app"}}}
-	var options layout.MigrateOptions
-	migrateLayout = func(_ context.Context, _ string, requested layout.MigrateOptions) (layout.MigrateReport, error) {
-		options = requested
-		return report, nil
-	}
+	t.Parallel()
 	for _, format := range []string{"markdown", "yaml", "json"} {
 		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			deps := testDependencies()
+			report := layout.MigrateReport{SchemaVersion: 1, DryRun: true, Clones: []layout.MigrateClone{{Repository: "acme/app", Status: "planned", Source: "/legacy/app", Destination: "/canonical/app"}}}
+			var options layout.MigrateOptions
+			deps.Migrate = func(_ context.Context, _ string, requested layout.MigrateOptions) (layout.MigrateReport, error) {
+				options = requested
+				return report, nil
+			}
 			root := t.TempDir()
 			reportDir := filepath.Join(root, "reports")
-			command := newLayoutMigrateCmd(&invocation{projectsRoot: root})
+			command := newMigrateCmd(func() string { return root }, deps)
 			var stdout bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetArgs([]string{"acme/app", "--clones-only", "--include-task=task-one", "--format=" + format, "--report-dir=" + reportDir})
@@ -57,13 +58,13 @@ func TestLayoutMigratePublishesReportFilesAndSelectedOutput(t *testing.T) {
 }
 
 func TestLayoutMigratePreservesPartialReportOnFailure(t *testing.T) {
-	previous := migrateLayout
-	t.Cleanup(func() { migrateLayout = previous })
+	t.Parallel()
+	deps := testDependencies()
 	want := errors.New("manifest write failed after first move")
-	migrateLayout = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
+	deps.Migrate = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 		return layout.MigrateReport{SchemaVersion: 1, Clones: []layout.MigrateClone{{Repository: "acme/app", Status: "done"}}}, want
 	}
-	command := newLayoutMigrateCmd(&invocation{projectsRoot: t.TempDir()})
+	command := newMigrateCmd(func() string { return "fixture-root" }, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
@@ -81,19 +82,19 @@ func TestLayoutMigratePreservesPartialReportOnFailure(t *testing.T) {
 }
 
 func TestLayoutMigrateClassifiesInvalidInclusionAsUsage(t *testing.T) {
-	previous := migrateLayout
-	t.Cleanup(func() { migrateLayout = previous })
+	t.Parallel()
+	deps := testDependencies()
 	for _, failure := range []error{&layout.UnknownIncludeTaskError{Task: "missing"}, &layout.UndoIncludeFlagsError{}} {
-		migrateLayout = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
+		deps.Migrate = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 			return layout.MigrateReport{}, failure
 		}
-		command := newLayoutMigrateCmd(&invocation{projectsRoot: t.TempDir()})
+		command := newMigrateCmd(func() string { return "fixture-root" }, deps)
 		command.SilenceUsage, command.SilenceErrors = true, true
 		var stdout bytes.Buffer
 		command.SetOut(&stdout)
 		command.SetArgs(nil)
-		var exit *exitError
-		if err := command.Execute(); !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(exit.Error(), failure.Error()) {
+		var exit *codedError
+		if err := command.Execute(); !errors.As(err, &exit) || exit.code != 2 || !strings.Contains(exit.Error(), failure.Error()) {
 			t.Fatalf("%T error = %v", failure, exit)
 		}
 		if stdout.Len() != 0 {
@@ -103,18 +104,18 @@ func TestLayoutMigrateClassifiesInvalidInclusionAsUsage(t *testing.T) {
 }
 
 func TestLayoutMigrateReportsSkippedCloneAsFindings(t *testing.T) {
-	previous := migrateLayout
-	t.Cleanup(func() { migrateLayout = previous })
-	migrateLayout = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
+	t.Parallel()
+	deps := testDependencies()
+	deps.Migrate = func(context.Context, string, layout.MigrateOptions) (layout.MigrateReport, error) {
 		return layout.MigrateReport{SchemaVersion: 1, Clones: []layout.MigrateClone{{Repository: "acme/app", Status: "skipped", Reason: "active claim"}}}, nil
 	}
-	command := newLayoutMigrateCmd(&invocation{projectsRoot: t.TempDir()})
+	command := newMigrateCmd(func() string { return "fixture-root" }, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	command.SetArgs([]string{"--format=json"})
-	var exit *exitError
-	if err := command.Execute(); !errors.As(err, &exit) || exit.code != exitFindings {
+	var exit *codedError
+	if err := command.Execute(); !errors.As(err, &exit) || exit.code != 1 {
 		t.Fatalf("error = %v", exit)
 	}
 	if !strings.Contains(stdout.String(), `"active claim"`) {

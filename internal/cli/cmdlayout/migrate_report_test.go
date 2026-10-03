@@ -1,4 +1,4 @@
-package main
+package cmdlayout
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ func TestWriteLayoutMigrateReportsWritesAllThreeFormats(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "reports", "nested")
 	report := layout.MigrateReport{SchemaVersion: 1}
 
-	if err := writeLayoutMigrateReports(directory, report); err != nil {
+	if err := writeReports(directory, "migrate", report.Markdown(), report); err != nil {
 		t.Fatalf("writeLayoutMigrateReports returned %v, want nil", err)
 	}
 
