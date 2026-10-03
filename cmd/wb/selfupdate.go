@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -176,9 +177,48 @@ func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, up
 		_, _ = cmd.ErrOrStderr().Write(output.Bytes())
 		return
 	}
-	// The self-update command owns stdout (especially in JSON mode), so the
-	// child lifecycle receipt is diagnostic-only.
-	_, _ = cmd.ErrOrStderr().Write(output.Bytes())
+	// A successful handoff used to dump the child's progress lines and the
+	// full lifecycle JSON onto stderr. That receipt stays available from
+	// `wb daemon status --format json`; self-update only needs the outcome.
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), daemonRestartSummary(output.Bytes()))
+}
+
+// daemonRestartSummary turns a successful `wb daemon restart --format json`
+// receipt into one line. Progress text mixed in ahead of the document is
+// ignored. Unparseable success still stays quiet: the child already exited 0.
+func daemonRestartSummary(output []byte) string {
+	result, ok := parseDaemonRestartResult(output)
+	if !ok {
+		return "Daemon restart finished."
+	}
+	if result.State.PID == 0 && !result.ProcessManagerRunning && !result.Reachable {
+		return "No running daemon to restart."
+	}
+	summary := "Daemon restarted."
+	switch {
+	case result.ReadyVerified || result.ReportedState == "ready" || result.State.Status == "ready":
+		summary = "Daemon restarted and ready."
+	case result.ReportedState != "":
+		summary = fmt.Sprintf("Daemon restarted (%s).", result.ReportedState)
+	case result.State.Status != "":
+		summary = fmt.Sprintf("Daemon restarted (%s).", result.State.Status)
+	}
+	if result.Warning != "" {
+		return summary + "\nwarning: " + result.Warning
+	}
+	return summary
+}
+
+func parseDaemonRestartResult(output []byte) (daemonResult, bool) {
+	start := bytes.IndexByte(output, '{')
+	if start < 0 {
+		return daemonResult{}, false
+	}
+	var result daemonResult
+	if err := json.Unmarshal(output[start:], &result); err != nil || result.Action == "" {
+		return daemonResult{}, false
+	}
+	return result, true
 }
 
 func selfUpdateWriteVerifiedVersion(cmd *cobra.Command, previous, installed string) {

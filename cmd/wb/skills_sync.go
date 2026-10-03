@@ -128,12 +128,78 @@ func writeSkillsSyncReports(out io.Writer, results []skillscmd.TargetResult, for
 	if format == "json" {
 		return writeSkillsSyncJSON(out, results)
 	}
+	var quiet []skillscmd.TargetResult
+	flushQuiet := func() error {
+		if len(quiet) == 0 {
+			return nil
+		}
+		err := writeSkillsSyncQuietTargets(out, quiet)
+		quiet = nil
+		return err
+	}
 	for _, result := range results {
+		if skillsSyncQuiet(result) {
+			if !skillsSyncQuietCompatible(quiet, result) {
+				if err := flushQuiet(); err != nil {
+					return err
+				}
+			}
+			quiet = append(quiet, result)
+			continue
+		}
+		if err := flushQuiet(); err != nil {
+			return err
+		}
 		if err := writeSkillsSyncText(out, result); err != nil {
 			return err
 		}
 	}
-	return nil
+	return flushQuiet()
+}
+
+// skillsSyncQuiet is a target whose text report would only say that every
+// skill already matches. Those targets collapse into one harness summary
+// instead of repeating an unchanged name list per directory.
+func skillsSyncQuiet(result skillscmd.TargetResult) bool {
+	if result.Err != nil {
+		return false
+	}
+	return !result.Report.Changed() && len(result.Report.Names(skillsync.Conflict)) == 0
+}
+
+func skillsSyncQuietCompatible(group []skillscmd.TargetResult, next skillscmd.TargetResult) bool {
+	if len(group) == 0 {
+		return true
+	}
+	prev := group[0].Report
+	return prev.DryRun == next.Report.DryRun &&
+		len(prev.Names(skillsync.Unchanged)) == len(next.Report.Names(skillsync.Unchanged))
+}
+
+func writeSkillsSyncQuietTargets(out io.Writer, results []skillscmd.TargetResult) error {
+	if len(results) == 1 {
+		return writeSkillsSyncText(out, results[0])
+	}
+	verb := "synced"
+	if results[0].Report.DryRun {
+		verb = "would sync"
+	}
+	labels := make([]string, len(results))
+	for i, result := range results {
+		labels[i] = skillsSyncTargetLabel(result)
+	}
+	if _, err := fmt.Fprintf(out, "wb skills %s for %d harnesses: %s\n", verb, len(results), strings.Join(labels, ", ")); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(out, "  "+skillsUnchangedLine(len(results[0].Report.Names(skillsync.Unchanged)), true))
+	return err
+}
+
+func skillsSyncTargetLabel(result skillscmd.TargetResult) string {
+	if result.Harness != "" {
+		return result.Harness
+	}
+	return result.Dir
 }
 
 func writeSkillsSyncJSON(out io.Writer, results []skillscmd.TargetResult) error {
@@ -178,7 +244,6 @@ func writeSkillsSyncText(out io.Writer, result skillscmd.TargetResult) error {
 	}{
 		{"added", skillsync.Added},
 		{"updated", skillsync.Updated},
-		{"unchanged", skillsync.Unchanged},
 		{"removed", skillsync.Removed},
 		{"conflicts (left untouched)", skillsync.Conflict},
 	} {
@@ -190,11 +255,27 @@ func writeSkillsSyncText(out io.Writer, result skillscmd.TargetResult) error {
 			return err
 		}
 	}
-	if !report.Changed() && len(report.Names(skillsync.Conflict)) == 0 {
-		_, err := fmt.Fprintln(out, "  nothing to do; skills already match this wb build")
-		return err
+	unchanged := len(report.Names(skillsync.Unchanged))
+	alreadyCurrent := !report.Changed() && len(report.Names(skillsync.Conflict)) == 0
+	if unchanged == 0 && !alreadyCurrent {
+		return nil
 	}
-	return nil
+	_, err := fmt.Fprintln(out, "  "+skillsUnchangedLine(unchanged, alreadyCurrent))
+	return err
+}
+
+func skillsUnchangedLine(n int, alreadyCurrent bool) string {
+	if n == 0 {
+		return "nothing to do; skills already match this wb build"
+	}
+	noun := "skills"
+	if n == 1 {
+		noun = "skill"
+	}
+	if alreadyCurrent {
+		return fmt.Sprintf("%d %s unchanged; already up to date", n, noun)
+	}
+	return fmt.Sprintf("%d %s unchanged", n, noun)
 }
 
 func skillsSyncPayload(result skillscmd.TargetResult) skillsSyncJSON {
