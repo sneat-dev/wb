@@ -1,4 +1,4 @@
-package main
+package landingcontext
 
 import (
 	"encoding/json"
@@ -21,7 +21,7 @@ func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 	if err := store.EventLog(".fleet").Append(streams.Event{Verb: "pr land", Outcome: "findings"}); err != nil {
 		t.Fatalf("append fleet landing event: %v", err)
 	}
-	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/app"); err != nil {
+	if err := CheckRepository(projectsRoot, "acme/app"); err != nil {
 		t.Fatalf("fleet metadata blocked the landing guard: %v", err)
 	}
 }
@@ -50,10 +50,10 @@ func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/unrelated"); err != nil {
+	if err := CheckRepository(projectsRoot, "acme/unrelated"); err != nil {
 		t.Fatalf("unrelated repository blocked landing: %v", err)
 	}
-	if err := refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/linked"); err == nil {
+	if err := CheckRepository(projectsRoot, "acme/linked"); err == nil {
 		t.Fatal("a repository admitted only as a linked consumer with a live link did not fail closed")
 	}
 }
@@ -69,7 +69,7 @@ func TestRefuseLinkedReceiptWorktreesGuardsAWorktreeArgumentDirectly(t *testing.
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := refuseLinkedReceiptWorktrees(&invocation{projectsRoot: projectsRoot}, worktree); err != nil {
+	if err := CheckReceipt(projectsRoot, worktree); err != nil {
 		t.Fatalf("a worktree argument with no recorded live link was refused: %v", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestRefuseLinkedReceiptWorktreesRefusesAWorktreeArgumentWithALiveLink(t *te
 		t.Fatal(err)
 	}
 
-	if err := refuseLinkedReceiptWorktrees(&invocation{projectsRoot: projectsRoot}, linkedWorktree); err == nil {
+	if err := CheckReceipt(projectsRoot, linkedWorktree); err == nil {
 		t.Fatal("a worktree argument with a recorded live link was not refused")
 	}
 }

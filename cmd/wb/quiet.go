@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -19,24 +17,6 @@ import (
 // through tail, which hid the verb's exit status and let a && chain run past a
 // refusal (sneat-dev/wb#813). --quiet is the supported way to get the outcome
 // alone, so the pipe has no reason to exist.
-
-// newLandingProgress is the CI-wait progress sink of a landing verb: live
-// lines on stderr, or none under --quiet. A non-terminal agent still gets the
-// newline-delimited form unless it asks for quiet.
-func newLandingProgress(inv *invocation, command *cobra.Command, nonInteractive bool) *ciWaitProgress {
-	interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
-	return newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), !inv.quiet)
-}
-
-// suggestedClosesToPrint is the issue list `wb pr create` offers as a --closes
-// suggestion. A suggestion is a courtesy, not an outcome, so --quiet offers
-// none and does not read the Work Log for one.
-func suggestedClosesToPrint(inv *invocation, ctx context.Context, worktreeArg string) []int {
-	if inv.quiet {
-		return nil
-	}
-	return suggestedClosesFromWorktreePrompt(inv, ctx, worktreeArg)
-}
 
 // quietArtifacts is the WB-internal artifact list `worktree cleanup` narrates
 // as `info:` lines on stderr. Under --quiet only the artifacts a run actually

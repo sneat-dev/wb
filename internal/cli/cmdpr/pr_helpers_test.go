@@ -1,4 +1,4 @@
-package main
+package cmdpr
 
 import "testing"
 
@@ -6,6 +6,8 @@ import "testing"
 // skip branch and the happy-path append branch together.
 func TestParseIssueNumbersDedupesInFirstSeenOrder(t *testing.T) {
 	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	issues, err := parseIssueNumbers([]string{"5", " 6 ", "5"})
 	if err != nil {
 		t.Fatalf("parseIssueNumbers returned %v, want nil", err)
@@ -18,6 +20,8 @@ func TestParseIssueNumbersDedupesInFirstSeenOrder(t *testing.T) {
 
 func TestParseIssueNumbersRejectsNonPositiveValue(t *testing.T) {
 	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	_, err := parseIssueNumbers([]string{"0"})
 	if err == nil {
 		t.Fatal("parseIssueNumbers(0) returned nil error, want a refusal")
@@ -30,6 +34,8 @@ func TestParseIssueNumbersRejectsNonPositiveValue(t *testing.T) {
 
 func TestParseIssueNumbersRejectsNonNumericValue(t *testing.T) {
 	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	_, err := parseIssueNumbers([]string{"abc"})
 	if err == nil {
 		t.Fatal("parseIssueNumbers(abc) returned nil error, want a refusal")
@@ -42,6 +48,8 @@ func TestParseIssueNumbersRejectsNonNumericValue(t *testing.T) {
 
 func TestFormatSuggestedIssuesJoinsHashPrefixedNumbers(t *testing.T) {
 	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	if got := formatSuggestedIssues([]int{5, 6}); got != "#5, #6" {
 		t.Fatalf("formatSuggestedIssues = %q, want %q", got, "#5, #6")
 	}
@@ -49,6 +57,8 @@ func TestFormatSuggestedIssuesJoinsHashPrefixedNumbers(t *testing.T) {
 
 func TestFormatSuggestedIssuesEmptyInputYieldsEmptyString(t *testing.T) {
 	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	if got := formatSuggestedIssues(nil); got != "" {
 		t.Fatalf("formatSuggestedIssues(nil) = %q, want empty string", got)
 	}

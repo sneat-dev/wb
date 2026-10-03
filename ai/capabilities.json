@@ -563,7 +563,7 @@
         "runtime": {"status": "Full", "commands": [{"path": "wb branch archive-target", "flags": ["--format", "--repo"], "modes": ["Resolves user-only per-organization archive configuration and live private-target status", "Read-only: no remote ref rename, worktree deletion, Work Log export, report creation, or apply mode"]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb branch archive-target --help", "contains": ["read-only", "--repo"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch archive-target --repo sneat-co/app --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/branch_test.go", "name": "TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight", "kind": "unit"}], "limitation": null}
+        "tests": {"status": "Full", "references": [{"path": "internal/cli/cmdbranch/command_test.go", "name": "TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight", "kind": "unit"}], "limitation": null}
       },
       "notes": "The command is an archive-target visibility preflight only. It does not make a remote retirement eligible or perform one."
     },
@@ -700,7 +700,7 @@
         "runtime": {"status": "Full", "commands": [{"path": "wb branch count", "flags": ["--base", "--format", "--name", "--older-than", "--only", "--org", "--repo", "--scope"], "modes": ["Shares one locally discovered branch inventory with list", "Reports active dispositions separately from retired refs; --only retired scopes the same repo/org/fleet inventory", "Retired-only selectors read local retired refs without fetching origin/main; remote scope refreshes only origin retired refs and reports failures through diagnostics and retired_remote_unavailable"]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb branch count --help", "contains": ["retired", "local, remote, or all"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-branches/SKILL.md", "marker": "## Local quarantine", "examples": ["wb branch count --org sneat-co --only retired --format yaml"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/branch_test.go", "name": "TestBranchCountUsesTheSharedInventorySelectors", "kind": "unit"}], "limitation": null}
+        "tests": {"status": "Full", "references": [{"path": "internal/cli/cmdbranch/command_test.go", "name": "TestBranchCountUsesTheSharedInventorySelectors", "kind": "unit"}], "limitation": null}
       },
       "notes": "Count is a presentation over one branch inventory, not a separate fleet scan."
     },
@@ -7806,17 +7806,17 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/pr_create_test.go",
+              "path": "internal/cli/cmdpr/pr_create_test.go",
               "name": "TestPRCreateRejectsBodyAndBodyFileTogether",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/pr_create_test.go",
+              "path": "internal/cli/cmdpr/pr_create_test.go",
               "name": "TestPRCreateRejectsAddWithCommitAll",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/pr_create_test.go",
+              "path": "internal/cli/cmdpr/pr_create_test.go",
               "name": "TestPRCreateHelpStatesItsContract",
               "kind": "unit"
             }
@@ -7994,7 +7994,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/pr_test.go",
+              "path": "internal/prselector/selector_test.go",
               "name": "TestPRLandSelectorAcceptsEveryFormAnOperatorHolds",
               "kind": "unit"
             },

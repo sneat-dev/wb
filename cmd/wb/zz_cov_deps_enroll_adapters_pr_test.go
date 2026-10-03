@@ -11,10 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/streamrun"
-	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -210,117 +208,5 @@ func TestCwDepsStreamLeaseAndSessionIdentity(t *testing.T) {
 		// A live registered session in the ambient environment is acceptable;
 		// what must never happen is a fabricated value.
 		t.Logf("ambient registered session: %q", identity)
-	}
-}
-
-func TestCwDepsPrintPullRequestLandShapes(t *testing.T) {
-	success := orchestrate.PullRequestLandResult{
-		Repository: "acme/app", PullRequest: 42, Title: "fix the thing", Outcome: orchestrate.LandSuccess,
-		MergeSHA: strings.Repeat("a", 40), BaseRef: "main", HeadRef: "feature/fix", BranchDeleted: true,
-		CleanedTasks: []string{"task-1"}, Kept: true,
-		Commits: []orchestrate.LandedCommit{
-			{SourceSHA: strings.Repeat("b", 40), Subject: "keep me", Kept: true},
-			{SourceSHA: strings.Repeat("c", 40), Subject: "squash me", Kept: false},
-		},
-	}
-	var out bytes.Buffer
-	if err := printPullRequestLand(cwDepsNewOutCommand(&out), success); err != nil {
-		t.Fatalf("success print: %v", err)
-	}
-	for _, want := range []string{
-		"acme/app#42 fix the thing (needs review)",
-		"landed " + strings.Repeat("a", 12) + " on main",
-		"retired origin/feature/fix",
-		"retired worktree for task task-1",
-		"kept the worktree (--keep)",
-		"kept commit " + strings.Repeat("b", 12) + " keep me",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("success output missing %q:\n%s", want, out.String())
-		}
-	}
-	if strings.Contains(out.String(), "squash me") {
-		t.Errorf("an unkept commit must not be listed:\n%s", out.String())
-	}
-	// A mechanical bump is classified as such.
-	out.Reset()
-	success.Mechanical = true
-	if err := printPullRequestLand(cwDepsNewOutCommand(&out), success); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "(mechanical bump)") {
-		t.Errorf("mechanical classification missing:\n%s", out.String())
-	}
-	// A refusal names its code and the command that satisfies the guard.
-	out.Reset()
-	refused := orchestrate.PullRequestLandResult{
-		Repository: "acme/app", PullRequest: 7, Title: "wip", Outcome: orchestrate.LandRefused,
-		Reason: "checks are red", RefusalCode: "checks-not-green", SanctionedCommand: "wb pr land acme/app#8",
-	}
-	if err := printPullRequestLand(cwDepsNewOutCommand(&out), refused); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"refused: checks are red", "refusal: checks-not-green", "resolve with: wb pr land acme/app#8"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("refusal output missing %q:\n%s", want, out.String())
-		}
-	}
-	// A short SHA is printed whole, and a failed write is surfaced.
-	if got := shortSHAForDisplay("abc"); got != "abc" {
-		t.Errorf("shortSHAForDisplay(abc) = %q", got)
-	}
-	if err := printPullRequestLand(cwDepsNewOutCommand(cwDepsFailingWriter{}), success); err == nil {
-		t.Error("a failed print must be surfaced")
-	}
-}
-
-func TestCwDepsLandingEventLogFindsTheOwningStream(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv(wbhome.EnvOverride, home)
-	projectsRoot := t.TempDir()
-
-	// Outside every stream the event still belongs to the fleet log.
-	appender, streamName := landingEventLog(&invocation{projectsRoot: projectsRoot}, "acme/app")
-	if streamName != "" || appender == nil {
-		t.Fatalf("unstreamed landing = %v, %q", appender, streamName)
-	}
-	// Inside a stream it belongs to that stream's log.
-	store, err := streams.Open(projectsRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Create(streams.Stream{Name: "cw-stream", CreatedAt: time.Now().UTC(),
-		Members: []streams.Member{cwDepsStreamMember("acme/app", 1, "")}}); err != nil {
-		t.Fatalf("create stream: %v", err)
-	}
-	appender, streamName = landingEventLog(&invocation{projectsRoot: projectsRoot}, "acme/app")
-	if streamName != "cw-stream" || appender == nil {
-		t.Fatalf("streamed landing = %v, %q", appender, streamName)
-	}
-}
-
-func TestCwDepsPRLandCommandUsageRefusals(t *testing.T) {
-	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	tests := map[string]struct {
-		args []string
-		want string
-		code int
-	}{
-		"unknown format":        {[]string{"pr", "land", "acme/app#1", "--format", "toml"}, "unsupported format", exitFindings},
-		"keep commits alone":    {[]string{"pr", "land", "acme/app#1", "--keep-commits", "4f2a1c9"}, "--keep-commits requires", exitUsage},
-		"take over without why": {[]string{"pr", "land", "acme/app#1", "--take-over-lane"}, "--take-over-lane requires", exitUsage},
-		"bad selector":          {[]string{"pr", "land", "not-a-selector"}, "owner/repository#number", exitUsage},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			_, stderr, code := cwCovRun(t, test.args...)
-			if code != test.code {
-				t.Fatalf("%v exit = %d, want %d\nstderr: %s", test.args, code, test.code, stderr)
-			}
-			if !strings.Contains(strings.ToLower(stderr), strings.ToLower(test.want)) {
-				t.Errorf("%v stderr = %q, want %q", test.args, stderr, test.want)
-			}
-		})
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package landingcontext
 
 import (
 	"os"
@@ -28,23 +28,23 @@ func TestRefuseLinkedRepositoryWorktreesFailsClosedOnUnreadableStream(t *testing
 		t.Fatalf("write truncated stream.json: %v", err)
 	}
 
-	err = refuseLinkedRepositoryWorktrees(&invocation{projectsRoot: projectsRoot}, "acme/app")
+	err = CheckRepository(projectsRoot, "acme/app")
 	if err == nil {
 		t.Fatal("refuseLinkedRepositoryWorktrees returned nil error, want a fail-closed refusal")
 	}
-	exitErr, ok := err.(*exitError)
+	exitErr, ok := err.(*Refusal)
 	if !ok {
-		t.Fatalf("error type = %T, want *exitError", err)
+		t.Fatalf("error type = %T, want *Refusal", err)
 	}
-	if exitErr.code != exitUsage {
-		t.Fatalf("exit code = %d, want %d", exitErr.code, exitUsage)
+	if exitErr.Message == "" {
+		t.Fatal("refusal has no message")
 	}
 	for _, want := range []string{
 		"cannot tell whether acme/app holds a live local link",
 		"broken (",
 	} {
-		if !strings.Contains(exitErr.message, want) {
-			t.Errorf("message %q missing %q", exitErr.message, want)
+		if !strings.Contains(exitErr.Message, want) {
+			t.Errorf("message %q missing %q", exitErr.Message, want)
 		}
 	}
 }

@@ -1,19 +1,13 @@
-package main
+package cmdbranch
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/spf13/cobra"
 )
 
-var branchArchiveTargetPreflight = func(ctx context.Context, repository string) (worktrees.RetiredArchivePlan, error) {
-	return worktrees.PlanRetiredArchivePreflight(ctx, repository, nil)
-}
-
-func newBranchArchiveTargetCmd() *cobra.Command {
+func newArchiveTarget(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var repository, format string
 	command := &cobra.Command{
 		Use:   "archive-target",
@@ -23,13 +17,13 @@ its current GitHub visibility. This is read-only: it does not rename remote refs
 remove worktrees, export Work Logs, create reports, or accept --apply.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format, "text", "json", "yaml"); err != nil {
+			if err := shared.RequireOutputFormat(format, "text", "json", "yaml"); err != nil {
 				return err
 			}
 			if repository == "" {
 				return fmt.Errorf("--repo is required; use owner/repository")
 			}
-			plan, err := branchArchiveTargetPreflight(command.Context(), repository)
+			plan, err := deps.ArchiveTarget(command.Context(), repository)
 			if err != nil {
 				return err
 			}
@@ -46,7 +40,7 @@ remove worktrees, export Work Logs, create reports, or accept --apply.`,
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(plan)
+				err = encoder.Encode(plan)
 			case "yaml":
 				raw, err := yamlCompatibleJSON(plan)
 				if err != nil {
@@ -54,9 +48,8 @@ remove worktrees, export Work Logs, create reports, or accept --apply.`,
 				}
 				_, err = command.OutOrStdout().Write(raw)
 				return err
-			default:
-				return fmt.Errorf("unsupported format %q; use text, json, or yaml", format)
 			}
+			return err
 		},
 	}
 	command.Flags().StringVar(&repository, "repo", "", "exact source owner/repository")

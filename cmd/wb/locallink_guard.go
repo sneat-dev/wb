@@ -1,15 +1,7 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"os"
-	"strings"
-
-	"github.com/sneat-dev/wb/internal/locallink"
-	"github.com/sneat-dev/wb/internal/streams"
-	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/sneat-dev/wb/internal/landingcontext"
 	"github.com/spf13/cobra"
 )
 
@@ -35,22 +27,8 @@ import (
 // worktree straight past the guard.
 //
 // Implements: dependency-streams#req:merge-refuses-a-linked-worktree.
-func refuseLinkedWorktrees(inv *invocation, worktrees []string) error {
-	store, err := streams.Open(inv.projectsRoot)
-	if err != nil {
-		return err
-	}
-	for _, worktree := range worktrees {
-		links, err := locallink.HasLiveLink(store, worktree)
-		if err != nil {
-			return err
-		}
-		if len(links) == 0 {
-			continue
-		}
-		return &exitError{code: exitUsage, message: locallink.RefusalMessage(worktree, links)}
-	}
-	return nil
+func refuseLinkedWorktrees(inv *invocation, paths []string) error {
+	return landingGuardError(landingcontext.CheckWorktrees(inv.projectsRoot, paths))
 }
 
 // refuseLinkedReceiptWorktrees is the land/resume entry point.
@@ -59,49 +37,8 @@ func refuseLinkedWorktrees(inv *invocation, worktrees []string) error {
 // and the land verbs are the ones that actually push. They are addressed by a
 // receipt, so the worktrees to guard are read out of it. A receipt WB cannot
 // read is not a reason to skip the guard — it is a reason to say so and stop.
-func refuseLinkedReceiptWorktrees(inv *invocation, receiptPath string) error {
-	worktrees, err := worktreeMergeReceiptWorktrees(receiptPath)
-	if err != nil {
-		// A path that is a worktree rather than a receipt is the documented
-		// second form of the argument; guard it directly.
-		if info, statErr := os.Stat(receiptPath); statErr == nil && info.IsDir() {
-			return refuseLinkedWorktrees(inv, []string{receiptPath})
-		}
-		return err
-	}
-	return refuseLinkedWorktrees(inv, worktrees)
-}
-
-// worktreeMergeReceiptWorktrees reads every source and candidate worktree a
-// merge receipt names.
-func worktreeMergeReceiptWorktrees(receiptPath string) ([]string, error) {
-	contents, err := os.ReadFile(receiptPath)
-	if err != nil {
-		return nil, err
-	}
-	var receipt struct {
-		Sources []struct {
-			Worktree string `json:"worktree"`
-		} `json:"sources"`
-		Candidate struct {
-			Worktree string `json:"worktree"`
-		} `json:"candidate"`
-	}
-	if err := json.Unmarshal(contents, &receipt); err != nil {
-		return nil, fmt.Errorf("read merge receipt %s: %w", receiptPath, err)
-	}
-	seen := map[string]bool{}
-	var worktrees []string
-	for _, source := range receipt.Sources {
-		if source.Worktree != "" && !seen[source.Worktree] {
-			seen[source.Worktree] = true
-			worktrees = append(worktrees, source.Worktree)
-		}
-	}
-	if receipt.Candidate.Worktree != "" && !seen[receipt.Candidate.Worktree] {
-		worktrees = append(worktrees, receipt.Candidate.Worktree)
-	}
-	return worktrees, nil
+func refuseLinkedReceiptWorktrees(inv *invocation, path string) error {
+	return landingGuardError(landingcontext.CheckReceipt(inv.projectsRoot, path))
 }
 
 // landingGuardAnnotation marks a command that pushes, lands or absorbs work,
@@ -162,83 +99,4 @@ var landingSurface = map[string]string{
 	"wb worktree merge land":    landingGuardByReceipt,
 	"wb worktree merge resume":  landingGuardByReceipt,
 	"wb pr land":                landingGuardByPullRequest,
-}
-
-// refuseLinkedRepositoryWorktrees is the pull-request entry point.
-//
-// A landing addressed by `owner/repository#N` names no worktree, so the guard
-// resolves them from the open streams that hold this repository. It runs before
-// any GitHub call: a refusal that has to reach the network first is a refusal
-// that fails differently when the network does.
-func refuseLinkedRepositoryWorktrees(inv *invocation, repository string) error {
-	store, err := streams.Open(inv.projectsRoot)
-	if err != nil {
-		return err
-	}
-	stream, found, unreadable, err := store.RepositoryStream(repository)
-	if err != nil {
-		return err
-	}
-	if len(unreadable) > 0 {
-		// A stream WB cannot read might be the one holding a live link to this
-		// repository. "I could not tell" must not be spelled the same way as
-		// "there is no link", so the guard says what it could not read and
-		// stops — the same rule refuseLinkedWorktrees applies to a store it
-		// cannot open.
-		names := make([]string, 0, len(unreadable))
-		for _, entry := range unreadable {
-			names = append(names, entry.Name+" ("+entry.Reason+")")
-		}
-		return &exitError{code: exitUsage, message: "cannot tell whether " + repository +
-			" holds a live local link: these streams are unreadable — " + strings.Join(names, "; ") +
-			"; fix or remove them, then rerun"}
-	}
-	if !found {
-		// Outside every stream a hand-written go.work is still a live link, and
-		// it is the signal stream state cannot see. Guard every WB worktree of
-		// this repository directly.
-		return refuseLinkedWorktreesOfRepository(inv, repository)
-	}
-	worktrees := make([]string, 0, len(stream.Members)+len(stream.LinkedConsumers))
-	for _, member := range stream.Members {
-		if member.Repository == repository && member.Worktree != "" {
-			worktrees = append(worktrees, member.Worktree)
-		}
-	}
-	// A repository admitted only as a linked consumer holds no membership row,
-	// but its Links are exactly the live local links this guard exists to
-	// catch — missing them here would let a repository dodge the guard just
-	// by joining as a consumer instead of a member.
-	for _, consumer := range stream.LinkedConsumers {
-		if consumer.Repository == repository && consumer.Worktree != "" {
-			worktrees = append(worktrees, consumer.Worktree)
-		}
-	}
-	return refuseLinkedWorktrees(inv, worktrees)
-}
-
-// refuseLinkedWorktreesOfRepository guards a repository that belongs to no
-// stream.
-//
-// The two link signals are independent: stream state would miss a hand-written
-// `go.work`, and `go.work` would miss an npm link. A repository outside every
-// stream has no stream state at all, so the second signal is the only one
-// there is — and skipping the guard because the first is empty is exactly the
-// "I could not tell" spelled as "there is no link" that this file opens by
-// forbidding.
-func refuseLinkedWorktreesOfRepository(inv *invocation, repository string) error {
-	listed, err := worktrees.ListWithDiagnostics(context.Background(), worktrees.ListOptions{
-		ProjectsRoot: inv.projectsRoot,
-		Filter:       repository,
-	})
-	if err != nil {
-		return err
-	}
-	paths := make([]string, 0, 4)
-	for _, entry := range listed.Results {
-		if entry.Repository == repository {
-			paths = append(paths, entry.WorktreeDir)
-		}
-	}
-	return refuseLinkedWorktrees(inv, paths)
 }

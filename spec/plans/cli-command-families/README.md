@@ -360,6 +360,49 @@ implementation review r29 accepted the exact source, all 52 original test
 responsibilities, 21 unchanged protected bodies and native evidence, with no
 remaining findings.
 
+Independent architecture review r30 approved the complete branch family:
+list, count, cleanup, quarantine and archive-target. Four existing worktree
+operations provide the boundary; list/count reuse the same inventory operation,
+without a new orchestration service. Keep native fetched-target, deletion,
+quarantine and archive-policy authority below the command adapter. The cohort
+preserves 36 original test responsibilities and three unrelated protected
+bodies, including two archive tests found outside the initial focused inventory.
+YAML compatibility retains concrete date-marshaling failures while removing
+only conversion branches proved unreachable for the actual result types.
+Extracted race suites cover 271/271 statements; the native validation suite
+also passed. Eight actual branch root cases passed and its factory is covered
+at 2/2 statements. Independent implementation review r32 accepted the exact
+273/273 designated scope, all original responsibilities and sequential shared
+file handoff, with no remaining findings. A new root wiring fixture was
+corrected to invoke the genuine family factory with private state, avoiding
+ambient checkout heartbeat writes. No broad suite was repeated.
+
+Independent architecture review r31 approved complete PR create/update/land,
+including create's auto-merge/land paths. A neutral selector serves PR and wait;
+small shared landing composition functions reuse the existing identity, link,
+event and lifecycle authorities for PR and worktree consumers. Command adapters
+preserve lazy flags, exact refusal classification, partial receipts before
+errors and landed-incomplete exit/resume behavior. Native link-before-GitHub,
+session/lane, publication and lifecycle guarantees remain genuine tests. The
+branch and PR slices of their shared test file use sequential whole-file
+handoff. Extracted race suites cover 433/433 statements (299 command, 119 shared
+landing composition, 15 selector); final root PR/landing bindings cover 16/16,
+for a designated new/moved scope of 449/449. The separately modified wait
+selector binding is covered, and all five existing wait root/alias cases passed
+with the touched factory at 17/17. Native full-root fixtures now use private
+working directories; original quiet sink assertions remain intact.
+
+The initial shared root gate recorded 26 passes and four failures caused by a
+test adapter executing parent help instead of the genuine child operation.
+Only those four native cases were retried after correcting the adapter, and
+all passed. A focused actual dependency-binding check covers final `pr.go` at
+11/11. Root profiles use a logical block union; stale coordinates from the
+production factory extraction are excluded entirely. Vet and lint passed.
+These scopes do not establish a new repository percentage or a matched runtime
+saving. Independent implementation review r33 accepted the exact source,
+all 56 original responsibilities, protected declarations and six actual test
+reference migrations (including branch), with no remaining findings.
+
 ### Task 7: Separate daemon runtime from CLI adapters
 
 **Status:** queued

@@ -1,4 +1,4 @@
-package main
+package cmdpr
 
 import (
 	"bytes"
@@ -12,20 +12,21 @@ import (
 )
 
 func TestPRUpdateReportsExactReceiptInTextAndJSON(t *testing.T) {
-	previous := updatePullRequest
-	t.Cleanup(func() { updatePullRequest = previous })
+	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	result := orchestrate.PullRequestUpdateResult{
 		Repository: "acme/app", PullRequest: "42", Status: "updated", BeforeSHA: "before", AfterSHA: "after",
 		TargetBeforeSHA: "target-before", TargetCurrentSHA: "target-after", LocalSync: "fast-forwarded", ReceiptPath: "/receipts/42.json",
 	}
 	var requested orchestrate.PullRequestUpdateOptions
-	updatePullRequest = func(_ context.Context, options orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
+	deps.Update = func(_ context.Context, options orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
 		requested = options
 		return result, nil
 	}
 	for _, format := range []string{"text", "json"} {
 		t.Run(format, func(t *testing.T) {
-			command := newPRUpdateCmd(&invocation{projectsRoot: t.TempDir()})
+			command := NewUpdate(testRuntime(), deps)
 			var stdout bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetArgs([]string{"acme/app#42", "--format=" + format})
@@ -51,14 +52,15 @@ func TestPRUpdateReportsExactReceiptInTextAndJSON(t *testing.T) {
 }
 
 func TestPRUpdateReturnsFindingsAfterPublishingPartialReceipt(t *testing.T) {
-	previous := updatePullRequest
-	t.Cleanup(func() { updatePullRequest = previous })
+	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	for _, status := range []string{"updated_partial", "unverified"} {
 		t.Run(status, func(t *testing.T) {
-			updatePullRequest = func(context.Context, orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
+			deps.Update = func(context.Context, orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
 				return orchestrate.PullRequestUpdateResult{Repository: "acme/app", PullRequest: "42", Status: status, ReceiptPath: "/receipts/42.json"}, nil
 			}
-			command := newPRUpdateCmd(&invocation{})
+			command := NewUpdate(testRuntime(), deps)
 			command.SilenceUsage, command.SilenceErrors = true, true
 			var stdout bytes.Buffer
 			command.SetOut(&stdout)
@@ -76,15 +78,16 @@ func TestPRUpdateReturnsFindingsAfterPublishingPartialReceipt(t *testing.T) {
 }
 
 func TestPRUpdateKeepsReceiptVisibleWhenUpdateFails(t *testing.T) {
-	previous := updatePullRequest
-	t.Cleanup(func() { updatePullRequest = previous })
+	t.Parallel()
+	deps := testDependencies()
+	_ = deps
 	want := errors.New("target moved during verification")
 	for _, receipt := range []string{"", "/receipts/42.json"} {
 		t.Run(receipt, func(t *testing.T) {
-			updatePullRequest = func(context.Context, orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
+			deps.Update = func(context.Context, orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
 				return orchestrate.PullRequestUpdateResult{Repository: "acme/app", PullRequest: "42", Status: "unverified", ReceiptPath: receipt}, want
 			}
-			command := newPRUpdateCmd(&invocation{})
+			command := NewUpdate(testRuntime(), deps)
 			command.SilenceUsage, command.SilenceErrors = true, true
 			var stdout bytes.Buffer
 			command.SetOut(&stdout)

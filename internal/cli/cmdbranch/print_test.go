@@ -1,4 +1,4 @@
-package main
+package cmdbranch
 
 import (
 	"errors"
@@ -10,15 +10,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-// cov-cgx-c1 trial lane: covers cmd/wb/branch.go seams named in
-// scratchpad/seams/rwi/c1.txt: the print helpers directly, and the
-// newBranchCountCmd/newBranchListCmd/newBranchCleanupCmd `switch format`
-// RunE closures via a real (but empty) projects root so no network or real
-// git history is needed. newBranchQuarantineCmd's loop closure is not
-// exercised here: producing both a succeeding and a failing quarantine
-// candidate needs a real git repository and branch — out of scope for this
-// lane's budget (see final report).
 
 func TestRetiredRemoteTagCountReadsScopedTotal(t *testing.T) {
 	t.Parallel()
@@ -99,8 +90,8 @@ func TestPrintBranchListPropagatesWriteErrorsAtEveryStage(t *testing.T) {
 		t.Run(fmt.Sprintf("after-%d-writes", after), func(t *testing.T) {
 			t.Parallel()
 			command := &cobra.Command{}
-			command.SetOut(&cgxc1FailAfterWriter{after: after, err: sentinel})
-			if err := printBranchList(command, outcome); !errors.Is(err, sentinel) {
+			command.SetOut(&failAfterWriter{remaining: after, err: sentinel})
+			if err := printBranchList(command.OutOrStdout(), outcome); !errors.Is(err, sentinel) {
 				t.Fatalf("after=%d err=%v", after, err)
 			}
 		})
@@ -109,8 +100,8 @@ func TestPrintBranchListPropagatesWriteErrorsAtEveryStage(t *testing.T) {
 	t.Run("empty entries first write failure", func(t *testing.T) {
 		t.Parallel()
 		command := &cobra.Command{}
-		command.SetOut(&cgxc1FailAfterWriter{after: 0, err: sentinel})
-		if err := printBranchList(command, worktrees.BranchListOutcome{}); !errors.Is(err, sentinel) {
+		command.SetOut(&failAfterWriter{remaining: 0, err: sentinel})
+		if err := printBranchList(command.OutOrStdout(), worktrees.BranchListOutcome{}); !errors.Is(err, sentinel) {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -137,8 +128,8 @@ func TestPrintBranchCleanupPropagatesWriteErrorsForEveryRowKind(t *testing.T) {
 		t.Run(fmt.Sprintf("after-%d-writes", after), func(t *testing.T) {
 			t.Parallel()
 			command := &cobra.Command{}
-			command.SetOut(&cgxc1FailAfterWriter{after: after, err: sentinel})
-			if err := printBranchCleanup(command, outcome); !errors.Is(err, sentinel) {
+			command.SetOut(&failAfterWriter{remaining: after, err: sentinel})
+			if err := printBranchCleanup(command.OutOrStdout(), outcome); !errors.Is(err, sentinel) {
 				t.Fatalf("after=%d err=%v", after, err)
 			}
 		})
@@ -147,20 +138,19 @@ func TestPrintBranchCleanupPropagatesWriteErrorsForEveryRowKind(t *testing.T) {
 	t.Run("no results first write failure", func(t *testing.T) {
 		t.Parallel()
 		command := &cobra.Command{}
-		command.SetOut(&cgxc1FailAfterWriter{after: 0, err: sentinel})
-		if err := printBranchCleanup(command, worktrees.BranchCleanupOutcome{}); !errors.Is(err, sentinel) {
+		command.SetOut(&failAfterWriter{remaining: 0, err: sentinel})
+		if err := printBranchCleanup(command.OutOrStdout(), worktrees.BranchCleanupOutcome{}); !errors.Is(err, sentinel) {
 			t.Fatalf("err=%v", err)
 		}
 	})
 }
 
-func TestBranchCountSwitchFormatCoversEveryBranch(t *testing.T) {
-	root := t.TempDir()
-	inv := &invocation{projectsRoot: root}
+func TestBranchCountAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) {
+	t.Parallel()
 	for _, format := range []string{"text", "json", "yaml", "bogus"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
-			command := newBranchCountCmd(inv)
+			command := newCount(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)
 			command.SetErr(&out)
@@ -179,13 +169,12 @@ func TestBranchCountSwitchFormatCoversEveryBranch(t *testing.T) {
 	}
 }
 
-func TestBranchListSwitchFormatCoversEveryBranch(t *testing.T) {
-	root := t.TempDir()
-	inv := &invocation{projectsRoot: root}
+func TestBranchListAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) {
+	t.Parallel()
 	for _, format := range []string{"text", "json", "yaml", "bogus"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
-			command := newBranchListCmd(inv)
+			command := newList(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)
 			command.SetErr(&out)
@@ -204,13 +193,12 @@ func TestBranchListSwitchFormatCoversEveryBranch(t *testing.T) {
 	}
 }
 
-func TestBranchCleanupSwitchFormatCoversEveryBranch(t *testing.T) {
-	root := t.TempDir()
-	inv := &invocation{projectsRoot: root}
+func TestBranchCleanupAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) {
+	t.Parallel()
 	for _, format := range []string{"text", "json", "bogus"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
-			command := newBranchCleanupCmd(inv)
+			command := newCleanup(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)
 			command.SetErr(&out)

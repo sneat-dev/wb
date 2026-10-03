@@ -16,8 +16,8 @@ import (
 // The real root binds current per-instance flags, the context reader, native registration and
 // cleanup. Snapshot decision details belong to waitrun's reader tests.
 func TestWaitRootBindsCurrentProjectsRootAndReleasesNativeRegistration(t *testing.T) {
-	t.Parallel()
 	projects := t.TempDir()
+	t.Chdir(projects)
 	home, err := wbhome.Root(projects)
 	if err != nil {
 		t.Fatal(err)

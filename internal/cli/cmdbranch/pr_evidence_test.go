@@ -1,4 +1,4 @@
-package main
+package cmdbranch
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 )
 
 func TestPrintBranchListExplainsRemotePullRequestEvidence(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		entry worktrees.BranchEntry
@@ -37,10 +38,10 @@ func TestPrintBranchListExplainsRemotePullRequestEvidence(t *testing.T) {
 			entry := test.entry
 			entry.Repository, entry.Branch, entry.Scope = "acme/app", "feature/pr-evidence", worktrees.BranchScopeRemote
 			entry.Disposition, entry.Evidence = worktrees.BranchContained, "ancestor of main"
-			command := newBranchListCmd(&invocation{})
+			command := newList(runtimeForTest(), depsForTest())
 			var output bytes.Buffer
 			command.SetOut(&output)
-			if err := printBranchList(command, worktrees.BranchListOutcome{
+			if err := printBranchList(command.OutOrStdout(), worktrees.BranchListOutcome{
 				Entries: []worktrees.BranchEntry{entry}, Totals: map[string]int{worktrees.BranchContained: 1},
 			}); err != nil {
 				t.Fatal(err)

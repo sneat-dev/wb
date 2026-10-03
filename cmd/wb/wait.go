@@ -1,20 +1,22 @@
 package main
 
 import (
+	"io"
+	"strings"
+
 	"github.com/sneat-dev/wb/internal/cli/cmdci"
 	"github.com/sneat-dev/wb/internal/cli/cmdwait"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/prselector"
 	"github.com/sneat-dev/wb/internal/waitrun"
 	"github.com/spf13/cobra"
-	"io"
-	"strings"
 )
 
 func newWaitCmd(inv *invocation) *cobra.Command {
 	observer := waitrun.Observer{}
 	registry := waitrun.DefaultRegistry()
 	return cmdwait.New(newCLIRuntime(inv), cmdwait.Dependencies{
-		Wait: observer.Wait, RegisterWait: registry.RegisterWait, Inspect: registry.Inspect, ParseSelector: splitPullRequestSelector,
+		Wait: observer.Wait, RegisterWait: registry.RegisterWait, Inspect: registry.Inspect, ParseSelector: prselector.Parse,
 		Interactive: func(out io.Writer, nonInteractive bool) bool { return console.Interactive(out, nonInteractive) }, Discovery: setDiscoveryTerms,
 	}, cmdwait.Children{Checks: func() *cobra.Command { return newWaitChecksCmd(inv) }, Agent: func() *cobra.Command { return newWaitAgentCmd(inv) }, Operation: func() *cobra.Command { return newWaitOperationCmd(inv) }})
 }

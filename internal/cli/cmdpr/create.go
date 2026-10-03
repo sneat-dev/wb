@@ -1,20 +1,19 @@
-package main
+package cmdpr
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/streams"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
-func newPRCreateCmd(inv *invocation) *cobra.Command {
+func NewCreate(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile string
 	var draft, autoMerge, allowUnfenced, commitStaged, commitAll, land, keep bool
 	var timeout time.Duration
@@ -112,23 +111,23 @@ wb pr create --auto-merge --approved-by review-1041.md
 wb pr create --format json`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format, "text", "json"); err != nil {
+			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
 			if strings.TrimSpace(body) != "" && strings.TrimSpace(bodyFile) != "" {
-				return usageError("--body and --body-file are mutually exclusive")
+				return runtime.ExitError(shared.ExitUsage, "--body and --body-file are mutually exclusive")
 			}
 			if draft && autoMerge {
-				return usageError("--draft and --auto-merge are mutually exclusive: a draft pull request cannot be merged")
+				return runtime.ExitError(shared.ExitUsage, "--draft and --auto-merge are mutually exclusive: a draft pull request cannot be merged")
 			}
 			if draft && land {
-				return usageError("--draft and --land are mutually exclusive: a draft pull request cannot be landed")
+				return runtime.ExitError(shared.ExitUsage, "--draft and --land are mutually exclusive: a draft pull request cannot be landed")
 			}
 			if !autoMerge && !land && command.Flags().Changed("approved-by") {
-				return usageError("--approved-by is only meaningful with --auto-merge or --land")
+				return runtime.ExitError(shared.ExitUsage, "--approved-by is only meaningful with --auto-merge or --land")
 			}
 			if !autoMerge && !land && command.Flags().Changed("allow-unfenced") {
-				return usageError("--allow-unfenced is only meaningful with --auto-merge or --land")
+				return runtime.ExitError(shared.ExitUsage, "--allow-unfenced is only meaningful with --auto-merge or --land")
 			}
 			commitModes := 0
 			for _, active := range []bool{commitStaged, commitAll, len(add) > 0} {
@@ -137,13 +136,13 @@ wb pr create --format json`,
 				}
 			}
 			if commitModes > 1 {
-				return usageError("--commit-staged, --commit-all, and --add are mutually exclusive")
+				return runtime.ExitError(shared.ExitUsage, "--commit-staged, --commit-all, and --add are mutually exclusive")
 			}
 			if (commitStaged || commitAll || len(add) > 0) && strings.TrimSpace(message) == "" {
-				return usageError("--commit-staged/--commit-all/--add require -m/--message")
+				return runtime.ExitError(shared.ExitUsage, "--commit-staged/--commit-all/--add require -m/--message")
 			}
 			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
-				return usageError("--review-comment and --review-comment-file are mutually exclusive")
+				return runtime.ExitError(shared.ExitUsage, "--review-comment and --review-comment-file are mutually exclusive")
 			}
 			// Round 3, MAJOR fix: without --land, nothing in this command
 			// ever reads --review-comment/--review-comment-file - --land is
@@ -153,12 +152,12 @@ wb pr create --format json`,
 			// when --auto-merge alone armed with nothing but the identity
 			// string itself.
 			if !land && (command.Flags().Changed("review-comment") || command.Flags().Changed("review-comment-file")) {
-				return usageError("--review-comment/--review-comment-file are only meaningful with --land; " +
+				return runtime.ExitError(shared.ExitUsage, "--review-comment/--review-comment-file are only meaningful with --land; "+
 					"--auto-merge alone never posts the review comment, so it would be silently ignored")
 			}
 			closesIssues, closesErr := parseIssueNumbers(splitCommaSeparated(closes))
 			if closesErr != nil {
-				return usageError(closesErr.Error())
+				return runtime.ExitError(shared.ExitUsage, closesErr.Error())
 			}
 			worktreeArg := ""
 			if len(args) > 0 {
@@ -167,15 +166,15 @@ wb pr create --format json`,
 			// #615: never add issue numbers to the body silently — print
 			// whatever the task's own original prompt names as a suggestion,
 			// leaving --closes as the only thing that acts on it.
-			if suggested := suggestedClosesToPrint(inv, command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
+			if suggested := suggestedCloses(runtime, deps, command.Context(), worktreeArg); len(suggested) > 0 && len(closesIssues) == 0 {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "suggestion: this task's prompt names %s; pass --closes to link them\n",
 					formatSuggestedIssues(suggested))
 			}
 			var landOptions *orchestrate.PullRequestLandOptions
 			if land {
-				progress := newLandingProgress(inv, command, false)
+				progress := landingProgress(runtime, deps, command, false)
 				landOptions = &orchestrate.PullRequestLandOptions{
-					ProjectsRoot:      inv.projectsRoot,
+					ProjectsRoot:      runtime.Flags().ProjectsRoot,
 					Keep:              keep,
 					ApprovedBy:        approvedBy,
 					ReviewComment:     reviewComment,
@@ -184,29 +183,31 @@ wb pr create --format json`,
 					AllowUnfenced:     allowUnfenced,
 					Slice:             timeout,
 					CheckPollInterval: orchestrate.DefaultCheckPollInterval,
-					Progress:          progress.report,
-					OperationProgress: progress.operationReporter("pr create --land"),
-					Lane:              landingLaneGuardRequest(inv, "wb pr create --land", "", false),
-					CheckoutUpdated:   lifecycleCheckoutUpdated(command.ErrOrStderr()),
+					Progress:          progress.Report,
+					OperationProgress: progress.OperationReporter("pr create --land"),
+					Lane:              deps.Lane(runtime.Flags().ProjectsRoot, "wb pr create --land", "", false),
+					CheckoutUpdated:   deps.CheckoutUpdated(command.ErrOrStderr()),
 				}
 			}
 			var lane orchestrate.LaneGuardRequest
 			if autoMerge && !land {
-				lane = landingLaneGuardRequest(inv, "wb pr create --auto-merge", "", false)
+				lane = deps.Lane(runtime.Flags().ProjectsRoot, "wb pr create --auto-merge", "", false)
 			}
-			result, createErr := createPullRequest(command.Context(), orchestrate.PullRequestCreateOptions{
-				Worktree: worktreeArg, ProjectsRoot: inv.projectsRoot,
+			result, createErr := deps.Create(command.Context(), orchestrate.PullRequestCreateOptions{
+				Worktree: worktreeArg, ProjectsRoot: runtime.Flags().ProjectsRoot,
 				Title: title, Body: body, BodyFile: bodyFile, Draft: draft, Base: base,
 				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message, Closes: closesIssues,
 				AutoMerge: autoMerge, ApprovedBy: approvedBy, AllowUnfenced: allowUnfenced, MergeMethod: mergeMethod, Lane: lane,
 				Land: land, LandOptions: landOptions,
-				LinkPreflight: func(repository string) error { return refuseLinkedRepositoryWorktrees(inv, repository) },
+				LinkPreflight: func(repository string) error { return deps.CheckRepository(runtime.Flags().ProjectsRoot, repository) },
 				// The repository is not known until the worktree's manifest is
 				// read inside CreatePullRequest itself, unlike `wb pr land`,
 				// which already has it as a CLI argument — so this hands over
 				// the same repository-scoped-stream resolver `wb pr land`
 				// uses, rather than a repository resolved too early to be right.
-				EventsForRepository: func(repository string) (streams.EventAppender, string) { return landingEventLog(inv, repository) },
+				EventsForRepository: func(repository string) (streams.EventAppender, string) {
+					return deps.Events(runtime.Flags().ProjectsRoot, repository)
+				},
 			})
 			// The envelope is printed whatever createErr is: `result` is
 			// initialized on the invocation's very first line and carries
@@ -227,17 +228,17 @@ wb pr create --format json`,
 				return err
 			}
 			if createErr != nil {
-				return &exitError{code: exitFindings, message: createErr.Error()}
+				return runtime.ExitError(shared.ExitFindings, createErr.Error())
 			}
 			switch result.ExitCode() {
 			case 0:
 				return nil
-			case exitUsage:
-				return &exitError{code: exitUsage, message: result.Reason + "; resolve with: " + result.SanctionedCommand}
-			case exitLandedIncomplete:
-				return &exitError{code: exitLandedIncomplete, message: result.Reason + "; resume with: " + result.LandResult.ResumeCommand}
+			case shared.ExitUsage:
+				return runtime.ExitError(shared.ExitUsage, result.Reason+"; resolve with: "+result.SanctionedCommand)
+			case 3:
+				return runtime.ExitError(3, result.Reason+"; resume with: "+result.LandResult.ResumeCommand)
 			default:
-				return &exitError{code: exitFindings, message: result.Reason}
+				return runtime.ExitError(shared.ExitFindings, result.Reason)
 			}
 		},
 	}
@@ -253,7 +254,7 @@ wb pr create --format json`,
 	command.Flags().BoolVar(&autoMerge, "auto-merge", false, "arm GitHub auto-merge immediately after the pull request is created or adopted")
 	command.Flags().BoolVar(&land, "land", false, "land the pull request in-process through wb pr land once it is created or adopted")
 	command.Flags().BoolVar(&keep, "keep", false, "with --land: retain the task's worktree and claim instead of retiring them")
-	command.Flags().DurationVar(&timeout, "timeout", defaultCIWaitSlice, "with --land: total foreground wait budget")
+	command.Flags().DurationVar(&timeout, "timeout", shared.DefaultCIWaitSlice, "with --land: total foreground wait budget")
 	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorizes --auto-merge/--land on a non-mechanical change: a review file, a comment URL, or (with --land) a reviewer identity {model}[@{harness}[@{session}]] plus --review-comment/--review-comment-file")
 	command.Flags().StringVar(&reviewComment, "review-comment", "", "with --land: the review text for a reviewer-identity --approved-by; mutually exclusive with --review-comment-file")
 	command.Flags().StringVar(&reviewCommentFile, "review-comment-file", "", "with --land: path to the review text for a reviewer-identity --approved-by; mutually exclusive with --review-comment")
@@ -261,8 +262,8 @@ wb pr create --format json`,
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "with --auto-merge/--land: arm on a target with no server-enforced strict up-to-date policy")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "with --auto-merge/--land: merge (default), squash, or rebase")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	setDiscoveryTerms(command, "open create pull request pr push branch worktree adopt draft auto merge cheap fast no build no test commit land")
-	markQuietVerb(command)
+	discovery(command, "open create pull request pr push branch worktree adopt draft auto merge cheap fast no build no test commit land")
+	quietVerb(command)
 	return command
 }
 
@@ -321,9 +322,6 @@ func printPullRequestCreate(command *cobra.Command, result orchestrate.PullReque
 	return nil
 }
 
-// parseIssueNumbers converts --closes's comma-separated/repeated values into
-// issue numbers, refusing anything that is not a positive integer by name
-// rather than silently dropping it.
 func parseIssueNumbers(values []string) ([]int, error) {
 	issues := make([]int, 0, len(values))
 	// Round 3, minor 6: dedupe here, in first-seen order, so
@@ -344,32 +342,6 @@ func parseIssueNumbers(values []string) ([]int, error) {
 	return issues, nil
 }
 
-// suggestedClosesFromWorktreePrompt reads the worktree's own original
-// prompt (Work Log) and returns whatever issue numbers it names (#615). Any
-// failure to resolve the worktree or load its Work Log is silent here: this
-// is a courtesy suggestion, never a requirement, and must not turn into a
-// usage error for a worktree that simply has no recorded prompt.
-func suggestedClosesFromWorktreePrompt(inv *invocation, ctx context.Context, worktreeArg string) []int {
-	worktree, err := orchestrate.ResolvePullRequestCreateWorktree(ctx, inv.projectsRoot, worktreeArgOrCurrent(worktreeArg))
-	if err != nil {
-		return nil
-	}
-	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{
-		ProjectsRoot: inv.projectsRoot, Worktree: worktree, IncludePromptBodies: true,
-	})
-	if err != nil || view.OriginalPrompt == nil {
-		return nil
-	}
-	return orchestrate.SuggestClosesFromPrompt(view.OriginalPrompt.Body)
-}
-
-func worktreeArgOrCurrent(worktreeArg string) string {
-	if strings.TrimSpace(worktreeArg) == "" {
-		return "."
-	}
-	return worktreeArg
-}
-
 func formatSuggestedIssues(issues []int) string {
 	parts := make([]string, 0, len(issues))
 	for _, issue := range issues {
@@ -377,6 +349,3 @@ func formatSuggestedIssues(issues []int) string {
 	}
 	return strings.Join(parts, ", ")
 }
-
-// createPullRequest is the creation seam; see landPullRequest.
-var createPullRequest = orchestrate.CreatePullRequest

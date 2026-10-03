@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const defaultCIWaitSlice = shared.DefaultCIWaitSlice
-
 var exactGitObjectID = shared.ExactGitObjectID
 
 func ciDependencies() cmdci.Dependencies {

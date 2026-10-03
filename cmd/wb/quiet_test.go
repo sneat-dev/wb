@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"sort"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/agentguard"
 	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -183,32 +181,6 @@ func TestInventoryProgressIsSilentUnderQuietEvenWhenVerbose(t *testing.T) {
 	}
 }
 
-func TestLandingProgressIsSilentUnderQuiet(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name      string
-		quiet     bool
-		wantLines bool
-	}{{"default prints the heartbeat lines", false, true}, {"quiet prints none", true, false}} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			var stderr bytes.Buffer
-			command := &cobra.Command{}
-			command.SetErr(&stderr)
-			progressSink := newLandingProgress(&invocation{quiet: test.quiet}, command, true)
-			progressSink.start("acme/app", "7", "", "")
-			progressSink.update("pr land: local link preflight: acme/app: started")
-			progressSink.report(orchestrate.PullRequestWaitProgress{Observation: 1})
-			progressSink.operationReporter("pr land")(progress.Event{Phase: "merge"})
-			progressSink.finishOperation("pr land: landed")
-			progressSink.fail(io.EOF)
-			if got := stderr.Len() > 0; got != test.wantLines {
-				t.Fatalf("stderr = %q, wantLines = %t", stderr.String(), test.wantLines)
-			}
-		})
-	}
-}
-
 func TestWorktreeMergeProgressIsSilentUnderQuiet(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -314,17 +286,6 @@ func TestWorktreeCleanupQuietKeepsOutcomeAndWarningsAndDropsCommentary(t *testin
 		// --quiet keeps it.
 		if applied := "info: cleanup WB internal journal /p/journal"; !strings.Contains(stderr.String(), applied) || !strings.Contains(stderr.String(), "applied=true") {
 			t.Errorf("%s: the applied=true line was dropped: %q", test.name, stderr.String())
-		}
-	}
-}
-
-func TestPRCreateOffersNoClosesSuggestionUnderQuiet(t *testing.T) {
-	t.Parallel()
-	missing := t.TempDir() + "/no-such-worktree"
-	for _, quiet := range []bool{false, true} {
-		inv := &invocation{projectsRoot: t.TempDir(), quiet: quiet}
-		if got := suggestedClosesToPrint(inv, context.Background(), missing); got != nil {
-			t.Errorf("quiet = %t: suggestedClosesToPrint = %v for an unreadable worktree, want none", quiet, got)
 		}
 	}
 }
