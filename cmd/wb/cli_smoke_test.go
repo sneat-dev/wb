@@ -59,7 +59,7 @@ func buildWB(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
+	build := exec.Command("go", smokeCoverageBuildArguments(binary, testing.CoverMode(), os.Getenv("WB_TEST_NATIVE_COVERDIR"), os.Getenv("WB_TEST_NATIVE_COVERPKG"))...)
 	if output, err := build.CombinedOutput(); err != nil {
 		smokeBuildErr = errors.New(string(output))
 		t.Fatalf("build wb: %v", smokeBuildErr)
@@ -118,7 +118,7 @@ func runWBInEnvironment(t *testing.T, dir string, childEnv []string, args ...str
 	command.Stdin = devNull // never a terminal, and already at EOF
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	command.Env = childEnv
+	command.Env = smokeCoverageChildEnvironment(childEnv, testing.CoverMode(), os.Getenv("WB_TEST_NATIVE_COVERDIR"))
 
 	started := time.Now()
 	runErr := command.Run()
@@ -279,4 +279,25 @@ func subcommandPaths(command *cobra.Command, prefix []string) [][]string {
 		paths = append(paths, subcommandPaths(child, path)...)
 	}
 	return paths
+}
+
+// Coverage is an explicit runner-owned fixture input; ordinary test builds stay unchanged.
+func smokeCoverageBuildArguments(binary, mode, directory, packages string) []string {
+	arguments := []string{"build", "-o", binary}
+	if mode != "" && directory != "" {
+		arguments = append(arguments, "-covermode="+mode)
+		// Go build otherwise instruments the whole main module, while Go test's default is this package.
+		if packages == "" {
+			packages = "github.com/sneat-dev/wb/cmd/wb"
+		}
+		arguments = append(arguments, "-coverpkg="+packages)
+	}
+	return append(arguments, ".")
+}
+func smokeCoverageChildEnvironment(environment []string, mode, directory string) []string {
+	child := append([]string(nil), environment...)
+	if mode != "" && directory != "" {
+		child = append(child, "GOCOVERDIR="+directory)
+	}
+	return child
 }

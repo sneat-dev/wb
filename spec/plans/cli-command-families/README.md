@@ -1154,6 +1154,28 @@ retirement ownership function (25/25 statements). Existing serial test reasons
 now precede declarations so WB quality scanning recognizes them. Publication
 remains deferred.
 
+### Native fixture coverage collection
+
+The coverage runner owns a separate counter directory for each test attempt.
+Covered smoke fixtures reuse their existing once-built native WB executable;
+child environments carry the counter location without changing process-global
+state. Successful counters are converted with supported `go tool covdata` and
+merged through the existing profile union. Failed attempts are discarded, and
+partial metadata/counter pairs or conversion failures cannot be accepted as an
+inherited test failure. Package and test-name discovery share the execution
+environment. Default native instrumentation stays within `cmd/wb`; explicit
+package selections remain explicit. Plain smoke builds retain their behavior.
+
+One shared retry helper replaces the former unsharded retry loop. Twenty whole
+changed production functions cover 354/354 statements in the 31-case race batch,
+which passes in 14.34 seconds; vet and lint pass. Two pure root fixture-contract
+cases pass under race. The separately selected actual WB version journey passes
+in 9.26 seconds, including its nested root test and shared native build. Its
+persisted atomic profile counts the real main entrypoint and contains only
+`cmd/wb` rows. This is scoped execution evidence, not a new total percentage or
+a measurement of complete CI duration. Linux/Windows compilation and final
+checkpoint review remain separate checks. Publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** in_progress

@@ -749,16 +749,7 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 // tool never masquerades as a package path, and is surfaced only through
 // the error.
 func runStdout(ctx context.Context, dir, name string, args ...string) (string, error) {
-	command := process.CommandContext(ctx, name, args...)
-	command.Dir = dir
-	command.Env = commandEnv(dir, name, nil)
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	output, err := command.Output()
-	if err != nil && stderr.Len() > 0 {
-		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return string(output), err
+	return runStdoutWithEnv(ctx, nil, dir, name, args...)
 }
 
 func runWithEnv(ctx context.Context, env []string, dir, name string, args ...string) (string, error) {
@@ -790,24 +781,9 @@ func commandEnv(dir, name string, env []string) []string {
 }
 
 func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, int, error) {
-	attempts := 0
-	for {
-		attempts++
-		attemptCtx := ctx
-		cancel := func() {}
-		if options.Timeout > 0 {
-			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
-		}
-		output, err := runWithEnv(attemptCtx, options.Env, dir, name, args...)
-		timedOut := attemptCtx.Err() == context.DeadlineExceeded
-		cancel()
-		if timedOut {
-			err = fmt.Errorf("timed out after %s", options.Timeout)
-		}
-		if err == nil || attempts > options.Retry || ctx.Err() != nil {
-			return output, attempts, err
-		}
-	}
+	return runCommandAttempts(ctx, options.Timeout, options.Retry, func(attemptCtx context.Context) (string, error) {
+		return runWithEnv(attemptCtx, options.Env, dir, name, args...)
+	})
 }
 
 func commandError(command, output string, err error) string {
