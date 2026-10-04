@@ -31,6 +31,7 @@ type SupersessionEntry struct {
 // worktree, claim, and deletion transactions that consume a verified receipt.
 type SupersessionPorts struct {
 	Git                worktreeproof.GitQuery
+	ReadGitFileBytes   func(context.Context, string, string, string) ([]byte, error)
 	IsAncestor         func(context.Context, string, string, string) (bool, error)
 	ReadReceipt        func(string) ([]byte, error)
 	ReadCampaignMarker func(string) (bool, error)
@@ -390,7 +391,7 @@ func (service SupersessionService) validateWorkflowAdoptions(ctx context.Context
 		if !ok {
 			return fmt.Sprintf("newly added workflow %q has no adoption evidence", change.path)
 		}
-		source, err := service.readGitFile(ctx, entry.CanonicalDir, entry.HeadSHA, change.path)
+		source, err := service.readGitFileBytes(ctx, entry.CanonicalDir, entry.HeadSHA, change.path)
 		if err != nil {
 			return fmt.Sprintf("cannot read exact source workflow %q: %v", change.path, err)
 		}
@@ -412,11 +413,11 @@ func (service SupersessionService) validateWorkflowAdoptions(ctx context.Context
 		if err != nil || !landed {
 			return fmt.Sprintf("workflow adoption replacement %s is not verified in exact target", adoption.ReplacementSHA)
 		}
-		target, err := service.readGitFile(ctx, entry.CanonicalDir, entry.RemoteTargetSHA, change.path)
+		target, err := service.readGitFileBytes(ctx, entry.CanonicalDir, entry.RemoteTargetSHA, change.path)
 		if err != nil {
 			return fmt.Sprintf("workflow adoption cannot read exact target file %q: %v", change.path, err)
 		}
-		replacement, err := service.readGitFile(ctx, entry.CanonicalDir, adoption.ReplacementSHA, change.path)
+		replacement, err := service.readGitFileBytes(ctx, entry.CanonicalDir, adoption.ReplacementSHA, change.path)
 		if err != nil {
 			return fmt.Sprintf("workflow adoption cannot read replacement file %q at %s: %v", change.path, adoption.ReplacementSHA, err)
 		}
@@ -526,6 +527,13 @@ func (service SupersessionService) readGitFile(ctx context.Context, repository, 
 		return nil, err
 	}
 	return []byte(contents), nil
+}
+
+func (service SupersessionService) readGitFileBytes(ctx context.Context, repository, revision, file string) ([]byte, error) {
+	if service.Ports.ReadGitFileBytes == nil {
+		return nil, fmt.Errorf("byte-preserving Git blob reader is unavailable")
+	}
+	return service.Ports.ReadGitFileBytes(ctx, repository, revision, file)
 }
 
 func dependencyContentChanged(file string, base, head []byte) (bool, error) {

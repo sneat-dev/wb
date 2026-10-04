@@ -65,6 +65,21 @@ func TestSupersessionAcceptsOnlyExactLandedAddedWorkflowAdoption(t *testing.T) {
 				tc.setup(&receipt)
 			}
 			service := SupersessionService{Ports: SupersessionPorts{
+				ReadGitFileBytes: func(_ context.Context, _, revision, file string) ([]byte, error) {
+					if file != workflowPath {
+						return nil, errors.New("unexpected blob path")
+					}
+					if revision == source {
+						return []byte(workflow), nil
+					}
+					if revision == target && tc.name == "different target workflow" || revision == replacement && tc.name == "different replacement workflow" {
+						return []byte(workflow + "# drift\n"), nil
+					}
+					if revision == target || revision == replacement {
+						return []byte(workflow), nil
+					}
+					return nil, errors.New("unexpected blob revision")
+				},
 				Git: func(_ context.Context, _ string, args ...string) (string, error) {
 					switch args[0] {
 					case "merge-base":
