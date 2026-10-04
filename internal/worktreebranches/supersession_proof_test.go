@@ -206,7 +206,12 @@ func TestSupersessionPureProofEdges(t *testing.T) {
 	entry.WorktreeDir = "/worktree"
 	service := SupersessionService{Ports: SupersessionPorts{
 		ReadCampaignMarker: func(string) (bool, error) { return false, nil },
-		Git:                func(context.Context, string, ...string) (string, error) { return "", errors.New("unreadable diff") },
+		Git: func(_ context.Context, _ string, args ...string) (string, error) {
+			if args[0] == "merge-base" {
+				return "base", nil
+			}
+			return "", errors.New("unreadable diff")
+		},
 	}}
 	if !service.DependencyCampaignWorktree(context.Background(), entry) {
 		t.Fatal("unreadable exact diff permitted generic supersession")
@@ -219,5 +224,167 @@ func TestSupersessionPureProofEdges(t *testing.T) {
 	}
 	if !NpmRangeAlternativeSatisfies("v1.2.3", ">=1.0.0") {
 		t.Fatal("valid single comparator was refused")
+	}
+}
+
+func TestDependencyCampaignDetectionUsesSourceDependencyContent(t *testing.T) {
+	t.Parallel()
+	const base, head = "base", "head"
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		base  map[string]string
+		head  map[string]string
+		want  bool
+	}{
+		{
+			name:  "package scripts and workflow run steps are generic changes",
+			paths: []string{"package.json", ".github/workflows/ci.yml"},
+			base: map[string]string{
+				"package.json":             `{"dependencies":{"nx":"1.2.3"},"scripts":{"test":"go test ./..."}}`,
+				".github/workflows/ci.yml": "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n      - run: go test ./...\n",
+			},
+			head: map[string]string{
+				"package.json":             `{"dependencies":{"nx":"1.2.3"},"scripts":{"pretest":"go generate ./...","test":"go test ./..."}}`,
+				".github/workflows/ci.yml": "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n      - run: go generate ./...\n      - run: go test ./...\n",
+			},
+			want: false,
+		},
+		{
+			name:  "direct npm dependency version change",
+			paths: []string{"package.json"},
+			base:  map[string]string{"package.json": `{"dependencies":{"nx":"1.2.3"}}`},
+			head:  map[string]string{"package.json": `{"dependencies":{"nx":"2.0.0"}}`},
+			want:  true,
+		},
+		{
+			name:  "Go toolchain directive change is dependency relevant",
+			paths: []string{"go.mod"},
+			base:  map[string]string{"go.mod": "module example.com/app\n\ngo 1.24\nrequire example.com/lib v1.2.3\n"},
+			head:  map[string]string{"go.mod": "module example.com/app\n\ngo 1.25\nrequire example.com/lib v1.2.3\n"},
+			want:  true,
+		},
+		{
+			name:  "Go module version change",
+			paths: []string{"go.mod"},
+			base:  map[string]string{"go.mod": "module example.com/app\n\nrequire example.com/lib v1.2.3\n"},
+			head:  map[string]string{"go.mod": "module example.com/app\n\nrequire example.com/lib v2.0.0\n"},
+			want:  true,
+		},
+		{
+			name:  "npm override change",
+			paths: []string{"package.json"},
+			base:  map[string]string{"package.json": `{"dependencies":{"nx":"1.2.3"},"overrides":{"vulnerable":"1.0.0"}}`},
+			head:  map[string]string{"package.json": `{"dependencies":{"nx":"1.2.3"},"overrides":{"vulnerable":"1.0.1"}}`},
+			want:  true,
+		},
+		{
+			name:  "npm workspace membership change",
+			paths: []string{"package.json"},
+			base:  map[string]string{"package.json": `{"workspaces":["packages/*"]}`},
+			head:  map[string]string{"package.json": `{"workspaces":["packages/*","tools/*"]}`},
+			want:  true,
+		},
+		{
+			name:  "Go workspace module membership change",
+			paths: []string{"go.work"},
+			base:  map[string]string{"go.work": "go 1.24\n\nuse ./app\n"},
+			head:  map[string]string{"go.work": "go 1.24\n\nuse (\n ./app\n ./tools\n)\n"},
+			want:  true,
+		},
+		{
+			name:  "Yarn resolution change",
+			paths: []string{"package.json"},
+			base:  map[string]string{"package.json": `{"resolutions":{"vulnerable":"1.0.0"}}`},
+			head:  map[string]string{"package.json": `{"resolutions":{"vulnerable":"1.0.1"}}`},
+			want:  true,
+		},
+		{
+			name:  "bundled dependency change",
+			paths: []string{"package.json"},
+			base:  map[string]string{"package.json": `{"bundledDependencies":["one"]}`},
+			head:  map[string]string{"package.json": `{"bundledDependencies":["one","two"]}`},
+			want:  true,
+		},
+		{
+			name:  "workflow action version change",
+			paths: []string{".github/workflows/ci.yml"},
+			base:  map[string]string{".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n"},
+			head:  map[string]string{".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - uses: actions/checkout@v5\n"},
+			want:  true,
+		},
+		{
+			name:  "workflow action toolchain input change",
+			paths: []string{".github/workflows/ci.yml"},
+			base:  map[string]string{".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: '1.24'\n"},
+			head:  map[string]string{".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: '1.25'\n"},
+			want:  true,
+		},
+		{
+			name:  "lockfile change",
+			paths: []string{"package-lock.json"},
+			base:  map[string]string{"package-lock.json": "before\n"},
+			head:  map[string]string{"package-lock.json": "after\n"},
+			want:  true,
+		},
+		{
+			name:  "npm shrinkwrap change",
+			paths: []string{"npm-shrinkwrap.json"},
+			base:  map[string]string{"npm-shrinkwrap.json": "before\n"},
+			head:  map[string]string{"npm-shrinkwrap.json": "after\n"},
+			want:  true,
+		},
+		{
+			name:  "Go workspace sum change",
+			paths: []string{"go.work.sum"},
+			base:  map[string]string{"go.work.sum": "example.com/lib v1.2.3 h1:before\n"},
+			head:  map[string]string{"go.work.sum": "example.com/lib v1.2.4 h1:after\n"},
+			want:  true,
+		},
+		{
+			name:  "malformed dependency manifest fails closed",
+			paths: []string{"package.json"},
+			base:  map[string]string{"package.json": "{\n"},
+			head:  map[string]string{"package.json": "{}\n"},
+			want:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			contents := map[string]string{}
+			for file, value := range tc.base {
+				contents[base+":"+file] = value
+			}
+			for file, value := range tc.head {
+				contents[head+":"+file] = value
+			}
+			service := SupersessionService{Ports: SupersessionPorts{
+				ReadCampaignMarker: func(string) (bool, error) { return false, nil },
+				Git: func(_ context.Context, _ string, args ...string) (string, error) {
+					switch args[0] {
+					case "merge-base":
+						return base, nil
+					case "diff":
+						if args[len(args)-2] != base || args[len(args)-1] != head {
+							t.Fatalf("diff did not compare source commits from the exact merge base: %q", args)
+						}
+						return strings.Join(tc.paths, "\x00") + "\x00", nil
+					case "show":
+						value, ok := contents[args[1]]
+						if !ok {
+							t.Fatalf("unexpected Git show query: %q", args)
+						}
+						return value, nil
+					default:
+						t.Fatalf("unexpected Git query: %q", args)
+						return "", nil
+					}
+				},
+			}}
+			entry := SupersessionEntry{Task: "sample", Branch: "feature/sample", CanonicalDir: "/repo", WorktreeDir: "/worktree", HeadSHA: head, RemoteTargetSHA: "target"}
+			if got := service.DependencyCampaignWorktree(context.Background(), entry); got != tc.want {
+				t.Fatalf("dependency campaign = %t, want %t", got, tc.want)
+			}
+		})
 	}
 }

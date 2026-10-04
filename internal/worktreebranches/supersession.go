@@ -365,25 +365,322 @@ func (service SupersessionService) DependencyCampaignWorktree(ctx context.Contex
 	if entry.CanonicalDir == "" || entry.HeadSHA == "" || entry.RemoteTargetSHA == "" {
 		return false
 	}
-	changed, err := service.Ports.Git(ctx, entry.CanonicalDir, "diff", "--name-only", "--diff-filter=ACMR", entry.RemoteTargetSHA, entry.HeadSHA)
+	base, err := service.Ports.Git(ctx, entry.CanonicalDir, "merge-base", entry.HeadSHA, entry.RemoteTargetSHA)
 	if err != nil {
-		// With exact source and target identities present, an unreadable diff
-		// must fail closed instead of allowing a generic terminalization.
+		// Exact source and target identities without a readable common base
+		// cannot prove that the source contains no dependency change.
 		return true
 	}
-	for _, file := range strings.Fields(changed) {
-		if IsDependencyManifestOrImporter(file) {
+	changed, err := service.Ports.Git(ctx, entry.CanonicalDir, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=ACMRD", strings.TrimSpace(base), entry.HeadSHA)
+	if err != nil {
+		// With exact source and target identities present, an unreadable source
+		// diff must fail closed instead of allowing generic terminalization.
+		return true
+	}
+	for _, file := range strings.Split(changed, "\x00") {
+		if file == "" || !IsDependencyManifestOrImporter(file) {
+			continue
+		}
+		baseContents, err := service.readGitFile(ctx, entry.CanonicalDir, strings.TrimSpace(base), file)
+		if err != nil {
+			return true
+		}
+		headContents, err := service.readGitFile(ctx, entry.CanonicalDir, entry.HeadSHA, file)
+		if err != nil {
+			return true
+		}
+		changed, err := dependencyContentChanged(file, baseContents, headContents)
+		if err != nil || changed {
 			return true
 		}
 	}
 	return false
 }
 
+func (service SupersessionService) readGitFile(ctx context.Context, repository, revision, file string) ([]byte, error) {
+	contents, err := service.Ports.Git(ctx, repository, "show", revision+":"+file)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(contents), nil
+}
+
+func dependencyContentChanged(file string, base, head []byte) (bool, error) {
+	baseName := path.Base(file)
+	switch {
+	case baseName == "package.json":
+		before, err := npmDependencySections(base)
+		if err != nil {
+			return false, err
+		}
+		after, err := npmDependencySections(head)
+		if err != nil {
+			return false, err
+		}
+		return !stringMapsEqual(before, after), nil
+	case baseName == "go.mod":
+		before, err := goDependencySections(base)
+		if err != nil {
+			return false, err
+		}
+		after, err := goDependencySections(head)
+		if err != nil {
+			return false, err
+		}
+		return !stringMapsEqual(before, after), nil
+	case baseName == "go.work":
+		before, err := goWorkspaceSections(base)
+		if err != nil {
+			return false, err
+		}
+		after, err := goWorkspaceSections(head)
+		if err != nil {
+			return false, err
+		}
+		return !stringMapsEqual(before, after), nil
+	case baseName == "go.sum" || baseName == "go.work.sum" || baseName == "package-lock.json" || baseName == "npm-shrinkwrap.json" || baseName == "pnpm-lock.yaml" || baseName == "yarn.lock":
+		// Lockfiles are resolved dependency evidence. Any source-side edit is
+		// kept behind the dependency receipt proof, even if its format changes.
+		return !bytes.Equal(base, head), nil
+	case baseName == "pnpm-workspace.yaml" || baseName == "pnpm-workspace.yml":
+		// Workspace membership and catalog declarations affect package
+		// resolution, so source-side edits require the same evidence.
+		return !bytes.Equal(base, head), nil
+	case strings.HasPrefix(file, ".github/workflows/"):
+		before, err := workflowActionReferences(base)
+		if err != nil {
+			return false, err
+		}
+		after, err := workflowActionReferences(head)
+		if err != nil {
+			return false, err
+		}
+		return !stringSlicesEqual(before, after), nil
+	default:
+		return false, nil
+	}
+}
+
+func npmDependencySections(contents []byte) (map[string]string, error) {
+	var manifest map[string]json.RawMessage
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	for _, section := range []string{"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"} {
+		var dependencies map[string]string
+		if raw := manifest[section]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &dependencies); err != nil {
+				return nil, fmt.Errorf("parse %s: %w", section, err)
+			}
+		}
+		for name, version := range dependencies {
+			result[section+":"+name] = version
+		}
+	}
+	for _, section := range []string{"overrides", "resolutions", "peerDependenciesMeta", "bundledDependencies", "bundleDependencies",
+		"dependenciesMeta", "workspaces", "packageManager", "engines", "os", "cpu", "libc", "installConfig", "catalogs"} {
+		raw := manifest[section]
+		if len(raw) == 0 {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", section, err)
+		}
+		canonical, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize %s: %w", section, err)
+		}
+		result[section] = string(canonical)
+	}
+	return result, nil
+}
+
+func goWorkspaceSections(contents []byte) (map[string]string, error) {
+	parsed, err := modfile.ParseWork("go.work", contents, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	if parsed.Go != nil {
+		result["go"] = parsed.Go.Version
+	}
+	if parsed.Toolchain != nil {
+		result["toolchain"] = parsed.Toolchain.Name
+	}
+	for _, use := range parsed.Use {
+		result["use:"+use.Path] = use.ModulePath
+	}
+	for _, replacement := range parsed.Replace {
+		old := replacement.Old.Path + "@" + replacement.Old.Version
+		newVersion := replacement.New.Path + "@" + replacement.New.Version
+		result["replace:"+old] = newVersion
+	}
+	return result, nil
+}
+
+func goDependencySections(contents []byte) (map[string]string, error) {
+	parsed, err := modfile.Parse("go.mod", contents, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	for _, requirement := range parsed.Require {
+		result["require:"+requirement.Mod.Path] = requirement.Mod.Version + "|indirect=" + fmt.Sprint(requirement.Indirect)
+	}
+	for _, replacement := range parsed.Replace {
+		old := replacement.Old.Path + "@" + replacement.Old.Version
+		newVersion := replacement.New.Path + "@" + replacement.New.Version
+		result["replace:"+old] = newVersion
+	}
+	for _, exclusion := range parsed.Exclude {
+		result["exclude:"+exclusion.Mod.Path] = exclusion.Mod.Version
+	}
+	if parsed.Go != nil {
+		result["go"] = parsed.Go.Version
+	}
+	if parsed.Toolchain != nil {
+		result["toolchain"] = parsed.Toolchain.Name
+	}
+	return result, nil
+}
+
+func workflowActionReferences(contents []byte) ([]string, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(contents, &root); err != nil {
+		return nil, err
+	}
+	var references []string
+	var visit func(*yaml.Node) error
+	visit = func(node *yaml.Node) error {
+		if node.Kind == yaml.MappingNode {
+			var uses *yaml.Node
+			var with *yaml.Node
+			for index := 0; index+1 < len(node.Content); index += 2 {
+				key, value := node.Content[index], node.Content[index+1]
+				if key.Kind == yaml.ScalarNode {
+					switch key.Value {
+					case "uses":
+						if uses != nil {
+							return fmt.Errorf("workflow action step has duplicate uses keys")
+						}
+						uses = value
+					case "with":
+						with = value
+					}
+				}
+				if err := visit(value); err != nil {
+					return err
+				}
+			}
+			if uses != nil {
+				if uses.Kind != yaml.ScalarNode || strings.TrimSpace(uses.Value) == "" {
+					return fmt.Errorf("workflow action reference is not a non-empty scalar")
+				}
+				action := map[string]any{"uses": strings.TrimSpace(uses.Value)}
+				if with != nil {
+					canonicalWith, err := canonicalYAMLNode(with)
+					if err != nil {
+						return fmt.Errorf("parse workflow action inputs: %w", err)
+					}
+					action["with"] = canonicalWith
+				}
+				encoded, err := json.Marshal(action)
+				if err != nil {
+					return fmt.Errorf("canonicalize workflow action inputs: %w", err)
+				}
+				references = append(references, string(encoded))
+			}
+			return nil
+		}
+		for _, child := range node.Content {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(&root); err != nil {
+		return nil, err
+	}
+	sort.Strings(references)
+	return references, nil
+}
+
+func canonicalYAMLNode(node *yaml.Node) (any, error) {
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if len(node.Content) != 1 {
+			return nil, fmt.Errorf("document does not contain exactly one value")
+		}
+		return canonicalYAMLNode(node.Content[0])
+	case yaml.MappingNode:
+		if len(node.Content)%2 != 0 {
+			return nil, fmt.Errorf("mapping has an incomplete key/value pair")
+		}
+		result := make(map[string]any, len(node.Content)/2)
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key := node.Content[index]
+			if key.Kind != yaml.ScalarNode {
+				return nil, fmt.Errorf("mapping key is not scalar")
+			}
+			if _, duplicate := result[key.Value]; duplicate {
+				return nil, fmt.Errorf("mapping has duplicate key %q", key.Value)
+			}
+			value, err := canonicalYAMLNode(node.Content[index+1])
+			if err != nil {
+				return nil, err
+			}
+			result[key.Value] = value
+		}
+		return result, nil
+	case yaml.SequenceNode:
+		result := make([]any, 0, len(node.Content))
+		for _, child := range node.Content {
+			value, err := canonicalYAMLNode(child)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, value)
+		}
+		return result, nil
+	case yaml.ScalarNode:
+		return map[string]string{"tag": node.Tag, "value": node.Value}, nil
+	default:
+		return nil, fmt.Errorf("unsupported YAML node kind %d", node.Kind)
+	}
+}
+
+func stringMapsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if other, ok := right[key]; !ok || other != value {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func IsDependencyManifestOrImporter(file string) bool {
 	file = path.Clean(strings.TrimSpace(file))
 	base := path.Base(file)
 	switch base {
-	case "package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "pnpm-workspace.yml", "yarn.lock", "go.mod", "go.sum":
+	case "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "pnpm-workspace.yml", "yarn.lock", "go.mod", "go.work", "go.sum", "go.work.sum":
 		return true
 	}
 	return strings.HasPrefix(file, ".github/workflows/") && (strings.HasSuffix(file, ".yml") || strings.HasSuffix(file, ".yaml"))
