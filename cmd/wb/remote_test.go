@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,11 +17,6 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/spf13/cobra"
 )
-
-// runRemotePublish is a test-only convenience wrapper around
-// runRemotePublishWithProgress: no production code calls it, and it exists so
-// tests exercising remote publish do not have to invent a nil progress
-// stream and a throwaway *invocation at every call site.
 
 func remoteGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -152,28 +146,6 @@ func TestPersistentFlagMatrixRemoteCommands(t *testing.T) {
 	}
 }
 
-func publishTwo(t *testing.T) (remoteFixture, time.Time) {
-	t.Helper()
-	f := newRemoteFixture(t, "laptop")
-	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
-	var out bytes.Buffer
-	if err := runRemotePublish(f.deps("alice", at), f.projectsRoot, "", 2, false, false, &out); err != nil {
-		t.Fatal(err)
-	}
-	// Second machine: same store, a different projects root and machine name.
-	g := remoteFixture{projectsRoot: filepath.Join(t.TempDir(), "projects"), origin: f.origin, configPath: filepath.Join(t.TempDir(), "wb.yaml")}
-	if err := os.MkdirAll(g.projectsRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(g.configPath, []byte("remote:\n  repo: team/wb-state\n  machine: vm\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := runRemotePublish(g.deps("bob", at.Add(-48*time.Hour)), g.projectsRoot, "", 2, false, false, &out); err != nil {
-		t.Fatal(err)
-	}
-	return f, at
-}
-
 // TestRemoteMachinesTableHasPublishedAtColumn proves the human-readable
 // table carries the exact RFC3339 UTC publish timestamp, not just the
 // coarse relative age: an operator diffing snapshots across machines needs
@@ -282,7 +254,3 @@ func TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress(t *testing
 }
 
 var _ = context.Background
-
-func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out io.Writer) error {
-	return runRemotePublishWithProgress(deps, projectsRoot, filter, parallel, dryRun, jsonOut, out, nil, &invocation{})
-}

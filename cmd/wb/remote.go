@@ -43,13 +43,6 @@ func defaultRemoteDeps() remoteDeps {
 	}
 }
 
-func remoteProgressHeartbeat(deps remoteDeps) time.Duration {
-	if deps.progressHeartbeat > 0 {
-		return deps.progressHeartbeat
-	}
-	return universalProgressHeartbeat
-}
-
 // remoteStateCloneURL is the state repository's transport URL. It is always on
 // GitHub, which is why the clone path below can place a missing mirror at the
 // literal host level.

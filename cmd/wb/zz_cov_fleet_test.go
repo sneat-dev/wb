@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,35 +24,6 @@ func cwCovRun(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	var out, errOut bytes.Buffer
 	code = run(args, &out, &errOut)
 	return out.String(), errOut.String(), code
-}
-
-// cwCovCaptureStdout swaps os.Stdout for a pipe while fn runs, so a function
-// that prints with fmt.Print can be asserted on. Only ever called from
-// non-parallel tests: Go resumes parallel tests only after every sequential
-// test in the package has returned.
-func cwCovCaptureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	previous := os.Stdout
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = writer
-	restore := func() { os.Stdout = previous }
-	defer restore()
-	done := make(chan string, 1)
-	go func() {
-		data, _ := io.ReadAll(reader)
-		done <- string(data)
-	}()
-	fn()
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	restore()
-	out := <-done
-	_ = reader.Close()
-	return out
 }
 
 // cwCovFakeGH installs a hermetic fake `gh` on PATH. It answers the three
