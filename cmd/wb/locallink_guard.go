@@ -1,45 +1,6 @@
 package main
 
-import (
-	"github.com/sneat-dev/wb/internal/landingcontext"
-	"github.com/spf13/cobra"
-)
-
-// refuseLinkedWorktrees is the landing guard every push-or-land verb calls
-// before it does anything.
-//
-// A worktree with a live local link builds against an *unpublished* working
-// tree. Pushing or landing it publishes a commit whose CI has already run
-// against something the registry never carried, so the guard fires before any
-// push and names both the offending link and the command that clears it.
-//
-// The two signals are independent by construction: stream state would miss a
-// hand-written `go.work`, and `go.work` would miss an npm link. Both are
-// consulted, and either one refuses.
-//
-// A state store that cannot be read is an error, never an empty result — "I
-// could not tell" must not be spelled the same way as "there is no link".
-//
-// This is the hook every landing verb shares — `merge`, `merge prepare`,
-// `merge land` and `merge resume`. The land verbs take a RECEIPT rather than a
-// worktree path, so they resolve the sources from it and guard those; without
-// that, preparing before linking and then landing the receipt pushed a linked
-// worktree straight past the guard.
-//
-// Implements: dependency-streams#req:merge-refuses-a-linked-worktree.
-func refuseLinkedWorktrees(inv *invocation, paths []string) error {
-	return landingGuardError(landingcontext.CheckWorktrees(inv.projectsRoot, paths))
-}
-
-// refuseLinkedReceiptWorktrees is the land/resume entry point.
-//
-// `merge-refuses-a-linked-worktree` says merge must refuse to "push or land",
-// and the land verbs are the ones that actually push. They are addressed by a
-// receipt, so the worktrees to guard are read out of it. A receipt WB cannot
-// read is not a reason to skip the guard — it is a reason to say so and stop.
-func refuseLinkedReceiptWorktrees(inv *invocation, path string) error {
-	return landingGuardError(landingcontext.CheckReceipt(inv.projectsRoot, path))
-}
+import "github.com/spf13/cobra"
 
 // landingGuardAnnotation marks a command that pushes, lands or absorbs work,
 // and therefore MUST refuse a worktree carrying a live local link.
