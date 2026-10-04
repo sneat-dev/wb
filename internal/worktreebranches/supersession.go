@@ -3,6 +3,8 @@ package worktreebranches
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +44,7 @@ type SupersessionDependencyDelta = worktreeproof.SupersessionDependencyDelta
 type SupersessionReplacement = worktreeproof.SupersessionReplacement
 type SupersessionResidual = worktreeproof.SupersessionResidual
 type SupersessionApproval = worktreeproof.SupersessionApproval
+type SupersessionWorkflowAdoption = worktreeproof.SupersessionWorkflowAdoption
 
 func sortedDependencyDeltas(deltas []SupersessionDependencyDelta) []SupersessionDependencyDelta {
 	return worktreeproof.SortedDependencyDeltas(deltas)
@@ -188,13 +191,31 @@ func (service SupersessionService) ValidateSupersessionReceipt(ctx context.Conte
 // proof boundary.
 func (service SupersessionService) ValidateDependencyDeltasReason(ctx context.Context, receipt SupersessionReceipt, entry SupersessionEntry) string {
 	if strings.TrimSpace(receipt.OriginalPR) == "" {
-		if service.DependencyCampaignWorktree(ctx, entry) {
+		if strings.HasPrefix(entry.Task, "deps-") || strings.HasPrefix(entry.Branch, "wb/deps/") {
 			return "dependency campaign supersession requires original_pr and exact dependency delta evidence"
+		}
+		if entry.WorktreeDir != "" && service.Ports.ReadCampaignMarker != nil {
+			if campaign, err := service.Ports.ReadCampaignMarker(entry.WorktreeDir); err == nil && campaign {
+				return "dependency campaign supersession requires original_pr and exact dependency delta evidence"
+			}
+		}
+		changes, rejection := service.dependencyChanges(ctx, entry)
+		if rejection != "" {
+			return "dependency campaign supersession requires original_pr and exact dependency delta evidence: " + rejection
 		}
 		if receipt.DependencyDeltasComplete || len(receipt.DependencyDeltas) > 0 {
 			return "dependency delta evidence requires original_pr"
 		}
-		return ""
+		if len(changes) == 0 {
+			if len(receipt.WorkflowAdoptions) > 0 {
+				return "workflow adoption evidence has no newly introduced dependency workflow"
+			}
+			return ""
+		}
+		return service.validateWorkflowAdoptions(ctx, receipt, entry, changes)
+	}
+	if len(receipt.WorkflowAdoptions) > 0 {
+		return "workflow adoption evidence cannot replace exact dependency PR evidence"
 	}
 	if rejection := ValidateAuthoritativeSourcePullRequest(receipt, entry); rejection != "" {
 		return rejection
@@ -268,6 +289,139 @@ func (service SupersessionService) ValidateDependencyDeltasReason(ctx context.Co
 			if !SelectorNamesExactPackage(delta.LockfileSelector, delta.Package) || !LockfileEntryContainsVersion(delta.Ecosystem, delta.Lockfile, lockfile, delta.LockfileSelector, delta.LockfileVersion) {
 				return fmt.Sprintf("%s lockfile does not prove exact selector %q at %q", prefix, delta.LockfileSelector, delta.LockfileVersion)
 			}
+		}
+	}
+	return ""
+}
+
+type dependencyChange struct {
+	path  string
+	added bool
+}
+
+// dependencyChanges returns only source changes whose dependency-bearing
+// content changed. A missing or unreadable Git object is never treated as an
+// unchanged file.
+func (service SupersessionService) dependencyChanges(ctx context.Context, entry SupersessionEntry) ([]dependencyChange, string) {
+	if entry.CanonicalDir == "" || entry.HeadSHA == "" || entry.RemoteTargetSHA == "" {
+		return nil, "exact source and target identities are required to inspect dependency changes"
+	}
+	base, err := service.Ports.Git(ctx, entry.CanonicalDir, "merge-base", entry.HeadSHA, entry.RemoteTargetSHA)
+	if err != nil || strings.TrimSpace(base) == "" {
+		return nil, "cannot derive exact source/target merge base; dependency campaign supersession is refused"
+	}
+	changedFiles, err := service.Ports.Git(ctx, entry.CanonicalDir, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=ACMRD", strings.TrimSpace(base), entry.HeadSHA)
+	if err != nil {
+		return nil, "cannot inspect exact source dependency diff; dependency campaign supersession is refused"
+	}
+	changes := make([]dependencyChange, 0)
+	for _, file := range strings.Split(changedFiles, "\x00") {
+		if file == "" || !IsDependencyManifestOrImporter(file) {
+			continue
+		}
+		baseContents, baseErr := service.readGitFile(ctx, entry.CanonicalDir, strings.TrimSpace(base), file)
+		headContents, headErr := service.readGitFile(ctx, entry.CanonicalDir, entry.HeadSHA, file)
+		if headErr != nil {
+			return nil, fmt.Sprintf("cannot read exact source dependency file %q; dependency campaign supersession is refused", file)
+		}
+		if baseErr != nil {
+			if !isWorkflowPath(file) {
+				return nil, fmt.Sprintf("cannot read exact base dependency file %q; dependency campaign supersession is refused", file)
+			}
+			// Prove absence separately. A failed show can also mean an unreadable
+			// object/database, so it cannot by itself establish an added file.
+			basePath, err := service.Ports.Git(ctx, entry.CanonicalDir, "ls-tree", "-r", "--name-only", strings.TrimSpace(base), "--", file)
+			if err != nil || strings.TrimSpace(basePath) != "" {
+				return nil, fmt.Sprintf("cannot prove workflow %q was newly added at the exact source base", file)
+			}
+			changes = append(changes, dependencyChange{path: file, added: true})
+			continue
+		}
+		changed, err := dependencyContentChanged(file, baseContents, headContents)
+		if err != nil {
+			return nil, fmt.Sprintf("cannot compare dependency-bearing content in %q: %v", file, err)
+		}
+		if changed {
+			changes = append(changes, dependencyChange{path: file})
+		}
+	}
+	return changes, ""
+}
+
+func isWorkflowPath(file string) bool {
+	file = path.Clean(strings.TrimSpace(file))
+	return strings.HasPrefix(file, ".github/workflows/") && (strings.HasSuffix(file, ".yml") || strings.HasSuffix(file, ".yaml"))
+}
+
+func (service SupersessionService) validateWorkflowAdoptions(ctx context.Context, receipt SupersessionReceipt, entry SupersessionEntry, changes []dependencyChange) string {
+	if !receipt.Approval.Trusted || strings.ToLower(strings.TrimSpace(receipt.Approval.Decision)) != "approved" || strings.TrimSpace(receipt.Approval.Actor) == "" || strings.TrimSpace(receipt.Approval.ReceiptID) == "" || receipt.Approval.ApprovedAt.IsZero() {
+		return "workflow adoption requires a complete trusted-reviewer approval"
+	}
+	if len(receipt.WorkflowAdoptions) != len(changes) {
+		return "workflow adoption evidence must cover every dependency-bearing source change and no others"
+	}
+	if service.Ports.IsAncestor == nil {
+		return "workflow adoption cannot verify replacement ancestry in the exact target"
+	}
+	byPath := make(map[string]SupersessionWorkflowAdoption, len(receipt.WorkflowAdoptions))
+	for _, adoption := range receipt.WorkflowAdoptions {
+		if adoption.Path == "" || path.Clean(adoption.Path) != adoption.Path || !isWorkflowPath(adoption.Path) {
+			return fmt.Sprintf("workflow adoption has an invalid added-workflow path %q", adoption.Path)
+		}
+		if _, exists := byPath[adoption.Path]; exists {
+			return fmt.Sprintf("workflow adoption repeats path %q", adoption.Path)
+		}
+		if !worktreeproof.IsGitObjectID(adoption.ReplacementSHA) || len(adoption.SourceSHA256) != 64 {
+			return fmt.Sprintf("workflow adoption for %q is missing exact source hash or replacement SHA", adoption.Path)
+		}
+		if _, err := hex.DecodeString(adoption.SourceSHA256); err != nil {
+			return fmt.Sprintf("workflow adoption for %q has an invalid source SHA-256", adoption.Path)
+		}
+		if !adoption.Reviewed {
+			return fmt.Sprintf("workflow adoption for %q is not reviewed", adoption.Path)
+		}
+		byPath[adoption.Path] = adoption
+	}
+	for _, change := range changes {
+		if !change.added || !isWorkflowPath(change.path) {
+			return fmt.Sprintf("dependency-bearing source change %q is not an added workflow eligible for adoption evidence", change.path)
+		}
+		adoption, ok := byPath[change.path]
+		if !ok {
+			return fmt.Sprintf("newly added workflow %q has no adoption evidence", change.path)
+		}
+		source, err := service.readGitFile(ctx, entry.CanonicalDir, entry.HeadSHA, change.path)
+		if err != nil {
+			return fmt.Sprintf("cannot read exact source workflow %q: %v", change.path, err)
+		}
+		digest := sha256.Sum256(source)
+		if hex.EncodeToString(digest[:]) != strings.ToLower(adoption.SourceSHA256) {
+			return fmt.Sprintf("workflow adoption source hash does not match exact source file %q", change.path)
+		}
+		listed := false
+		for _, replacement := range receipt.Replacements {
+			if replacement.SHA == adoption.ReplacementSHA {
+				listed = true
+				break
+			}
+		}
+		if !listed {
+			return fmt.Sprintf("workflow adoption for %q names a commit absent from the replacement inventory", change.path)
+		}
+		landed, err := service.Ports.IsAncestor(ctx, entry.CanonicalDir, adoption.ReplacementSHA, entry.RemoteTargetSHA)
+		if err != nil || !landed {
+			return fmt.Sprintf("workflow adoption replacement %s is not verified in exact target", adoption.ReplacementSHA)
+		}
+		target, err := service.readGitFile(ctx, entry.CanonicalDir, entry.RemoteTargetSHA, change.path)
+		if err != nil {
+			return fmt.Sprintf("workflow adoption cannot read exact target file %q: %v", change.path, err)
+		}
+		replacement, err := service.readGitFile(ctx, entry.CanonicalDir, adoption.ReplacementSHA, change.path)
+		if err != nil {
+			return fmt.Sprintf("workflow adoption cannot read replacement file %q at %s: %v", change.path, adoption.ReplacementSHA, err)
+		}
+		if !bytes.Equal(source, replacement) || !bytes.Equal(source, target) {
+			return fmt.Sprintf("workflow adoption file %q in replacement or exact target differs from the reviewed source bytes", change.path)
 		}
 	}
 	return ""
@@ -362,39 +516,8 @@ func (service SupersessionService) DependencyCampaignWorktree(ctx context.Contex
 	if err == nil && campaign {
 		return true
 	}
-	if entry.CanonicalDir == "" || entry.HeadSHA == "" || entry.RemoteTargetSHA == "" {
-		return false
-	}
-	base, err := service.Ports.Git(ctx, entry.CanonicalDir, "merge-base", entry.HeadSHA, entry.RemoteTargetSHA)
-	if err != nil {
-		// Exact source and target identities without a readable common base
-		// cannot prove that the source contains no dependency change.
-		return true
-	}
-	changed, err := service.Ports.Git(ctx, entry.CanonicalDir, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=ACMRD", strings.TrimSpace(base), entry.HeadSHA)
-	if err != nil {
-		// With exact source and target identities present, an unreadable source
-		// diff must fail closed instead of allowing generic terminalization.
-		return true
-	}
-	for _, file := range strings.Split(changed, "\x00") {
-		if file == "" || !IsDependencyManifestOrImporter(file) {
-			continue
-		}
-		baseContents, err := service.readGitFile(ctx, entry.CanonicalDir, strings.TrimSpace(base), file)
-		if err != nil {
-			return true
-		}
-		headContents, err := service.readGitFile(ctx, entry.CanonicalDir, entry.HeadSHA, file)
-		if err != nil {
-			return true
-		}
-		changed, err := dependencyContentChanged(file, baseContents, headContents)
-		if err != nil || changed {
-			return true
-		}
-	}
-	return false
+	changes, rejection := service.dependencyChanges(ctx, entry)
+	return rejection != "" || len(changes) > 0
 }
 
 func (service SupersessionService) readGitFile(ctx context.Context, repository, revision, file string) ([]byte, error) {

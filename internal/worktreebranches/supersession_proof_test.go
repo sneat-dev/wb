@@ -2,6 +2,8 @@ package worktreebranches
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -21,6 +23,101 @@ func supersessionProofFixture() (SupersessionReceipt, SupersessionEntry, string)
 		Approval:          SupersessionApproval{Actor: "reviewer", Trusted: true, Decision: "approved", ReceiptID: "review-1", ApprovedAt: time.Now().UTC()},
 	}
 	return receipt, entry, residual
+}
+
+func TestSupersessionAcceptsOnlyExactLandedAddedWorkflowAdoption(t *testing.T) {
+	t.Parallel()
+	const workflowPath = ".github/workflows/provider-tools.yml"
+	const base = "base"
+	source, target, replacement := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	workflow := "name: provider tools\njobs:\n  check:\n    steps:\n      - uses: actions/checkout@v4\n"
+	digest := sha256.Sum256([]byte(workflow))
+	valid := func() (SupersessionReceipt, SupersessionEntry) {
+		receipt, entry, _ := supersessionProofFixture()
+		entry.HeadSHA, entry.RemoteTargetSHA = source, target
+		receipt.OriginalHead, receipt.TargetHead = source, target
+		receipt.Replacements = []SupersessionReplacement{{Kind: "commit", Ref: replacement, SHA: replacement}}
+		receipt.Approval = SupersessionApproval{Actor: "reviewer", Trusted: true, Decision: "approved", ReceiptID: "audit-1", ApprovedAt: time.Now().UTC()}
+		receipt.WorkflowAdoptions = []SupersessionWorkflowAdoption{{Path: workflowPath, SourceSHA256: hex.EncodeToString(digest[:]), ReplacementSHA: replacement, Reviewed: true}}
+		return receipt, entry
+	}
+
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		setup func(*SupersessionReceipt)
+		want  string
+	}{
+		{name: "exact landed workflow bytes", paths: []string{workflowPath}},
+		{name: "different target workflow", paths: []string{workflowPath}, want: "differs from the reviewed source bytes", setup: func(_ *SupersessionReceipt) {}},
+		{name: "different replacement workflow", paths: []string{workflowPath}, want: "differs from the reviewed source bytes", setup: func(_ *SupersessionReceipt) {}},
+		{name: "wrong source hash", paths: []string{workflowPath}, want: "source hash does not match", setup: func(r *SupersessionReceipt) { r.WorkflowAdoptions[0].SourceSHA256 = strings.Repeat("0", 64) }},
+		{name: "unlisted replacement", paths: []string{workflowPath}, want: "absent from the replacement inventory", setup: func(r *SupersessionReceipt) { r.WorkflowAdoptions[0].ReplacementSHA = strings.Repeat("e", 40) }},
+		{name: "missing trusted approval", paths: []string{workflowPath}, want: "complete trusted-reviewer approval", setup: func(r *SupersessionReceipt) { r.Approval.Trusted = false }},
+		{name: "unreviewed workflow", paths: []string{workflowPath}, want: "is not reviewed", setup: func(r *SupersessionReceipt) { r.WorkflowAdoptions[0].Reviewed = false }},
+		{name: "additional package dependency change", paths: []string{workflowPath, "package.json"}, want: "must cover every dependency-bearing", setup: func(_ *SupersessionReceipt) {}},
+		{name: "modified existing workflow", paths: []string{workflowPath}, want: "not an added workflow eligible", setup: func(_ *SupersessionReceipt) {}},
+		{name: "missing adoption evidence", paths: []string{workflowPath}, want: "must cover every dependency-bearing", setup: func(r *SupersessionReceipt) { r.WorkflowAdoptions = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt, entry := valid()
+			if tc.setup != nil {
+				tc.setup(&receipt)
+			}
+			service := SupersessionService{Ports: SupersessionPorts{
+				Git: func(_ context.Context, _ string, args ...string) (string, error) {
+					switch args[0] {
+					case "merge-base":
+						return base, nil
+					case "diff":
+						return strings.Join(tc.paths, "\x00") + "\x00", nil
+					case "show":
+						object := args[1]
+						switch object {
+						case base + ":" + workflowPath:
+							if tc.name == "modified existing workflow" {
+								return "jobs: {}\n", nil
+							}
+							return "", errors.New("path does not exist")
+						case source + ":" + workflowPath:
+							return workflow, nil
+						case target + ":" + workflowPath:
+							if tc.name == "different target workflow" {
+								return workflow + "# drift\n", nil
+							}
+							return workflow, nil
+						case replacement + ":" + workflowPath:
+							if tc.name == "different replacement workflow" {
+								return workflow + "# drift\n", nil
+							}
+							return workflow, nil
+						case base + ":package.json":
+							return `{"dependencies":{"demo":"1.0.0"}}`, nil
+						case source + ":package.json":
+							return `{"dependencies":{"demo":"2.0.0"}}`, nil
+						}
+					case "ls-tree":
+						if tc.name == "modified existing workflow" {
+							return workflowPath, nil
+						}
+						return "", nil
+					}
+					t.Fatalf("unexpected Git query: %q", args)
+					return "", nil
+				},
+				IsAncestor: func(_ context.Context, _, ancestor, descendant string) (bool, error) {
+					return ancestor == replacement && descendant == target, nil
+				},
+			}}
+			got := service.ValidateDependencyDeltasReason(context.Background(), receipt, entry)
+			if tc.want == "" && got != "" {
+				t.Fatalf("valid workflow adoption refused: %s", got)
+			}
+			if tc.want != "" && !strings.Contains(got, tc.want) {
+				t.Fatalf("refusal = %q, want substring %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestSupersessionReceiptRefusesIncompleteOrDriftedProof(t *testing.T) {
@@ -66,6 +163,12 @@ func TestSupersessionReceiptRefusesIncompleteOrDriftedProof(t *testing.T) {
 			}
 			service := SupersessionService{Ports: SupersessionPorts{
 				Git: func(_ context.Context, _ string, args ...string) (string, error) {
+					if args[0] == "merge-base" {
+						return "base", nil
+					}
+					if args[0] == "diff" {
+						return "", nil
+					}
 					if args[0] != "rev-list" {
 						t.Fatalf("unexpected Git query: %q", args)
 					}
