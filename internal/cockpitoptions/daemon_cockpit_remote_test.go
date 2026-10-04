@@ -1,4 +1,4 @@
-package main
+package cockpitoptions
 
 import (
 	"bytes"
@@ -27,9 +27,6 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-// emptyMachine is the collectors of a machine with no repositories, sessions,
-// runs or pull requests: enough for a snapshot, and nothing that runs Git or
-// reads a real directory.
 type emptyMachine struct{}
 
 func (emptyMachine) Repositories(context.Context) ([]discover.Repo, error) { return nil, nil }
@@ -158,7 +155,7 @@ func TestCockpitRemotesComeOnlyFromTheLocalConfiguration(t *testing.T) {
 			configPath = cockpitConfigFile(t, test.yaml)()
 		}
 		var logs bytes.Buffer
-		targets, transports, copyRoutes := cockpitRemotes(configPath, test.config, func(format string, args ...any) { _, _ = fmt.Fprintf(&logs, format+"\n", args...) }, cockpitSSH{})
+		targets, transports, copyRoutes := cockpitRemotes(configPath, test.config, func(format string, args ...any) { _, _ = fmt.Fprintf(&logs, format+"\n", args...) }, SSH{})
 		gotHTTP, gotSSH := map[string]cockpitfleet.HTTPRoute{}, routes{}
 		for index, target := range targets {
 			if target.HTTP != nil {
@@ -271,11 +268,11 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 	exported := &lineSignal{needle: "the export of vm failed (http_unavailable)", seen: make(chan struct{}, 8)}
 	start := func(yaml string, config wbconfig.CockpitConfig) (runner *countingRunner, lookups *atomic.Int64, refresh, remote chan time.Time, stop func()) {
 		runner, lookups = &countingRunner{ran: make(chan struct{}, 1)}, &atomic.Int64{}
-		ssh := cockpitSSH{runner: runner, find: func() (string, error) {
+		ssh := SSH{Runner: runner, Find: func() (string, error) {
 			lookups.Add(1)
 			return executable, nil
 		}}
-		options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, exported, func() (string, error) { return "laptop", nil }, ssh)
+		options := testOptions(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, exported, func() (string, error) { return "laptop", nil }, ssh)
 		options.Collectors, options.Sampler = emptyMachineCollectors(), nil
 		refresh, remote = make(chan time.Time), make(chan time.Time)
 		options.Tick = func(time.Duration) (<-chan time.Time, func()) { return refresh, func() {} }
@@ -337,18 +334,18 @@ func TestADaemonStartsNoSSHProcessUnlessAMachineHasAnSSHRouteAndTheSwitchIsOn(t 
 // production seams: nothing else decides which ssh runs or how it is ended.
 func TestTheDaemonsOwnSSHSeamsAreTheTrustedSearchAndTheGroupKillingRunner(t *testing.T) {
 	t.Parallel()
-	ssh := daemonCockpitSSH()
-	if ssh.find == nil || ssh.runner != (remotessh.GroupRunner{}) {
+	ssh := defaultSSH()
+	if ssh.Find == nil || ssh.Runner != (remotessh.GroupRunner{}) {
 		t.Fatalf("daemonCockpitSSH = %+v", ssh)
 	}
 	// The search runs nothing: it only looks at files. What it finds is the
 	// system's ssh, or one on the PATH that passes remotessh.ResolveTrusted.
-	if found, err := ssh.find(); err == nil && !filepath.IsAbs(found) {
+	if found, err := ssh.Find(); err == nil && !filepath.IsAbs(found) {
 		t.Fatalf("the daemon's ssh = %q", found)
 	}
 	// With no session_move section the daemon's options hold no machine to read
 	// and no transport, so nothing is ever run with those seams.
-	options := cockpitFleetOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "laptop", nil })
+	options := testDefaultOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "laptop", nil })
 	if len(options.Remotes) != 0 || len(options.Transports) != 0 || len(options.SSHRoutes) != 0 || options.Machine != "laptop" {
 		t.Fatalf("the daemon's options with no configuration = %+v", options)
 	}
@@ -381,7 +378,7 @@ func TestADaemonWithNoHTTPRouteSendsNothingAndOneWithARouteReadsIt(t *testing.T)
 	disabled := wbconfig.DefaultCockpitConfig()
 	disabled.RemoteHTTP = false
 	start := func(yaml string, config wbconfig.CockpitConfig) (refresh, remote chan time.Time, stop func()) {
-		options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, io.Discard, func() (string, error) { return "laptop", nil }, cockpitSSH{})
+		options := testOptions(t.TempDir(), t.TempDir(), cockpitConfigFile(t, yaml)(), config, io.Discard, func() (string, error) { return "laptop", nil }, SSH{})
 		// The collectors and the sampler are replaced: a unit test reads no real
 		// directory and runs no Git. The targets and transports are the daemon's.
 		options.Collectors, options.Sampler = emptyMachineCollectors(), nil

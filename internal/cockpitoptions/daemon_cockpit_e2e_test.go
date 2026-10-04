@@ -1,6 +1,6 @@
 //go:build e2e
 
-package main
+package cockpitoptions
 
 import (
 	"encoding/json"
@@ -22,10 +22,6 @@ import (
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
-// TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithoutNetworkOrWrites
-// builds the snapshotter from the daemon's own options for a remote section
-// whose local state clone exists and whose origin could not be reached: it reads
-// the other machine from the clone and changes nothing under it.
 func TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithoutNetworkOrWrites(t *testing.T) {
 	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -66,7 +62,7 @@ func TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithout
 	}
 	before := states()
 	configPath := cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: laptop-1\n")()
-	options := cockpitFleetOptionsWith(root, t.TempDir(), configPath, wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil }, cockpitSSH{})
+	options := testOptions(root, t.TempDir(), configPath, wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil }, SSH{})
 	snapshotter := cockpitfleet.New(options)
 	if err := snapshotter.Refresh(t.Context()); err != nil {
 		t.Fatal(err)
@@ -100,14 +96,9 @@ func TestE2ECockpitFleetSnapshotThroughTheDaemonsWiringReadsOtherMachinesWithout
 	}
 }
 
-// TestE2ECockpitMetricsSamplerReadsThisRealMachine builds the snapshotter from
-// the daemon's own options and sampler wiring (the real platform reader and clock,
-// ticking fast) and starts it as the daemon does, and requires the local metrics
-// route to hold a sample with a CPU percent within seconds (present on macOS and
-// Linux): memory and disk totals above zero and a time in the past.
 func TestE2ECockpitMetricsSamplerReadsThisRealMachine(t *testing.T) {
 	t.Parallel()
-	options := cockpitFleetOptionsWith(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil }, cockpitSSH{})
+	options := testOptions(t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil }, SSH{})
 	// The daemon's own sampler wiring, ticking fast so the test needs no 10 s wait.
 	options.Sampler = newLocalSampler(options.ProjectsRoot, func(string, ...any) {}, func(time.Duration) (<-chan time.Time, func()) {
 		ticker := time.NewTicker(300 * time.Millisecond)

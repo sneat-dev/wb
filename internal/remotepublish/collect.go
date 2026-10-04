@@ -1,4 +1,4 @@
-package main
+package remotepublish
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/reposelection"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -122,30 +123,34 @@ func (s *repositoryScans) keepOnly(paths map[string]bool) {
 // ends stops the scan between repositories and returns its error: the daemon's
 // periodic publish bounds one attempt with it. scans is how each repository is
 // read: nil reads every one with Git, as a publish by hand does.
-func collectSnapshot(ctx context.Context, projectsRoot, filter string, parallel int, identity remotestate.Snapshot, redaction remotestate.Redaction, progress *remotePublishProgress, scans *repositoryScans) (remotestate.Snapshot, error) {
-	targets, err := qualityTargets("", projectsRoot, filter, qualityOptions{fleet: true, parallel: parallel, allowEmpty: filter == ""})
+func (service *Service) collectSnapshot(ctx context.Context, projectsRoot, filter string, parallel int, identity remotestate.Snapshot, redaction remotestate.Redaction, progress Progress, scans *repositoryScans) (remotestate.Snapshot, error) {
+	targets, err := service.deps.Select(reposelection.Request{ProjectsRoot: projectsRoot, Filter: filter, Fleet: true, Parallel: parallel, AllowEmpty: filter == ""})
 	if err != nil {
 		return remotestate.Snapshot{}, err
 	}
 	progress.start(len(targets))
 	inputs := make([]remotestate.RepositoryInput, len(targets))
-	runTargets(len(targets), parallel, func(index int) {
+	reposelection.ForEach(len(targets), parallel, func(index int) {
 		target := targets[index]
 		if ctx.Err() != nil {
-			inputs[index] = remotestate.RepositoryInput{Repository: target.repository, Path: target.path, Err: ctx.Err()}
+			inputs[index] = remotestate.RepositoryInput{Repository: target.Repository, Path: target.Path, Err: ctx.Err()}
 			return
 		}
-		input := remotestate.RepositoryInput{Repository: target.repository, Path: target.path}
-		input.Status, input.Tracking, input.Err = scans.of(target.path, identity.PublishedAt)
+		input := remotestate.RepositoryInput{Repository: target.Repository, Path: target.Path}
+		if scans == nil {
+			input.Status, input.Tracking, input.Err = service.deps.ReadRepository(target.Path)
+		} else {
+			input.Status, input.Tracking, input.Err = scans.of(target.Path, identity.PublishedAt)
+		}
 		inputs[index] = input
-		progress.repositoryComplete(target.repository, input.Err)
+		progress.repositoryComplete(target.Repository, input.Err)
 	})
 	if err := ctx.Err(); err != nil {
 		return remotestate.Snapshot{}, err
 	}
 	listed := make(map[string]bool, len(targets))
 	for _, target := range targets {
-		listed[target.path] = true
+		listed[target.Path] = true
 	}
 	scans.keepOnly(listed)
 	// No OwnerState filter: this snapshot is a fleet-audit artifact, and
@@ -154,7 +159,7 @@ func collectSnapshot(ctx context.Context, projectsRoot, filter string, parallel 
 	// here made `wb remote publish` under-report worktree counts on any
 	// machine holding orphaned worktrees.
 	progress.phase("inspecting worktrees")
-	wts, err := worktrees.List(ctx, worktrees.ListOptions{
+	wts, err := service.deps.ListWorktrees(ctx, worktrees.ListOptions{
 		ProjectsRoot: projectsRoot,
 		Filter:       filter,
 		Progress:     progress.worktree,

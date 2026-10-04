@@ -1,4 +1,4 @@
-package main
+package remotepublishview
 
 import (
 	"bytes"
@@ -12,15 +12,15 @@ import (
 func TestRemotePublishProgressShowsRepositoryAndWorktreePhases(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	progress := newRemotePublishProgress(&out, true)
-	progress.start(2)
-	progress.repositoryComplete("acme/one", nil)
-	progress.repositoryComplete("acme/two", errors.New("broken"))
-	progress.phase("inspecting worktrees")
-	progress.worktree(worktrees.ListProgress{Path: "/tmp/acme/one", Done: false})
-	progress.worktree(worktrees.ListProgress{Repository: "acme/one", Done: true})
-	progress.phase("publishing snapshot")
-	progress.finish("published 2 repositories and 1 worktrees")
+	progress := NewProgress(&out, true)
+	progress.Start(2)
+	progress.RepositoryComplete("acme/one", nil)
+	progress.RepositoryComplete("acme/two", errors.New("broken"))
+	progress.Phase("inspecting worktrees")
+	progress.Worktree(worktrees.ListProgress{Path: "/tmp/acme/one", Done: false})
+	progress.Worktree(worktrees.ListProgress{Repository: "acme/one", Done: true})
+	progress.Phase("publishing snapshot")
+	progress.Finish("published 2 repositories and 1 worktrees")
 
 	rendered := out.String()
 	for _, want := range []string{

@@ -734,6 +734,36 @@ files require exact source hash equality. Linux and Windows compilation, the
 private current-source WB build, capability declaration checks and SpecScore lint
 passed. Publication remains deferred while later reviewed domains are extracted.
 
+The publication/fleet prerequisite now consolidates manual and periodic fleet
+collection, provider opening and publication in `internal/remotepublish`.
+`internal/cockpitoptions` owns actual fleet/SSH/sampler/watcher composition;
+`internal/cli/remotepublishview` owns shared output and progress. Remote publish
+and sync consume the same implementation. Root FleetOptions retains its genuine
+binding to daemonhost. Shared ShortPath preserves its original algorithm and
+three inventory-progress consumers. Full remote command extraction remains
+queued; claims/status/enrollment algorithms retain their existing authority.
+
+All 38 selected original responsibilities have destinations and 35 protected
+companions retain exact bodies. Actual source-only Git scans, authenticated
+HTTP/SSH, per-publisher private fingerprint cache, durable markers and publication
+before rendering remain intact. Root wrappers without genuine callers were
+removed, including the obsolete periodic read override. The concrete Snapshot
+YAML producer remains called; its unreachable error catch was removed under the
+same existing Snapshot-marshalling invariant. Reachable JSON time errors and
+all writer failures retain real tests.
+
+The tagged native batch passed 42 of 43 cases. A mechanical field qualification
+had incorrectly capitalized three YAML fixture keys; restoring their original
+lowercase spelling fixed the sole configuration case in a targeted 2.158-second
+retry. Production was unchanged. The original 400-repository native fixture took
+78.7 seconds and was retained without another run. Fixture setup reuse and bounded
+parallel setup remain performance opportunities, not implemented speed claims.
+The 13 retained root wiring/sync cases passed in 8.547 seconds; a sole additional
+real-Git nil-progress case proves stderr notes routing and clean JSON stdout.
+Designated coverage is 337/337 statements: 317 in the owners/shared helper and 20
+in six genuine root bindings. Source-bound profile union deduplicates identical
+blocks; no repository-wide coverage gain is claimed. Publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

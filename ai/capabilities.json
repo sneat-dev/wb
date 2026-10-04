@@ -8421,7 +8421,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_test.go",
+              "path": "internal/remotepublish/integration/manual_original_test.go",
               "name": "TestRemotePublishWritesSnapshotToStore",
               "kind": "integration"
             }

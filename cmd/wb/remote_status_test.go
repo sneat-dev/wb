@@ -11,24 +11,6 @@ import (
 // TestOpenRemoteRejectsUnsupportedProvider drives the default branch of
 // openRemote's provider switch: a provider name that is neither "git" nor
 // "hub" is refused as a usage error rather than reaching either backend.
-func TestOpenRemoteRejectsUnsupportedProvider(t *testing.T) {
-	t.Parallel()
-	_, err := openRemote(remotestate.Config{Provider: "ftp"}, t.TempDir())
-	if err == nil {
-		t.Fatal("openRemote(ftp) returned nil error, want a refusal")
-	}
-	exitErr, ok := err.(*exitError)
-	if !ok {
-		t.Fatalf("openRemote(ftp) error type = %T, want *exitError", err)
-	}
-	if exitErr.code != exitUsage {
-		t.Fatalf("openRemote(ftp) exit code = %d, want %d", exitErr.code, exitUsage)
-	}
-	const want = "remote.provider ftp is not supported"
-	if exitErr.message != want {
-		t.Fatalf("openRemote(ftp) message = %q, want %q", exitErr.message, want)
-	}
-}
 
 // TestWriteRemoteStatusDiagnosticsRendersEachMismatch drives the range loop
 // over diagnostics.Mismatches: every mismatch gets its own warning line.

@@ -1,6 +1,6 @@
 //go:build e2e
 
-package main
+package integration
 
 import (
 	"net/http"

@@ -1,6 +1,6 @@
 //go:build e2e
 
-package main
+package integration
 
 import (
 	"encoding/json"
@@ -13,8 +13,11 @@ import (
 	"time"
 
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/cockpitoptions"
+	"github.com/sneat-dev/wb/internal/remotepublish"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/periodic"
+	"github.com/sneat-dev/wb/internal/reposelection"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -27,12 +30,12 @@ func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	clock := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	deps := f.deps("alice", clock)
-	deps.now = func() time.Time { return clock }
+	deps.Now = func() time.Time { return clock }
 	cfg := remotestate.Config{Provider: "git", Repo: "team/wb-state", Machine: "laptop", Publish: remotestate.PublishConfig{Interval: 5 * time.Minute, Unpushed: remotestate.RedactNone}}
-	publisher := newPeriodicPublisher(deps, cfg, f.projectsRoot, nil, nil)
+	publisher := remotepublish.New(deps.Dependencies).Periodic(cfg, f.projectsRoot, nil, nil)
 	// The real gate source: the fleet snapshotter of the daemon over the same
 	// projects root, refreshed before each attempt as its own ticker would.
-	options := cockpitFleetOptions(f.projectsRoot, t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "laptop", nil })
+	options := cockpitoptions.Options(cockpitoptions.Request{ProjectsRoot: f.projectsRoot, Home: t.TempDir(), ConfigPath: filepath.Join(t.TempDir(), "absent.yaml"), Config: wbconfig.DefaultCockpitConfig(), Logs: io.Discard}, testCockpitDependencies("laptop"))
 	options.PullRequests = nil
 	snapshotter := cockpitfleet.New(options)
 	commits := func() int {
@@ -109,7 +112,7 @@ func TestE2EPeriodicPublishPreGateOnA400RepositoryFleet(t *testing.T) {
 		remoteGit(t, repo, "init", "-q", "-b", "main")
 		remoteGit(t, repo, "commit", "-q", "--allow-empty", "-m", "seed")
 	}
-	options := cockpitFleetOptions(root, t.TempDir(), filepath.Join(t.TempDir(), "absent.yaml"), wbconfig.DefaultCockpitConfig(), io.Discard, func() (string, error) { return "host", nil })
+	options := cockpitoptions.Options(cockpitoptions.Request{ProjectsRoot: root, Home: t.TempDir(), ConfigPath: filepath.Join(t.TempDir(), "absent.yaml"), Config: wbconfig.DefaultCockpitConfig(), Logs: io.Discard}, testCockpitDependencies("host"))
 	options.PullRequests = nil
 	snapshotter := cockpitfleet.New(options)
 	began := time.Now()
@@ -126,9 +129,9 @@ func TestE2EPeriodicPublishPreGateOnA400RepositoryFleet(t *testing.T) {
 		provider := &capturingProvider{}
 		opened := 0
 		deps := publishDeps(provider, func() (string, error) { return "alice", nil }, &opened)
-		deps.now = func() time.Time { return clock }
+		deps.Now = func() time.Time { return clock }
 		cfg := publishConfig(remotestate.PublishConfig{Interval: 5 * time.Minute, Unpushed: remotestate.RedactNone})
-		return newPeriodicPublisher(deps, cfg, root, nil, nil), provider
+		return remotepublish.New(deps.Dependencies).Periodic(cfg, root, nil, nil), provider
 	}
 	timed := func(publisher *periodic.Publisher, source remotestate.PublishSource) time.Duration {
 		clock = clock.Add(6 * time.Minute)
@@ -173,7 +176,7 @@ func TestE2EPeriodicPublishPreGateOnA400RepositoryFleet(t *testing.T) {
 	// the listing of the repositories and the worktree inventory, which reads
 	// state no fingerprint covers (heartbeats, manifests, owners).
 	began = time.Now()
-	if _, err := qualityTargets("", root, "", qualityOptions{fleet: true, parallel: periodicScanWorkers, allowEmpty: true}); err != nil {
+	if _, err := reposelection.Select(reposelection.Request{ProjectsRoot: root, Fleet: true, Parallel: 2, AllowEmpty: true}); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("of which listing the repositories: %s", time.Since(began).Round(time.Millisecond))
