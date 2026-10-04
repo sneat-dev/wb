@@ -9,12 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func cwWtCmdWriter(writer *cwWtFailWriter) *cobra.Command {
-	command := &cobra.Command{}
-	command.SetOut(writer)
-	return command
-}
-
 func TestCwWtRequireOutputFormat(t *testing.T) {
 	if err := requireOutputFormat("json", "text", "json"); err != nil {
 		t.Fatalf("allowed value = %v", err)

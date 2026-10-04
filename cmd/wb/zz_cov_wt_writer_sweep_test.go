@@ -6,66 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/canonicalrescue"
-	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/spf13/cobra"
 )
-
-// The helpers below drive every writer-error return in the report renderers by
-// failing the writer at each successive write. A renderer that ignores a write
-// failure would leave a truncated report on stdout while exiting 0, which is
-// exactly the silent-truncation bug these branches exist to prevent.
-
-func cwWtSweepWrites(t *testing.T, max int, run func(writer *cwWtFailWriter) error) {
-	t.Helper()
-	for allow := 0; allow <= max; allow++ {
-		if err := run(&cwWtFailWriter{Allow: allow}); err == nil {
-			return
-		}
-	}
-	t.Fatalf("no write budget up to %d let the renderer finish", max)
-}
-
-func TestCwWtWriterSweepEndMarkerRescueAndLogVerb(t *testing.T) {
-	end := worktreeend.Result{
-		Task: "t", Applied: true,
-		Members: []worktreeend.MemberResult{
-			{Repository: "acme/a", Worktree: "/tmp/w", Action: "retired", Dirty: []string{"a.go"}, CaptureRef: "ref", Detail: "detail"},
-			{Repository: "acme/b", Worktree: "/tmp/w2", Action: "skip"},
-		},
-		ClaimOutcome: "released",
-	}
-	cwWtSweepWrites(t, 10, func(writer *cwWtFailWriter) error {
-		return printWorktreeEnd(cwWtCmdWriter(writer), "text", end)
-	})
-
-	outcomes := []markerOutcome{
-		{Path: "/a", Kind: "canonical", MarkerWritten: true, ExcludeWritten: true},
-		{Path: "/b", Kind: "worktree", MarkerWritten: true},
-		{Path: "/c", Kind: "worktree", ExcludeWritten: true},
-		{Path: "/d", Kind: "worktree"},
-		{Path: "/e", Kind: "worktree", Error: "boom"},
-	}
-	cwWtSweepWrites(t, 10, func(writer *cwWtFailWriter) error {
-		return renderMarkerOutcomes(cwWtCmdWriter(writer), "text", false, outcomes)
-	})
-
-	changes := make([]canonicalrescue.Change, 0, 25)
-	for index := 0; index < 25; index++ {
-		changes = append(changes, canonicalrescue.Change{Status: "M", Path: "file"})
-	}
-	// The applied spelling is used because the dry-run spelling always ends in
-	// the findings exit error; only a captured, pushed, restored report returns
-	// nil, which is what lets the sweep detect the true end of the output.
-	rescue := canonicalrescue.Report{
-		Path: "/tmp/clone", Changes: changes, UntrackedCount: 25,
-		RescueBranch: "rescue/x", RescueCommit: "deadbeef", Pushed: true, Restored: true,
-	}
-	cwWtSweepWrites(t, 30, func(writer *cwWtFailWriter) error {
-		return renderRescueReport(cwWtCmdWriter(writer), "text", true, rescue)
-	})
-
-}
 
 func TestCwWtWorkLogArchiveAfterFinalize(t *testing.T) {
 	projects, _, worktree := initGCFixture(t)

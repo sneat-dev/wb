@@ -1023,6 +1023,32 @@ and final source binding qualify reuse of the passing root gate. No duplicate
 native run or global coverage measurement was performed. Work remains local
 on the shared branch, with publication deferred.
 
+### Worktree end, rescue, marker and ownership commands
+
+End/rescue and marker/ownership commands now delegate through typed command
+and native-operation owners. Marker application is shared by create, rename,
+relocate and sync. Original native authority and assertion predicates remain;
+controlled resolver/operation tests are identified separately from native Git
+proof. Isolated tests run in parallel; genuine process-global cases remain serial.
+
+The reviewed scope covers 447/447 statements: end/rescue 226/226,
+marker/ownership 208/208 (including all 12 statements in AfterCreate), and eight
+whole root declarations with their actual callback closures 13/13. This is
+scoped coverage, not a new repository-wide percentage. The root gate initially
+failed compilation after a needed filepath import was removed; restoring that
+import preserved test bodies. Its retry passed all 21 selected cases under race
+in 20.22 seconds. Native retirement execution covered the final cleanup-to-result
+interpretation call. Leaf fixture failures and their narrow repairs are retained
+in the receipts; 22 distinct end/rescue cases ultimately passed. Obsolete native
+source coordinates from the first profile are excluded from the coverage union.
+
+Three mixed writer clauses moved to their actual owners; obsolete root writer
+helpers were removed while the work-log companion stayed unchanged. One moved
+capability reference was rebound and all 790 named tests resolve. Scoped lint,
+vet, Linux/Windows compilation and the private executable build pass; cross
+compilation is not execution. Independent review precedes the local checkpoint.
+Work accumulates on the shared branch; publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

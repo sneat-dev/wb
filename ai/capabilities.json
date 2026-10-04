@@ -14110,7 +14110,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/worktree_end_test.go",
+              "path": "internal/worktreerun/end_original_test.go",
               "name": "TestWorktreeEndCapturesDirtyWorkAndRetiresTheCheckout",
               "kind": "e2e"
             }

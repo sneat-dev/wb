@@ -57,13 +57,11 @@ func AfterCreate(options checkoutmarker.DescribeOptions, stderr io.Writer, resul
 				continue
 			}
 			seen[path] = true
-			inspection, err := deps.Describe(path, options)
-			if err == nil {
-				_, err = deps.Apply(inspection.Descriptor, inspection.ExcludePath)
+			outcome := applyMarker(path, options, false, deps)
+			if outcome.Error != "" {
+				_, _ = fmt.Fprintf(stderr, "warning: could not write %s in %s: %s\n", checkoutmarker.FileName, path, outcome.Error)
 			}
-			if err != nil {
-				_, _ = fmt.Fprintf(stderr, "warning: could not write %s in %s: %s\n", checkoutmarker.FileName, path, err)
-			}
+
 		}
 	}
 }

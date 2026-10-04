@@ -130,7 +130,12 @@ func TestWorktreeCleanupSweepWithANamedBasePrintsThatTargetOnEveryLine(t *testin
 //nolint:paralleltest // swaps the package-level claim release.
 func TestWorktreeEndReleasesTheClaimThroughTheSharedSeam(t *testing.T) {
 	_, released := stubCleanupEngine(t, worktrees.CleanupOutcome{})
-	message := claimReleaser{writer: &bytes.Buffer{}}.Release(t.TempDir(), "fixture-ended-task")
+	root := t.TempDir()
+	engine, err := worktreeEndEngine(root, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := engine.Claims.Release(root, "fixture-ended-task")
 	if !slices.Equal(*released, []string{"fixture-ended-task"}) || message != "released through the remote-claim path" {
 		t.Fatalf("released = %v, message = %q", *released, message)
 	}
