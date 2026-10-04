@@ -61,41 +61,6 @@ func TestCwWtWriterSweepCleanupRenameShellsAdopt(t *testing.T) {
 		return printRetireTaskShells(cwWtCmdWriter(writer), shells)
 	})
 
-	adopt := []worktrees.AdoptResult{
-		{Path: "/tmp/a", Task: "t", Action: worktrees.AdoptAdopted},
-		{Path: "/tmp/b", Task: "t", Action: worktrees.AdoptWouldAdopt},
-		{Path: "/tmp/c", Action: worktrees.AdoptSkipped, Reason: "already managed"},
-	}
-	cwWtSweepWrites(t, 10, func(writer *cwWtFailWriter) error {
-		return renderAdopt(writer, adopt, false)
-	})
-}
-
-func TestCwWtWriterSweepOrphansAndActive(t *testing.T) {
-	report := worktrees.OrphanReport{
-		Families: []worktrees.OrphanFamily{
-			{
-				RootEffort: "e1", Disposition: worktrees.DispositionRemove, Reason: "landed",
-				Worktrees: []worktrees.OrphanWorktree{
-					{Disposition: "remove", Repository: "acme/a", Branch: "b", Layout: worktrees.LayoutCurrent, HasManifest: false, Dirty: true, Missing: true, OwnerState: worktrees.OwnerLive, Evidence: []string{"one"}},
-					{Disposition: "remove", Repository: "acme/b", Branch: "b", Layout: worktrees.LayoutLegacy, HasManifest: true, Provenance: "reconstructed", OwnerState: worktrees.OwnerGone},
-					{Disposition: "remove", Repository: "acme/c", Branch: "b", Layout: worktrees.LayoutExternal, HasManifest: true},
-				},
-			},
-		},
-		Residue: []worktrees.OrphanResidue{{Task: "t", Repository: "acme/a", Layout: worktrees.LayoutLocal, Evidence: []string{"unregistered"}, Remedy: "wb worktree gc"}},
-		Totals: worktrees.OrphanTotals{
-			Worktrees: 3, Families: 1,
-			ByLayout:    map[string]int{worktrees.LayoutCurrent: 1, worktrees.LayoutLegacy: 1, worktrees.LayoutExternal: 1},
-			ByDispositn: map[string]int{worktrees.DispositionRemove: 1},
-			NoManifest:  1, Dirty: 1, Residue: 1,
-		},
-		Unscanned: []string{"/tmp/unreadable"},
-	}
-	cwWtSweepWrites(t, 40, func(writer *cwWtFailWriter) error {
-		return renderOrphans(writer, report, "")
-	})
-
 }
 
 func TestCwWtWriterSweepEndMarkerRescueAndLogVerb(t *testing.T) {
@@ -137,14 +102,6 @@ func TestCwWtWriterSweepEndMarkerRescueAndLogVerb(t *testing.T) {
 		return renderRescueReport(cwWtCmdWriter(writer), "text", true, rescue)
 	})
 
-	verb := worktrees.LogVerbResult{
-		Verb: "steer", Worktree: "/tmp/wt", Applied: true, Prompt: "p",
-		Event:   &worktrees.LocalWorkLogEvent{Type: "prompt_recorded", Seq: 1},
-		Offline: true, Outbox: 1, Notes: []string{"n"}, Diagnosis: []string{"d"},
-	}
-	cwWtSweepWrites(t, 10, func(writer *cwWtFailWriter) error {
-		return encodeLogVerbResult(cwWtCmdWriter(writer), "text", verb)
-	})
 }
 
 func TestCwWtWorkLogArchiveAfterFinalize(t *testing.T) {

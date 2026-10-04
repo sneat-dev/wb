@@ -152,14 +152,6 @@ func TestCwCovReportPrintAndRecordBuckets(t *testing.T) {
 	}
 }
 
-func TestCwCovPluralSuffixAndFleetRegex(t *testing.T) {
-	for count, want := range map[int]string{0: "ies", 1: "y", 3: "ies"} {
-		if got := plural(count); got != want {
-			t.Errorf("plural(%d) = %q, want %q", count, got, want)
-		}
-	}
-}
-
 func TestCwCovFleetCommandsEmitReportsInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", t.TempDir())
 	root := cwCovProjectsRoot(t, "acme/clean", "acme/dirty")

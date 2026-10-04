@@ -4015,12 +4015,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyCheckExitsOneOnBlockingViolation",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyCheckStrictPromotesReportFindings",
               "kind": "integration"
             },
@@ -4091,7 +4091,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/policy_original_test.go",
               "name": "TestPolicySubcommandsAndFlagsArePresent",
               "kind": "integration"
             }
@@ -4155,12 +4155,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyExplainShowsPatternPrecedenceAndShadowing",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyExplainSeparatesScopeVerdicts",
               "kind": "integration"
             }
@@ -4225,7 +4225,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/policy_original_test.go",
               "name": "TestPolicySubcommandsAndFlagsArePresent",
               "kind": "integration"
             }
@@ -4287,12 +4287,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyInitWritesTheDeclarationAndThenChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyInitRefusesToOverwrite",
               "kind": "integration"
             }
@@ -4358,7 +4358,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/policy_original_test.go",
               "name": "TestPolicySubcommandsAndFlagsArePresent",
               "kind": "integration"
             }
@@ -4422,7 +4422,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyShowPrintsEffectiveRules",
               "kind": "integration"
             },
@@ -4487,12 +4487,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyTestRunsAssertions",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyTestFailsWhenAPolicyDeclaresNoAssertions",
               "kind": "integration"
             }
@@ -4552,7 +4552,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyValidateAcceptsAGoodPolicyAndRejectsAShadowedOne",
               "kind": "integration"
             },

@@ -1193,7 +1193,10 @@ func TestWorktreeLogFinalizeReportRejectsOversizedInput(t *testing.T) {
 }
 
 func TestWorktreeLogRecoverReconcileBranchFlagsWireAndRequireInputs(t *testing.T) {
-	command := newWorktreeLogRecoverCmd(&invocation{})
+	command, _, err := newWorktreeWorkLogCmd(&invocation{}).Find([]string{"recover"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, flag := range []string{"reconcile-branch", "expected-head", "remote", "actor", "reason", "event-id", "apply"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Fatalf("recover is missing --%s", flag)

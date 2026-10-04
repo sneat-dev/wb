@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,123 +158,6 @@ func TestCwWtPrintRetireTaskShells(t *testing.T) {
 	}
 }
 
-func TestCwWtRenderAdopt(t *testing.T) {
-	results := []worktrees.AdoptResult{
-		{Path: "/tmp/a", Task: "t", Action: worktrees.AdoptAdopted},
-		{Path: "/tmp/b", Task: "t", Action: worktrees.AdoptWouldAdopt},
-		{Path: "/tmp/c", Action: worktrees.AdoptSkipped, Reason: "already managed"},
-	}
-	var out bytes.Buffer
-	if err := renderAdopt(&out, results, false); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"skipped /tmp/c: already managed",
-		"adopted", "/tmp/a", "would_adopt", "/tmp/b",
-		"dry-run only, pass --apply to write",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("adopt output missing %q:\n%s", want, text)
-		}
-	}
-	out.Reset()
-	if err := renderAdopt(&out, results, true); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), "dry-run only") {
-		t.Fatalf("adopt apply output = %q", out.String())
-	}
-	out.Reset()
-	if err := renderAdopt(&out, nil, true); err != nil {
-		t.Fatal(err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("empty adopt output = %q", out.String())
-	}
-
-	for allow := 0; allow < 3; allow++ {
-		if err := renderAdopt(&cwWtFailWriter{Allow: allow}, results, false); err == nil {
-			t.Fatalf("renderAdopt with %d writes allowed returned nil", allow)
-		}
-	}
-}
-
-func TestCwWtRenderOrphans(t *testing.T) {
-	report := worktrees.OrphanReport{
-		Families: []worktrees.OrphanFamily{
-			{
-				RootEffort: "effort-1", Disposition: worktrees.DispositionRemove, Reason: "every worktree landed",
-				Worktrees: []worktrees.OrphanWorktree{
-					{Disposition: "remove", Repository: "acme/a", Branch: "b", Layout: worktrees.LayoutCurrent, HasManifest: false, Dirty: true, Missing: true, OwnerState: worktrees.OwnerLive, Evidence: []string{"landed"}},
-					{Disposition: "remove", Repository: "acme/b", Branch: "b", Layout: worktrees.LayoutCurrent, HasManifest: true, Provenance: "reconstructed", OwnerState: worktrees.OwnerGone},
-					{Disposition: "remove", Repository: "acme/c", Branch: "b", Layout: worktrees.LayoutLegacy, HasManifest: true, OwnerState: ""},
-				},
-			},
-			{RootEffort: "effort-2", Disposition: worktrees.DispositionReview, Reason: "needs a look"},
-		},
-		Residue: []worktrees.OrphanResidue{
-			{Task: "task", Repository: "acme/a", Layout: worktrees.LayoutLocal, Evidence: []string{"unregistered"}, Remedy: "wb worktree gc"},
-		},
-		Totals: worktrees.OrphanTotals{
-			Worktrees: 4, Families: 2,
-			ByLayout:    map[string]int{worktrees.LayoutCurrent: 2, worktrees.LayoutLegacy: 1, worktrees.LayoutExternal: 1},
-			ByDispositn: map[string]int{worktrees.DispositionRemove: 1, worktrees.DispositionReview: 1},
-			NoManifest:  1, Dirty: 1, Residue: 1,
-		},
-		Unscanned: []string{"/tmp/unreadable"},
-	}
-	var out bytes.Buffer
-	if err := renderOrphans(&out, report, ""); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"effort-1 [remove] every worktree landed",
-		"no-manifest", "reconstructed", "dirty", "missing", "owner live", "owner gone", "owner unstated",
-		"- landed", "unregistered checkouts (1)", "wb worktree gc",
-		"4 worktrees in 2 efforts (2 shown): 2 current, 1 legacy, 1 external; 1 without a manifest, 1 dirty",
-		"unscanned: /tmp/unreadable",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("orphans output missing %q:\n%s", want, text)
-		}
-	}
-
-	// --only filters both families and the residue section.
-	out.Reset()
-	if err := renderOrphans(&out, report, worktrees.DispositionRemove); err != nil {
-		t.Fatal(err)
-	}
-	text = out.String()
-	if strings.Contains(text, "effort-2") || strings.Contains(text, "unregistered checkouts") {
-		t.Fatalf("--only=remove output = %q", text)
-	}
-	out.Reset()
-	if err := renderOrphans(&out, report, worktrees.DispositionReview); err != nil {
-		t.Fatal(err)
-	}
-	text = out.String()
-	if strings.Contains(text, "effort-1") || !strings.Contains(text, "unregistered checkouts") {
-		t.Fatalf("--only=review output = %q", text)
-	}
-
-	// A report with no families and no residue still prints the footer.
-	out.Reset()
-	if err := renderOrphans(&out, worktrees.OrphanReport{}, ""); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "(0 shown)") {
-		t.Fatalf("empty orphans output = %q", out.String())
-	}
-
-	for allow := 0; allow < 3; allow++ {
-		if err := renderOrphans(&cwWtFailWriter{Allow: allow}, report, ""); err == nil {
-			t.Fatalf("renderOrphans with %d writes allowed returned nil", allow)
-		}
-	}
-}
-
 func TestCwWtFormatCanonicalFreshness(t *testing.T) {
 	if got := formatCanonicalFreshness(nil); got != "not checked" {
 		t.Fatalf("nil freshness = %q", got)
@@ -293,99 +175,6 @@ func TestCwWtFormatCanonicalFreshness(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("freshness text missing %q: %s", want, got)
 		}
-	}
-}
-
-func TestCwWtReadPromptBody(t *testing.T) {
-	directory := t.TempDir()
-	promptFile := filepath.Join(directory, "prompt.txt")
-	if err := os.WriteFile(promptFile, []byte("  from a file\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	emptyFile := filepath.Join(directory, "empty.txt")
-	if err := os.WriteFile(emptyFile, []byte("   \n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := readPromptBody("", ""); err == nil || !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("neither source = %v", err)
-	}
-	if _, err := readPromptBody("inline", promptFile); err == nil || !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("both sources = %v", err)
-	}
-	if body, err := readPromptBody("inline", ""); err != nil || string(body) != "inline" {
-		t.Fatalf("inline body = (%q, %v)", body, err)
-	}
-	if _, err := readPromptBody("   ", ""); err == nil || !strings.Contains(err.Error(), "must not be empty") {
-		t.Fatalf("empty inline body = %v", err)
-	}
-	if body, err := readPromptBody("", promptFile); err != nil || string(body) != "  from a file\n" {
-		t.Fatalf("file body = (%q, %v)", body, err)
-	}
-	if _, err := readPromptBody("", filepath.Join(directory, "missing.txt")); err == nil || !strings.Contains(err.Error(), "read prompt file") {
-		t.Fatalf("missing file = %v", err)
-	}
-	if _, err := readPromptBody("", emptyFile); err == nil || !strings.Contains(err.Error(), "is empty") {
-		t.Fatalf("empty file = %v", err)
-	}
-}
-
-func TestCwWtEncodeLogVerbResult(t *testing.T) {
-	result := worktrees.LogVerbResult{
-		Verb: "steer", Worktree: "/tmp/wt", Applied: true, Prompt: "prompt-1",
-		Event:   &worktrees.LocalWorkLogEvent{Type: "prompt_recorded", Seq: 3},
-		Offline: true, Outbox: 2,
-		Notes: []string{"note one"}, Diagnosis: []string{"line one"},
-	}
-	var out bytes.Buffer
-	if err := encodeLogVerbResult(cwWtCmd(&out), "text", result); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"steer /tmp/wt applied=true", "prompt=prompt-1",
-		"event=prompt_recorded#3", "offline outbox=2",
-		"- note one", "diagnosis: line one",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("log verb text missing %q:\n%s", want, text)
-		}
-	}
-
-	out.Reset()
-	if err := encodeLogVerbResult(cwWtCmd(&out), "json", result); err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-		t.Fatalf("log verb JSON: %v\n%s", err, out.String())
-	}
-	if decoded["verb"] != "steer" || decoded["prompt"] != "prompt-1" {
-		t.Fatalf("log verb JSON = %+v", decoded)
-	}
-
-	// A minimal result writes only the header line.
-	out.Reset()
-	if err := encodeLogVerbResult(cwWtCmd(&out), "text", worktrees.LogVerbResult{Verb: "sync"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "sync  applied=false\n" {
-		t.Fatalf("minimal log verb = %q", got)
-	}
-
-	for allow := 0; allow < 7; allow++ {
-		if err := encodeLogVerbResult(cwWtCmdWriter(&cwWtFailWriter{Allow: allow}), "text", result); err == nil {
-			t.Fatalf("encodeLogVerbResult with %d writes allowed returned nil", allow)
-		}
-	}
-}
-
-func TestCwWtWorktreeLogPath(t *testing.T) {
-	if got := worktreeLogPath(nil); got != "." {
-		t.Fatalf("no arg = %q", got)
-	}
-	if got := worktreeLogPath([]string{"/tmp/wt"}); got != "/tmp/wt" {
-		t.Fatalf("one arg = %q", got)
 	}
 }
 
@@ -467,8 +256,8 @@ func TestCwWtCleanupTaskNameHelpers(t *testing.T) {
 func TestCwWtWorktreeCmdsRejectBadFormatInProcess(t *testing.T) {
 	projects := t.TempDir()
 	builders := map[string]func() *cobra.Command{
-		"log-show":    func() *cobra.Command { return newWorktreeLogShowCmd(&invocation{}) },
-		"log-refresh": func() *cobra.Command { return newWorktreeLogRefreshCmd(&invocation{}) },
+		"log-show":    func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) },
+		"log-refresh": func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) },
 		"backfill":    func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{}) },
 		"adopt":       func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) },
 		"orphans":     func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{}) },
@@ -489,8 +278,8 @@ func TestCwWtWorktreeCmdsRejectBadFormatInProcess(t *testing.T) {
 		"cleanup":     {"t"},
 		"marker":      {"."},
 		"adopt":       {"."},
-		"log-show":    {"."},
-		"log-refresh": {"."},
+		"log-show":    {"show", "."},
+		"log-refresh": {"refresh", "."},
 	}
 	for name, build := range builders {
 		args := append(append([]string{}, arguments[name]...), "--format", "bogus")
@@ -812,12 +601,12 @@ func TestCwWtWorktreeSetAndLogVerbsInProcess(t *testing.T) {
 	}
 
 	// log show on a path that does not exist reports the backend error.
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeLogShowCmd(&invocation{}) }, filepath.Join(t.TempDir(), "missing"))
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "show", filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
 		t.Fatal("log show on a missing path must fail")
 	}
 	// log show on a real checkout with no journal is a valid, empty read.
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeLogShowCmd(&invocation{}) }, checkout); err != nil {
+	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "show", checkout); err != nil {
 		t.Fatalf("log show on a clean checkout: %v", err)
 	}
 

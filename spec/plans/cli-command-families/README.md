@@ -842,6 +842,39 @@ metadata changes only three test paths; all 790 references resolve. Scoped
 lint/serial checks, cross-platform compilation and independent final review
 close the local checkpoint; publication remains deferred.
 
+The next parallel cohort extracts the complete nine-child dependency policy
+family and worktree adoption/backfill/orphans, followed by the complete journal
+family. Policy has one Cobra-free operation owner while the existing policy
+engine retains resolution, configuration and finding authority. Actual remote
+policy retrieval stays in that owner; original HTTP and filesystem contracts
+move with it. All 35 original responsibilities retain their assertion clauses.
+The selected 43-case race batch passed in 4.16 seconds. A separate three-case
+supplement closes twelve statements without repeating native originals. Whole
+policy leaves and both changed root declarations are covered: 511/511 statements.
+
+Adoption delegates directly to the existing worktree operations and shares
+sorted totals rendering without copying domain behavior. Its seven-case leaf
+batch covers 141/141 statements. Journal composes eleven private children plus
+set, checkpoint fetch and identity correction through actual domain callbacks;
+root retains admission and identity authority. Legacy prompt-file handling,
+bounded report stdin, explicit zero/empty flag distinctions, private versus
+redacted output and release/error order remain intact. Its leaf scope covers
+376/376 statements. Filesystem input tests use real private files with an
+explicit simulated append; persisted journal/session/Git behavior remains in
+the original root journeys.
+
+The combined adoption/policy root gate passed nine cases in 8.80 seconds. The
+journal cutover then passed all 21 selected original root cases in 52.37 seconds,
+with source unchanged. The fresh latter profile also covers the unchanged
+adoption bindings at their relocated source coordinates. Whole designated
+leaves and changed root declarations total 1,042/1,042 statements; this is not a
+repository-wide coverage result. No complete root suite or global coverage run
+was added. Linux and Windows compilation, root vet, scoped lint and affected
+serial checks pass; target compilation does not claim native execution there.
+Capability metadata changes only thirteen policy test paths; all 790 references
+resolve. Independent final review and a local checkpoint precede continuation;
+publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued
