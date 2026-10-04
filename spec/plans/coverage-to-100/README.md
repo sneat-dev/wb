@@ -187,6 +187,32 @@ Next are source/canonical inspection and route/validation-plan ownership, follow
 by dedicated whole-owner Prepare and Land batches rather than further small
 acknowledgement tails. Remote publication remains deferred.
 
+### Source inspection and validation-plan checkpoint
+
+The fully composed batch passed all 20 selected top-level race cases in
+36.049 seconds: 138/138 statements across 11 whole declarations, with no
+skips or failures. Scoped lint/vet, Linux and Windows compilation, and spec
+validation passed. Source inspection/canonical resolution and Peek now have a
+cohesive producer file; the five route/lazy validation-plan bodies and two types
+moved byte-for-byte into their own file. Existing policy, custody and native
+journeys remain protected. Narrow per-call Runner observations and a directly
+bound filepath.Abs function allow deterministic negative tests without changing
+process cwd or inventing successful Git facts.
+
+Equivalent source before this checkpoint was 135 statements in eight functions;
+the current scope has 138 in 11. Three native wrappers add three statements,
+all covered, for testability rather than a statement reduction. The adjacent
+same-file deletions required composition of exact approved spans. A prematurely
+started partial-source run selected only 16 of 20 cases and was rejected by the
+selector completeness assertion; its observations are archived and excluded.
+The final 20-case profile alone supplies this checkpoint's coverage evidence.
+
+The next substantial batches are the independently reviewed whole Prepare and
+Land owner plans: concrete receipt/continuation phases, consistent existing
+Runner routing, shared timeout persistence, and meaningful native/private fault
+matrices. Their selected-run diagnostics and historical gap counts remain
+separate from complete package coverage. Publication stays deferred.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
