@@ -123,6 +123,7 @@ func (f remoteFixture) deps(login string, at time.Time) remoteDeps {
 // rather than mocking the seam.
 
 func TestRemotePublishAcceptsProjectsRootAndFilterFlags(t *testing.T) {
+	t.Parallel()
 	for _, flag := range []string{"projects-root", "filter"} {
 		if !persistentFlagSupport[flag]["remote publish"] {
 			t.Errorf("remote publish must accept --%s: it scans the fleet under --projects-root honouring --filter", flag)
@@ -134,6 +135,7 @@ func TestRemotePublishAcceptsProjectsRootAndFilterFlags(t *testing.T) {
 }
 
 func TestPersistentFlagMatrixRemoteCommands(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range []string{"remote publish", "remote status", "remote machines"} {
 		if !persistentFlagSupport["projects-root"][cmd] {
 			t.Errorf("%s must accept --projects-root: it locates the state-repo clone", cmd)
@@ -170,6 +172,7 @@ func TestPersistentFlagMatrixRemoteCommands(t *testing.T) {
 // enough of a liveness signal to render normally.
 
 func TestSyncPublishFlagIsRegistered(t *testing.T) {
+	t.Parallel()
 	cmd := newSyncCmd(&invocation{})
 	flag := cmd.Flags().Lookup("publish")
 	if flag == nil || flag.DefValue != "false" {
@@ -204,10 +207,18 @@ func TestFinishSyncPublishesAfterCleanSync(t *testing.T) {
 }
 
 func TestFinishSyncSkipsPublishWhenSyncFailed(t *testing.T) {
-	f := newRemoteFixture(t, "laptop")
+	t.Parallel()
+	projectsRoot := t.TempDir()
+	configPath := filepath.Join(projectsRoot, "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := remoteDeps{configPath: configPath, open: func(remotestate.Config, string) (remotestate.Provider, error) {
+		return nil, errors.New("must not be called")
+	}}
 	var out, errOut bytes.Buffer
 	failed := []fleetsync.Result{{Status: fleetsync.Failed}}
-	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, failed, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
+	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, failed, true, false, deps, projectsRoot, "", 1, &out, &errOut); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if strings.Contains(out.String(), "published") || strings.Contains(errOut.String(), "publish") {
@@ -220,13 +231,17 @@ func TestFinishSyncSkipsPublishWhenSyncFailed(t *testing.T) {
 // were invoked, so reaching a clean exit with the "skipping" message and no
 // stderr output proves the guard runs before anything provider-shaped.
 func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
-	f := newRemoteFixture(t, "laptop")
-	deps := f.deps("alice", time.Now().UTC())
-	deps.open = func(remotestate.Config, string) (remotestate.Provider, error) {
-		return nil, errors.New("must not be called")
+	t.Parallel()
+	projectsRoot := t.TempDir()
+	configPath := filepath.Join(projectsRoot, "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	deps := remoteDeps{configPath: configPath, open: func(remotestate.Config, string) (remotestate.Provider, error) {
+		return nil, errors.New("must not be called")
+	}}
 	var out, errOut bytes.Buffer
-	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, nil, true, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(&invocation{}, fleetsync.RunMeta{}, nil, true, true, deps, projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(out.String(), "skipping remote publish") {

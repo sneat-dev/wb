@@ -1196,6 +1196,33 @@ recorded in a separate cleanup commit. A fresh complete `cmd/wb` coverage
 measurement follows these repairs; earlier failed runs do not establish a new
 package percentage. Publication remains deferred.
 
+### Root coverage closure and private fixture reuse
+
+The fresh public scoped coverage command passes on local `856e8683`, including
+unit and real-Git E2E tiers, in 294.62 seconds: 847/851 statements (99.53%).
+The remaining four statements are private state-read/readiness/client errors
+in two daemon peer helpers. New tests prime actual private daemon custody with
+controlled process observations, synchronously alter that private state through
+the existing health observation, and prove the subsequent fresh read refuses
+it. There is no production seam change or real daemon launch. Global-home
+fixtures retain explicit serial reasons.
+
+The combined twelve-case race batch passes in 7.24 seconds and covers both
+whole helpers (23/23). All 72 production files remain byte-identical to the full
+run. Exact location, column and statement tuples agree across the full `set`
+and focused `atomic` profiles; projecting positive counts to coverage bits and
+uniting them gives 851/851 statements and 219/219 whole root functions. This is
+source-bound statement coverage from two passing runs, not a new global
+repository percentage or a single complete-suite rerun.
+
+Six existing isolated flag/retirement tests now run in parallel. Two further
+sync refusal/dry-run tests retain valid private configurations, reachable
+provider-refusal sentinels and actual report writes while dropping unused Git
+origin/seed/fleet setup and environment pins; they also run in parallel. Original
+assertions and companion cases remain unchanged. Structural fixture reduction
+is verified; no elapsed-time saving is inferred from unrelated runs. Publication
+remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** in_progress
