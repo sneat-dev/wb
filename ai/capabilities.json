@@ -3263,7 +3263,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/browser_test.go",
+              "path": "internal/browser/original_test.go",
               "name": "TestBrowserCommandUsesPlatformMechanism",
               "kind": "unit"
             }

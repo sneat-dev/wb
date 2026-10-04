@@ -1116,6 +1116,33 @@ shared implementations. All790 capability references resolve after three path
 updates. Final scoped checks and independent exact-state review precede the local
 checkpoint; publication remains deferred.
 
+### Browser and root boundary contracts
+
+Browser resolution, platform selection and asynchronous native launch now have
+one neutral owner. Root retains the genuine `openBrowser` callback. Two pure
+originals and the pure clauses of a compound original follow the owner; the
+actual missing-PATH launcher refusal stays at root. Private per-instance resolver
+and platform observations preserve error identity without changing native launch
+policy, destroying cwd or starting a browser. The new producer covers 18/18
+statements in six passing race cases.
+
+Root boundary tests cover actual pflag lookup refusals, optional initiator,
+native missing-home/private-home/override semantics and annotation preservation.
+The three-line `repo status` diagnostic nested under a fleet predicate was
+unreachable under the unchanged selector policy and is removed; real unsupported
+selector refusal remains tested. Controlled registry observations are explicitly
+separate from native session registration or custody authority.
+
+The root race batch passes fourteen cases in 11.72 seconds; three narrow added
+cases pass in 5.44 seconds. Seven whole root functions cover 56/56 statements,
+including the real `main` entrypoint's one statement. That entrypoint is observed
+in a separately built, source-bound covered native binary running `--version`
+with private counters, not an injected exit function or a broad suite claim.
+The designated browser/boundary scope is therefore 74/74. Native counter reuse
+in ordinary CI profiles remains a separate feasibility question. Capability
+references resolve; final scoped checks and independent review precede the local
+checkpoint. Publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** in_progress

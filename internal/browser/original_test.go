@@ -1,4 +1,4 @@
-package main
+package browser
 
 import (
 	"path/filepath"
@@ -27,11 +27,12 @@ func TestBrowserCommandUsesPlatformMechanism(t *testing.T) {
 }
 
 func TestBrowserTargetPreservesWebURLsAndResolvesFiles(t *testing.T) {
+	t.Parallel()
 	const dashboard = "https://sneat.work/bench/dashboard/?machine=vm"
-	if got, err := browserTarget(dashboard); err != nil || got != dashboard {
+	if got, err := browserTarget(dashboard, filepath.Abs); err != nil || got != dashboard {
 		t.Fatalf("browserTarget(web) = %q, %v", got, err)
 	}
-	got, err := browserTarget("report.html")
+	got, err := browserTarget("report.html", filepath.Abs)
 	if err != nil {
 		t.Fatal(err)
 	}
