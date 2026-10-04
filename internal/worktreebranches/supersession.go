@@ -593,6 +593,10 @@ func dependencyContentChanged(file string, base, head []byte) (bool, error) {
 }
 
 func npmDependencySections(contents []byte) (map[string]string, error) {
+	return npmDependencySectionsWithMarshal(contents, marshalCanonicalJSON)
+}
+
+func npmDependencySectionsWithMarshal(contents []byte, marshal func(any) ([]byte, error)) (map[string]string, error) {
 	var manifest map[string]json.RawMessage
 	if err := json.Unmarshal(contents, &manifest); err != nil {
 		return nil, err
@@ -619,13 +623,17 @@ func npmDependencySections(contents []byte) (map[string]string, error) {
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", section, err)
 		}
-		canonical, err := json.Marshal(value)
+		canonical, err := marshal(value)
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize %s: %w", section, err)
 		}
 		result[section] = string(canonical)
 	}
 	return result, nil
+}
+
+func marshalCanonicalJSON(value any) ([]byte, error) {
+	return json.Marshal(value)
 }
 
 func goWorkspaceSections(contents []byte) (map[string]string, error) {
@@ -678,6 +686,10 @@ func goDependencySections(contents []byte) (map[string]string, error) {
 }
 
 func workflowActionReferences(contents []byte) ([]string, error) {
+	return workflowActionReferencesWithMarshal(contents, marshalCanonicalJSON)
+}
+
+func workflowActionReferencesWithMarshal(contents []byte, marshal func(any) ([]byte, error)) ([]string, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(contents, &root); err != nil {
 		return nil, err
@@ -717,7 +729,7 @@ func workflowActionReferences(contents []byte) ([]string, error) {
 					}
 					action["with"] = canonicalWith
 				}
-				encoded, err := json.Marshal(action)
+				encoded, err := marshal(action)
 				if err != nil {
 					return fmt.Errorf("canonicalize workflow action inputs: %w", err)
 				}

@@ -156,6 +156,9 @@ func TestWorktreeRebindCommandRequiresExpectedRootAndRecordsAudit(t *testing.T) 
 	if out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), root); err == nil || out != "" || !strings.Contains(err.Error(), "--expected-root is required") {
 		t.Fatalf("missing expected root = %q, %v", out, err)
 	}
+	if out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), root, "--expected-root", filepath.Join(root, "wrong-old-root")); err == nil || out != "" {
+		t.Fatalf("stale-root mismatch = %q, %v; want an error and no success output", out, err)
+	}
 	out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), root, "--expected-root", oldRoot)
 	if err != nil || !strings.Contains(out, oldRoot+" -> "+root) {
 		t.Fatalf("explicit rebind = %q, %v", out, err)
