@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/worktreeend"
@@ -26,39 +25,6 @@ func cwWtSweepWrites(t *testing.T, max int, run func(writer *cwWtFailWriter) err
 		}
 	}
 	t.Fatalf("no write budget up to %d let the renderer finish", max)
-}
-
-func TestCwWtWriterSweepListAndSummary(t *testing.T) {
-	results := []worktrees.ListResult{
-		{Task: "t", Repository: "acme/a", Branch: "b", Clean: true, TerminalResult: "success", ReportPath: "/tmp/r", Owner: "o", AgeSeconds: 60},
-		{Task: "t", Repository: "acme/b", Branch: "b", Clean: false},
-		{Task: "t", Repository: "acme/c", Branch: "b", Clean: true, Locked: true},
-		{Task: "t", Repository: "acme/d", Branch: "b", Clean: true, OpenPullRequest: &worktrees.PullRequest{Number: 1, URL: "u"}},
-		{Task: "t", Repository: "acme/e", Branch: "b", Clean: true, AbsorbedAtOrigin: true},
-		{Task: "t", Repository: "acme/f", Branch: "b", Clean: true, MergedPullRequest: &worktrees.PullRequest{Number: 2, URL: "u"}},
-		{Task: "t", Repository: "acme/g", Branch: "b", Clean: true, LocallyMerged: true},
-		{Task: "t", Repository: "acme/h", Branch: "", Clean: true, Detached: true, Expired: true, AgeSeconds: 90},
-	}
-	cwWtSweepWrites(t, 12, func(writer *cwWtFailWriter) error {
-		return printWorktreeList(cwWtCmdWriter(writer), results)
-	})
-
-	summary := []worktrees.ListResult{
-		{
-			Repository: "acme/a", WorktreeDir: "/tmp/a", Branch: "b", HeadSHA: strings.Repeat("a", 40), Base: "main",
-			IntegratedAtOrigin: true, Clean: true, TerminalResult: "success", TerminalMessage: "done",
-			FinalizedAt: time.Now().UTC(), ReportPath: "/tmp/r",
-			OpenPullRequest: &worktrees.PullRequest{Number: 1, URL: "u"},
-		},
-		{Repository: "acme/b", Branch: "b", Base: "main", AbsorbedAtOrigin: true, Clean: true, MergedPullRequest: &worktrees.PullRequest{Number: 2, URL: "u"}},
-		{Repository: "acme/c", Branch: "b", Base: "main", RebaseMergedAtOrigin: true, Clean: true},
-		{Repository: "acme/d", Branch: "b", Base: "main", LocallyMerged: true, Clean: true},
-		{Repository: "acme/e", Branch: "b", Base: "main", Clean: false, Locked: true},
-	}
-	// Five rows at roughly twenty writes each, plus the header and spacer.
-	cwWtSweepWrites(t, 60, func(writer *cwWtFailWriter) error {
-		return printWorktreeSummary(cwWtCmdWriter(writer), "task", summary, true)
-	})
 }
 
 func TestCwWtWriterSweepCleanupRenameShellsAdopt(t *testing.T) {

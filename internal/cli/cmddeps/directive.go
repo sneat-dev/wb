@@ -1,17 +1,17 @@
-package main
+package cmddeps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	goversion "go/version"
 	"io"
-	"path/filepath"
 	"sort"
 	"time"
 
-	"github.com/spf13/cobra"
-
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/depsrun"
+	"github.com/spf13/cobra"
 )
 
 // defaultDirectiveGoVersion and defaultDirectiveToolchain are the fleet's
@@ -35,30 +35,6 @@ const (
 // GitHub advances CodeQL's bundled toolchain.
 const defaultCodeQLCeiling = "1.26.7"
 
-// codeQLRisk reports whether a module's current, committed state — not the
-// policy's proposed target — already exceeds what CodeQL default-setup's
-// pinned local toolchain can run, and if so, a one-line explanation naming
-// both versions.
-func codeQLRisk(assessment deps.DirectiveAssessment, ceiling string) (bool, string) {
-	effective := assessment.EffectiveGoVersion()
-	if effective == "" || ceiling == "" {
-		return false, ""
-	}
-	if goversion.Compare(goversion.Lang(goSyntaxLocal(effective)), goversion.Lang(goSyntaxLocal(ceiling))) <= 0 {
-		return false, ""
-	}
-	return true, fmt.Sprintf("CodeQL default setup would fail here: requires go %s, pinned to go%s (GOTOOLCHAIN=local)", effective, ceiling)
-}
-
-// goSyntaxLocal mirrors internal/deps's unexported goSyntax: prefix a bare
-// go.mod-style version with "go" for go/version comparisons.
-func goSyntaxLocal(v string) string {
-	if len(v) >= 2 && v[:2] == "go" {
-		return v
-	}
-	return "go" + v
-}
-
 const goDirectiveLongHelp = `Assess, and (with --apply) land, the fleet's Go directive policy: a ` + "`go`" + `
 language directive of ` + "`" + defaultDirectiveGoVersion + "`" + ` paired with ` + "`toolchain " + defaultDirectiveToolchain + "`" + `.
 
@@ -75,13 +51,28 @@ build list. Achievability is determined by resolving that build list with real
 grepping go.mod files — so the verdict is exact and names the forcing
 dependency when the policy cannot be met.`
 
-func newDepsGoDirectiveCmd(inv *invocation) *cobra.Command {
+type DirectiveDependencies struct {
+	Select func(context.Context, depsrun.Selection) ([]deps.Repository, error)
+	Check  func(context.Context, depsrun.DirectiveCheckRequest, func(depsrun.DirectiveCheckRow)) (depsrun.DirectiveCheckResult, error)
+	Report func(context.Context, []deps.Repository, deps.DirectivePolicy, deps.Options, string) []depsrun.DirectiveRow
+}
+
+func DirectiveOperations(service *depsrun.Service) DirectiveDependencies {
+	return DirectiveDependencies{Select: service.Select, Check: service.CheckDirectives, Report: service.ReportDirectives}
+}
+func writeDirectiveJSON(out io.Writer, rows []depsrun.DirectiveRow) error {
+	encoder := json.NewEncoder(out)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(rows)
+}
+
+func NewGoDirective(runtime shared.Runtime, operations DirectiveDependencies) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "go-directive",
 		Short: "Assess and land the fleet's go/toolchain directive policy",
 		Long:  goDirectiveLongHelp,
 	}
-	command.AddCommand(newDepsGoDirectiveCheckCmd(), newDepsGoDirectiveReportCmd(inv))
+	command.AddCommand(newDirectiveCheck(runtime, operations), newDirectiveReport(runtime, operations))
 	return command
 }
 
@@ -91,9 +82,7 @@ func directiveFlags(command *cobra.Command, goVersion, toolchain *string, timeou
 	command.Flags().DurationVar(timeout, "timeout", 2*time.Minute, "timeout for each go subprocess")
 }
 
-// ---------------------------------------------------------------- check
-
-func newDepsGoDirectiveCheckCmd() *cobra.Command {
+func newDirectiveCheck(runtime shared.Runtime, operations DirectiveDependencies) *cobra.Command {
 	var apply bool
 	var goVersion, toolchain, codeQLCeiling string
 	var timeout time.Duration
@@ -113,45 +102,26 @@ verdict is would-change, then runs "go mod tidy" and re-resolves to confirm
 the edit was not silently reverted by a forcing dependency assessment missed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root := directoryArg(args)
-			absolute, err := filepath.Abs(root)
-			if err != nil {
-				return usageError(err.Error())
+			root := "."
+			if len(args) > 0 && args[0] != "" {
+				root = args[0]
 			}
-			modules := discoverModules(absolute)
-			out := cmd.OutOrStdout()
-			if len(modules) == 0 {
-				_, _ = fmt.Fprintf(out, "no Go module found at or under %s\n", root)
+			result, err := operations.Check(cmd.Context(), depsrun.DirectiveCheckRequest{Directory: root, Policy: deps.DirectivePolicy{GoVersion: goVersion, Toolchain: toolchain}, Options: deps.Options{Timeout: timeout, Retry: 1}, Apply: apply, CodeQLCeiling: codeQLCeiling}, func(row depsrun.DirectiveCheckRow) {
+				if row.Error != nil {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "x  %-40s %s\n", row.Label, row.Error.Error())
+					return
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s  %-40s %s\n", directiveMarker(row.Assessment.Verdict), row.Label, row.Detail)
+			})
+			if err != nil {
+				return runtime.ExitError(shared.ExitUsage, err.Error())
+			}
+			if result.ModuleCount == 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no Go module found at or under %s\n", root)
 				return nil
 			}
-			policy := deps.DirectivePolicy{GoVersion: goVersion, Toolchain: toolchain}
-			options := deps.Options{Timeout: timeout, Retry: 1}
-			attention := 0
-			for _, moduleDir := range modules {
-				label := moduleLabel(absolute, moduleDir)
-				var assessment deps.DirectiveAssessment
-				var assessErr error
-				if apply {
-					assessment, assessErr = deps.ApplyDirective(cmd.Context(), moduleDir, policy, options)
-				} else {
-					assessment, assessErr = deps.AssessDirective(cmd.Context(), moduleDir, policy, options)
-				}
-				if assessErr != nil {
-					attention++
-					_, _ = fmt.Fprintf(out, "x  %-40s %s\n", label, assessErr.Error())
-					continue
-				}
-				detail := assessment.Detail
-				if atRisk, note := codeQLRisk(assessment, codeQLCeiling); atRisk {
-					detail += " — " + note
-				}
-				_, _ = fmt.Fprintf(out, "%s  %-40s %s\n", directiveMarker(assessment.Verdict), label, detail)
-				if needsAttention(assessment.Verdict, apply) {
-					attention++
-				}
-			}
-			if attention > 0 {
-				return &exitError{code: exitFindings, message: fmt.Sprintf("%d module(s) need attention; see the lines above", attention)}
+			if result.Attention > 0 {
+				return runtime.ExitError(shared.ExitFindings, fmt.Sprintf("%d module(s) need attention; see the lines above", result.Attention))
 			}
 			return nil
 		},
@@ -160,30 +130,6 @@ the edit was not silently reverted by a forcing dependency assessment missed.`,
 	command.Flags().StringVar(&codeQLCeiling, "codeql-ceiling", defaultCodeQLCeiling, "Go toolchain version CodeQL default-setup's GOTOOLCHAIN=local currently pins; annotate a module whose effective go requirement exceeds it")
 	directiveFlags(command, &goVersion, &toolchain, &timeout)
 	return command
-}
-
-// needsAttention reports whether verdict should count against the exit code.
-// Under --apply, a fresh would-change becomes compliant or fails outright
-// (a non-nil error), so would-change itself is only a failure in dry-run mode
-// — it is exactly the "there is a plan to land" signal --apply exists to
-// consume.
-func needsAttention(verdict deps.DirectiveVerdict, applying bool) bool {
-	switch verdict {
-	case deps.DirectiveCannotComply, deps.DirectiveError:
-		return true
-	case deps.DirectiveWouldChange:
-		return !applying
-	default:
-		return false
-	}
-}
-
-func moduleLabel(root, moduleDir string) string {
-	relative, err := filepath.Rel(root, moduleDir)
-	if err != nil || relative == "." {
-		return filepath.Base(root)
-	}
-	return relative
 }
 
 func directiveMarker(verdict deps.DirectiveVerdict) string {
@@ -201,22 +147,7 @@ func directiveMarker(verdict deps.DirectiveVerdict) string {
 	}
 }
 
-// ---------------------------------------------------------------- report
-
-// directiveRow is one module's fleet-wide assessment row, projected for text
-// and JSON reporting.
-type directiveRow struct {
-	Repository   string                   `json:"repository"`
-	Module       string                   `json:"module,omitempty"`
-	Verdict      string                   `json:"verdict"`
-	Detail       string                   `json:"detail"`
-	Forcing      []deps.ForcingDependency `json:"forcing,omitempty"`
-	CodeQLAtRisk bool                     `json:"codeQLAtRisk,omitempty"`
-}
-
-const verdictNoModule = "no-module"
-
-func newDepsGoDirectiveReportCmd(inv *invocation) *cobra.Command {
+func newDirectiveReport(runtime shared.Runtime, operations DirectiveDependencies) *cobra.Command {
 	var match, regex, goVersion, toolchain, format, codeQLCeiling string
 	var timeout time.Duration
 	command := &cobra.Command{
@@ -234,16 +165,17 @@ the cannot-comply rows read as one worklist of which upstream module needs
 fixing first.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repositories, err := fleetRepositories(inv, match, regex)
+			flags := runtime.Flags()
+			repositories, err := operations.Select(cmd.Context(), depsrun.Selection{ProjectsRoot: flags.ProjectsRoot, Filter: flags.Filter, ExtraOrgs: flags.ExtraOrgs, Fleet: true, Parallel: 1, Match: match, Regex: regex})
 			if err != nil {
-				return err
+				return runtime.ExitError(shared.ExitUsage, err.Error())
 			}
 			policy := deps.DirectivePolicy{GoVersion: goVersion, Toolchain: toolchain}
 			options := deps.Options{Timeout: timeout, Retry: 1}
-			rows := sweepDirectives(cmd.Context(), repositories, policy, options, codeQLCeiling)
+			rows := operations.Report(cmd.Context(), repositories, policy, options, codeQLCeiling)
 			out := cmd.OutOrStdout()
 			if format == "json" {
-				if err := writeJSONTo(out, rows); err != nil {
+				if err := writeDirectiveJSON(out, rows); err != nil {
 					return err
 				}
 			} else {
@@ -262,8 +194,8 @@ fixing first.`,
 				}
 			}
 			if cannotComply > 0 || errored > 0 {
-				return &exitError{code: exitFindings, message: fmt.Sprintf(
-					"%d module(s) cannot comply, %d module(s) errored, %d at risk under CodeQL default setup — see the report above", cannotComply, errored, codeQLAtRisk)}
+				return runtime.ExitError(shared.ExitFindings, fmt.Sprintf(
+					"%d module(s) cannot comply, %d module(s) errored, %d at risk under CodeQL default setup — see the report above", cannotComply, errored, codeQLAtRisk))
 			}
 			return nil
 		},
@@ -276,50 +208,7 @@ fixing first.`,
 	return command
 }
 
-// sweepDirectives walks every Go module in the selected repositories and
-// assesses each one. It never applies — the fleet report has no --apply.
-func sweepDirectives(ctx context.Context, repositories []deps.Repository, policy deps.DirectivePolicy, options deps.Options, codeQLCeiling string) []directiveRow {
-	var rows []directiveRow
-	for _, repository := range repositories {
-		if repository.Path == "" {
-			rows = append(rows, directiveRow{Repository: repository.Slug, Verdict: verdictNoModule, Detail: "remote-only — not cloned locally, cannot be assessed"})
-			continue
-		}
-		modules := discoverModules(repository.Path)
-		if len(modules) == 0 {
-			rows = append(rows, directiveRow{Repository: repository.Slug, Verdict: verdictNoModule, Detail: "no Go module"})
-			continue
-		}
-		for _, moduleDir := range modules {
-			row := directiveRow{Repository: repository.Slug, Module: moduleLabel(repository.Path, moduleDir)}
-			assessment, err := deps.AssessDirective(ctx, moduleDir, policy, options)
-			if err != nil {
-				row.Verdict = string(deps.DirectiveError)
-				row.Detail = err.Error()
-				rows = append(rows, row)
-				continue
-			}
-			row.Module = assessment.ModulePath
-			row.Verdict = string(assessment.Verdict)
-			row.Detail = assessment.Detail
-			row.Forcing = assessment.Forcing
-			if atRisk, note := codeQLRisk(assessment, codeQLCeiling); atRisk {
-				row.CodeQLAtRisk = true
-				row.Detail += " — " + note
-			}
-			rows = append(rows, row)
-		}
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Repository != rows[j].Repository {
-			return rows[i].Repository < rows[j].Repository
-		}
-		return rows[i].Module < rows[j].Module
-	})
-	return rows
-}
-
-func writeDirectiveReportText(out io.Writer, rows []directiveRow) {
+func writeDirectiveReportText(out io.Writer, rows []depsrun.DirectiveRow) {
 	counts := map[string]int{}
 	codeQLAtRisk := 0
 	for _, row := range rows {
@@ -338,7 +227,7 @@ func writeDirectiveReportText(out io.Writer, rows []directiveRow) {
 		case deps.DirectiveBelowFloor:
 			marker = "▪"
 		}
-		if row.Verdict == verdictNoModule {
+		if row.Verdict == "no-module" {
 			marker = "–"
 		}
 		label := row.Repository

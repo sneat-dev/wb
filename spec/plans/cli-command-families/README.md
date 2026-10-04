@@ -815,6 +815,33 @@ and serial checks, target compilation, review and local commits close the
 cohorts; publication remains deferred. The full repository parallel baseline
 is still failed and has not been attributed to an old target without evidence.
 
+The next parallel cohort extracts complete inventory list/summary and dependency
+go-directive check/report domains. Inventory delegates directly to the existing
+ListWithDiagnostics operation and shares diagnostics/artifact rendering, while
+keeping list and summary defaults and state precedence distinct. Five original
+pure contracts move to their CLI owner; native privacy, purge receipts, filters
+and journal behavior remain at the production root entrypoint. Its eight-case
+race batch passed in 2.46 seconds with 175/175 leaf statements covered.
+
+Go-directive retains actual Go assessment/application authority, synchronous
+mutation/output order, read-only report behavior and original error/exit policy.
+Module discovery now has one neutral owner, used by directive operations and two
+existing policy paths. Thirteen original responsibilities move with the domain;
+23 selected race cases passed in 3.31 seconds. Three new files have 190/190
+statements covered. The changed default factory and root adapters bring the
+combined designated scope to 380/380; this is not repository-wide coverage.
+
+One combined root gate passed all twelve cases in 31.54 seconds with source
+unchanged. These exercise the real root entrypoint inside the Go test binary,
+private native Git/manifest fixtures, and both remaining policy consumers;
+they do not claim separately spawned WB executable proof. The two-repository
+inventory fixture took 11.37 seconds for its complete case, a future performance
+candidate rather than a measured setup-only cost. Unchanged global flag guards
+were reused, and no full CLI suite or global coverage run was added. Capability
+metadata changes only three test paths; all 790 references resolve. Scoped
+lint/serial checks, cross-platform compilation and independent final review
+close the local checkpoint; publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

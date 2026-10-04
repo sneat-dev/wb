@@ -74,6 +74,9 @@ type SeedResult struct {
 	Resolutions []deps.LatestScopeResolution
 }
 type Dependencies struct {
+	DiscoverModules   func(string) []string
+	AssessDirective   func(context.Context, string, deps.DirectivePolicy, deps.Options) (deps.DirectiveAssessment, error)
+	ApplyDirective    func(context.Context, string, deps.DirectivePolicy, deps.Options) (deps.DirectiveAssessment, error)
 	Fleet             func(root, filter string, extra []string) ([]deps.Repository, error)
 	Identity          func(path, root string) (string, string, error)
 	Abs               func(string) (string, error)
@@ -96,7 +99,7 @@ type Service struct{ deps Dependencies }
 func New(deps Dependencies) *Service { return &Service{deps: deps} }
 func DefaultDependencies(diagnostics io.Writer) Dependencies {
 	resolver := fleetdiscovery.New(diagnostics)
-	return Dependencies{
+	return Dependencies{DiscoverModules: DiscoverModules, AssessDirective: deps.AssessDirective, ApplyDirective: deps.ApplyDirective,
 		Fleet: func(root, filter string, extra []string) ([]deps.Repository, error) {
 			found, err := resolver.Discover(root, filter, func() []string { return resolver.Owners(extra) })
 			if err != nil {

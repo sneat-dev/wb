@@ -52,7 +52,7 @@ type depsSetOptions struct {
 
 func newDepsCmd(inv *invocation) *cobra.Command {
 	command := cmddeps.New(newCLIRuntime(inv), cmddeps.Operations(newDependencyService(), openBrowser))
-	command.AddCommand(newDepsPublishCmd(inv), newDepsPropagateCmd(inv), newDepsPolicyCmd(inv), newDepsGoDirectiveCmd(inv))
+	command.AddCommand(newDepsPublishCmd(inv), newDepsPropagateCmd(inv), newDepsPolicyCmd(inv), cmddeps.NewGoDirective(newCLIRuntime(inv), cmddeps.DirectiveOperations(newDependencyService())))
 	return command
 }
 func newDependencyService() *depsrun.Service {

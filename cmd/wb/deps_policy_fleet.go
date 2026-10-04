@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/depsrun"
 	"github.com/sneat-dev/wb/internal/policy"
 )
 
@@ -38,7 +39,7 @@ type moduleOutcome struct {
 func sweep(inv *invocation, repositories []deps.Repository, policyOverride string) []moduleOutcome {
 	var outcomes []moduleOutcome
 	for _, repository := range repositories {
-		for _, moduleDir := range discoverModules(repository.Path) {
+		for _, moduleDir := range depsrun.DiscoverModules(repository.Path) {
 			outcome := moduleOutcome{
 				Repository: repository.Slug,
 				Directory:  moduleDir,
@@ -263,7 +264,7 @@ Exits 1 when any module is ungoverned or disagrees with detection.`,
 			var rows []driftRow
 			issues := 0
 			for _, repository := range repositories {
-				for _, moduleDir := range discoverModules(repository.Path) {
+				for _, moduleDir := range depsrun.DiscoverModules(repository.Path) {
 					row := driftRow{Repository: repository.Slug}
 					context, err := resolvePolicy(inv, moduleDir, policyFlag)
 					if err != nil {
