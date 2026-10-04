@@ -17758,6 +17758,73 @@
       "notes": "Prompt text must never enter source Git, generic operational events/projections, a Git fallback/mirror, or normal output; public state carries only a digest and authorized receipt."
     },
     {
+      "id": "wb.worktree.rebind",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md",
+        "spec/features/work-log/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree rebind",
+              "flags": [
+                "--expected-root"
+              ],
+              "modes": [
+                "Repairs a stale collaboration root only after the prior path was retired and Git reused the linked-worktree identity",
+                "Requires the exact recorded prior root, an absent old path, and matching GitDir and CommonDir",
+                "Requires a live admitted WB session and does not change ownership or infer a checkout identity"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree rebind --help",
+              "contains": [
+                "prior worktree root",
+                "retired",
+                "--expected-root",
+                "live admitted WB session"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Rebind a stale root after worktree reuse",
+              "examples": [
+                "wb worktree rebind <current-path> --expected-root <retired-path>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestWorktreeRebindCommandRequiresExpectedRootAndRecordsAudit",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A narrow repair for a retired checkout root reused by Git; it is owner- and session-authorized, exact-root-bound, and append-only."
+    },
+    {
       "id": "wb.worktree.relocate",
       "feature_refs": [
         "spec/features/worktree-lifecycle/README.md"

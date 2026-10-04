@@ -6,6 +6,18 @@ worktrees, or sweeping historic leftovers across the fleet — read
 make a sweep find nothing, and how to read a skip reason. This file is the
 per-task lifecycle contract those commands enforce.
 
+## Rebind a stale root after worktree reuse
+
+Use this only when Git has reused the same linked-worktree identity after the
+previous checkout path was retired. Inspect the stale snapshot first and pass
+its exact recorded root; WB refuses if the old path still exists, GitDir or
+CommonDir differ, or the caller has no live admitted session. Rebinding records
+an audit event and does not change ownership.
+
+```sh
+wb worktree rebind <current-path> --expected-root <retired-path>
+```
+
 ## Inspect
 
 For one named task/effort across every live worktree:
