@@ -426,14 +426,11 @@ func persistStrandedLandingAcknowledgementInjected(path string, ack WorktreeMerg
 }
 
 func readStrandedLandingAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeStrandedLandingAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
+	var ack WorktreeMergeStrandedLandingAcknowledgement
+	if err := readMergeAcknowledgement(path, "stranded-landing acknowledgement", &ack); err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
-	var ack WorktreeMergeStrandedLandingAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeStrandedLandingAcknowledgement{}, fmt.Errorf("decode stranded-landing acknowledgement %s: %w", path, err)
-	}
+
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err

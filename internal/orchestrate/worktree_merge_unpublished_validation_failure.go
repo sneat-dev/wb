@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -249,14 +248,11 @@ func persistUnpublishedValidationFailureAcknowledgementInjected(path string, ack
 }
 
 func readUnpublishedValidationFailureAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeUnpublishedValidationFailureAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
+	var ack WorktreeMergeUnpublishedValidationFailureAcknowledgement
+	if err := readMergeAcknowledgement(path, "unpublished-validation-failure acknowledgement", &ack); err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
-	var ack WorktreeMergeUnpublishedValidationFailureAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("decode unpublished-validation-failure acknowledgement %s: %w", path, err)
-	}
+
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err

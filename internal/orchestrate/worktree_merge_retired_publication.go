@@ -328,14 +328,11 @@ func persistRetiredPublicationAcknowledgementInjected(path string, ack WorktreeM
 }
 
 func readRetiredPublicationAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
+	var ack WorktreeMergeRetiredPublicationAcknowledgement
+	if err := readMergeAcknowledgement(path, "retired-publication acknowledgement", &ack); err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	var ack WorktreeMergeRetiredPublicationAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("decode retired-publication acknowledgement %s: %w", path, err)
-	}
+
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err

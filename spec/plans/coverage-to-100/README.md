@@ -160,8 +160,32 @@ destination remains present when subsequent directory open/sync fails.
 The complete equivalent before-scope contained 191 statements at the exact
 committed checkpoint; the current scope contains 97, a net reduction of 94.
 This is a bounded code/coverage result, not a refreshed complete package total.
-Next proposed domains are prepare-continuation helpers and audit readback/
-eligibility; the public prepare/land pipeline remains a later cutover.
+### Prepare continuation and audit readback checkpoint
+
+The next combined batch passed its first scoped race/profile run: 13 top-level
+cases, including three retained native prepare/land journeys, in 57.812 seconds.
+All 215 statements across 24 whole production declarations are reached. Native
+Go AST bounds and passing raw coverage tuples bind this scope to the held source;
+there are no skipped or failing selected cases. Scoped lint/vet, Linux and Windows
+compilation, and specification lint passed. No complete package run was repeated.
+
+Four continuation entry points retain their native default bindings and share
+one indexed additive-source ancestry decision between two real callers.
+Refresh and post-target repair retain different status/publication checks and
+remote-versus-HEAD observation order; cleanliness refusals remain false/nil.
+Three audit read stages reuse the existing typed decoder. Their digest and
+identity tails, adoption's raw JSON error/partial-result exception, the two large
+Prepare/Land bodies, and original tests remain unchanged. New private test groups
+reuse receipt fixtures and run in parallel; static record tests make no live Git
+ancestry or custody claim.
+
+The equivalent committed before-scope contained 224 statements across 19
+functions; the current scope contains 215 across 24, a net reduction of nine.
+The extra private functions thread per-call runners without shared mutable
+state. This is scoped coverage and reuse evidence, not a refreshed package total.
+Next are source/canonical inspection and route/validation-plan ownership, followed
+by dedicated whole-owner Prepare and Land batches rather than further small
+acknowledgement tails. Remote publication remains deferred.
 
 ## Founder decisions (2026-09-23)
 
