@@ -18,6 +18,7 @@ import (
 )
 
 func TestInstallCmd_Registration(t *testing.T) {
+	t.Parallel()
 	cmd := newInstallCmd()
 	if cmd.Name() != "install" {
 		t.Errorf("Name() = %q, want %q", cmd.Name(), "install")
@@ -25,12 +26,15 @@ func TestInstallCmd_Registration(t *testing.T) {
 }
 
 func TestInstallCmd_PanicsForUnknownHostID(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected cobracmd.New to panic for an unregistered host id")
-		}
+	t.Parallel()
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected cobracmd.New to panic for an unregistered host id")
+			}
+		}()
+		cobracmd.New(cobracmd.CommandOptions{HostID: "nosuchhost-wb-test"})
 	}()
-	cobracmd.New(cobracmd.CommandOptions{HostID: "nosuchhost-wb-test"})
 }
 
 // AC: cli-install#req:host-owned-exit-codes — fleetErrors.Failure maps
@@ -39,6 +43,7 @@ func TestInstallCmd_PanicsForUnknownHostID(t *testing.T) {
 // KindManagedCommand, to wb's exitFindings; every message carries the exact
 // "install: " prefix and never "self-update:"/"upgrade:" (review S1).
 func TestInstallErrors_FailureExitCodes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		kind selfupdate.FailureKind
@@ -62,6 +67,7 @@ func TestInstallErrors_FailureExitCodes(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			mapped := (newInstallErrors(testRuntime())).Failure(&selfupdate.Failure{Kind: testCase.kind, Err: errors.New("boom")})
 			var coded *exitError
 			if !errors.As(mapped, &coded) {
@@ -82,6 +88,7 @@ func TestInstallErrors_FailureExitCodes(t *testing.T) {
 // wb's own documented meaning for exit 2) and carry the exact "install: "
 // prefix, never "self-update:"/"upgrade:" (review S1).
 func TestInstallErrors_FailureUsageError(t *testing.T) {
+	t.Parallel()
 	mapped := (newInstallErrors(testRuntime())).Failure(&cobracmd.UsageError{Err: errors.New("invalid --format")})
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
@@ -99,6 +106,7 @@ func TestInstallErrors_FailureUsageError(t *testing.T) {
 // for anything that isn't one) still maps to exitFindings rather than
 // panicking or losing the underlying message.
 func TestInstallErrors_FailureWrapsPlainError(t *testing.T) {
+	t.Parallel()
 	mapped := (newInstallErrors(testRuntime())).Failure(errors.New("not a *selfupdate.Failure"))
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
@@ -116,6 +124,7 @@ func TestInstallErrors_FailureWrapsPlainError(t *testing.T) {
 // install command, exactly like selfUpdateErrors's own permission remedy
 // (REQ: permission-remedy-names-brew), with an exact "install: " prefix.
 func TestInstallErrors_FailurePermissionNamesPathAndBrew(t *testing.T) {
+	t.Parallel()
 	mapped := (newInstallErrors(testRuntime())).Failure(&selfupdate.Failure{
 		Kind: selfupdate.KindPermission,
 		Path: "/usr/local/bin/specscore",
@@ -136,6 +145,7 @@ func TestInstallErrors_FailurePermissionNamesPathAndBrew(t *testing.T) {
 }
 
 func TestInstallErrors_FailurePermissionWithoutPath(t *testing.T) {
+	t.Parallel()
 	mapped := (newInstallErrors(testRuntime())).Failure(&selfupdate.Failure{Kind: selfupdate.KindPermission, Err: errors.New("permission denied")})
 	var coded *exitError
 	if !errors.As(mapped, &coded) {
@@ -155,6 +165,7 @@ func TestInstallErrors_FailurePermissionWithoutPath(t *testing.T) {
 // the same single exitFindings code either way, but this pins that both
 // mappers keep making that same choice as the library grows.
 func TestInstallErrors_SharedKindsMatchSelfUpdateErrors(t *testing.T) {
+	t.Parallel()
 	shared := []selfupdate.FailureKind{
 		selfupdate.KindAmbiguous, selfupdate.KindReleaseLookup, selfupdate.KindDownload,
 		selfupdate.KindChecksum, selfupdate.KindPermission, selfupdate.KindNonInteractive,
@@ -163,6 +174,7 @@ func TestInstallErrors_SharedKindsMatchSelfUpdateErrors(t *testing.T) {
 	}
 	for _, kind := range shared {
 		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
 			installErr := (newInstallErrors(testRuntime())).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
 			selfUpdateErr := (selfUpdateErrors{runtime: testRuntime()}).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
 			var installCoded, selfUpdateCoded *exitError

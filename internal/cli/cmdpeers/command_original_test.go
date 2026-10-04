@@ -48,6 +48,7 @@ func peersOriginalExecute(t *testing.T, command *cobra.Command, args ...string) 
 	return out.String(), err
 }
 func TestPeersJoinCLIWiresIntoRunPeersJoin(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "join", "not-a-url")
 	if err == nil || !strings.Contains(err.Error(), "http") {
@@ -55,6 +56,7 @@ func TestPeersJoinCLIWiresIntoRunPeersJoin(t *testing.T) {
 	}
 }
 func TestPeersInviteCLIWiresIntoRunPeersInvite(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "invite", "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -62,6 +64,7 @@ func TestPeersInviteCLIWiresIntoRunPeersInvite(t *testing.T) {
 	}
 }
 func TestPeersBlockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "block", "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -69,6 +72,7 @@ func TestPeersBlockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
 	}
 }
 func TestPeersUnblockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "unblock", "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -76,6 +80,7 @@ func TestPeersUnblockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
 	}
 }
 func TestPeersDisconnectCLIWiresIntoRunPeersDisconnect(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "disconnect", "laptop")
 	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
@@ -83,6 +88,7 @@ func TestPeersDisconnectCLIWiresIntoRunPeersDisconnect(t *testing.T) {
 	}
 }
 func TestPeersGetCLIWiresIntoRunPeersGet(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "get", "upstream")
 	if err == nil || !strings.Contains(err.Error(), "no upstream is configured") {
@@ -90,6 +96,7 @@ func TestPeersGetCLIWiresIntoRunPeersGet(t *testing.T) {
 	}
 }
 func TestPeersListCLIWiresIntoRunPeersList(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	out, err := peersOriginalExecute(t, peersOriginalCommand(root), "list")
 	if err != nil {

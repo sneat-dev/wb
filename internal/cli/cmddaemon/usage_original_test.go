@@ -13,6 +13,7 @@ import (
 )
 
 func TestCwWtDaemonOperationUsageErrors(t *testing.T) {
+	t.Parallel()
 	deps := testDependencies()
 
 	builders := map[string]func() *cobra.Command{

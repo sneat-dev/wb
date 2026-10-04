@@ -11,6 +11,7 @@ import (
 )
 
 func TestPeersListGoldenTextAndJSON(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	lastSeen := now.Add(-2 * time.Hour)
 	lag37 := int64(37)
@@ -51,6 +52,7 @@ func TestPeersListGoldenTextAndJSON(t *testing.T) {
 	}
 }
 func TestPeersGetGoldenTextAndJSON(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	lastSeen := now.Add(-90 * time.Minute)
 	downstream := peers.Detail{Record: peers.Record{

@@ -11,6 +11,7 @@ import (
 )
 
 func TestCwWtReadSessionMessageBody(t *testing.T) {
+	t.Parallel()
 	command := NewSend(shared.Runtime{}, Dependencies{})
 	command.SetIn(strings.NewReader("from stdin\n"))
 

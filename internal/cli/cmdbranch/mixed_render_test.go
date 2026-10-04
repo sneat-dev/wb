@@ -9,6 +9,7 @@ import (
 )
 
 func TestBranchListShowsSortedDispositionTotals(t *testing.T) {
+	t.Parallel()
 
 	var out bytes.Buffer
 
@@ -58,6 +59,7 @@ func TestBranchListShowsSortedDispositionTotals(t *testing.T) {
 }
 
 func TestBranchCleanupShowsEveryOutcome(t *testing.T) {
+	t.Parallel()
 
 	var out bytes.Buffer
 	outcome := worktrees.BranchCleanupOutcome{

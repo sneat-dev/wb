@@ -256,6 +256,7 @@ func TestAgentDispatchPropagatesANonRequestFailureAsAFinding(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // the actual missing-credential contract mutates DEEPSEEK_API_KEY
 func TestAgentDispatchReportsAMissingProviderCredential(t *testing.T) {
 	f := newFixture(t)
 	f.writeConfig(t, baseConfig)

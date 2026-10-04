@@ -30,6 +30,7 @@ func TestSkillsHookInstallWithoutSettingsFlagDerivesPathFromHome(t *testing.T) {
 	}
 }
 func TestSkillsHookShellCommandForcesExitZero(t *testing.T) {
+	t.Parallel()
 	command := skillsHookShellCommand("/opt/homebrew/bin/wb", shared.ShellQuoteArg)
 	for _, expected := range []string{"/opt/homebrew/bin/wb", skillsHookInvocation, "2>/dev/null", "exit 0"} {
 		if !strings.Contains(command, expected) {
@@ -42,6 +43,7 @@ func TestSkillsHookShellCommandForcesExitZero(t *testing.T) {
 }
 
 func TestSkillsHookSettingsSnippetHasNoMatcherSoItRunsForEverySource(t *testing.T) {
+	t.Parallel()
 	snippet := skillsHookSettingsSnippet("/usr/local/bin/wb", shared.ShellQuoteArg)
 	encoded, err := json.Marshal(snippet)
 	if err != nil {
@@ -56,6 +58,7 @@ func TestSkillsHookSettingsSnippetHasNoMatcherSoItRunsForEverySource(t *testing.
 }
 
 func TestNewSkillsHookPrintCmdPrintsAPasteableSnippet(t *testing.T) {
+	t.Parallel()
 	command := newSkillsHookPrintCmd(testHookDependencies())
 	var out bytes.Buffer
 	command.SetOut(&out)

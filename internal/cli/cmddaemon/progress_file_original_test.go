@@ -9,6 +9,7 @@ import (
 )
 
 func TestCwWtDaemonOperationProgressWriter(t *testing.T) {
+	t.Parallel()
 	var stderr bytes.Buffer
 	writer, closeWriter, err := progressWriter(testRuntime(), &stderr, false, "")
 	if err != nil || writer == nil {

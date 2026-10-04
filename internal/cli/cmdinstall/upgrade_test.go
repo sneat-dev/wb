@@ -20,6 +20,7 @@ import (
 )
 
 func TestUpgradeCmd_Registration(t *testing.T) {
+	t.Parallel()
 	cmd := newUpgradeCmd()
 	if cmd.Name() != "upgrade" {
 		t.Errorf("Name() = %q, want %q", cmd.Name(), "upgrade")
@@ -27,12 +28,15 @@ func TestUpgradeCmd_Registration(t *testing.T) {
 }
 
 func TestUpgradeCmd_PanicsForUnknownHostID(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected cobracmd.NewUpgrade to panic for an unregistered host id")
-		}
+	t.Parallel()
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected cobracmd.NewUpgrade to panic for an unregistered host id")
+			}
+		}()
+		cobracmd.NewUpgrade(cobracmd.UpgradeCommandOptions{HostID: "nosuchhost-wb-test"})
 	}()
-	cobracmd.NewUpgrade(cobracmd.UpgradeCommandOptions{HostID: "nosuchhost-wb-test"})
 }
 
 // AC: install#req:upgrade-exit-code-mapping — upgradeErrors.Failure reuses
@@ -44,6 +48,7 @@ func TestUpgradeCmd_PanicsForUnknownHostID(t *testing.T) {
 // table this mirrors — but with its own exact "upgrade: " prefix (review
 // S1), never "install:"/"self-update:".
 func TestUpgradeErrors_FailureExitCodes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		kind selfupdate.FailureKind
@@ -67,6 +72,7 @@ func TestUpgradeErrors_FailureExitCodes(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			mapped := (newUpgradeErrors(testRuntime())).Failure(&selfupdate.Failure{Kind: testCase.kind, Err: errors.New("boom")})
 			var coded *exitError
 			if !errors.As(mapped, &coded) {
@@ -89,6 +95,7 @@ func TestUpgradeErrors_FailureExitCodes(t *testing.T) {
 // deliberately not identical any more — each carries its own command's
 // exact prefix (review S1), asserted here.
 func TestUpgradeErrors_FailureMatchesInstallErrors(t *testing.T) {
+	t.Parallel()
 	shared := []selfupdate.FailureKind{
 		selfupdate.KindUnknownTarget,
 		selfupdate.KindAmbiguous, selfupdate.KindReleaseLookup, selfupdate.KindDownload,
@@ -98,6 +105,7 @@ func TestUpgradeErrors_FailureMatchesInstallErrors(t *testing.T) {
 	}
 	for _, kind := range shared {
 		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
 			upgradeErr := (newUpgradeErrors(testRuntime())).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
 			installErr := (newInstallErrors(testRuntime())).Failure(&selfupdate.Failure{Kind: kind, Err: errors.New("boom")})
 			var upgradeCoded, installCoded *exitError
@@ -125,6 +133,7 @@ func TestUpgradeErrors_FailureMatchesInstallErrors(t *testing.T) {
 // "The permission remedy for upgrade should be the upgrade command, not
 // brew install").
 func TestUpgradeErrors_FailurePermissionNamesUpgradeCommand(t *testing.T) {
+	t.Parallel()
 	mapped := (newUpgradeErrors(testRuntime())).Failure(&selfupdate.Failure{
 		Kind: selfupdate.KindPermission,
 		Path: "/usr/local/bin/specscore",
@@ -147,6 +156,7 @@ func TestUpgradeErrors_FailurePermissionNamesUpgradeCommand(t *testing.T) {
 // exitFindings, mirroring selfUpdateErrors.UpdateAvailable's own no-fourth-
 // code choice (REQ: exit-code-mapping).
 func TestUpgradeErrors_UpgradesAvailableMapsToExitFindings(t *testing.T) {
+	t.Parallel()
 	cases := []cliinstall.UpgradeResult{
 		{Target: "specscore", Current: "1.0.0", Latest: "1.1.0", Verdict: selfupdate.UpdateAvailable},
 		{Target: "wb", Current: "unknown", Latest: "1.1.0", Verdict: selfupdate.Undetermined},
@@ -172,6 +182,7 @@ func TestUpgradeErrors_UpgradesAvailableMapsToExitFindings(t *testing.T) {
 // identical underlying verdict, matching install#req:upgrade-exit-code-
 // mapping's own equivalence requirement.
 func TestUpgradeErrors_UpgradesAvailableMatchesSelfUpdateUpdateAvailable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		results []cliinstall.UpgradeResult
@@ -190,6 +201,7 @@ func TestUpgradeErrors_UpgradesAvailableMatchesSelfUpdateUpdateAvailable(t *test
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			upgradeErr := (newUpgradeErrors(testRuntime())).UpgradesAvailable(testCase.results)
 			selfUpdateErr := (selfUpdateErrors{runtime: testRuntime()}).UpdateAvailable(testCase.check)
 			var upgradeCoded, selfUpdateCoded *exitError

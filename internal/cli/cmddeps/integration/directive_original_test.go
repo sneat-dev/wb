@@ -210,8 +210,8 @@ func TestDepsGoDirectiveReportWalksFleetAndNeverWrites(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Actual private GH/PATH or command environment isolation mutates process environment.
 func TestCwCovDepsGoDirectiveCheckCommand(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"),
 		[]byte("module github.com/acme/good\n\ngo 1.26.0\n\ntoolchain go1.27.0\n"), 0o644); err != nil {
@@ -224,7 +224,6 @@ func TestCwCovDepsGoDirectiveCheckCommand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "go.mod"), []byte("module\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_HOME", t.TempDir())
 
 	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return directiveChild(t, "check", shared.Flags{}) }, root)
 	if code := directiveExitCode(err); code != shared.ExitFindings {
@@ -256,7 +255,7 @@ func TestCwCovDepsGoDirectiveCheckCommand(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Actual private GH/PATH or command environment isolation mutates process environment.
+//nolint:paralleltest // Actual private GH discovery fixture mutates process PATH.
 func TestCwCovDepsGoDirectiveReportCommand(t *testing.T) {
 	root := t.TempDir()
 	good := filepath.Join(root, "acme", "good")
@@ -271,7 +270,6 @@ func TestCwCovDepsGoDirectiveReportCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	cwCovFakeGH(t, "cwcov-user", nil, `[]`)
-	t.Setenv("WB_HOME", t.TempDir())
 
 	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return directiveChild(t, "report", shared.Flags{ProjectsRoot: root}) })
 	if code := directiveExitCode(err); code != 0 {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestWriteSkillsSyncJSONIncludesTargetError(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	err := writeSkillsSyncJSON(&out, []skillscmd.TargetResult{{
 		Harness: "codex",
@@ -41,6 +42,7 @@ func TestWriteSkillsSyncJSONIncludesTargetError(t *testing.T) {
 }
 
 func TestWriteSkillsSyncTextDoesNotDescribeAFailedTargetAsCurrent(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	err := writeSkillsSyncText(&out, skillscmd.TargetResult{
 		Dir: "/tmp/codex/skills",
@@ -60,6 +62,7 @@ func TestWriteSkillsSyncTextDoesNotDescribeAFailedTargetAsCurrent(t *testing.T) 
 }
 
 func TestNewSkillsSyncCmdRejectsDirAndHarnessTogether(t *testing.T) {
+	t.Parallel()
 	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies())
 	command.SetArgs([]string{"--dir", "/explicit/skills", "--harness", "cursor"})
 	err := command.Execute()

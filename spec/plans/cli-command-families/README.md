@@ -950,6 +950,37 @@ Independent final review precedes the local commit; publication remains
 deferred. Earlier extracted command packages are now being audited for safe
 parallel execution and unnecessary process-wide fixture mutations.
 
+### Earlier command families: parallel-test audit
+
+The follow-up audit covered earlier extracted command families, tracing fixture
+helpers as well as test bodies. Across 38 test-only files, 109 formerly serial
+top-level cases now call `t.Parallel`. Eleven already parallel parents also
+schedule independent table children in parallel. Seventeen assigned cases keep
+genuine environment, provider PATH, CPU/load-floor or working-directory effects
+serial. Three last-publication serial cases were outside this batch and remain
+unchanged. Serial command entries reported by the actual quality scanner fell
+from 176 to 45; the remaining entries include shared-fixture table cases.
+
+Installer tests copy the shared manager catalog slice before mutating it.
+Session fixtures thread private roots through real remote stores and resume
+requests instead of resetting global project/agent variables. Dependency
+fixtures remove redundant retired-home pins and repeated per-test isolation
+where package TestMain already owns process isolation. Genuine default-provider,
+missing-credential, PATH, CPU and cwd behavior is preserved. Assertion predicates,
+state expectations and diagnostics are retained; three resume-call inputs gain
+the explicitly private root. Production and TestMain code are unchanged.
+
+One scoped race batch passed 85 session/peers/install cases in 3.316 seconds;
+three actual test-owned HTTP peer probes passed separately in 1.560 seconds.
+The other lane passed 38 cases in eight packages in 7.864 seconds. Shared lint
+found two panic-assertion defers that needed local function scopes; their actual
+constructor/recovery assertions were preserved and only those two cases were
+retried. Current scoped lint, serial checks, vet and Linux/Windows compilation
+pass. Passing unrelated checks were reused for that narrow two-test derivative.
+No production coverage, whole root suite or global CI benchmark was rerun.
+All 790 named capability references resolve without metadata changes. Independent
+final review precedes the local checkpoint; publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

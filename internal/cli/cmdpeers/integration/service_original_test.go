@@ -58,6 +58,7 @@ func executePeerFixture(ctx context.Context, deps peerCommandFixture, root strin
 	return command.Execute()
 }
 func TestHubOnlyVerbsRefuseWithoutAHubConfig(t *testing.T) {
+	t.Parallel()
 	deps := testPeersDeps(t, nil, nil)
 	var out bytes.Buffer
 
@@ -88,6 +89,7 @@ func TestHubOnlyVerbsRefuseWithoutAHubConfig(t *testing.T) {
 	assertUsageRefusal(t, err)
 }
 func TestPeersListIsForgivingWithoutADaemonOrUpstream(t *testing.T) {
+	t.Parallel()
 	deps := testPeersDeps(t, nil, nil)
 	var out, errOut bytes.Buffer
 	if err := executePeerFixture(context.Background(), deps, t.TempDir(), []string{"list", "--json=" + strconv.FormatBool(true)}, nil, &out, &errOut); err != nil {
@@ -99,6 +101,7 @@ func TestPeersListIsForgivingWithoutADaemonOrUpstream(t *testing.T) {
 	}
 }
 func TestPeersListEscalatesToAFindingWhenAHubIsConfiguredButUnreachable(t *testing.T) {
+	t.Parallel()
 	deps := testPeersDeps(t, nil, nil)
 	hubConfigPath := deps.configPath()
 	if err := os.WriteFile(hubConfigPath, []byte("hub:\n  store:\n    engine: memory\n"), 0o600); err != nil {
@@ -118,6 +121,7 @@ func TestPeersListEscalatesToAFindingWhenAHubIsConfiguredButUnreachable(t *testi
 	}
 }
 func TestPeersGetUpstreamWithoutConfigurationIsAFinding(t *testing.T) {
+	t.Parallel()
 	deps := testPeersDeps(t, nil, nil)
 	var out bytes.Buffer
 	if err := executePeerFixture(context.Background(), deps, t.TempDir(), []string{"get", "upstream", "--json=" + strconv.FormatBool(false)}, nil, &out, &out); err == nil {
@@ -125,6 +129,7 @@ func TestPeersGetUpstreamWithoutConfigurationIsAFinding(t *testing.T) {
 	}
 }
 func TestPeersBlockActsLocallyOnTheUpstream(t *testing.T) {
+	t.Parallel()
 	deps := testPeersDeps(t, nil, nil)
 	if err := wbconfig.SetPeersUpstream(deps.configPath(), "https://vm1.sneat.dev", filepath.Join(t.TempDir(), "token")); err != nil {
 		t.Fatal(err)

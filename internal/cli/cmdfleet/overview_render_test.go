@@ -9,6 +9,7 @@ import (
 )
 
 func TestCwCovFleetSummarySentences(t *testing.T) {
+	t.Parallel()
 	remote := fleetinspect.RemoteStats{
 		WouldClone: 1, WouldPull: 2, SkippedDirty: 3, Ignored: 4, EmptyRemote: 5,
 		ArchivedUnlandable: 6, LocalOnly: 7, RemoteOnly: 8, NoOp: 9, Error: 10,
@@ -42,6 +43,7 @@ func TestCwCovFleetSummarySentences(t *testing.T) {
 	}
 }
 func TestCwCovFleetMarkdownRendersOptionalSections(t *testing.T) {
+	t.Parallel()
 	stats := fleetinspect.StatsReport{
 		SchemaVersion: 1,
 		Inventory:     fleetinspect.InventoryStats{Organizations: 1, Repositories: 3},

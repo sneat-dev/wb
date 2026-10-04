@@ -13,6 +13,7 @@ import (
 )
 
 func TestNewSelfUpdateCmdRegistration(t *testing.T) {
+	t.Parallel()
 	cmd := newSelfUpdateCmd()
 	if cmd.Use != "self-update" {
 		t.Errorf("Use = %q, want %q", cmd.Use, "self-update")
@@ -33,6 +34,7 @@ func TestNewSelfUpdateCmdRegistration(t *testing.T) {
 // non-permission *selfupdate.Failure — is exitFindings (1), never a fourth
 // code.
 func TestSelfUpdateErrorsFailureMapsToExitFindings(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -50,6 +52,7 @@ func TestSelfUpdateErrorsFailureMapsToExitFindings(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			mapped := selfUpdateErrors{runtime: testRuntime()}.Failure(testCase.err)
 			var coded *exitError
 			if !errors.As(mapped, &coded) {
@@ -68,6 +71,7 @@ func TestSelfUpdateErrorsFailureMapsToExitFindings(t *testing.T) {
 // Homebrew install command as the alternative — the remedy that is
 // specifically wb's own, not the library's.
 func TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew(t *testing.T) {
+	t.Parallel()
 	err := &selfupdate.Failure{
 		Kind: selfupdate.KindPermission,
 		Path: "/usr/local/bin/wb",
@@ -96,6 +100,7 @@ func TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew(t *testing.T) {
 // Path (the library always sets it today, but the mapper must not print an
 // empty path if that ever changes).
 func TestSelfUpdateErrorsFailurePermissionWithoutPath(t *testing.T) {
+	t.Parallel()
 	err := &selfupdate.Failure{Kind: selfupdate.KindPermission, Err: fs.ErrPermission}
 	mapped := selfUpdateErrors{runtime: testRuntime()}.Failure(err)
 	var coded *exitError
@@ -112,12 +117,14 @@ func TestSelfUpdateErrorsFailurePermissionWithoutPath(t *testing.T) {
 // exitFindings (1), exactly like `wb status` and `wb check` report findings
 // — not a distinct exit code.
 func TestSelfUpdateErrorsUpdateAvailableMapsToExitFindings(t *testing.T) {
+	t.Parallel()
 	cases := []selfupdate.CheckResult{
 		{Current: "1.0.0", Latest: "1.1.0", Verdict: selfupdate.UpdateAvailable},
 		{Current: "unknown", Latest: "1.1.0", Verdict: selfupdate.Undetermined},
 	}
 	for _, result := range cases {
 		t.Run(result.Verdict.String(), func(t *testing.T) {
+			t.Parallel()
 			mapped := selfUpdateErrors{runtime: testRuntime()}.UpdateAvailable(result)
 			var coded *exitError
 			if !errors.As(mapped, &coded) {

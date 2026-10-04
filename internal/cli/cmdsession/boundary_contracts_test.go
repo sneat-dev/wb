@@ -77,6 +77,7 @@ func TestSessionFormatsRefuseBeforeReadingOrCallingEffects(t *testing.T) {
 	builders := []func(shared.Runtime, Dependencies) *cobra.Command{NewList, NewMove, NewPark, NewResume, NewReceive, NewReceivePark}
 	for i, build := range builders {
 		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			t.Parallel()
 			command := build(shared.Runtime{Flags: func() shared.Flags { t.Fatal("flags read after invalid format"); return shared.Flags{} }}, Dependencies{})
 			args := []string{"--format", "invalid"}
 			if i == 3 {
@@ -98,6 +99,7 @@ func TestRegisterJoinsOnlyAfterSuccessfulRegistrationOutput(t *testing.T) {
 	want := errors.New("writer stopped")
 	for _, at := range []int{1, 2, 0} {
 		t.Run(string(rune('a'+at)), func(t *testing.T) {
+			t.Parallel()
 			joined := 0
 			ctx := context.WithValue(context.Background(), boundaryContextKey{}, "private")
 			root := "before"
@@ -188,6 +190,7 @@ func TestSessionLifecyclePropagatesEffectAndWriterFailures(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			command := test.build()
 			command.SetArgs(test.args)
 			command.SetIn(strings.NewReader("continuation"))
@@ -219,6 +222,7 @@ func TestReceiveRendersEachActualStageAndReturnsWriterErrors(t *testing.T) {
 	wantErr := errors.New("receiver writer")
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			for _, failed := range []bool{false, true} {
 				root := "before"
 				calls := 0
@@ -304,6 +308,7 @@ func TestReceiverEffectErrorsRemainExactAndUnreceiptedParkIsNotSuccess(t *testin
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			var out bytes.Buffer
 			test.command.SilenceUsage = true
 			test.command.SilenceErrors = true
@@ -330,6 +335,7 @@ func TestSessionListPropagatesDynamicRowAndFlushFailures(t *testing.T) {
 	want := errors.New("bound list stream failed")
 	for _, model := range []string{"normal model", "model\fcontinued"} {
 		t.Run(fmt.Sprintf("model %q", model), func(t *testing.T) {
+			t.Parallel()
 			row := sessionrun.Row{View: session.View{Record: session.Record{Runtime: "codex", Model: model}}}
 			if err := renderSessions(boundaryOutputFailure{want}, []sessionrun.Row{row}); !errors.Is(err, want) {
 				t.Fatalf("row/flush error=%v", err)
@@ -374,6 +380,7 @@ func TestListBindsCurrentFlagsWarningsAndEachConcreteOutput(t *testing.T) {
 	for _, format := range []string{"text", "json"} {
 		for _, empty := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s empty=%t", format, empty), func(t *testing.T) {
+				t.Parallel()
 				root := "before"
 				calls := 0
 				flags := 0
@@ -441,6 +448,7 @@ func TestListColumnCondensingPreservesUnicodeAndCounts(t *testing.T) {
 		{"multiple", []string{"first", "second"}, 4, "2"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := condense(test.values, test.max); got != test.want {
 				t.Fatalf("column=%q, want %q", got, test.want)
 			}

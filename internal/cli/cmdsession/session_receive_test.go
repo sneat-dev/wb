@@ -61,6 +61,7 @@ func TestSessionReceiveCommandBoundsInputBeforeTargetExecution(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			called := false
 			deps := sessionrun.ReceiveDependencies{
 				LocalMachine: func() (string, error) { return "target-vm", nil },

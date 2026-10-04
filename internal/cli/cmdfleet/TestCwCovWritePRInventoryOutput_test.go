@@ -12,6 +12,7 @@ import (
 )
 
 func TestCwCovWritePRInventoryOutput(t *testing.T) {
+	t.Parallel()
 	report := prinventory.Report{SchemaVersion: 1, Complete: true}
 	reportDir := "reports"
 	deps := fakeDependencies()

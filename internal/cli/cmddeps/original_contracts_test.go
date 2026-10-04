@@ -80,6 +80,7 @@ func cwDepsPeerReportFixture() deps.PeerReport {
 }
 
 func TestCwDepsWritersRenderEveryFormatAndRefuseUnknown(t *testing.T) {
+	t.Parallel()
 	type writer struct {
 		name  string
 		write func(command *cobra.Command, format string) error
@@ -126,6 +127,7 @@ func TestCwDepsWritersRenderEveryFormatAndRefuseUnknown(t *testing.T) {
 }
 
 func TestDependencyOptionsNoVerifyForcesValidationModeNone(t *testing.T) {
+	t.Parallel()
 	inv := shared.Flags{ProjectsRoot: "/tmp/does-not-matter"}
 	got := dependencyOptions(inv, depsSetOptions{noVerify: true, validation: string(deps.ValidationModeFull)}, nil)
 	if got.ValidationMode != deps.ValidationModeNone {
@@ -137,6 +139,7 @@ func TestDependencyOptionsNoVerifyForcesValidationModeNone(t *testing.T) {
 }
 
 func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		options    depsSetOptions
@@ -177,6 +180,7 @@ func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
 }
 
 func TestDependencyValidationOptionsNoVerifyRejectsChecks(t *testing.T) {
+	t.Parallel()
 	command := &cobra.Command{Use: "bump"}
 	var checks string
 	command.Flags().StringVar(&checks, "checks", "", "checks")
@@ -190,6 +194,7 @@ func TestDependencyValidationOptionsNoVerifyRejectsChecks(t *testing.T) {
 }
 
 func TestDepsBumpRefusesAScopeWithoutLatest(t *testing.T) {
+	t.Parallel()
 	bump := newBump(testRuntime(), testOperations())
 	bump.SetArgs([]string{"npm", "--fleet", "--changed", "@acme/core@0.1.0", "--scope", "@acme/*"})
 	bump.SetOut(io.Discard)
@@ -202,6 +207,7 @@ func TestDepsBumpRefusesAScopeWithoutLatest(t *testing.T) {
 }
 
 func TestDepsBumpRefusesLatestWithoutAScope(t *testing.T) {
+	t.Parallel()
 	bump := newBump(testRuntime(), testOperations())
 	bump.SetArgs([]string{"npm", "--fleet", "--latest", "--dry-run"})
 	bump.SetOut(io.Discard)
@@ -251,6 +257,7 @@ func TestDepsCommandIncludesGraphViewsAndBrowserReportFlags(t *testing.T) {
 }
 
 func TestDepsDriftFleetWithRepositoryPathIsRejected(t *testing.T) {
+	t.Parallel()
 	_, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newDrift(testRuntime(), testOperations()) }, "--fleet", "some/path")
 	if err == nil || !strings.Contains(err.Error(), "repository-path cannot be used with --fleet") {
 		t.Fatalf("wb deps drift --fleet some/path: err = %v, want the repository-path/--fleet refusal", err)

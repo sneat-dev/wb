@@ -31,6 +31,7 @@ func (c *progressWaitClient) WaitOperation(_ context.Context, req *connect.Reque
 }
 
 func TestDaemonOperationHumanProgressDoesNotEnterAgentStreams(t *testing.T) {
+	t.Parallel()
 	var agent bytes.Buffer
 	path := filepath.Join(t.TempDir(), "human.log")
 	writer, closeWriter, err := progressWriter(testRuntime(), &agent, true, path)
@@ -64,6 +65,7 @@ func TestDaemonOperationHumanProgressDoesNotEnterAgentStreams(t *testing.T) {
 }
 
 func TestDaemonOperationQuietProgressAndInvalidDestination(t *testing.T) {
+	t.Parallel()
 	writer, closeWriter, err := progressWriter(testRuntime(), io.Discard, false, "")
 	if err != nil {
 		t.Fatal(err)

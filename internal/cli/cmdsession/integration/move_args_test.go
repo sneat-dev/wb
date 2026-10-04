@@ -10,6 +10,7 @@ import (
 )
 
 func TestCwDepsSessionMoveResumeRefusesExtraFlagsAndArguments(t *testing.T) {
+	t.Parallel()
 	deps := sessionrun.MoveDependencies{
 		ResolveSource: func(string) (session.Record, bool, error) { return session.Record{}, false, nil },
 	}

@@ -12,6 +12,7 @@ import (
 )
 
 func TestCwCovSessionPruneCommandRemovesOnlyExitedRecords(t *testing.T) {
+	t.Parallel()
 	// sessionDir and the prune command must resolve the same state home, which
 	// now derives from the projects root, so both are given the same root.
 	root := t.TempDir()

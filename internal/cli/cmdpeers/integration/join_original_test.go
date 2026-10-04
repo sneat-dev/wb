@@ -82,6 +82,7 @@ func testPeersJoinDeps(verifyErr, restartErr error) (peersrun.JoinDependencies, 
 // wb.peers.join's core contract: it verifies, writes a private credential,
 // writes peers.upstream, and leaves remote: untouched.
 func TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical(t *testing.T) {
+	t.Parallel()
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	original := "parallel: 3\nremote:\n  provider: git\n  repo: acme/state\n"
 	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
@@ -126,6 +127,7 @@ func TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical(t *testing
 }
 
 func TestPeersJoinRefusesSameOriginHubRemote(t *testing.T) {
+	t.Parallel()
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	original := "remote:\n  provider: hub\n  url: https://vm1.sneat.dev\n  machine: laptop\n  token_file: /abs/token\n"
 	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
@@ -145,6 +147,7 @@ func TestPeersJoinRefusesSameOriginHubRemote(t *testing.T) {
 }
 
 func TestPeersJoinRefusesABadToken(t *testing.T) {
+	t.Parallel()
 	deps, _, restartCalls := testPeersJoinDeps(errors.New("unauthorized"), nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.ConfigPath = func() string { return configPath }
@@ -162,6 +165,7 @@ func TestPeersJoinRefusesABadToken(t *testing.T) {
 }
 
 func TestPeersJoinRequiresExactlyOneTokenSource(t *testing.T) {
+	t.Parallel()
 	deps, _, _ := testPeersJoinDeps(nil, nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.ConfigPath = func() string { return configPath }
@@ -175,6 +179,7 @@ func TestPeersJoinRequiresExactlyOneTokenSource(t *testing.T) {
 }
 
 func TestPeersJoinRejectsANonAbsoluteTokenFile(t *testing.T) {
+	t.Parallel()
 	deps, _, _ := testPeersJoinDeps(nil, nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.ConfigPath = func() string { return configPath }
@@ -185,6 +190,7 @@ func TestPeersJoinRejectsANonAbsoluteTokenFile(t *testing.T) {
 }
 
 func TestPeersJoinRejectsAnInvalidHubURL(t *testing.T) {
+	t.Parallel()
 	deps, _, _ := testPeersJoinDeps(nil, nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.ConfigPath = func() string { return configPath }
@@ -196,6 +202,7 @@ func TestPeersJoinRejectsAnInvalidHubURL(t *testing.T) {
 
 // TestPeersJoinReportsJSON proves the machine-readable output shape.
 func TestPeersJoinReportsJSON(t *testing.T) {
+	t.Parallel()
 	deps, _, _ := testPeersJoinDeps(nil, nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.ConfigPath = func() string { return configPath }
@@ -213,6 +220,7 @@ func TestPeersJoinReportsJSON(t *testing.T) {
 // the node identity file is reported to stderr, not mixed into stdout's join
 // result, and does not fail the join itself.
 func TestPeersJoinNodeIdentityWarningGoesToStderr(t *testing.T) {
+	t.Parallel()
 	deps, _, _ := testPeersJoinDeps(nil, nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	deps.ConfigPath = func() string { return configPath }
@@ -252,6 +260,7 @@ func TestPeersJoinNodeIdentityWarningGoesToStderr(t *testing.T) {
 // (an *remotestate.UnconfiguredError, the ordinary fresh-install case) is
 // allowed to.
 func TestPeersJoinRefusesOnAnUnparsableRemoteConfig(t *testing.T) {
+	t.Parallel()
 	deps, verifyCalls, _ := testPeersJoinDeps(nil, nil)
 	configPath := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(configPath, []byte("not: [valid\n"), 0o600); err != nil {
@@ -272,6 +281,7 @@ func TestPeersJoinRefusesOnAnUnparsableRemoteConfig(t *testing.T) {
 // never follow a redirect, since the peer's bearer token travels in a
 // header a redirect target would also receive.
 func TestVerifyPeerConnectProbeRefusesARedirect(t *testing.T) {
+	t.Parallel()
 	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("verifyPeerConnectProbe must never follow a redirect to a second server")
 	}))
@@ -290,6 +300,7 @@ func TestVerifyPeerConnectProbeRefusesARedirect(t *testing.T) {
 // join↔probe contract is exercised end to end (not just through a mocked
 // verify function).
 func TestVerifyPeerConnectProbeAgainstTheRealHandler(t *testing.T) {
+	t.Parallel()
 	server := hubPeersConnectTestServer(t, true)
 	if err := peersrun.Verify(context.Background(), server.URL, "the-token"); err != nil {
 		t.Fatalf("verifyPeerConnectProbe against a valid peer token = %v", err)
@@ -297,6 +308,7 @@ func TestVerifyPeerConnectProbeAgainstTheRealHandler(t *testing.T) {
 }
 
 func TestVerifyPeerConnectProbeRefusesANonPeerCredential(t *testing.T) {
+	t.Parallel()
 	server := hubPeersConnectTestServer(t, false)
 	if err := peersrun.Verify(context.Background(), server.URL, "the-token"); err == nil {
 		t.Fatal("expected verifyPeerConnectProbe to refuse a non-peer credential")

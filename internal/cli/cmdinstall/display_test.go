@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ func (f selfUpdateReleaseTransport) RoundTrip(req *http.Request) (*http.Response
 }
 
 func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
+	t.Parallel()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -29,8 +31,10 @@ func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
 	}{{name: "newer", current: "0.81.1"}, {name: "equal", current: "0.92.3"}, {name: "unknown", current: "(devel)"}, {name: "unavailable", current: "0.81.1", unavailable: true}} {
 		for _, format := range []string{"text", "json"} {
 			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				t.Parallel()
 				cfg := newSelfUpdateConfig()
 				cfg.CurrentVersion = tc.current
+				cfg.Managers = slices.Clone(cfg.Managers)
 				cfg.Managers[0].PathMarkers = []string{executable}
 				requests := 0
 				cfg.HTTPClient = &http.Client{Transport: selfUpdateReleaseTransport(func(req *http.Request) (*http.Response, error) {

@@ -45,6 +45,7 @@ func newPublicResumeRefusalFixture(t *testing.T) parkedResumeRefusalFixture {
 	return parkedResumeRefusalFixture{root: root, store: store, lock: lock, state: state, config: config}
 }
 func TestSessionResumeRejectsRemoteFlagsWithoutTargetBeforeCustody(t *testing.T) {
+	t.Parallel()
 	fixture := newPublicResumeRefusalFixture(t)
 	if err := fixture.lock.Close(); err != nil {
 		t.Fatal(err)

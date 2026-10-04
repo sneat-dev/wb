@@ -37,6 +37,7 @@ func cwDepsPropagateResultFixture() locallink.Result {
 }
 
 func TestCwDepsPrintPropagateLocalTextAndJSON(t *testing.T) {
+	t.Parallel()
 	result := cwDepsPropagateResultFixture()
 	var out bytes.Buffer
 	if err := printPropagateLocal(&out, "text", result); err != nil {
@@ -117,6 +118,7 @@ func TestCwDepsPrintPropagateLocalTextAndJSON(t *testing.T) {
 }
 
 func TestCwDepsConsumerPathsSkipsTheUnlinked(t *testing.T) {
+	t.Parallel()
 	result := locallink.Result{Consumers: []locallink.ConsumerResult{
 		{Consumer: "/tmp/a"},
 		{Consumer: "/tmp/b", Skipped: true},

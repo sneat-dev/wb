@@ -18,6 +18,7 @@ import (
 )
 
 func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.T) {
+	t.Parallel()
 	source := session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now().UTC()}
 	var captured sessionmessenger.Options
 	deps := sessionrun.MessageDependencies{
@@ -86,6 +87,7 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 }
 
 func TestSessionMessageResumeRejectsReplacementAndReportsExactRetryCommand(t *testing.T) {
+	t.Parallel()
 	deps := sessionrun.MessageDependencies{
 		ResolveSource: func(string) (session.Record, bool, error) {
 			return session.Record{PID: 1, WBSessionID: "wbs-source", StartedAt: time.Now()}, true, nil
@@ -118,6 +120,7 @@ func TestSessionMessageResumeRejectsReplacementAndReportsExactRetryCommand(t *te
 }
 
 func TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume(t *testing.T) {
+	t.Parallel()
 	var calls []sessionmessenger.Options
 	deps := sessionrun.MessageDependencies{
 		ResolveSource: func(string) (session.Record, bool, error) {
@@ -151,6 +154,7 @@ func TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume(t *testing.T
 }
 
 func TestSessionReceiveMessageReturnsCanonicalReceiptOnly(t *testing.T) {
+	t.Parallel()
 	receipt := sessionmove.MessageReceipt{
 		SchemaVersion: sessionmove.MessageReceiptSchemaVersion, MessageID: "message-123",
 		MessageDigest: sessionmove.DigestBytes([]byte("message")), HandoffID: "handoff-123",

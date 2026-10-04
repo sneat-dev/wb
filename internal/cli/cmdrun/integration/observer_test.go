@@ -36,6 +36,8 @@ func TestMain(m *testing.M) {
 	remove()
 	os.Exit(code)
 }
+
+//nolint:paralleltest // the real admission observer overrides process CPU policy, environment and cwd
 func TestRunCommandReportsQueueVisibilityOnStderr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the WB fleet runs on macOS and Linux")

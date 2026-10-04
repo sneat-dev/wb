@@ -15,6 +15,7 @@ type refusedWriter struct{}
 
 func (refusedWriter) Write([]byte) (int, error) { return 0, errors.New("cwDeps: write refused") }
 func TestCwDepsWritePRInventoryOutputRefusesAnUnwritableReportDir(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "a-file")
 	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o600); err != nil {
 		t.Fatal(err)

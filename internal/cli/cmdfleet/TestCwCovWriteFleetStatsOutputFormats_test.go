@@ -12,6 +12,7 @@ import (
 )
 
 func TestCwCovWriteFleetStatsOutputFormats(t *testing.T) {
+	t.Parallel()
 	report := fleetinspect.StatsReport{SchemaVersion: 1, Inventory: fleetinspect.InventoryStats{Repositories: 2}}
 	reportDir := "reports"
 	deps := fakeDependencies()

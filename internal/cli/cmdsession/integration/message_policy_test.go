@@ -62,6 +62,7 @@ func cwWtSendBuilder(t *testing.T, deps sessionrun.MessageDependencies) func() *
 }
 
 func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
+	t.Parallel()
 	okSource := session.Record{PID: 1, WBSessionID: "wbs-sender"}
 	var seen sessionmessenger.Options
 	send := func(_ context.Context, options sessionmessenger.Options) (sessionmessenger.Result, error) {
@@ -137,6 +138,7 @@ func TestCwWtRunSessionMessageSuccessAndOptions(t *testing.T) {
 }
 
 func TestCwWtRunSessionMessageErrors(t *testing.T) {
+	t.Parallel()
 	okSource := session.Record{PID: 1, WBSessionID: "wbs-sender"}
 	goodSend := func(context.Context, sessionmessenger.Options) (sessionmessenger.Result, error) {
 		return sessionmessenger.Result{
@@ -206,6 +208,7 @@ func TestCwWtRunSessionMessageErrors(t *testing.T) {
 }
 
 func TestCwWtSessionRecallCmd(t *testing.T) {
+	t.Parallel()
 	deps := cwWtMessageDeps(session.Record{PID: 1, WBSessionID: "wbs-sender"}, true, nil, nil, nil,
 		func(_ context.Context, options sessionmessenger.Options) (sessionmessenger.Result, error) {
 			if options.Kind != sessionmove.MessageKindRequestHandoff {
@@ -257,6 +260,7 @@ func cwWtReceiveDeps(localMachine func() (string, error), store func(string) (se
 }
 
 func TestCwWtSessionReceiveMessageBranches(t *testing.T) {
+	t.Parallel()
 	goodLocal := func() (string, error) { return "machine-a", nil }
 	goodStore := func(string) (sessionmove.Store, error) { return sessionmove.Store{}, nil }
 	goodDir := func() (string, error) { return "/tmp/sessions", nil }

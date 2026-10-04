@@ -7,6 +7,7 @@ import (
 )
 
 func TestCwCovWorkerCmdSurface(t *testing.T) {
+	t.Parallel()
 	command := New(testRuntime(), testDependencies())
 	sub, _, err := command.Find([]string{"connect"})
 	if err != nil || sub == command {
@@ -20,6 +21,7 @@ func TestCwCovWorkerCmdSurface(t *testing.T) {
 	}
 }
 func TestWorkerConnectHelpExposesStableIdentityRootsAndFormats(t *testing.T) {
+	t.Parallel()
 	command := newConnect(testRuntime(), testDependencies())
 	for _, name := range []string{"id", "root", "cpu-capacity", "format", "json"} {
 		if command.Flags().Lookup(name) == nil {
@@ -28,6 +30,7 @@ func TestWorkerConnectHelpExposesStableIdentityRootsAndFormats(t *testing.T) {
 	}
 }
 func TestCwCovWorkerConnectCommandValidation(t *testing.T) {
+	t.Parallel()
 	root := "/canonical"
 	build := func() *cobra.Command { return newConnect(testRuntime(), testDependencies()) }
 	cases := map[string][]string{

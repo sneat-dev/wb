@@ -27,6 +27,7 @@ func TestPeersInviteReportsAWriteFailureAfterARescuedToken(t *testing.T) {
 	}}
 	for callIndex := 1; callIndex <= 3; callIndex++ {
 		t.Run(fmt.Sprintf("call-%d", callIndex), func(t *testing.T) {
+			t.Parallel()
 			out := &failAtCallWriter{failAt: callIndex}
 			err := runInvite(context.Background(), deps, "root", "laptop", true, "relative-token", false, out)
 			if !errors.Is(err, errAtWrite) {

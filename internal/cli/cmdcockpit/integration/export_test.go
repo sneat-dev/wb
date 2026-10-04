@@ -610,6 +610,7 @@ func TestCockpitExportReportsAnUnwritableStdout(t *testing.T) {
 // TestCockpitExportDefaultsReadARealRecordFile reads a daemon record the way the
 // daemon writes it, from the projects root's runtime directory.
 func TestCockpitExportDefaultsReadARealRecordFile(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	deps := cockpitrun.DefaultExportDependencies()
 	if _, found, err := deps.LoadRecord(root); err != nil || found {

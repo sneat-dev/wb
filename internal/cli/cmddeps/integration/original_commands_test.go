@@ -44,7 +44,6 @@ func cwDepsGraphFixture(t *testing.T) string {
 	cwCovWriteFile(t, filepath.Join(app, "app.go"), "package app\n\nimport \"github.com/acme/library\"\n\nvar _ = library.Name\n")
 
 	cwCovFakeGH(t, "cwcov-user", []string{"acme"}, `[]`)
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	return root
 }
 
@@ -73,7 +72,6 @@ func cwDepsSetFixture(t *testing.T) string {
 	cwCovFakeGH(t, "acme", nil,
 		`[{"name":"app","isArchived":false,"isFork":false,"sshUrl":"git@example.test:acme/app.git"},`+
 			`{"name":"library","isArchived":false,"isFork":false,"sshUrl":"git@example.test:acme/library.git"}]`)
-	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	return root
 }
 
@@ -139,7 +137,6 @@ exit 0
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("WB_HOME", t.TempDir())
 }
 
 func cwCovOrgLogins(orgs []string) []map[string]string {
@@ -179,7 +176,6 @@ func familyChild(t *testing.T, name string, flags shared.Flags) *cobra.Command {
 }
 func cwCovExec(t *testing.T, _ string, build func() *cobra.Command, args ...string) (string, string, error) {
 	t.Helper()
-	testenv.Isolate(t)
 	cmd := build()
 	var out, errout bytes.Buffer
 	cmd.SetOut(&out)
@@ -262,7 +258,7 @@ func TestDepsPeersRejectsAnUnknownFormat(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Native fleet discovery uses the private GH PATH fixture and per-command environment isolation.
+//nolint:paralleltest // Native fleet discovery uses the private GH PATH fixture.
 func TestCwDepsGraphCommandInProcess(t *testing.T) {
 	root := cwDepsGraphFixture(t)
 	reportDir := filepath.Join(t.TempDir(), "reports")
@@ -310,7 +306,7 @@ func TestCwDepsGraphCommandInProcess(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Native fleet discovery uses the private GH PATH fixture and per-command environment isolation.
+//nolint:paralleltest // Native fleet discovery uses the private GH PATH fixture.
 func TestCwDepsDriftCommandInProcess(t *testing.T) {
 	root := cwDepsGraphFixture(t)
 
@@ -355,7 +351,7 @@ func TestCwDepsDriftCommandInProcess(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Actual Git fleet execution uses the private GH PATH fixture and per-command environment isolation.
+//nolint:paralleltest // Actual Git fleet execution uses the private GH PATH fixture.
 func TestCwDepsSetCommandInProcessDryRun(t *testing.T) {
 	root := cwDepsSetFixture(t)
 	app := filepath.Join(root, "acme", "app")
@@ -450,7 +446,7 @@ func TestCwDepsSetCommandInProcessDryRun(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Actual Git wave execution uses the private GH PATH fixture and per-command environment isolation.
+//nolint:paralleltest // Actual Git wave execution uses the private GH PATH fixture.
 func TestCwDepsBumpCommandInProcessDryRun(t *testing.T) {
 	root := cwDepsSetFixture(t)
 
@@ -501,7 +497,7 @@ func TestCwDepsBumpCommandInProcessDryRun(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Actual Git propagation execution uses the private GH PATH fixture and per-command environment isolation.
+//nolint:paralleltest // Actual Git propagation execution uses the private GH PATH fixture.
 func TestCwDepsSetPropagateFleetDelegatesToDepsBump(t *testing.T) {
 	root := cwDepsSetFixture(t)
 
