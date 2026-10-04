@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
@@ -52,7 +54,7 @@ func newDaemonOperationSubmitCmd(inv *invocation, deps daemonDependencies) *cobr
 			if err := requireDaemonRawExecutionPolicy(deps, inv.projectsRoot); err != nil {
 				return err
 			}
-			client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
+			client, err := daemonruntime.OperationClient(command.Context(), deps.Dependencies, inv.projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -90,7 +92,7 @@ func newDaemonOperationGetCmd(inv *invocation, deps daemonDependencies) *cobra.C
 			if err != nil {
 				return usageError(err.Error())
 			}
-			client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
+			client, err := daemonruntime.OperationClient(command.Context(), deps.Dependencies, inv.projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -128,7 +130,7 @@ func newDaemonOperationWaitCmd(inv *invocation, deps daemonDependencies) *cobra.
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			client, err := daemonOperationClient(ctx, deps, inv.projectsRoot, progress)
+			client, err := daemonruntime.OperationClient(ctx, deps.Dependencies, inv.projectsRoot, progress)
 			if err != nil {
 				return err
 			}
@@ -156,7 +158,7 @@ func newDaemonOperationCancelCmd(inv *invocation, deps daemonDependencies) *cobr
 			if err != nil {
 				return usageError(err.Error())
 			}
-			client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
+			client, err := daemonruntime.OperationClient(command.Context(), deps.Dependencies, inv.projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -252,9 +254,9 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 }
 
 func requireDaemonRawExecutionPolicy(deps daemonDependencies, root string) error {
-	check := deps.rawPolicy
+	check := deps.RawPolicy
 	if check == nil {
-		check = defaultDaemonDependencies().rawPolicy
+		check = defaultDaemonDependencies().RawPolicy
 	}
 	allowed, path, err := check(root)
 	if err != nil {

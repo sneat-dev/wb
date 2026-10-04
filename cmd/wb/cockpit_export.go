@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
@@ -46,9 +48,9 @@ type cockpitExportDependencies struct {
 func defaultCockpitExportDependencies() cockpitExportDependencies {
 	return cockpitExportDependencies{
 		loadRecord: func(root string) (daemon.State, bool, error) {
-			return newDaemonController(daemonDependencies{}, root).store.Load()
+			return newDaemonController(daemonDependencies{}, root).LoadState()
 		},
-		alive:        daemonProcessAlive,
+		alive:        daemonruntime.ProcessAlive,
 		processStart: daemon.ProcessStartTime,
 		client:       cockpitExportClient,
 		now:          time.Now,

@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/url"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
@@ -87,12 +89,12 @@ func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, 
 	// (listen is empty) and is a refusal when it was, because Start would
 	// otherwise replace it (rewriting the launchd job on macOS, or overwriting
 	// its record and spawning a second process elsewhere).
-	recorded, found, err := controller.store.Load()
+	recorded, found, err := controller.LoadState()
 	if err != nil {
 		return cockpitLocalSession{}, fmt.Errorf("read the local daemon record: %w", err)
 	}
 	switch {
-	case found && recorded.Status != daemon.StatusStopped && recorded.PID > 0 && deps.alive(recorded.PID):
+	case found && recorded.Status != daemon.StatusStopped && recorded.PID > 0 && deps.Alive(recorded.PID):
 		if listen == "" {
 			listen = recorded.Listen
 		} else if listen != recorded.Listen {
@@ -101,7 +103,7 @@ func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, 
 				recorded.Listen, listen, recorded.Listen)
 		}
 	case listen == "":
-		listen = daemonDefaultListen
+		listen = daemonruntime.DefaultListen
 	}
 	result, err := controller.Start(ctx, listen)
 	if err != nil {
@@ -111,7 +113,7 @@ func cockpitLocalFromDaemon(ctx context.Context, deps daemonDependencies, root, 
 	if !mint {
 		return session, nil
 	}
-	client, err := cockpitOwnerClient(result, controller.store.Load, deps, root)
+	client, err := cockpitOwnerClient(result, controller.LoadState, deps, root)
 	if err != nil {
 		return cockpitLocalSession{}, err
 	}
@@ -147,9 +149,9 @@ func cockpitOwnerClient(result daemonResult, load func() (daemon.State, bool, er
 	if !found || state.Status != daemon.StatusReady || !result.ProcessManagerRunning {
 		return nil, errors.New("local daemon is not ready")
 	}
-	localClient := deps.localClient
+	localClient := deps.LocalClient
 	if localClient == nil {
-		localClient = daemonLocalHTTPClient
+		localClient = daemonruntime.LocalHTTPClient
 	}
 	httpClient, err := localClient(root, state.OwnerToken)
 	if err != nil {
@@ -213,7 +215,7 @@ func newCockpitCmdWithDependencies(inv *invocation, deps cockpitCommandDependenc
 				result.URL, target = config.HostedURL, config.HostedURL
 			} else {
 				if command.Flags().Changed("listen") {
-					if err := requireLoopbackAddress(listen); err != nil {
+					if err := daemonruntime.RequireLoopbackAddress(listen); err != nil {
 						return usageError(err.Error())
 					}
 				}

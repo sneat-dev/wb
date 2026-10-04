@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
@@ -89,7 +91,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	}
 
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return configPath }
+	deps.HubConfigPath = func() string { return configPath }
 	// A test cannot wait out the 30s configuration floor, and its GitHub has
 	// no rate limit to protect.
 	deps.hubTuning = &hubTuning{APIBaseURL: api.URL, PollInterval: 150 * time.Millisecond}
@@ -104,7 +106,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	command.SetErr(console)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -156,10 +158,10 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 		t.Fatalf("the feature worktree moved from %s to %s", worktreeHead, head)
 	}
 	waitFor(t, deadline, "the hub to report the event received and acknowledged", func() bool {
-		health, err := daemonHubHealth(context.Background(), address)
+		health, err := daemonruntime.DefaultDependencies(usageError).HubHealth(context.Background(), address)
 		return err == nil && health.LastEventReceived != nil && health.LastEventAcknowledged != nil
 	})
-	health, err := daemonHubHealth(context.Background(), address)
+	health, err := daemonruntime.DefaultDependencies(usageError).HubHealth(context.Background(), address)
 	if err != nil || health.LastEventReceived.Event != "default_branch_updated" {
 		t.Fatalf("hub health = %+v, %v", health, err)
 	}

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/daemon"
@@ -31,18 +33,18 @@ func cwWtDaemonOpFixture(t *testing.T) (root string, deps daemonDependencies) {
 	t.Setenv("WB_CWWT_DAEMON_HELPER", "1")
 
 	deps = daemonTestDependencies(t, root)
-	originalStart := deps.start
+	originalStart := deps.Start
 	var server *http.Server
-	deps.start = func(executable string, args []string, logPath string) (int, error) {
+	deps.Start = func(executable string, args []string, logPath string) (int, error) {
 		pid, err := originalStart(executable, args, logPath)
 		if err != nil {
 			return 0, err
 		}
-		state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
+		state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}).Load()
 		if err != nil || !found {
 			return 0, fmt.Errorf("load starting lifecycle state: found=%t: %w", found, err)
 		}
-		listener, err := listenDaemonLocal(root)
+		listener, err := daemonruntime.ListenLocal(root)
 		if err != nil {
 			return 0, err
 		}
@@ -58,7 +60,7 @@ func cwWtDaemonOpFixture(t *testing.T) (root string, deps daemonDependencies) {
 		}
 		path, handler := daemonv1connect.NewDaemonServiceHandler(service)
 		mux := http.NewServeMux()
-		mux.Handle(path, authenticatedDaemonHandler(state.OwnerToken, handler))
+		mux.Handle(path, daemonruntime.AuthenticatedHandler(state.OwnerToken, handler))
 		server = &http.Server{Handler: mux}
 		go func() { _ = server.Serve(listener) }()
 		return pid, nil
@@ -249,7 +251,7 @@ func TestCwWtDaemonOperationUsageErrors(t *testing.T) {
 
 	// A denied raw-execution policy refuses before any RPC.
 	denied := deps
-	denied.rawPolicy = func(string) (bool, string, error) { return false, "/tmp/policy.json", nil }
+	denied.RawPolicy = func(string) (bool, string, error) { return false, "/tmp/policy.json", nil }
 	deniedSubmit := newDaemonOperationSubmitCmd(&invocation{}, denied)
 	deniedSubmit.SilenceUsage, deniedSubmit.SilenceErrors = true, true
 	deniedSubmit.SetOut(&bytes.Buffer{})
@@ -312,20 +314,17 @@ func TestCwWtDaemonOperationProgressFailurePropagation(t *testing.T) {
 
 func TestCwWtRequireDaemonRawExecutionPolicy(t *testing.T) {
 	root := t.TempDir()
-	if err := requireDaemonRawExecutionPolicy(daemonDependencies{
-		rawPolicy: func(string) (bool, string, error) { return true, "/tmp/policy", nil },
-	}, root); err != nil {
+	if err := requireDaemonRawExecutionPolicy(daemonDependencies{Dependencies: daemonruntime.Dependencies{
+		RawPolicy: func(string) (bool, string, error) { return true, "/tmp/policy", nil }}}, root); err != nil {
 		t.Fatalf("allowed policy: %v", err)
 	}
-	err := requireDaemonRawExecutionPolicy(daemonDependencies{
-		rawPolicy: func(string) (bool, string, error) { return false, "/tmp/policy", nil },
-	}, root)
+	err := requireDaemonRawExecutionPolicy(daemonDependencies{Dependencies: daemonruntime.Dependencies{
+		RawPolicy: func(string) (bool, string, error) { return false, "/tmp/policy", nil }}}, root)
 	if err == nil || !strings.Contains(err.Error(), "raw daemon execution is disabled") || !strings.Contains(err.Error(), "/tmp/policy") {
 		t.Fatalf("denied policy = %v", err)
 	}
-	err = requireDaemonRawExecutionPolicy(daemonDependencies{
-		rawPolicy: func(string) (bool, string, error) { return false, "", errors.New("cwWt: policy unreadable") },
-	}, root)
+	err = requireDaemonRawExecutionPolicy(daemonDependencies{Dependencies: daemonruntime.Dependencies{
+		RawPolicy: func(string) (bool, string, error) { return false, "", errors.New("cwWt: policy unreadable") }}}, root)
 	if err == nil || !strings.Contains(err.Error(), "load daemon raw-execution policy") {
 		t.Fatalf("policy load error = %v", err)
 	}

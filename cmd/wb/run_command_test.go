@@ -88,7 +88,7 @@ func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing
 	t.Chdir(root)
 
 	deps := daemonTestDependencies(t, root)
-	deps.rawPolicy = func(root string) (bool, string, error) {
+	deps.RawPolicy = func(root string) (bool, string, error) {
 		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
 		return allowed, policyPath, err
 	}

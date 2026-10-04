@@ -1,35 +1,10 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"strings"
-
-	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/spf13/cobra"
 )
 
 // Helpers kept for tests only: no production caller remains.
-
-func (controller daemonController) Restart(ctx context.Context, ifRunning bool) (daemonResult, error) {
-	return controller.RestartWithProgress(ctx, ifRunning, nil, false)
-}
-
-func daemonFileRequestTarget(procedure string, body []byte) (string, error) {
-	target, _, err := daemonFilePrepareRequest(procedure, body, "")
-	return target, err
-}
-
-func newDaemonOperationClient(root, token string) (daemonv1connect.DaemonServiceClient, error) {
-	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("daemon lifecycle state has no authentication token")
-	}
-	client, err := daemonLocalHTTPClient(root, token)
-	if err != nil {
-		return nil, err
-	}
-	return daemonv1connect.NewDaemonServiceClient(client, daemonRPCBaseURL), nil
-}
 
 // newRootCmd builds the command tree for callers that only inspect it (help
 // text, subcommand paths, flag matrices) rather than execute it through

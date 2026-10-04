@@ -4,15 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/spf13/cobra"
 
@@ -148,54 +147,8 @@ func TestHubDeliveryMarkerIsOptional(t *testing.T) {
 // TestDaemonStatusReportsPollingFromTheRunningDaemon is the status half of
 // Task 2: the declaration supplies polling and interval, and the live health
 // endpoint supplies what only the serving process knows.
-func TestDaemonStatusReportsPollingFromTheRunningDaemon(t *testing.T) {
-	root := daemonTestRoot(t)
-	deps := daemonTestDependencies(t, root)
-	configPath := memoryHubConfig(t)
-	deps.hubConfigPath = func() string { return configPath }
-	at := time.Date(2026, 9, 11, 14, 0, 0, 0, time.UTC)
-	deps.hubHealth = func(context.Context, string) (daemonHubStatus, error) {
-		return daemonHubStatus{
-			RepositoriesPolled: 7,
-			LastEventReceived:  &daemonHubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", Event: "default_branch_updated", OccurredAt: at},
-			LastEventAcknowledged: &daemonHubEventMarker{
-				ID: "poll:acme_app:default_branch_updated:abc", Event: "default_branch_updated", OccurredAt: at,
-			},
-		}, nil
-	}
-	status := newDaemonController(deps, root).status(t, "127.0.0.1:8765")
-	if !status.Polling || status.PollInterval != "20m0s" || status.RepositoriesPolled != 7 {
-		t.Fatalf("hub status = %+v", status)
-	}
-	if status.LastEventReceived == nil || status.LastEventAcknowledged == nil {
-		t.Fatalf("delivery markers = %+v", status)
-	}
-
-	// The daemon is not running: the declaration still answers, and the live
-	// numbers stay zero rather than failing status.
-	deps.hubHealth = func(context.Context, string) (daemonHubStatus, error) {
-		return daemonHubStatus{}, errors.New("connection refused")
-	}
-	offline := newDaemonController(deps, root).status(t, "127.0.0.1:8765")
-	if !offline.Polling || offline.RepositoriesPolled != 0 || offline.LastEventReceived != nil {
-		t.Fatalf("offline hub status = %+v", offline)
-	}
-
-	// A daemon that has never been started has no listen address to ask.
-	if unaddressed := newDaemonController(deps, root).status(t, ""); unaddressed.RepositoriesPolled != 0 {
-		t.Fatalf("unaddressed hub status = %+v", unaddressed)
-	}
-	deps.hubHealth = nil
-	if unwired := newDaemonController(deps, root).status(t, "127.0.0.1:8765"); unwired.RepositoriesPolled != 0 {
-		t.Fatalf("unwired hub status = %+v", unwired)
-	}
-}
 
 // status is a small shim so each case above reads as one line.
-func (controller daemonController) status(t *testing.T, listen string) daemonHubStatus {
-	t.Helper()
-	return controller.hubStatus(context.Background(), listen)
-}
 
 // TestDaemonStatusRendersThePollingColumns pins the text a human reads.
 func TestDaemonStatusRendersThePollingColumns(t *testing.T) {
@@ -204,8 +157,8 @@ func TestDaemonStatusRendersThePollingColumns(t *testing.T) {
 	err := writeDaemonResult(&out, "text", daemonResult{Action: "status", Hub: daemonHubStatus{
 		Mounted: true, Engine: "memory", Store: "(in-memory; discarded on exit)", Listen: "127.0.0.1:8766",
 		Polling: true, PollInterval: "20m0s", RepositoriesPolled: 7,
-		LastEventReceived:     &daemonHubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", OccurredAt: at},
-		LastEventAcknowledged: &daemonHubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", OccurredAt: at},
+		LastEventReceived:     &daemonruntime.HubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", OccurredAt: at},
+		LastEventAcknowledged: &daemonruntime.HubEventMarker{ID: "poll:acme_app:default_branch_updated:abc", OccurredAt: at},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -223,64 +176,6 @@ func TestDaemonStatusRendersThePollingColumns(t *testing.T) {
 
 // TestDaemonHubHealthReadsTheServingDaemon covers the HTTP read itself,
 // including the answers it must refuse.
-func TestDaemonHubHealthReadsTheServingDaemon(t *testing.T) {
-	ctx := context.Background()
-	for _, testCase := range []struct {
-		name    string
-		handler http.HandlerFunc
-		wantErr bool
-		want    int
-	}{
-		{
-			name: "a hub block is returned",
-			handler: func(writer http.ResponseWriter, _ *http.Request) {
-				_, _ = writer.Write([]byte(`{"status":"ready","hub":{"mounted":true,"polling":true,"repositories_polled":3}}`))
-			},
-			want: 3,
-		},
-		{
-			name: "a daemon without a hub says so",
-			handler: func(writer http.ResponseWriter, _ *http.Request) {
-				_, _ = writer.Write([]byte(`{"status":"ready"}`))
-			},
-			wantErr: true,
-		},
-		{
-			name:    "an error status is not an answer",
-			handler: func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusInternalServerError) },
-			wantErr: true,
-		},
-		{
-			name: "a body that is not JSON is not an answer",
-			handler: func(writer http.ResponseWriter, _ *http.Request) {
-				_, _ = writer.Write([]byte("<html>"))
-			},
-			wantErr: true,
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			server := httptest.NewServer(testCase.handler)
-			defer server.Close()
-			status, err := daemonHubHealth(ctx, strings.TrimPrefix(server.URL, "http://"))
-			if testCase.wantErr {
-				if err == nil {
-					t.Fatalf("hub health = %+v, want an error", status)
-				}
-				return
-			}
-			if err != nil || status.RepositoriesPolled != testCase.want {
-				t.Fatalf("hub health = %+v, %v", status, err)
-			}
-		})
-	}
-
-	if _, err := daemonHubHealth(ctx, "127.0.0.1:0"); err == nil {
-		t.Fatal("an unreachable daemon answered")
-	}
-	if _, err := daemonHubHealth(ctx, "\x7f"); err == nil {
-		t.Fatal("an unbuildable request was made")
-	}
-}
 
 // TestServeQuietSilencesTheConsoleWithoutChangingTheHub is the --quiet
 // contract: the flag reaches the narrator and nothing else.
@@ -339,12 +234,12 @@ func TestDaemonServeAcceptsQuietAndStartNeverPassesIt(t *testing.T) {
 
 	deps := daemonTestDependencies(t, root)
 	var launched []string
-	previousStart := deps.start
-	deps.start = func(executable string, args []string, logPath string) (int, error) {
+	previousStart := deps.Start
+	deps.Start = func(executable string, args []string, logPath string) (int, error) {
 		launched = append([]string(nil), args...)
 		return previousStart(executable, args, logPath)
 	}
-	_, _ = newDaemonController(deps, root).Start(context.Background(), daemonDefaultListen)
+	_, _ = newDaemonController(deps, root).Start(context.Background(), daemonruntime.DefaultListen)
 	for _, argument := range launched {
 		if argument == "--quiet" {
 			t.Fatalf("daemon start passed --quiet: %v", launched)
@@ -369,7 +264,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return configPath }
+	deps.HubConfigPath = func() string { return configPath }
 
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
@@ -383,7 +278,7 @@ func TestServeDashboardPublishesHubHealth(t *testing.T) {
 	command.SetErr(stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/daemon"
 )
@@ -243,20 +245,20 @@ type peerAdminClient struct{ httpClient *http.Client }
 // against it.
 func newPeerAdminClient(ctx context.Context, deps daemonDependencies, root string) (*peerAdminClient, error) {
 	controller := newDaemonController(deps, root)
-	result, err := controller.Start(ctx, daemonDefaultListen)
+	result, err := controller.Start(ctx, daemonruntime.DefaultListen)
 	if err != nil {
 		return nil, fmt.Errorf("start local daemon: %w", err)
 	}
-	state, found, err := controller.store.Load()
+	state, found, err := controller.LoadState()
 	if err != nil {
 		return nil, err
 	}
 	if !found || state.Status != daemon.StatusReady || !result.ProcessManagerRunning {
 		return nil, errors.New("local daemon is not ready")
 	}
-	localClient := deps.localClient
+	localClient := deps.LocalClient
 	if localClient == nil {
-		localClient = daemonLocalHTTPClient
+		localClient = daemonruntime.LocalHTTPClient
 	}
 	httpClient, err := localClient(root, state.OwnerToken)
 	if err != nil {
@@ -275,7 +277,7 @@ func (client *peerAdminClient) call(ctx context.Context, path string, request, r
 	if err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, daemonRPCBaseURL+path, bytes.NewReader(body))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, daemonruntime.RPCBaseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -319,7 +321,7 @@ func (client *peerAdminClient) call(ctx context.Context, path string, request, r
 // silently opened.
 func daemonListenAddress(deps daemonDependencies, root string) (string, error) {
 	controller := newDaemonController(deps, root)
-	state, found, err := controller.store.Load()
+	state, found, err := controller.LoadState()
 	if err != nil {
 		return "", err
 	}

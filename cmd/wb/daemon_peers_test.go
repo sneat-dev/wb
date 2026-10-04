@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/hub/narrate"
@@ -25,7 +29,7 @@ func peerAdminTestMount(t *testing.T) (*hubMount, http.Handler) {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
 	t.Cleanup(func() { _ = mount.Close() })
-	handler := authenticatedDaemonHandler("owner-token", newPeerAdminHTTPHandler(mount))
+	handler := daemonruntime.AuthenticatedHandler("owner-token", newPeerAdminHTTPHandler(mount))
 	return mount, handler
 }
 
@@ -194,7 +198,7 @@ func TestPeerAdminEnrollRefusesAPeerName(t *testing.T) {
 func TestNewPeerAdminClientStartsTheLocalDaemonAndAuthenticates(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	deps.localClient = func(string, string) (*http.Client, error) { return &http.Client{}, nil }
+	deps.LocalClient = func(string, string) (*http.Client, error) { return &http.Client{}, nil }
 	client, err := newPeerAdminClient(context.Background(), deps, root)
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +206,48 @@ func TestNewPeerAdminClientStartsTheLocalDaemonAndAuthenticates(t *testing.T) {
 	if client == nil || client.httpClient == nil {
 		t.Fatal("newPeerAdminClient returned no usable client")
 	}
+	t.Run("actual default owner transport", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("the existing Windows local transport is unsupported")
+		}
+		root, err := os.MkdirTemp("/tmp", "wb-peer-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		pinDaemonHome(t, root)
+		deps := daemonTestDependencies(t, root)
+		deps.LocalClient = nil
+		client, err := newPeerAdminClient(context.Background(), deps, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, found, err := newDaemonController(deps, root).LoadState()
+		if err != nil || !found || state.OwnerToken == "" {
+			t.Fatalf("owner record=%+v found=%v error=%v", state, found, err)
+		}
+		listener, err := daemonruntime.ListenLocal(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &http.Server{Handler: daemonruntime.AuthenticatedHandler(state.OwnerToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+state.OwnerToken || r.URL.Path != peersRPCPrefix+"list" {
+				t.Errorf("request authority/path=%q %q", r.Header.Get("Authorization"), r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))}
+		done := make(chan error, 1)
+		go func() { done <- server.Serve(listener) }()
+		t.Cleanup(func() { _ = server.Close(); <-done })
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		var response map[string]bool
+		if err := client.call(ctx, peersRPCPrefix+"list", struct{}{}, &response); err != nil || !response["ok"] {
+			t.Fatalf("owner response=%v error=%v", response, err)
+		}
+	})
+
 }
 
 func TestDaemonListenAddressBranches(t *testing.T) {
@@ -211,7 +257,7 @@ func TestDaemonListenAddressBranches(t *testing.T) {
 		t.Fatal("expected daemonListenAddress to fail before the daemon has ever started")
 	}
 	controller := newDaemonController(deps, root)
-	if _, err := controller.Start(context.Background(), daemonDefaultListen); err != nil {
+	if _, err := controller.Start(context.Background(), daemonruntime.DefaultListen); err != nil {
 		t.Fatal(err)
 	}
 	listen, err := daemonListenAddress(deps, root)
@@ -224,7 +270,7 @@ func TestDaemonListenAddressBranches(t *testing.T) {
 // hub section still answers every peer admin route, just unavailably,
 // rather than panicking on a nil PeerAdmin.
 func TestPeerAdminHandlerWithoutAHubAnswersUnavailable(t *testing.T) {
-	handler := authenticatedDaemonHandler("owner-token", newPeerAdminHTTPHandler(nil))
+	handler := daemonruntime.AuthenticatedHandler("owner-token", newPeerAdminHTTPHandler(nil))
 	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"invite", peerInviteRequest{Name: "laptop"})
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("invite with no hub = %d, want 503", response.Code)

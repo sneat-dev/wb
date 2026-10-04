@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"connectrpc.com/connect"
 
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
@@ -32,7 +34,7 @@ func TestWorkerConnectLeasesAndExecutesARealQueuedOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := daemonOperationClient(context.Background(), deps, root, &bytes.Buffer{})
+	client, err := daemonruntime.OperationClient(context.Background(), deps.Dependencies, root, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("daemon operation client: %v", err)
 	}

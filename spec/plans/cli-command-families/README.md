@@ -523,13 +523,62 @@ sources beyond an explicit projects root.
 
 ### Task 7: Separate daemon runtime from CLI adapters
 
-**Status:** queued
+**Status:** in_progress
 **Verifies:** User journey steps 1–4.
 
 Distinguish daemon command parsing from servers, transport, polling, process
 supervision and platform behavior. Move runtime logic and its fixtures to
 operational packages; daemon/worker/peers/cockpit command tests delegate through
 the same narrow pattern. Do not replace genuine platform tests with mocks.
+
+The first runtime cohort moves controller lifecycle, local authenticated
+transport, file bridge, polling, identity, locking and platform supervision into
+Cobra-free `internal/daemonruntime`. Root retains command composition and its
+pinned lifecycle store; daemon protocol and durable operations remain in
+`internal/daemon`. All 396 original test responsibilities have destinations:
+198 native runtime, 118 affected root cases and 80 protected cases. Of the
+protected cases, 72 bodies are unchanged and eight qualify moved fields,
+constants or validation calls; one of those eight additionally tests the genuine
+default owner transport while preserving its original assertions. Capability metadata relocates ten test paths
+without changing assertions or capability definitions.
+
+Per-instance private dependencies expose failure boundaries while successful
+paths use actual private filesystem state, descriptor checks and ownership
+records. Simulated process identity, supervisor mode and failed operations are
+unit policy/effect proofs, not native platform evidence. The owner-token
+transport factory is a narrow public exception shared by actual production
+clients and portable authenticated fixtures; it preserves the existing cloning
+and bearer-token behavior. Impossible catches for Go 1.27 random reads,
+concrete JSON envelopes and successfully opened descriptors were removed after
+review of their producer contracts, without removing security rechecks.
+
+The complete macOS runtime race run passed 240 top-level tests and covered
+1,906/1,906 statements, with 12.107 seconds package elapsed time. The scoped
+root race gate passed all 144 selected cases in 22.173 seconds package elapsed
+(28.219 seconds including admission/build), with source hashes unchanged.
+A sole additional peer-client race case passed in 1.843 seconds using the
+actual default local transport and stored owner token. The new runtime/shared
+handoff bindings cover 6/6 statements, and the changed peer fallback covers
+1/1. Three pre-existing dashboard callback statements remain uncovered in the
+broader qualification-only diff; this batch does not claim whole-root 100%.
+Root-inclusive vet and platform-aware lint passed. Linux and Windows test
+packages compile; those platforms were not executed. One Unix-only metadata
+test was relocated behind its platform build constraint after Windows compile
+caught it; production source remained unchanged. The additional common-root test also initially
+referenced a Unix-only fixture helper; its portable private-root setup was
+corrected, then the sole race case and current root Linux/Windows test-package
+compilation, vet and lint passed. These results do not establish
+new repository-wide coverage or native Windows security coverage.
+
+Twenty-three private-fixture cases and six long bridge cases now run in
+parallel; genuine environment-forwarding cases remain serial. Fixtures register
+joined cleanup immediately, including early-failure paths. The earlier runtime
+race package took 22.340 seconds under a different batch/load, so the faster
+final run is an observation, not a controlled benchmark or CI-time promise.
+Active `WB_PROJECTS_ROOT` pins were redundant where explicit roots win;
+retired compatibility pins were separately removed. Actual environment
+forwarding remains tested. Further daemon, worker, peers and Cockpit CLI
+cutovers remain pending under this task.
 
 ### Task 8: Verify full cutover and land reviewed batches
 

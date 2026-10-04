@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/hub/narrate"
+	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 )
 
 // realTestAppPrivateKeyPEM is a freshly generated RSA key, unlike the
@@ -118,17 +120,26 @@ func TestNoRedeliverySweepWithoutAnApp(t *testing.T) {
 func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return appHubConfig(t, webhookSecret) }
+	deps.HubConfigPath = func() string { return appHubConfig(t, webhookSecret) }
 	at := time.Date(2026, 9, 18, 14, 0, 0, 0, time.UTC)
 	failedAt := at.Add(-time.Hour)
-	deps.hubHealth = func(context.Context, string) (daemonHubStatus, error) {
-		return daemonHubStatus{WebhookRedelivery: &daemonHubRedeliverySweep{
+	deps.HubHealth = func(context.Context, string) (daemonHubStatus, error) {
+		return daemonHubStatus{WebhookRedelivery: &daemonruntime.HubRedeliverySweep{
 			LastSweepAt: &at, Redelivered: 2, Abandoned: 1, Uncounted: 4,
 			LastFailureAt: &failedAt, LastFailureClass: "rate_limited",
 		}}, nil
 	}
 
-	status := newDaemonController(deps, root).hubStatus(context.Background(), "127.0.0.1:8765")
+	saved := daemon.State{SchemaVersion: daemon.StateSchemaVersion, Status: daemon.StatusStopped, Listen: "127.0.0.1:8765"}
+	saved.Queue.SchemaVersion = daemon.QueueSchemaVersion
+	if err := (daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}).Save(saved); err != nil {
+		t.Fatal(err)
+	}
+	statusResult, statusErr := newDaemonController(deps, root).Status(context.Background())
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	status := statusResult.Hub
 	if status.WebhookRedelivery == nil || status.WebhookRedelivery.Redelivered != 2 || status.WebhookRedelivery.Abandoned != 1 ||
 		status.WebhookRedelivery.Uncounted != 4 ||
 		status.WebhookRedelivery.LastSweepAt == nil || !status.WebhookRedelivery.LastSweepAt.Equal(at) ||
@@ -152,8 +163,12 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 
 	// The daemon is not running, or has never swept: the field stays absent
 	// rather than inventing a zero-value sweep.
-	deps.hubHealth = func(context.Context, string) (daemonHubStatus, error) { return daemonHubStatus{}, nil }
-	quiet := newDaemonController(deps, root).hubStatus(context.Background(), "127.0.0.1:8765")
+	deps.HubHealth = func(context.Context, string) (daemonHubStatus, error) { return daemonHubStatus{}, nil }
+	quietResult, quietErr := newDaemonController(deps, root).Status(context.Background())
+	if quietErr != nil {
+		t.Fatal(quietErr)
+	}
+	quiet := quietResult.Hub
 	if quiet.WebhookRedelivery != nil {
 		t.Fatalf("hub status without a live sweep = %+v", quiet.WebhookRedelivery)
 	}

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/api/githubapp"
@@ -101,7 +103,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return configPath }
+	deps.HubConfigPath = func() string { return configPath }
 
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
@@ -116,7 +118,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", false, false)
+		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -228,7 +230,7 @@ func waitForHealth(t *testing.T, address string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := daemonHealthy(context.Background(), address); err == nil {
+		if err := daemonruntime.DefaultDependencies(usageError).Health(context.Background(), address); err == nil {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -385,7 +387,7 @@ func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return configPath }
+	deps.HubConfigPath = func() string { return configPath }
 
 	run := func(t *testing.T, args ...string) string {
 		t.Helper()
@@ -416,7 +418,7 @@ func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 
 	// Without a hub section nothing is claimed, and the text stays the shape
 	// it was plus one honest false.
-	deps.hubConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
+	deps.HubConfigPath = func() string { return filepath.Join(t.TempDir(), "absent.yaml") }
 	if text := run(t); !strings.Contains(text, "hub_mounted=false") || strings.Contains(text, "hub_engine") {
 		t.Fatalf("status without a hub section = %q", text)
 	}
@@ -424,7 +426,7 @@ func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 	// A hub section that will not load is reported as absent rather than
 	// failing status, which is when an operator needs it most.
 	broken := hubTestConfig(t, "hub:\n  store:\n    engine: postgres\n")
-	deps.hubConfigPath = func() string { return broken }
+	deps.HubConfigPath = func() string { return broken }
 	if text := run(t); !strings.Contains(text, "hub_mounted=false") {
 		t.Fatalf("status with an invalid hub section = %q", text)
 	}

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/daemon"
@@ -78,7 +80,7 @@ func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 	command.SetOut(&stdout)
 	command.SetErr(stderr)
 
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
 		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
@@ -116,7 +118,7 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 	command.SetOut(&stdout)
 	command.SetErr(stderr)
 
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
 		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
@@ -128,11 +130,11 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 	// bridge's next poll (daemonFileBridgePoll, 250ms) fail with a real,
 	// non-benign error — deterministic, since the directory never comes
 	// back, unlike a one-shot race.
-	base, err := daemonFileBridgeDirectory(root)
+	runtimeDir, err := daemon.RuntimeDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(base, "requests")); err != nil {
+	if err := os.RemoveAll(filepath.Join(runtimeDir, "file-bridge", "requests")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,9 +157,9 @@ func TestServeDashboardReleasesListenerWhenProvenanceFails(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	provenanceErr := errors.New("provenance unavailable")
-	deps.executable = func() (string, error) { return "", provenanceErr }
+	deps.Executable = func() (string, error) { return "", provenanceErr }
 	address := freeLoopbackAddress(t)
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 
 	err := serveDashboard(&invocation{projectsRoot: root}, &cobra.Command{}, deps, address, store, "owner-token", true, false)
 	if !errors.Is(err, provenanceErr) {

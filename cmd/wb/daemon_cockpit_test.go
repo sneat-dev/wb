@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
@@ -36,7 +38,7 @@ import (
 func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = cockpitConfigFile(t, "cockpit:\n  refresh_interval: 45s\n  anonymous_metadata: false\n")
+	deps.HubConfigPath = cockpitConfigFile(t, "cockpit:\n  refresh_interval: 45s\n  anonymous_metadata: false\n")
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,7 +51,7 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -139,14 +141,20 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	var sessionKey string
 	mint := func(method, token string) (int, string) {
 		t.Helper()
-		socket, err := daemonLocalHTTPClient(root, token)
+		socket, err := daemonruntime.LocalHTTPClient(root, token)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if token == "" {
-			socket.Transport = socket.Transport.(daemonAuthenticatedTransport).base
+			path, pathErr := daemon.SocketPath(root)
+			if pathErr != nil {
+				t.Fatal(pathErr)
+			}
+			socket.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", path)
+			}}
 		}
-		request, err := http.NewRequestWithContext(context.Background(), method, daemonRPCBaseURL+cockpit.LoginCodeRPCPath, nil)
+		request, err := http.NewRequestWithContext(context.Background(), method, daemonruntime.RPCBaseURL+cockpit.LoginCodeRPCPath, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -450,14 +458,14 @@ func cockpitConfigFile(t *testing.T, content string) func() string {
 func TestCockpitInvalidConfigurationStopsTheDaemonFromServing(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = cockpitConfigFile(t, "cockpit:\n  hosted_url: not-a-url\n")
+	deps.HubConfigPath = cockpitConfigFile(t, "cockpit:\n  hosted_url: not-a-url\n")
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	command.SetContext(ctx)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err := serveDashboard(&invocation{projectsRoot: root}, command, deps, freeLoopbackAddress(t), daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+	err := serveDashboard(&invocation{projectsRoot: root}, command, deps, freeLoopbackAddress(t), daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	if err == nil || !strings.Contains(err.Error(), "cockpit configuration") || !strings.Contains(err.Error(), "cockpit.hosted_url") {
 		t.Fatalf("serveDashboard = %v, want an error naming the cockpit section", err)
 	}
@@ -479,7 +487,7 @@ func TestDaemonRefusesToServeOnAListenerBoundOutsideLoopback(t *testing.T) {
 	command.SetContext(context.Background())
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err = serveDashboard(&invocation{projectsRoot: root}, command, deps, "localhost:8766", daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+	err = serveDashboard(&invocation{projectsRoot: root}, command, deps, "localhost:8766", daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	var exit *exitError
 	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "192.0.2.10:8766") {
 		t.Fatalf("serveDashboard = %v, want a usage error naming the bound address", err)
@@ -540,14 +548,6 @@ func TestCockpitServerKeepsSessionsInMemorySoARestartEndsThem(t *testing.T) {
 // TestCockpitLoginCodeRouteIsRefusedByTheFileBridge pins that the file
 // bridge, which dispatches into the same mux as the unix socket, forwards
 // only the DaemonService procedures it lists.
-func TestCockpitLoginCodeRouteIsRefusedByTheFileBridge(t *testing.T) {
-	t.Parallel()
-	for _, procedure := range []string{cockpit.LoginCodeRPCPath, cockpit.LoginCodeRPCPath + "/", peersRPCPrefix + "invite"} {
-		if _, _, err := daemonFilePrepareRequest(procedure, nil, "request-id"); err == nil || !strings.Contains(err.Error(), "refused an unknown RPC procedure") {
-			t.Errorf("the file bridge prepared %s: %v", procedure, err)
-		}
-	}
-}
 
 // fleetBody is the fleet document as a request without Accept-Encoding would
 // receive it, from the snapshotter's prepared bytes.

@@ -2403,7 +2403,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_local_unix_test.go",
+              "path": "internal/daemonruntime/local_unix_test.go",
               "name": "TestDaemonLocalTransportRequiresTokenAndProtectsSocket",
               "kind": "integration"
             }
@@ -2607,17 +2607,17 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonRecoverRefusesActiveAndNonTerminalTransitions",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode",
               "kind": "unit"
             }
@@ -2690,7 +2690,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
               "kind": "unit"
             }
@@ -2870,7 +2870,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
               "kind": "unit"
             }
@@ -2952,7 +2952,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_poller_test.go",
+              "path": "internal/daemonruntime/poller_test.go",
               "name": "TestDaemonStatusReportsPollingFromTheRunningDaemon",
               "kind": "unit"
             },
@@ -3021,7 +3021,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
               "kind": "unit"
             }
@@ -12865,12 +12865,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "path": "internal/daemonruntime/file_bridge_test.go",
               "name": "TestDaemonFileBridgeTargetsOneOfTwoWorkersAndCancelsWithoutLease",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "path": "internal/daemonruntime/file_bridge_test.go",
               "name": "TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects",
               "kind": "integration"
             }

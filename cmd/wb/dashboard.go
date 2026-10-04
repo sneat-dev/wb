@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/url"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
@@ -41,13 +43,13 @@ func defaultDashboardCommandDependencies() dashboardCommandDependencies {
 	return dashboardCommandDependencies{
 		open: openBrowser,
 		localURL: func(ctx context.Context, root string) (string, string, error) {
-			result, err := newDaemonController(defaultDaemonDependencies(), root).Start(ctx, daemonDefaultListen)
+			result, err := newDaemonController(defaultDaemonDependencies(), root).Start(ctx, daemonruntime.DefaultListen)
 			if err != nil {
 				return "", "", err
 			}
 			address := result.State.Listen
 			if address == "" {
-				address = daemonDefaultListen
+				address = daemonruntime.DefaultListen
 			}
 			return (&url.URL{Scheme: "http", Host: address, Path: "/"}).String(), result.Warning, nil
 		},

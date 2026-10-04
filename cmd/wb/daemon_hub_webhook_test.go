@@ -308,8 +308,12 @@ func TestPollIntervalPrefersTheTestOverride(t *testing.T) {
 func TestDaemonStatusReportsWebhookMode(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return appHubConfig(t, webhookSecret) }
-	status := newDaemonController(deps, root).hubStatus(context.Background(), "")
+	deps.HubConfigPath = func() string { return appHubConfig(t, webhookSecret) }
+	statusResult, statusErr := newDaemonController(deps, root).Status(context.Background())
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	status := statusResult.Hub
 	if !status.Webhook || status.WebhookPublicURL != "https://bench.example.test" {
 		t.Fatalf("hub status = %+v", status)
 	}
@@ -324,8 +328,12 @@ func TestDaemonStatusReportsWebhookMode(t *testing.T) {
 		}
 	}
 
-	deps.hubConfigPath = func() string { return memoryHubConfig(t) }
-	polling := newDaemonController(deps, root).hubStatus(context.Background(), "")
+	deps.HubConfigPath = func() string { return memoryHubConfig(t) }
+	pollingResult, pollingErr := newDaemonController(deps, root).Status(context.Background())
+	if pollingErr != nil {
+		t.Fatal(pollingErr)
+	}
+	polling := pollingResult.Hub
 	if polling.Webhook || polling.WebhookPublicURL != "" {
 		t.Fatalf("polling-only hub status = %+v", polling)
 	}

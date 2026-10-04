@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/peers"
@@ -32,7 +34,7 @@ func fakeDaemonHTTPClient(serverAddr, token string) *http.Client {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", serverAddr)
 		},
 	}
-	return &http.Client{Transport: daemonAuthenticatedTransport{token: token, base: transport}}
+	return &http.Client{Transport: daemonruntime.WithOwnerToken(token, transport)}
 }
 
 // testPeersDeps wires a peersDeps whose admin writes go through server (a
@@ -108,7 +110,7 @@ func (source fixedPeerSource) GetPeer(_ context.Context, id string) (peers.Detai
 func newPeerAdminTestServer(t *testing.T) (*httptest.Server, *hubMount) {
 	t.Helper()
 	mount, _ := peerAdminTestMount(t)
-	server := httptest.NewServer(authenticatedDaemonHandler("owner-token", newPeerAdminHTTPHandler(mount)))
+	server := httptest.NewServer(daemonruntime.AuthenticatedHandler("owner-token", newPeerAdminHTTPHandler(mount)))
 	t.Cleanup(server.Close)
 	return server, mount
 }

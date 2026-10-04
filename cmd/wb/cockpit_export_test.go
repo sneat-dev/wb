@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/internal/cockpit"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
@@ -180,24 +182,23 @@ func exportMetrics() cockpitfleet.MetricsResponse {
 func failingStartSeams(t *testing.T, export cockpitExportDependencies) cockpitCommandDependencies {
 	t.Helper()
 	return cockpitCommandDependencies{
-		daemon: daemonDependencies{
-			start: func(string, []string, string) (int, error) {
+		daemon: daemonDependencies{Dependencies: daemonruntime.Dependencies{
+			Start: func(string, []string, string) (int, error) {
 				t.Error("the export verb started a daemon")
 				return 0, errors.New("start")
 			},
-			executable: func() (string, error) {
+			Executable: func() (string, error) {
 				t.Error("the export verb resolved the wb executable to start a daemon")
 				return "", errors.New("executable")
 			},
-			localClient: func(string, string) (*http.Client, error) {
+			LocalClient: func(string, string) (*http.Client, error) {
 				t.Error("the export verb opened the owner channel to mint a login code")
 				return nil, errors.New("owner channel")
 			},
-			stop: func(int, daemon.Supervisor, string) error {
+			Stop: func(int, daemon.Supervisor, string) error {
 				t.Error("the export verb stopped a daemon")
 				return errors.New("stop")
-			},
-		},
+			}}},
 		open: func(string) error {
 			t.Error("the export verb opened a browser")
 			return errors.New("open")
@@ -645,7 +646,7 @@ func TestCockpitExportDefaultsReadARealRecordFile(t *testing.T) {
 	if _, found, err := deps.loadRecord(root); err != nil || found {
 		t.Fatalf("no record yet: found %v, err %v", found, err)
 	}
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	saved := daemon.State{SchemaVersion: daemon.StateSchemaVersion, Status: daemon.StatusReady, PID: 99, Listen: "127.0.0.1:1", UpdatedAt: exportNow}
 	saved.Queue.SchemaVersion = daemon.QueueSchemaVersion
 	if err := store.Save(saved); err != nil {
@@ -668,27 +669,47 @@ func TestCockpitExportReachesNoStartPath(t *testing.T) {
 	t.Parallel()
 	forbidden := map[string]bool{
 		"cockpitLocalFromDaemon": true, "cockpitOwnerClient": true, "startDaemonProcess": true, "stopDaemonProcess": true,
-		"runLaunchctl": true, "openBrowser": true, "defaultDaemonDependencies": true, "daemonLocalHTTPClient": true,
+		"runLaunchctl": true, "runNativeLaunchctl": true, "openBrowser": true, "defaultDaemonDependencies": true,
+		"DefaultDependencies": true, "LocalHTTPClient": true, "daemonLocalHTTPClient": true,
 		"peerAdminClient": true, "LoginCodeRPCPath": true, "LoginPath": true, "launchdBootstrap": true,
 		"Start": true, "Restart": true, "Stop": true, "Replace": true,
 	}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	fileSet := token.NewFileSet()
 	bodies := map[string][]*ast.FuncDecl{}
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		parsed, err := parser.ParseFile(fileSet, name, nil, 0)
+	for _, source := range []struct{ pattern, prefix string }{{"*.go", ""}, {"../../internal/daemonruntime/*.go", "daemonruntime."}} {
+		files, err := filepath.Glob(source.pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, declaration := range parsed.Decls {
-			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Body != nil {
-				bodies[function.Name.Name] = append(bodies[function.Name.Name], function)
+		for _, name := range files {
+			if strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			parsed, err := parser.ParseFile(fileSet, name, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, declaration := range parsed.Decls {
+				if function, ok := declaration.(*ast.FuncDecl); ok && function.Body != nil {
+					// The only runtime receiver reached here is nativeOperations.
+					// Keep its methods qualified so a root helper cannot hide one.
+					key := source.prefix + function.Name.Name
+					if function.Recv != nil {
+						if len(function.Recv.List) != 1 {
+							continue
+						}
+						typeExpr := function.Recv.List[0].Type
+						if pointer, ok := typeExpr.(*ast.StarExpr); ok {
+							typeExpr = pointer.X
+						}
+						typeName, ok := typeExpr.(*ast.Ident)
+						if !ok || source.prefix == "" {
+							continue
+						}
+						key = source.prefix + typeName.Name + "." + function.Name.Name
+					}
+					bodies[key] = append(bodies[key], function)
+				}
 			}
 		}
 	}
@@ -701,47 +722,76 @@ func TestCockpitExportReachesNoStartPath(t *testing.T) {
 			continue
 		}
 		reached[name] = true
-		if name == "launchdPID" {
-			continue // read-only, checked below
-		}
+		if name == "daemonruntime.nativeOperations.launchdPID" {
+			continue
+		} // exact print call checked below
 		for _, function := range bodies[name] {
 			ast.Inspect(function.Body, func(node ast.Node) bool {
-				identifier, ok := node.(*ast.Ident)
-				if !ok {
-					return true
+				// The concrete native constructor assigns deferred executors; it
+				// does not execute them. Skip only direct function-literal
+				// assignments to its two known executor fields. An immediate
+				// invocation or any other constructor call is still walked.
+				if assignment, ok := node.(*ast.AssignStmt); ok && name == "daemonruntime.defaultNativeOperations" && len(assignment.Lhs) == 1 && len(assignment.Rhs) == 1 {
+					if selector, ok := assignment.Lhs[0].(*ast.SelectorExpr); ok && (selector.Sel.Name == "runSystemctl" || selector.Sel.Name == "runLaunchctl") {
+						if _, deferred := assignment.Rhs[0].(*ast.FuncLit); deferred {
+							return false
+						}
+					}
 				}
-				if forbidden[identifier.Name] {
-					t.Errorf("%s reaches %s, which can start, stop or sign in to a daemon or open a browser", name, identifier.Name)
+				if identifier, ok := node.(*ast.Ident); ok {
+					if forbidden[identifier.Name] {
+						t.Errorf("%s reaches forbidden %s", name, identifier.Name)
+					}
+					key := identifier.Name
+					if strings.HasPrefix(name, "daemonruntime.") {
+						key = "daemonruntime." + key
+					}
+					if _, declared := bodies[key]; declared {
+						queue = append(queue, key)
+					}
 				}
-				if _, declared := bodies[identifier.Name]; declared {
-					queue = append(queue, identifier.Name)
+				if selector, ok := node.(*ast.SelectorExpr); ok {
+					if forbidden[selector.Sel.Name] {
+						t.Errorf("%s reaches forbidden %s", name, selector.Sel.Name)
+					}
+					if owner, ok := selector.X.(*ast.Ident); ok && owner.Name == "daemonruntime" {
+						queue = append(queue, "daemonruntime."+selector.Sel.Name)
+					}
+					if strings.HasPrefix(name, "daemonruntime.") {
+						key := "daemonruntime.nativeOperations." + selector.Sel.Name
+						if _, declared := bodies[key]; declared {
+							queue = append(queue, key)
+						}
+					}
 				}
 				return true
 			})
 		}
 	}
-	for _, must := range []string{"cockpitExportEnvelope", "cockpitExportGet", "daemonProcessAlive", "launchdPID", "requireOutputFormat"} {
+	for _, must := range []string{"cockpitExportEnvelope", "cockpitExportGet", "daemonruntime.ProcessAlive", "daemonruntime.defaultNativeOperations", "daemonruntime.nativeOperations.processAlive", "daemonruntime.nativeOperations.launchdPID", "requireOutputFormat"} {
 		if !reached[must] {
 			t.Errorf("the walk never reached %s: it is not walking the real call graph", must)
 		}
 	}
-	for _, function := range bodies["launchdPID"] {
+	for _, function := range bodies["daemonruntime.nativeOperations.launchdPID"] {
 		calls := 0
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if callee, ok := call.Fun.(*ast.Ident); ok && callee.Name == "runLaunchctl" {
+			if callee, ok := call.Fun.(*ast.SelectorExpr); ok && callee.Sel.Name == "runLaunchctl" {
 				calls++
-				if literal, ok := call.Args[0].(*ast.BasicLit); !ok || literal.Value != `"print"` {
-					t.Errorf("launchdPID runs launchctl with something other than the read-only print")
+				if len(call.Args) == 0 {
+					t.Error("launchdPID omitted its print argument")
+				} else if literal, ok := call.Args[0].(*ast.BasicLit); !ok || literal.Value != `"print"` {
+					t.Error("launchdPID executes something other than read-only print")
 				}
 			}
 			return true
 		})
 		if calls != 1 {
-			t.Errorf("launchdPID calls runLaunchctl %d times, want exactly one", calls)
+			t.Errorf("launchdPID calls native.runLaunchctl %d times, want exactly one", calls)
 		}
 	}
 }

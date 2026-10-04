@@ -18,13 +18,13 @@ func TestRunAsyncCompositionPreservesDaemonClientRefusal(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	sentinel := errors.New("another projects root owns the supervisor")
-	deps.checkOtherRoot = func(got string, replace bool) error {
+	deps.CheckOtherRoot = func(got string, replace bool) error {
 		if got != root || replace {
 			t.Fatalf("root=%q replace=%v", got, replace)
 		}
 		return sentinel
 	}
-	deps.rawPolicy = func(string) (bool, string, error) {
+	deps.RawPolicy = func(string) (bool, string, error) {
 		t.Fatal("normal worker submission must not request raw administrator opt-in")
 		return false, "", nil
 	}
@@ -46,7 +46,7 @@ func TestRunAsyncCompositionPreservesDaemonClientRefusal(t *testing.T) {
 
 func TestRunAsyncCompositionPreservesAuthenticatedSubmitRefusal(t *testing.T) {
 	root, deps := cwWtDaemonOpFixture(t)
-	deps.rawPolicy = func(string) (bool, string, error) {
+	deps.RawPolicy = func(string) (bool, string, error) {
 		t.Fatal("normal worker submission must not request raw administrator opt-in")
 		return false, "", nil
 	}

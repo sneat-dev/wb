@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/internal/daemon"
 )
 
@@ -24,15 +26,17 @@ func TestManagedServeRecordsSupervisorAndSurvivesStop(t *testing.T) {
 	root := cwWtDaemonRoot(t)
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
 	deps := daemonTestDependencies(t, root)
-	deps.getpid = func() int { return 4242 }
-	deps.getppid = func() int { return 1 }
+	deps.Getpid = func() int { return 4242 }
+	deps.Getppid = func() int { return 1 }
 	env := map[string]string{"INVOCATION_ID": "managed-invocation", "SYSTEMD_EXEC_PID": "4242"}
-	deps.getenv = func(name string) string { return env[name] }
-	if err := secureDaemonRuntime(root); err != nil {
+	deps.Getenv = func(name string) string { return env[name] }
+	release, err := newDaemonController(deps, root).AcquireStateLock()
+	if err != nil {
 		t.Fatal(err)
 	}
-	statePath := mustDaemonPath(t, daemonStatePath, root)
-	starting := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", "", "", deps.now())
+	release()
+	statePath := mustDaemonPath(t, daemonruntime.StatePath, root)
+	starting := daemon.NewStartingAt(nil, "127.0.0.1:0", daemon.Provenance{}, "cw-wt-token", "", "", deps.Now())
 	if err := (daemon.Store{Path: statePath}).Save(starting); err != nil {
 		t.Fatal(err)
 	}

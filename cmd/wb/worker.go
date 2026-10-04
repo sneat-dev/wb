@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
@@ -96,7 +98,7 @@ func connectWorker(inv *invocation, command *cobra.Command, deps daemonDependenc
 		if err := command.Context().Err(); err != nil {
 			return nil
 		}
-		client, err := daemonOperationClient(command.Context(), deps, inv.projectsRoot, command.ErrOrStderr())
+		client, err := daemonruntime.OperationClient(command.Context(), deps.Dependencies, inv.projectsRoot, command.ErrOrStderr())
 		if err == nil {
 			err = runWorkerConnection(inv, command, client, workerID, roots, cpuCapacity, format, first)
 			first = false

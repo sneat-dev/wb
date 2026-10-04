@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/internal/wbupdate"
 )
 
@@ -61,24 +63,24 @@ func TestSelfUpdateVersionFlagNotSwallowedByRoot(t *testing.T) {
 // misleading "could not run" warning instead (sneat-dev/wb#622 review item
 // 11; the bug that motivated this function existing at all).
 func TestSelfUpdateDaemonHandoffTimeoutTracksCurrentBoundsWithHeadroom(t *testing.T) {
-	previousSupervisor := daemonSupervisorRestartTimeout
-	t.Cleanup(func() { daemonSupervisorRestartTimeout = previousSupervisor })
+	bounds := daemonruntime.DefaultLifecycleBounds()
+	timeout := daemonHandoffTimeout(func() daemonruntime.LifecycleBounds { return bounds })
 
-	daemonSupervisorRestartTimeout = 45 * time.Second
-	want := daemonStopTimeout + daemonSupervisorRestartTimeout + wbupdate.HandoffMargin
-	if got := selfUpdateDaemonHandoffTimeout(); got != want {
-		t.Fatalf("selfUpdateDaemonHandoffTimeout() = %s, want %s", got, want)
+	bounds.SupervisorRestart = 45 * time.Second
+	want := bounds.Stop + bounds.SupervisorRestart + wbupdate.HandoffMargin
+	if got := timeout(); got != want {
+		t.Fatalf("timeout() = %s, want %s", got, want)
 	}
-	if got := selfUpdateDaemonHandoffTimeout(); got <= daemonStopTimeout+daemonSupervisorRestartTimeout {
-		t.Fatalf("timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", got, daemonStopTimeout, daemonSupervisorRestartTimeout)
+	if got := timeout(); got <= bounds.Stop+bounds.SupervisorRestart {
+		t.Fatalf("timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", got, bounds.Stop, bounds.SupervisorRestart)
 	}
 
-	daemonSupervisorRestartTimeout = 5 * time.Second
-	shrunk := selfUpdateDaemonHandoffTimeout()
+	bounds.SupervisorRestart = 5 * time.Second
+	shrunk := timeout()
 	if shrunk >= want {
 		t.Fatalf("timeout did not track a shrunk supervisor bound: %s, want less than %s", shrunk, want)
 	}
-	if shrunk <= daemonStopTimeout+daemonSupervisorRestartTimeout {
-		t.Fatalf("shrunk timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", shrunk, daemonStopTimeout, daemonSupervisorRestartTimeout)
+	if shrunk <= bounds.Stop+bounds.SupervisorRestart {
+		t.Fatalf("shrunk timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", shrunk, bounds.Stop, bounds.SupervisorRestart)
 	}
 }

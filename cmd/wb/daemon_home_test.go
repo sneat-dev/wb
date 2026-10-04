@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -101,5 +103,5 @@ func daemonTestState(t *testing.T, root, listen string, provenance daemon.Proven
 	t.Helper()
 	return daemon.NewStartingAt(nil, listen, provenance, token,
 		mustDaemonPath(t, func(string) (string, error) { return wbhome.Root(root) }, root),
-		mustDaemonPath(t, daemonStatePath, root), now)
+		mustDaemonPath(t, daemonruntime.StatePath, root), now)
 }

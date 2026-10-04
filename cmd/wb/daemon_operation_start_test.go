@@ -16,7 +16,7 @@ import (
 func TestDaemonOperationSubcommandsReportWhenTheLocalDaemonCannotBeStarted(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	deps.start = func(string, []string, string) (int, error) { return 0, errors.New("supervisor refused") }
+	deps.Start = func(string, []string, string) (int, error) { return 0, errors.New("supervisor refused") }
 	inv := &invocation{projectsRoot: root}
 	for name, build := range map[string]func() (*cobra.Command, []string){
 		"get":    func() (*cobra.Command, []string) { return newDaemonOperationGetCmd(inv, deps), []string{"op-1"} },

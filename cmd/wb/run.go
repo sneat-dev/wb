@@ -1,9 +1,11 @@
 package main
 
 import (
-	"connectrpc.com/connect"
 	"context"
+
+	"connectrpc.com/connect"
 	"github.com/sneat-dev/wb/internal/cli/cmdrun"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 	"github.com/sneat-dev/wb/internal/discover"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/operationreceipt"
@@ -19,7 +21,7 @@ func newRunCmdWithDaemonDependencies(inv *invocation, deps daemonDependencies) *
 		return fleet(root, filter, func() []string { return fleetOwners(extraOrgs) })
 	})
 	submit := runexec.NewSubmission(func(ctx context.Context, request runexec.SubmitRequest, submission runexec.Submission) (operationreceipt.Receipt, error) {
-		client, err := daemonOperationClient(ctx, deps, request.ProjectsRoot, request.Stderr)
+		client, err := daemonruntime.OperationClient(ctx, deps.Dependencies, request.ProjectsRoot, request.Stderr)
 		if err != nil {
 			return operationreceipt.Receipt{}, err
 		}
