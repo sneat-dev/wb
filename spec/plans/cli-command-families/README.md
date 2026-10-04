@@ -782,6 +782,39 @@ coverage measurement. Worktree and dependency extraction now run in parallel
 with separate file ownership; root wiring changes are sequenced through scoped
 gates. Publication remains deferred.
 
+The parallel follow-up separates collaboration/session binding and redacted
+checkout inspection into `worktreerun`, with argument/rendering adapters in
+`cmdworktree`. Existing `worktreecollab.Service` and `Store` retain ownership,
+corroborated process/session checks, messaging and persistence. Actual session
+registration remains lazily bound at root. Four new files have 228/228
+statements covered; the unchanged domain race result was reused after repairing
+an integration build failure by moving a private presentation assertion to its
+proper CLI test owner. The repair gate passed in 2.44 seconds.
+
+The first dependency cohort moves graph/drift/peers/set/bump into `cmddeps` and
+`depsrun`, composing the four remaining children at root. Existing dependency
+engines remain the authority. One closed concrete-report renderer replaces four
+switches; a type-tree invariant test protects its infallible serialization
+premise. Native report-home and checkpoint/resume inputs remain separate from
+engine options. Shared validation and derived-scope rules have genuine root and
+family consumers. Propagation refusals and early bump failures now stop owned
+progress correctly; actual npm selection progress remains intact. The fresh
+leaf race batch passed 46 tests in 3.65 seconds with 517/517 statements covered.
+Nine original external integration cases remain separate earlier journey
+proof, not a profile attributed to later production changes.
+
+One combined root race gate ran 17 targeted cases, including distinct registered
+processes, linked Git checkout custody, prompt redaction, active merger lanes,
+session registration and real npm adapters. Sixteen passed; a new registry test
+fixture missing its Git origin failed. A sole-case retry passed after adding a
+private bare origin without weakening the actual fetch. All 26 statements in
+the changed root declarations are covered, yielding 771/771 for these two
+cohorts. Source-bound passing native cases were not repeated. These counts do
+not measure repository-wide coverage or end-to-end CI speed. Final scoped lint
+and serial checks, target compilation, review and local commits close the
+cohorts; publication remains deferred. The full repository parallel baseline
+is still failed and has not been attributed to an old target without evidence.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/depsrun"
 	"github.com/sneat-dev/wb/internal/encode"
 	"github.com/sneat-dev/wb/internal/npmrelease"
 	"github.com/sneat-dev/wb/internal/orchestrate"
@@ -436,7 +437,7 @@ func validateNpmPublishFormat(format string) error {
 }
 
 func validateNpmPublicationSelection(options npmPublishOptions) error {
-	if _, err := compileDependencyRegex(options.regex); err != nil {
+	if _, err := depsrun.CompileRegex(options.regex); err != nil {
 		return err
 	}
 	if options.match != "" {

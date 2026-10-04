@@ -3318,7 +3318,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/original_contracts_test.go",
               "name": "TestDependencyValidationModesKeepFastBoundToExactPRHeadCI",
               "kind": "unit"
             },
@@ -3791,7 +3791,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_peers_test.go",
+              "path": "internal/cli/cmddeps/integration/original_commands_test.go",
               "name": "TestDepsPeersExitsWithFindingsAndPrintsTheVerdictTable",
               "kind": "integration"
             }
@@ -4794,12 +4794,12 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/original_contracts_test.go",
               "name": "TestDepsSetRejectsUnusableDependencyOrderCombinations",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/original_contracts_test.go",
               "name": "TestDependencyValidationModesKeepFastBoundToExactPRHeadCI",
               "kind": "unit"
             }
@@ -14362,7 +14362,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }
@@ -14510,7 +14510,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }
@@ -17422,7 +17422,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }
@@ -17481,7 +17481,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }
@@ -17544,7 +17544,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }
@@ -18283,7 +18283,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }
@@ -18344,7 +18344,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_collaboration_test.go",
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
               "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
               "kind": "integration"
             }

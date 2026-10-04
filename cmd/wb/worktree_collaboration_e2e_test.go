@@ -57,13 +57,13 @@ func TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree(t *testing.T) {
 	if _, err := os.Stat(coordinationDir); !os.IsNotExist(err) {
 		t.Fatalf("read-only info initialized coordination metadata: %v", err)
 	}
-	if _, err := executeCollaborationCommand(t, newWorktreeTakeOwnershipCmd(collaborationFactory(inv)), checkout.ID, "--expected-owner", "none", "--force", "--reason", "reviewed"); err == nil {
+	if _, err := executeCollaborationCommand(t, newWorktreeCmd(inv), "take-ownership", checkout.ID, "--expected-owner", "none", "--force", "--reason", "reviewed"); err == nil {
 		t.Fatal("none bypassed legacy owner")
 	}
 	if _, err := os.Stat(coordinationDir); !os.IsNotExist(err) {
 		t.Fatalf("refused wrong-owner takeover initialized coordination metadata: %v", err)
 	}
-	if _, err := executeCollaborationCommand(t, newWorktreeTakeOwnershipCmd(collaborationFactory(inv)), checkout.ID, "--expected-owner", legacy.ID, "--force", "--reason", "reviewed"); err != nil {
+	if _, err := executeCollaborationCommand(t, newWorktreeCmd(inv), "take-ownership", checkout.ID, "--expected-owner", legacy.ID, "--force", "--reason", "reviewed"); err != nil {
 		t.Fatalf("owner took exact legacy observation: %v", err)
 	}
 	peerRegister := makeRegister()
@@ -75,7 +75,7 @@ func TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree(t *testing.T) {
 	if err != nil || view.Owner != "wbs-owner" || len(view.Joined) != 2 {
 		t.Fatalf("owner and peer view = %+v, %v", view, err)
 	}
-	if _, err := executeCollaborationCommand(t, newWorktreeTransferOwnershipCmd(collaborationFactory(inv)), worktree, "--to-session", "wbs-peer"); err == nil {
+	if _, err := executeCollaborationCommand(t, newWorktreeCmd(inv), "transfer-ownership", worktree, "--to-session", "wbs-peer"); err == nil {
 		t.Fatal("peer transferred ownership without being owner")
 	}
 	failedRegister := makeRegister()

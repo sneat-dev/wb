@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"github.com/sneat-dev/wb/internal/continuationinput"
@@ -16,11 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/worktreecollab"
+	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -263,123 +261,8 @@ target branch.`,
 }
 
 func newWorktreeInfoCmd(inv *invocation) *cobra.Command {
-	return newWorktreeInfoCmdWithPorts(inv, worktreeInfoPorts{
-		load: worktrees.LoadWorkLogView, lane: activeMergeLaneClaimForWorktreeInfo,
-		collaboration: func() (worktreecollab.Service, error) { return newCollaborationService(inv) },
-	})
-}
-
-type worktreeInfoPorts struct {
-	load          func(context.Context, worktrees.LoadWorkLogOptions) (worktrees.WorkLogView, error)
-	lane          func(string, worktrees.WorkLogView) (*orchestrate.MergeLaneClaim, error)
-	collaboration collaborationServiceFactory
-}
-
-func newWorktreeInfoCmdWithPorts(inv *invocation, ports worktreeInfoPorts) *cobra.Command {
-	var format string
-	command := &cobra.Command{
-		Use:   "info [worktree-path]",
-		Short: "Show redacted identity and Git state for one worktree",
-		Long: `Print a safe, redacted summary of one worktree's journal and live Git state.
-
-Includes manifest, claim identity, prompt ordinals and digests, and dirty/head
-evidence. Prompt bodies are never printed — use 'wb worktree log' when an agent
-needs the exact original prompt and steering instructions.
-
-Default text is human-readable. --format json emits the same redacted payload
-as one JSON document on stdout.`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format, "text", "json"); err != nil {
-				return err
-			}
-			path := "."
-			if len(args) == 1 {
-				path = args[0]
-			}
-			view, err := ports.load(command.Context(), worktrees.LoadWorkLogOptions{
-				ProjectsRoot:        inv.projectsRoot,
-				Worktree:            path,
-				IncludePromptBodies: false,
-			})
-			if err != nil {
-				return err
-			}
-			laneClaim, err := ports.lane(inv.projectsRoot, view)
-			if err != nil {
-				return err
-			}
-			service, err := ports.collaboration()
-			if err != nil {
-				return err
-			}
-			coordination, err := service.Inspect(command.Context(), path)
-			if err != nil && !errors.Is(err, worktrees.ErrCollaborationCanonicalClone) {
-				return err
-			}
-			var collaboration *worktreecollab.View
-			if err == nil {
-				collaboration = &coordination
-			}
-			if format == "json" {
-				encoder := json.NewEncoder(command.OutOrStdout())
-				encoder.SetIndent("", "  ")
-				return encoder.Encode(worktreeInfoDocument{WorkLogView: view, MergerLaneClaim: laneClaim, Collaboration: collaboration})
-			}
-			text := worktrees.FormatWorktreeInfoText(view) + formatMergerLaneClaimText(laneClaim)
-			if collaboration != nil {
-				text += formatCollaborationInfo(*collaboration)
-			}
-			_, err = io.WriteString(command.OutOrStdout(), text)
-			return err
-		},
-	}
-	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	return command
-}
-
-// worktreeInfoDocument extends the redacted Work Log view with whether an
-// active merger lane already claims this worktree's branch (lesson
-// merger-lane-branch-race). WorkLogView stays orchestrate-free; the join
-// happens here so an agent sitting in the worktree can see "is anyone
-// draining this?" before pushing instead of only after a merge.
-type worktreeInfoDocument struct {
-	worktrees.WorkLogView
-	MergerLaneClaim *orchestrate.MergeLaneClaim `json:"merger_lane_claim,omitempty"`
-	Collaboration   *worktreecollab.View        `json:"collaboration,omitempty"`
-}
-
-// activeMergeLaneClaimForWorktreeInfo resolves the exact repository and
-// branch this worktree carries and asks whether a merger lane already
-// claimed that branch. It prefers the durable manifest identity and falls
-// back to the live Git branch when no manifest was recorded (an adopted or
-// unmanaged checkout).
-func activeMergeLaneClaimForWorktreeInfo(projectsRoot string, view worktrees.WorkLogView) (*orchestrate.MergeLaneClaim, error) {
-	repository, branch := "", view.Git.Branch
-	if view.Manifest != nil {
-		repository = view.Manifest.Repository
-		if view.Manifest.Branch != "" {
-			branch = view.Manifest.Branch
-		}
-	}
-	return orchestrate.ActiveMergeLaneClaim(projectsRoot, repository, branch)
-}
-
-func formatMergerLaneClaimText(claim *orchestrate.MergeLaneClaim) string {
-	if claim == nil {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("## Merger lane\n")
-	fmt.Fprintf(&b, "claimed: true\n")
-	fmt.Fprintf(&b, "lane: %s\n", claim.Lane)
-	fmt.Fprintf(&b, "target: %s\n", claim.Target)
-	fmt.Fprintf(&b, "status: %s\n", claim.Status)
-	fmt.Fprintf(&b, "receipt: %s\n", claim.ReceiptPath)
-	b.WriteString("A merger lane already selected this branch for a batch it may land at any\n")
-	b.WriteString("time. Hand any change (a revert included) to the lane instead of pushing\n")
-	b.WriteString("directly to this branch.\n\n")
-	return b.String()
+	service := worktreerun.DefaultInfoService()
+	return cmdworktree.NewInfo(newCLIRuntime(inv), service.Inspect)
 }
 
 func newWorktreeWorkLogCmd(inv *invocation) *cobra.Command {
