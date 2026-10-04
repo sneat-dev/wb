@@ -764,6 +764,24 @@ Designated coverage is 337/337 statements: 317 in the owners/shared helper and 2
 in six genuine root bindings. Source-bound profile union deduplicates identical
 blocks; no repository-wide coverage gain is claimed. Publication remains deferred.
 
+The worktree receipt/active cohort separates Git receipt observation into
+`internal/graduation`, active inventory into `internal/worktreerun`, and argument
+handling/rendering into `internal/cli/cmdworktree`. Root constructors bind real
+native observers and the existing remote configuration loader. Original command
+and filesystem journeys live in the adapter integration package; domain tests
+retain inventory and Git authority checks. Native owners isolate harness,
+process, Git and user state before fixture discovery. The mixed writer sweep
+retains its unrelated orphan checks in the root package.
+
+The isolated four-package race batch passed 50 top-level tests in 3.45 seconds;
+all 306 statements across the four new production files were covered. A focused
+root race gate passed four registration/default-binding cases plus the moved
+writer sweep in 12.57 seconds, covering all six statements in the two root
+constructors. These are bounded cohort results, not a fresh repository-wide
+coverage measurement. Worktree and dependency extraction now run in parallel
+with separate file ownership; root wiring changes are sequenced through scoped
+gates. Publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

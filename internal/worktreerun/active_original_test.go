@@ -1,22 +1,63 @@
-package main
+package worktreerun
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"github.com/sneat-dev/wb/internal/remotepublish"
+	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/remotestate"
-	"github.com/sneat-dev/wb/internal/session"
-	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+type remoteDeps struct {
+	configPath string
+	login      func() (string, error)
+	open       func(remotestate.Config, string) (remotestate.Provider, error)
+	now        func() time.Time
+}
+
+func (remote remoteDeps) domain() ActiveRemoteDependencies {
+	return ActiveRemoteDependencies{Load: func(root string) (remotestate.Config, remotestate.Provider, error) {
+		return remotepublish.Load(remote.configPath, root, remote.open, func(code int, message string) error { return fmt.Errorf("exit %d: %s", code, message) })
+	}, Login: remote.login, Now: remote.now}
+}
+
+type activeWorktreeDeps struct {
+	claims   func(string, string) ([]worktrees.ActiveClaimSummary, error)
+	sessions func(string) ([]session.View, error)
+	remote   remoteDeps
+}
+
+func runWorktreeActive(ctx context.Context, deps activeWorktreeDeps, root, filter string, local bool, stale time.Duration) (ActiveReport, error) {
+	return CollectActive(ctx, ActiveDependencies{Claims: deps.claims, Sessions: deps.sessions, Remote: deps.remote.domain()}, root, filter, local, stale)
+}
+
+type activeProvider struct {
+	entries []remotestate.Entry
+	err     error
+}
+
+func (provider activeProvider) Publish(context.Context, remotestate.Snapshot) (remotestate.PublishResult, error) {
+	return remotestate.PublishResult{}, errors.New("unexpected publish")
+}
+func (provider activeProvider) List(context.Context) ([]remotestate.Entry, error) {
+	return provider.entries, provider.err
+}
+func (provider activeProvider) Claim(context.Context, remotestate.Claim, remotestate.ClaimMode, string) (remotestate.ClaimOutcome, error) {
+	return remotestate.ClaimOutcome{}, errors.New("unexpected claim")
+}
+func (provider activeProvider) Release(context.Context, string, string, string, bool) (remotestate.ReleaseOutcome, error) {
+	return remotestate.ReleaseOutcome{}, errors.New("unexpected release")
+}
+func (provider activeProvider) Claims(context.Context) ([]remotestate.ClaimEntry, error) {
+	return nil, errors.New("unexpected claims")
+}
 
 // cwWtFakeProvider embeds the remotestate.Provider interface so only List has
 // to be implemented for the active-worktree preflight.
@@ -57,7 +98,114 @@ func cwWtRemoteDeps(t *testing.T, login string, loginErr error, provider *cwWtFa
 	}
 }
 
-func TestCwWtRunWorktreeActiveLocalPaths(t *testing.T) {
+func activeConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(path, []byte("remote:\n  provider: git\n  repo: acme/state\n  machine: laptop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestWorktreeActiveCombinesLiveLocalAndOtherMachineSnapshots(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 12, 18, 0, 0, 0, time.UTC)
+	deps := activeWorktreeDeps{
+		claims: func(string, string) ([]worktrees.ActiveClaimSummary, error) {
+			return []worktrees.ActiveClaimSummary{
+				{Task: "local-task", TaskSummary: "Fix worktree discovery", Repository: "acme/widgets", Branch: "agent/local", Owner: "codex", WBSessionID: "wbs-live", RecordedAt: now},
+				{Task: "recent-task", Repository: "acme/widgets", Branch: "agent/recent", Owner: "codex", WBSessionID: "wbs-gone", RecordedAt: now.Add(-time.Hour)},
+				{Task: "old-task", Repository: "acme/widgets", Branch: "agent/old", Owner: "codex", WBSessionID: "wbs-gone", RecordedAt: now.Add(-48 * time.Hour)},
+				{Task: "manual-task", Repository: "acme/widgets", Branch: "agent/manual", Owner: "alex", RecordedAt: now.Add(-48 * time.Hour)},
+			}, nil
+		},
+		sessions: func(string) ([]session.View, error) {
+			return []session.View{{Record: session.Record{WBSessionID: "wbs-live"}, State: session.StateLive}}, nil
+		},
+		remote: remoteDeps{
+			configPath: activeConfig(t), login: func() (string, error) { return "alice", nil }, now: func() time.Time { return now },
+			open: func(remotestate.Config, string) (remotestate.Provider, error) {
+				return activeProvider{entries: []remotestate.Entry{
+					{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: now.Add(-time.Hour), Worktrees: []remotestate.WorktreeState{{Task: "self", Repository: "acme/widgets", Branch: "agent/self", OwnerState: "active"}}}},
+					{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "laptop"}, Error: "/Users/alice/private/corrupt-snapshot"},
+					{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "vm", PublishedAt: now.Add(-48 * time.Hour), LastSeenAt: now, Worktrees: []remotestate.WorktreeState{
+						{Task: "remote-task", TaskSummary: "Add task summaries", Repository: "acme/widgets", Branch: "agent/remote", OwnerState: "active", Lifecycle: "working", LastActivityAt: now.Add(-3 * time.Hour)},
+						{Task: "orphaned", Repository: "acme/widgets", Branch: "agent/orphaned", OwnerState: "orphaned", Lifecycle: "working"},
+						{Task: "finished", Repository: "acme/widgets", Branch: "agent/finished", OwnerState: "orphaned", Lifecycle: "merged"},
+						{Task: "active-but-finished", Repository: "acme/widgets", Branch: "agent/active-finished", OwnerState: "active", Lifecycle: "merged"},
+					}}},
+				}}, nil
+			},
+		},
+	}
+	report, err := runWorktreeActive(context.Background(), deps, t.TempDir(), "acme/widgets", false, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Local.Status != "incomplete" || report.Local.OmittedUnresolvedClaims != 2 || report.Remote.Status != "stale" || report.Remote.Machines != 1 || report.Remote.StaleMachines != 1 || len(report.Remote.Snapshots) != 1 || len(report.Worktrees) != 3 {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.Remote.Snapshots[0].Machine != "alice/vm" || !report.Remote.Snapshots[0].Stale {
+		t.Fatalf("remote snapshots = %+v", report.Remote.Snapshots)
+	}
+	if report.Remote.Snapshots[0].WorktreesPublished == report.Remote.Snapshots[0].MachineHeartbeat {
+		t.Fatalf("claim heartbeat hid stale worktree publication: %+v", report.Remote.Snapshots[0])
+	}
+	if report.Worktrees[0].Task != "local-task" || report.Worktrees[0].Summary != "Fix worktree discovery" || report.Worktrees[1].Task != "recent-task" || report.Worktrees[1].OwnerState != "recent_claim" || report.Worktrees[2].Task != "remote-task" {
+		t.Fatalf("rows = %+v", report.Worktrees)
+	}
+	remote := report.Worktrees[2]
+	if remote.Locality != "remote" || remote.Machine != "alice/vm" || remote.Summary != "Add task summaries" || !remote.SnapshotStale {
+		t.Fatalf("remote row = %+v", remote)
+	}
+}
+
+func TestWorktreeActiveMakesRemoteFailureExplicitAndSupportsLocalOnly(t *testing.T) {
+	t.Parallel()
+	deps := activeWorktreeDeps{
+		claims:   func(string, string) ([]worktrees.ActiveClaimSummary, error) { return nil, nil },
+		sessions: func(string) ([]session.View, error) { return nil, nil },
+		remote: remoteDeps{configPath: activeConfig(t), login: func() (string, error) { return "alice", nil }, now: time.Now,
+			open: func(remotestate.Config, string) (remotestate.Provider, error) {
+				return activeProvider{err: errors.New("/Users/alice/private/offline")}, nil
+			}},
+	}
+	report, err := runWorktreeActive(context.Background(), deps, t.TempDir(), "", false, time.Hour)
+	if err != nil || report.Remote.Status != "unavailable" || report.Remote.Error == "" || strings.Contains(report.Remote.Error, "/Users/") {
+		t.Fatalf("remote failure report=%+v err=%v", report, err)
+	}
+	report, err = runWorktreeActive(context.Background(), deps, t.TempDir(), "", true, time.Hour)
+	if err != nil || report.Remote.Status != "local_only" {
+		t.Fatalf("local only report=%+v err=%v", report, err)
+	}
+}
+
+func TestWorktreeActiveOmitsUnsafeRemoteSummaryAndReportsFinding(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 12, 18, 0, 0, 0, time.UTC)
+	deps := activeWorktreeDeps{
+		claims:   func(string, string) ([]worktrees.ActiveClaimSummary, error) { return nil, nil },
+		sessions: func(string) ([]session.View, error) { return nil, nil },
+		remote: remoteDeps{
+			configPath: activeConfig(t), login: func() (string, error) { return "alice", nil }, now: func() time.Time { return now },
+			open: func(remotestate.Config, string) (remotestate.Provider, error) {
+				return activeProvider{entries: []remotestate.Entry{{Snapshot: remotestate.Snapshot{
+					Login: "alice", Machine: "vm", PublishedAt: now,
+					Worktrees: []remotestate.WorktreeState{
+						{Task: "unsafe-control", TaskSummary: "line one\nline two", Repository: "acme/widgets", Branch: "unsafe-control", OwnerState: "active"},
+						{Task: "unsafe-long", TaskSummary: strings.Repeat("x", worktrees.MaxTaskSummaryRunes+1), Repository: "acme/widgets", Branch: "unsafe-long", OwnerState: "active"},
+					},
+				}}}}, nil
+			},
+		},
+	}
+	report, err := runWorktreeActive(context.Background(), deps, t.TempDir(), "acme/widgets", false, 24*time.Hour)
+	if err != nil || report.Remote.Status != "unavailable" || len(report.Worktrees) != 2 || report.Worktrees[0].Summary != "" || report.Worktrees[1].Summary != "" {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+}
+func TestOriginalRunWorktreeActiveLocalPaths(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 5, 5, 12, 0, 0, 0, time.UTC)
 	live := []worktrees.ActiveClaimSummary{
 		{Task: "zeta", Repository: "acme/app", Branch: "b1", WBSessionID: "wbs-1", RecordedAt: now.Add(-time.Hour)},
@@ -101,7 +249,8 @@ func TestCwWtRunWorktreeActiveLocalPaths(t *testing.T) {
 	}
 }
 
-func TestCwWtRunWorktreeActiveErrors(t *testing.T) {
+func TestOriginalRunWorktreeActiveErrors(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	remote := cwWtRemoteDeps(t, "me", nil, &cwWtFakeProvider{}, nil, now)
 
@@ -170,7 +319,8 @@ func TestCwWtRunWorktreeActiveErrors(t *testing.T) {
 	}
 }
 
-func TestCwWtRunWorktreeActiveRemoteSnapshots(t *testing.T) {
+func TestOriginalRunWorktreeActiveRemoteSnapshots(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 5, 5, 12, 0, 0, 0, time.UTC)
 	stale := now.Add(-48 * time.Hour)
 	fresh := now.Add(-time.Hour)
@@ -228,50 +378,8 @@ func TestCwWtRunWorktreeActiveRemoteSnapshots(t *testing.T) {
 	}
 }
 
-func TestCwWtWriteActiveWorktreeTextBranches(t *testing.T) {
-	report := activeWorktreeReport{
-		SchemaVersion: 1,
-		Local:         activeLocalStatus{Status: "incomplete", OmittedUnresolvedClaims: 2},
-		Remote:        activeRemoteStatus{Status: "stale", Error: "one snapshot is stale"},
-		Worktrees: []activeWorktreeRow{
-			{Locality: "local", Repository: "acme/app", Task: "alpha", Branch: "b", OwnerState: "active", Lifecycle: "working", Summary: "local one"},
-			{Locality: "remote", Machine: "them/machine-b", Repository: "acme/app", Task: "beta", Branch: "b", OwnerState: "unknown", Lifecycle: "working", SnapshotStale: true},
-		},
-	}
-	var out bytes.Buffer
-	if err := writeActiveWorktreeText(&out, report); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"local: incomplete (2 unresolved claims omitted; inspect wb worktree list)",
-		"remote: stale (one snapshot is stale)",
-		"local local acme/app alpha b [active/working] — local one",
-		"remote them/machine-b acme/app beta b [unknown/working] (STALE SNAPSHOT)",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("active text missing %q:\n%s", want, text)
-		}
-	}
-
-	// A clean report writes just the two status lines.
-	out.Reset()
-	if err := writeActiveWorktreeText(&out, activeWorktreeReport{Local: activeLocalStatus{Status: "available"}, Remote: activeRemoteStatus{Status: "local_only"}}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "local: available\nremote: local_only\n" {
-		t.Fatalf("clean report text = %q", got)
-	}
-
-	// Every write failure is propagated.
-	for allow := 0; allow < 7; allow++ {
-		if err := writeActiveWorktreeText(&cwWtFailWriter{Allow: allow}, report); err == nil {
-			t.Fatalf("writeActiveWorktreeText with %d writes allowed returned nil", allow)
-		}
-	}
-}
-
-func TestCwWtActiveHelpers(t *testing.T) {
+func TestOriginalActiveHelpers(t *testing.T) {
+	t.Parallel()
 	if includeRemoteActive(remotestate.WorktreeState{OwnerState: "active", Lifecycle: "working"}) != true {
 		t.Fatal("an active working remote worktree must be included")
 	}
@@ -341,83 +449,12 @@ func TestCwWtActiveHelpers(t *testing.T) {
 
 	// The final tie-break is the branch, reached only when repository, task,
 	// and machine are equal.
-	rows := []activeWorktreeRow{
+	rows := []ActiveRow{
 		{Repository: "acme/app", Task: "t", Machine: "m", Branch: "z"},
 		{Repository: "acme/app", Task: "t", Machine: "m", Branch: "a"},
 	}
 	sortActiveWorktrees(rows)
 	if rows[0].Branch != "a" || rows[1].Branch != "z" {
 		t.Fatalf("branch tie-break = %+v", rows)
-	}
-}
-
-func TestCwWtActiveSessionListingAndCmd(t *testing.T) {
-	// listActiveSessions fails when the projects root cannot be resolved: a
-	// path whose ancestor is a regular file is not merely absent.
-	blocker := filepath.Join(t.TempDir(), "blocker")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := listActiveSessions(filepath.Join(blocker, "projects")); err == nil {
-		t.Fatal("listActiveSessions with an unresolvable projects root must fail")
-	}
-
-	// Default dependencies against an empty root. Isolate the user home too:
-	// the default claim reader includes the retired $HOME/.wb layout.
-	projects := t.TempDir()
-	userHome := t.TempDir()
-	t.Setenv("HOME", userHome)
-	t.Setenv("USERPROFILE", userHome)
-	t.Setenv(wbhome.EnvOverride, projects)
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--local-only")
-	if err != nil {
-		t.Fatalf("active --local-only: %v", err)
-	}
-	if !strings.Contains(stdout, "local: available") || !strings.Contains(stdout, "remote: local_only") {
-		t.Fatalf("active text stdout = %q", stdout)
-	}
-
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--format", "json", "--local-only")
-	if err != nil {
-		t.Fatalf("active json: %v", err)
-	}
-	if !strings.Contains(stdout, "schema_version") {
-		t.Fatalf("active json stdout = %q", stdout)
-	}
-
-	// Without a configured remote the preflight is incomplete: exit 1.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) })
-	if code := exitCodeOf(t, err); code != exitFindings {
-		t.Fatalf("active without a remote exit = %d (%v)", code, err)
-	}
-
-	if _, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeActiveCmd(&invocation{projectsRoot: projects}) }, "--format", "bogus"); err == nil {
-		t.Fatal("active with a bogus format must fail")
-	}
-}
-
-func TestCwWtWorktreeActiveCmdWithDepsIncompleteIsFindings(t *testing.T) {
-	deps := cwWtActiveDeps(
-		func(string, string) ([]worktrees.ActiveClaimSummary, error) {
-			return []worktrees.ActiveClaimSummary{{Task: "old", Repository: "acme/app", RecordedAt: time.Now().UTC().Add(-72 * time.Hour)}}, nil
-		},
-		func(string) ([]session.View, error) { return nil, nil },
-		cwWtRemoteDeps(t, "me", nil, &cwWtFakeProvider{}, nil, time.Now().UTC()),
-	)
-	stdout, _, err := cwCovExec(t, t.TempDir(), func() *cobra.Command { return newWorktreeActiveCmdWithDeps(&invocation{}, deps) })
-	if code := exitCodeOf(t, err); code != exitFindings {
-		t.Fatalf("active with an omitted local claim exit = %d (%v)\n%s", code, err, stdout)
-	}
-	if !strings.Contains(stdout, "local: incomplete") {
-		t.Fatalf("active incomplete stdout = %q", stdout)
-	}
-
-	// The same report in json reaches the encoder instead.
-	stdout, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newWorktreeActiveCmdWithDeps(&invocation{}, deps) }, "--format", "json")
-	if code := exitCodeOf(t, err); code != exitFindings {
-		t.Fatalf("active json exit = %d (%v)", code, err)
-	}
-	if !strings.Contains(stdout, "\"omitted_unresolved_claims\":1") {
-		t.Fatalf("active json stdout = %q", stdout)
 	}
 }

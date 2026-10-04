@@ -12216,7 +12216,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/verify_receipt_test.go",
+              "path": "internal/cli/cmdworktree/integration/receipt_original_test.go",
               "name": "TestVerifyReceiptComposesExactMachineReadableEvidence",
               "kind": "integration"
             }
@@ -12282,7 +12282,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/verify_receipt_test.go",
+              "path": "internal/cli/cmdworktree/integration/receipt_original_test.go",
               "name": "TestVerifyReceiptRemoteTargetUsesFixedGitObservation",
               "kind": "unit"
             }
@@ -13107,12 +13107,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_active_test.go",
+              "path": "internal/worktreerun/active_original_test.go",
               "name": "TestWorktreeActiveCombinesLiveLocalAndOtherMachineSnapshots",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/worktree_active_test.go",
+              "path": "internal/worktreerun/active_original_test.go",
               "name": "TestWorktreeActiveMakesRemoteFailureExplicitAndSupportsLocalOnly",
               "kind": "unit"
             }

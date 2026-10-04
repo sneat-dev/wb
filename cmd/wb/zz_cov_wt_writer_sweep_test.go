@@ -130,18 +130,6 @@ func TestCwWtWriterSweepOrphansAndActive(t *testing.T) {
 		return renderOrphans(writer, report, "")
 	})
 
-	active := activeWorktreeReport{
-		SchemaVersion: 1,
-		Local:         activeLocalStatus{Status: "incomplete", OmittedUnresolvedClaims: 2},
-		Remote:        activeRemoteStatus{Status: "stale", Error: "stale snapshot"},
-		Worktrees: []activeWorktreeRow{
-			{Locality: "local", Repository: "acme/a", Task: "t", Branch: "b", OwnerState: "active", Lifecycle: "working", Summary: "s"},
-			{Locality: "remote", Machine: "m", Repository: "acme/b", Task: "t2", Branch: "b", OwnerState: "unknown", Lifecycle: "working", SnapshotStale: true},
-		},
-	}
-	cwWtSweepWrites(t, 14, func(writer *cwWtFailWriter) error {
-		return writeActiveWorktreeText(writer, active)
-	})
 }
 
 func TestCwWtWriterSweepEndMarkerRescueAndLogVerb(t *testing.T) {
