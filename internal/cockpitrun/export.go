@@ -1,65 +1,70 @@
-package main
+package cockpitrun
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"github.com/sneat-dev/wb/internal/cockpit"
+	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/daemonruntime"
-
-	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/cockpit"
-	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
-	"github.com/sneat-dev/wb/internal/daemon"
-	"github.com/sneat-dev/wb/internal/loopbackhost"
 )
 
-// cockpitExportDependencies is everything `wb cockpit export` touches. It
+type ExportRequest struct {
+	Root        string
+	MetricsOnly bool
+}
+type ExportResult struct {
+	Body    []byte
+	Drops   cockpitfleet.ExportDrops
+	Failure ExportFailure
+}
+
+// ExportDependencies is everything `wb cockpit export` touches. It
 // deliberately has no seam that starts a daemon, mints a login code or opens a
 // browser (cockpit-views#req:cockpit-export-verb): the verb reads the daemon
 // record and makes anonymous loopback reads, and tests prove that no start path
 // is reachable from it (a structural test of this struct and a call-graph test
 // of this file).
-type cockpitExportDependencies struct {
-	// loadRecord reads this machine's daemon record for a projects root.
-	loadRecord func(root string) (daemon.State, bool, error)
-	// alive reports whether a process id is a running process. On macOS it asks
+type ExportDependencies struct {
+	// LoadRecord reads this machine's daemon record for a projects root.
+	LoadRecord func(root string) (daemon.State, bool, error)
+	// Alive reports whether a process id is a running process. On macOS it asks
 	// launchd (`launchctl print`, which changes nothing), so a daemon started in
 	// the foreground by hand is reported as not running there.
-	alive func(int) bool
-	// processStart observes when a process started, to tell the daemon the record
-	// was written for from a process that now holds its recycled id. It reads
+	Alive func(int) bool
+	// ProcessStart observes when a process started, to tell the daemon the record
+	// was written for from a process that Now holds its recycled id. It reads
 	// /proc on Linux and reports false elsewhere.
-	processStart func(int) (time.Time, bool)
-	// client is the HTTP client for the daemon's loopback listener.
-	client func() *http.Client
-	now    func() time.Time
+	ProcessStart func(int) (time.Time, bool)
+	// Client is the HTTP Client for the daemon's loopback listener.
+	Client func() *http.Client
+	Now    func() time.Time
 }
 
-func defaultCockpitExportDependencies() cockpitExportDependencies {
-	return cockpitExportDependencies{
-		loadRecord: func(root string) (daemon.State, bool, error) {
-			return newDaemonController(daemonDependencies{}, root).LoadState()
+func DefaultExportDependencies() ExportDependencies {
+	return ExportDependencies{
+		LoadRecord: func(root string) (daemon.State, bool, error) {
+			return daemonruntime.NewController(daemonruntime.Dependencies{}, root).LoadState()
 		},
-		alive:        daemonruntime.ProcessAlive,
-		processStart: daemon.ProcessStartTime,
-		client:       cockpitExportClient,
-		now:          time.Now,
+		Alive:        daemonruntime.ProcessAlive,
+		ProcessStart: daemon.ProcessStartTime,
+		Client:       exportClient,
+		Now:          time.Now,
 	}
 }
 
-// cockpitExportClient is a client with no proxy, no cookie jar and no
+// exportClient is a Client with no proxy, no cookie jar and no
 // redirect, and a 10 second limit: the daemon is on this machine.
-func cockpitExportClient() *http.Client {
+func exportClient() *http.Client {
 	return &http.Client{
 		Timeout:       10 * time.Second,
 		Transport:     &http.Transport{Proxy: nil},
@@ -74,41 +79,42 @@ const (
 	cockpitDocumentLimit = cockpitfleet.MaxEnvelopeBytes - cockpitMetricsLimit - 4096
 )
 
-// exportFailure is one of the three typed reasons the verb reports on stdout
+// ExportFailure is one of the three typed reasons the verb reports on stdout
 // with exit code 1, or empty for none. It is its code and nothing else: no error
 // text of a dependency, no path and no response body reaches an operator or a
 // pipe.
-type exportFailure string
+type ExportFailure string
 
 const (
-	errDaemonNotRunning = exportFailure(cockpitfleet.ErrorDaemonNotRunning)
-	errExportRefused    = exportFailure(cockpitfleet.ErrorExportRefused)
-	errExportFailed     = exportFailure(cockpitfleet.ErrorExportFailed)
-	errWarmingUp        = exportFailure(cockpitfleet.ErrorWarmingUp)
+	errDaemonNotRunning = ExportFailure(cockpitfleet.ErrorDaemonNotRunning)
+	errExportRefused    = ExportFailure(cockpitfleet.ErrorExportRefused)
+	errExportFailed     = ExportFailure(cockpitfleet.ErrorExportFailed)
+	errWarmingUp        = ExportFailure(cockpitfleet.ErrorWarmingUp)
 )
 
 // cockpitExportEnvelope builds this machine's export envelope from the running
 // daemon's own fleet and machine-metrics routes, read as anonymous-local, and
 // returns it encoded with its trailing newline, and what it left out. It never
-// starts anything and every failure is one of the exportFailure values. A
+// starts anything and every failure is one of the ExportFailure values. A
 // daemon whose first pass has not ended has a partial fleet, which is not
 // exported: the full export is warming_up until it has (the metrics-only one
 // needs no fleet).
-func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, root string, metricsOnly bool) ([]byte, cockpitfleet.ExportDrops, exportFailure) {
-	fail := func(reason exportFailure) ([]byte, cockpitfleet.ExportDrops, exportFailure) {
-		return nil, cockpitfleet.ExportDrops{}, reason
+func Export(ctx context.Context, deps ExportDependencies, request ExportRequest) ExportResult {
+	root, metricsOnly := request.Root, request.MetricsOnly
+	fail := func(reason ExportFailure) ExportResult {
+		return ExportResult{Failure: reason}
 	}
-	record, found, err := deps.loadRecord(root)
+	record, found, err := deps.LoadRecord(root)
 	switch {
 	case err != nil:
 		return fail(errExportFailed)
-	case !found || record.Status == daemon.StatusStopped || record.PID <= 0 || !deps.alive(record.PID):
+	case !found || record.Status == daemon.StatusStopped || record.PID <= 0 || !deps.Alive(record.PID):
 		return fail(errDaemonNotRunning)
 	}
-	// A record whose recorded process start differs from the process that now holds
+	// A record whose recorded process start differs from the process that Now holds
 	// its id is a stale record of a daemon that is gone; a record that cannot say
-	// is trusted as far as the process being alive.
-	if started, observed := deps.processStart(record.PID); observed {
+	// is trusted as far as the process being Alive.
+	if started, observed := deps.ProcessStart(record.PID); observed {
 		if match, known := record.ProcessGenerationMatches(started, observed); known && !match {
 			return fail(errDaemonNotRunning)
 		}
@@ -117,7 +123,7 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 	if !ok {
 		return fail(errExportFailed)
 	}
-	client := deps.client()
+	Client := deps.Client()
 
 	// The verb asks the daemon for this machine's part of the fleet document
 	// alone: its own entries for a full export, and nothing but its machine entry
@@ -130,7 +136,7 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 		scope = cockpitfleet.ScopeMachine
 	}
 	var document cockpitfleet.Document
-	header, failure := cockpitExportGet(ctx, client, base, cockpitfleet.FleetRoute, url.Values{"scope": {scope}}, cockpitDocumentLimit, &document)
+	header, failure := cockpitExportGet(ctx, Client, base, cockpitfleet.FleetRoute, url.Values{"scope": {scope}}, cockpitDocumentLimit, &document)
 	if failure != "" {
 		return fail(failure)
 	}
@@ -148,7 +154,7 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 			continue
 		}
 		query := url.Values{"machine": {machine.ID}}
-		if _, failure := cockpitExportGet(ctx, client, base, cockpitfleet.MetricsRoute, query, cockpitMetricsLimit, &metrics); failure != "" {
+		if _, failure := cockpitExportGet(ctx, Client, base, cockpitfleet.MetricsRoute, query, cockpitMetricsLimit, &metrics); failure != "" {
 			return fail(failure)
 		}
 		break
@@ -157,17 +163,17 @@ func cockpitExportEnvelope(ctx context.Context, deps cockpitExportDependencies, 
 	// this binary never emits an envelope that its own readers would refuse, and
 	// the 8 MiB bound is enforced on the bytes themselves.
 	// The envelope types cannot fail to marshal.
-	envelope, drops := cockpitfleet.NewEnvelope(document, metrics, deps.now(), metricsOnly)
+	envelope, drops := cockpitfleet.NewEnvelope(document, metrics, deps.Now(), metricsOnly)
 	if !metricsOnly {
 		// What the daemon left out of its answer counts with what this pass did.
 		drops = drops.Plus(cockpitfleet.ParseExportDrops(header.Get(cockpitfleet.ExportDropsHeader)))
 		envelope.Dropped = drops.Total()
 	}
 	body, _ := json.Marshal(envelope)
-	if _, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(body), metricsOnly, deps.now()); err != nil {
+	if _, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(body), metricsOnly, deps.Now()); err != nil {
 		return fail(errExportFailed)
 	}
-	return append(body, '\n'), drops, ""
+	return ExportResult{Body: append(body, '\n'), Drops: drops}
 }
 
 // cockpitLoopbackBase is the Cockpit API address of a daemon recorded as
@@ -193,7 +199,7 @@ func cockpitLoopbackBase(listen string) (url.URL, bool) {
 // not serving; 401 or 403 means it refuses anonymous reads; anything else, a
 // request that cannot be made and a daemon that does not answer in time
 // included, is a failed export.
-func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, route string, query url.Values, limit int, target any) (http.Header, exportFailure) {
+func cockpitExportGet(ctx context.Context, Client *http.Client, base url.URL, route string, query url.Values, limit int, target any) (http.Header, ExportFailure) {
 	address := base
 	address.Path += route
 	address.RawQuery = query.Encode()
@@ -205,7 +211,7 @@ func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, ro
 	// looking at the Cockpit: it must not count as demand for this daemon's own
 	// reads of other machines.
 	request.Header.Set(cockpitfleet.ExportReaderHeader, "1")
-	response, err := client.Do(request)
+	response, err := Client.Do(request)
 	if err != nil {
 		return nil, exportTransportFailure(ctx, err)
 	}
@@ -232,63 +238,10 @@ func cockpitExportGet(ctx context.Context, client *http.Client, base url.URL, ro
 // daemon that is there and did not answer in time, or a read that was
 // cancelled, is a failed export: only a connection that could not be made says
 // that no daemon is serving at the recorded address.
-func exportTransportFailure(ctx context.Context, err error) exportFailure {
+func exportTransportFailure(ctx context.Context, err error) ExportFailure {
 	var timeout interface{ Timeout() bool }
 	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || (errors.As(err, &timeout) && timeout.Timeout()) {
 		return errExportFailed
 	}
 	return errDaemonNotRunning
-}
-
-func newCockpitExportCmd(inv *invocation, deps cockpitExportDependencies) *cobra.Command {
-	var format string
-	var metricsOnly bool
-	command := &cobra.Command{
-		Use:   "export",
-		Short: "Print this machine's Cockpit export envelope as JSON",
-		Long: "Print this machine's export envelope {schema_version, machine, exported_at, fleet, metrics} as JSON, " +
-			"read from this machine's running daemon over its loopback listener as the anonymous-local principal " +
-			"(this machine's own entries only, whatever other machines the daemon shows), " +
-			"within 8 MiB and limited to the metadata an anonymous local reader may see. " +
-			"Another machine's daemon runs this over SSH to read this one. " +
-			"It never starts a daemon, opens a browser or mints a login code, and writes nothing. " +
-			"--metrics-only omits the fleet. When no daemon is running, or one refuses anonymous reads " +
-			"(cockpit.anonymous_metadata: false), or its first scan has not finished (the fleet is still partial; " +
-			"--metrics-only is not affected), or the export fails otherwise, it prints {schema_version, error} " +
-			"with error daemon_not_running, export_refused, warming_up or export_failed and exits 1. " +
-			"An entry of this machine that the envelope's rules refuse is left out and counted in the envelope's dropped field. " +
-			"On macOS a daemon is found through launchd, so one started by hand in the foreground is reported as not running.",
-		Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			if err := requireOutputFormat(format, "json"); err != nil {
-				return usageError(err.Error())
-			}
-			body, drops, failure := cockpitExportEnvelope(command.Context(), deps, inv.projectsRoot, metricsOnly)
-			if failure != "" {
-				if _, writeErr := command.OutOrStdout().Write(append(mustMarshalExportError(failure), '\n')); writeErr != nil {
-					return errors.New("wb cockpit export: could not write to stdout")
-				}
-				return &exitError{code: exitFindings, message: "wb cockpit export: " + string(failure)}
-			}
-			if _, err := command.OutOrStdout().Write(body); err != nil {
-				return errors.New("wb cockpit export: could not write to stdout")
-			}
-			if drops.Total() > 0 {
-				// Numbers only: what was left out is never named, here or anywhere.
-				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb cockpit export: left out %d entries the envelope's rules refuse (repositories %d, worktrees %d, pull requests %d, agents %d)\n",
-					drops.Total(), drops.Repositories, drops.Worktrees, drops.PullRequests, drops.Agents)
-			}
-			return nil
-		},
-	}
-	command.Flags().StringVar(&format, "format", "json", "stdout format: json")
-	command.Flags().BoolVar(&metricsOnly, "metrics-only", false, "omit the fleet and print only the machine's metrics")
-	return command
-}
-
-// mustMarshalExportError is the stdout form of a failure; the type cannot fail
-// to marshal.
-func mustMarshalExportError(failure exportFailure) []byte {
-	body, _ := json.Marshal(cockpitfleet.NewExportError(string(failure)))
-	return body
 }

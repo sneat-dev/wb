@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cli/daemonview"
+
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
@@ -149,7 +151,7 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := writeDaemonResult(&out, "text", daemonResult{Action: "status", Hub: status}); err != nil {
+	if err := daemonview.Result(&out, "text", daemonResult{Action: "status", Hub: status}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -173,7 +175,7 @@ func TestDaemonStatusReportsTheRedeliverySweep(t *testing.T) {
 		t.Fatalf("hub status without a live sweep = %+v", quiet.WebhookRedelivery)
 	}
 	out.Reset()
-	if err := writeDaemonResult(&out, "text", daemonResult{Action: "status", Hub: quiet}); err != nil {
+	if err := daemonview.Result(&out, "text", daemonResult{Action: "status", Hub: quiet}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "hub_webhook_redelivered") {

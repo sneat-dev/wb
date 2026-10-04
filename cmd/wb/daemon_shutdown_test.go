@@ -83,7 +83,7 @@ func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
+		served <- serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
 	}()
 	waitForHealth(t, address)
 
@@ -121,7 +121,7 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
+		served <- serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
 	}()
 	waitForHealth(t, address)
 
@@ -161,7 +161,7 @@ func TestServeDashboardReleasesListenerWhenProvenanceFails(t *testing.T) {
 	address := freeLoopbackAddress(t)
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 
-	err := serveDashboard(&invocation{projectsRoot: root}, &cobra.Command{}, deps, address, store, "owner-token", true, false)
+	err := serveDashboard(root, context.Background(), os.Stdout, os.Stderr, deps, address, store, "owner-token", true, false)
 	if !errors.Is(err, provenanceErr) {
 		t.Fatalf("serveDashboard error = %v, want provenance failure", err)
 	}

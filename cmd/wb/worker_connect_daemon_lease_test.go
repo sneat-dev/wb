@@ -54,7 +54,7 @@ func TestWorkerConnectLeasesAndExecutesARealQueuedOperation(t *testing.T) {
 
 	fetchOperation := func() (daemonOperationResult, error) {
 		var out bytes.Buffer
-		get := newDaemonOperationGetCmd(&invocation{projectsRoot: root}, deps)
+		get := daemonCommandForTest("operation get", &invocation{projectsRoot: root}, deps)
 		get.SilenceUsage, get.SilenceErrors = true, true
 		get.SetOut(&out)
 		get.SetErr(&bytes.Buffer{})

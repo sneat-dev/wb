@@ -19,9 +19,15 @@ func TestDaemonOperationSubcommandsReportWhenTheLocalDaemonCannotBeStarted(t *te
 	deps.Start = func(string, []string, string) (int, error) { return 0, errors.New("supervisor refused") }
 	inv := &invocation{projectsRoot: root}
 	for name, build := range map[string]func() (*cobra.Command, []string){
-		"get":    func() (*cobra.Command, []string) { return newDaemonOperationGetCmd(inv, deps), []string{"op-1"} },
-		"cancel": func() (*cobra.Command, []string) { return newDaemonOperationCancelCmd(inv, deps), []string{"op-1"} },
-		"wait":   func() (*cobra.Command, []string) { return newDaemonOperationWaitCmd(inv, deps), []string{"op-1"} },
+		"get": func() (*cobra.Command, []string) {
+			return daemonCommandForTest("operation get", inv, deps), []string{"op-1"}
+		},
+		"cancel": func() (*cobra.Command, []string) {
+			return daemonCommandForTest("operation cancel", inv, deps), []string{"op-1"}
+		},
+		"wait": func() (*cobra.Command, []string) {
+			return daemonCommandForTest("operation wait", inv, deps), []string{"op-1"}
+		},
 	} {
 		command, args := build()
 		command.SilenceUsage, command.SilenceErrors = true, true

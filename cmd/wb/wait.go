@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/cli/cmdci"
+	"github.com/sneat-dev/wb/internal/cli/cmddaemon"
 	"github.com/sneat-dev/wb/internal/cli/cmdwait"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/prselector"
@@ -49,7 +50,7 @@ func newWaitAgentCmd(inv *invocation) *cobra.Command {
 
 // newWaitOperationCmd is `wb daemon operation wait` under the verb.
 func newWaitOperationCmd(inv *invocation) *cobra.Command {
-	command := newDaemonOperationWaitCmd(inv, defaultDaemonDependencies())
+	command := cmddaemon.NewOperationWait(newCLIRuntime(inv), daemonCommandDependencies(defaultDaemonDependencies()))
 	command.Use = strings.Replace(command.Use, "wait ", "operation ", 1)
 	command.Short = "Wait for a durable operation to reach a terminal state (was: wb daemon operation wait)"
 	return command

@@ -46,7 +46,7 @@ func TestManagedServeRecordsSupervisorAndSurvivesStop(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 		cancel()
 	}()
-	command := newDaemonServeCmd(&invocation{projectsRoot: root}, deps)
+	command := daemonCommandForTest("serve", &invocation{projectsRoot: root}, deps)
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetContext(ctx)

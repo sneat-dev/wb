@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cli/daemonview"
+
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/spf13/cobra"
@@ -46,7 +48,7 @@ func TestServeDashboardRecordsSupervisorFromEnvironment(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -107,7 +109,7 @@ func TestServeDashboardRecordsItsOwnObservedSystemdUnit(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -179,7 +181,7 @@ func TestServeDashboardTreatsInheritedInvocationIDAsUnsupervised(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -232,7 +234,7 @@ func TestServeDashboardRecordsLaunchdSupervisor(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, store, "owner-token", true, false)
+		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -279,7 +281,7 @@ func TestDaemonStatusReportsNoneForARecordPredatingSupervisorField(t *testing.T)
 	}
 
 	var buffer bytes.Buffer
-	if err := writeDaemonResult(&buffer, "text", result); err != nil {
+	if err := daemonview.Result(&buffer, "text", result); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buffer.String(), "supervisor=none") {
@@ -305,7 +307,7 @@ func TestDaemonResultJSONReportsSupervisor(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buffer bytes.Buffer
-	if err := writeDaemonResult(&buffer, "json", result); err != nil {
+	if err := daemonview.Result(&buffer, "json", result); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{`"supervisor": "launchd"`, `"supervisor_label": "dev.sneat.wb.daemon"`} {
@@ -414,7 +416,7 @@ func TestDaemonStatusFlagsASupervisorMismatch(t *testing.T) {
 	}
 
 	var buffer bytes.Buffer
-	if err := writeDaemonResult(&buffer, "text", result); err != nil {
+	if err := daemonview.Result(&buffer, "text", result); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buffer.String(), "supervisor_mismatch=") {
@@ -565,7 +567,7 @@ func TestDaemonStopHintNamesTheRealRemedyOnlyForAForeignLaunchdLabel(t *testing.
 			deps.Stop = func(int, daemon.Supervisor, string) error { alive = false; return nil }
 
 			projectsRoot := root
-			command := newDaemonStopCmd(&invocation{projectsRoot: projectsRoot}, deps)
+			command := daemonCommandForTest("stop", &invocation{projectsRoot: projectsRoot}, deps)
 			var stdout, stderr bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)
@@ -599,7 +601,7 @@ func TestDaemonStopHintNamesTheSystemdRemedyUnconditionally(t *testing.T) {
 	deps.Stop = func(int, daemon.Supervisor, string) error { alive = false; return nil }
 
 	projectsRoot := root
-	command := newDaemonStopCmd(&invocation{projectsRoot: projectsRoot}, deps)
+	command := daemonCommandForTest("stop", &invocation{projectsRoot: projectsRoot}, deps)
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)

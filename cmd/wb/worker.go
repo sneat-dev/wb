@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/operationreceipt"
+
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"connectrpc.com/connect"
@@ -290,7 +292,7 @@ func workerHeartbeatLoop(ctx context.Context, out io.Writer, client daemonv1conn
 				cancel()
 				return
 			}
-			if daemonOperationTerminal(response.Msg.Operation.State) {
+			if operationreceipt.Terminal(response.Msg.Operation.State) {
 				errorsOut <- errors.New("operation became terminal while the worker was executing it")
 				cancel()
 				return

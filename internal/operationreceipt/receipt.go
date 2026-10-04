@@ -2,8 +2,9 @@
 package operationreceipt
 
 import (
-	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"strings"
+
+	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 )
 
 type Receipt struct {
@@ -42,4 +43,11 @@ func FromOperation(operation *daemonv1.Operation) Receipt {
 		Error: operation.Error, StdoutTail: string(operation.StdoutTail), StderrTail: string(operation.StderrTail),
 		TargetWorkerID: operation.TargetWorkerId,
 	}
+}
+
+func Terminal(state daemonv1.OperationState) bool {
+	return state == daemonv1.OperationState_OPERATION_STATE_SUCCEEDED ||
+		state == daemonv1.OperationState_OPERATION_STATE_FAILED ||
+		state == daemonv1.OperationState_OPERATION_STATE_CANCELLED ||
+		state == daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED
 }

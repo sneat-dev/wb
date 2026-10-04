@@ -55,7 +55,7 @@ func TestServeDashboardRefusesARawCommandWithoutAnAdministratorOptIn(t *testing.
 	command.SetErr(stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+		served <- serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()

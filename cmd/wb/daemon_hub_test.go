@@ -118,7 +118,7 @@ func TestServeDashboardMountsTheHubAndDashboard(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: projectsRoot}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", false, false)
+		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", false, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -391,7 +391,7 @@ func TestDaemonStatusReportsTheMountedHub(t *testing.T) {
 
 	run := func(t *testing.T, args ...string) string {
 		t.Helper()
-		command := newDaemonStatusCmd(&invocation{projectsRoot: projectsRoot}, deps)
+		command := daemonCommandForTest("status", &invocation{projectsRoot: projectsRoot}, deps)
 		var output bytes.Buffer
 		command.SetOut(&output)
 		command.SetArgs(args)

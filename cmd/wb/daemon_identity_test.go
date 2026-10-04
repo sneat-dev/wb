@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/cli/daemonview"
 
-	"github.com/spf13/cobra"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/sneat-dev/wb/internal/daemon"
 )
@@ -53,7 +54,7 @@ func TestDaemonStatusReportsAReachableDaemonFromAnotherHome(t *testing.T) {
 		}
 	}
 	var text bytes.Buffer
-	if err := writeDaemonResult(&text, "text", result); err != nil {
+	if err := daemonview.Result(&text, "text", result); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"state=unverified", "identity=foreign_home", "ready_verified=false", "api_reachable=true"} {
@@ -90,7 +91,7 @@ func TestServeDashboardNamesTheEndpointItCouldNotBind(t *testing.T) {
 	address := held.Addr().String()
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 
-	err = serveDashboard(&invocation{}, &cobra.Command{}, deps, address, store, "owner-token", true, false)
+	err = serveDashboard("", context.Background(), os.Stdout, os.Stderr, deps, address, store, "owner-token", true, false)
 	if err == nil {
 		t.Fatal("serving on a held endpoint must fail")
 	}
@@ -152,7 +153,7 @@ func TestDaemonStatusNamesAnUnrecordedAnswerAndTheLegacyEndpoint(t *testing.T) {
 		t.Fatalf("legacy endpoint = %#v, want %s", result.LegacyRuntime, legacyDir)
 	}
 	var text bytes.Buffer
-	if err := writeDaemonResult(&text, "text", result); err != nil {
+	if err := daemonview.Result(&text, "text", result); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"state=absent", "api_reachable=true", "identity=absent", "legacy_runtime="} {

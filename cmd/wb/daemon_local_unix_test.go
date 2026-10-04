@@ -64,7 +64,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 	})
 
 	var submitOutput bytes.Buffer
-	submit := newDaemonOperationSubmitCmd(&invocation{projectsRoot: projectsRoot}, deps)
+	submit := daemonCommandForTest("operation submit", &invocation{projectsRoot: projectsRoot}, deps)
 	submit.SetOut(&submitOutput)
 	submit.SetErr(&bytes.Buffer{})
 	submit.SetArgs([]string{"--json", "--", os.Args[0], "-test.run=TestDaemonOperationCLIHelperProcess", "--", "cli"})
@@ -80,7 +80,7 @@ func TestDaemonOperationCLI_SubmitThenWait(t *testing.T) {
 	}
 
 	var waitOutput bytes.Buffer
-	wait := newDaemonOperationWaitCmd(&invocation{projectsRoot: projectsRoot}, deps)
+	wait := daemonCommandForTest("operation wait", &invocation{projectsRoot: projectsRoot}, deps)
 	wait.SetOut(&waitOutput)
 	wait.SetErr(&bytes.Buffer{})
 	wait.SetArgs([]string{"--json", "--timeout", "10s", submitted.OperationID})

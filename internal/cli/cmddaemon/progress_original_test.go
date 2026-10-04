@@ -1,4 +1,4 @@
-package main
+package cmddaemon
 
 import (
 	"bytes"
@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/daemonview"
+	"github.com/sneat-dev/wb/internal/daemonoperation"
 
 	"connectrpc.com/connect"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
@@ -30,12 +33,14 @@ func (c *progressWaitClient) WaitOperation(_ context.Context, req *connect.Reque
 func TestDaemonOperationHumanProgressDoesNotEnterAgentStreams(t *testing.T) {
 	var agent bytes.Buffer
 	path := filepath.Join(t.TempDir(), "human.log")
-	writer, closeWriter, err := daemonOperationProgressWriter(&agent, true, path)
+	writer, closeWriter, err := progressWriter(testRuntime(), &agent, true, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := &progressWaitClient{}
-	operation, err := waitForDaemonOperation(context.Background(), writer, client, &daemonv1.Operation{OperationId: "test"})
+	operation, err := (daemonoperation.Service{Client: func(context.Context, string, io.Writer) (daemonv1connect.DaemonServiceClient, error) {
+		return client, nil
+	}}).Wait(context.Background(), "root", "test", "", writer)
 	closeWriter()
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +55,7 @@ func TestDaemonOperationHumanProgressDoesNotEnterAgentStreams(t *testing.T) {
 	if bytes.Count(human, []byte("still running")) != 2 {
 		t.Fatalf("human progress: %s", human)
 	}
-	if err := writeDaemonOperation(&agent, "json", operation); err != nil {
+	if err := daemonview.Operation(&agent, "json", operation); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(agent.Bytes(), []byte("assertion context")) || !bytes.Contains(agent.Bytes(), []byte(`"state": "failed"`)) {
@@ -59,7 +64,7 @@ func TestDaemonOperationHumanProgressDoesNotEnterAgentStreams(t *testing.T) {
 }
 
 func TestDaemonOperationQuietProgressAndInvalidDestination(t *testing.T) {
-	writer, closeWriter, err := daemonOperationProgressWriter(io.Discard, false, "")
+	writer, closeWriter, err := progressWriter(testRuntime(), io.Discard, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +72,10 @@ func TestDaemonOperationQuietProgressAndInvalidDestination(t *testing.T) {
 	if writer != io.Discard {
 		t.Fatal("quiet mode does not discard progress")
 	}
-	if _, _, err := daemonOperationProgressWriter(io.Discard, false, "human.log"); err == nil {
+	if _, _, err := progressWriter(testRuntime(), io.Discard, false, "human.log"); err == nil {
 		t.Fatal("conflicting flags accepted")
 	}
-	if _, _, err := daemonOperationProgressWriter(io.Discard, true, filepath.Join(t.TempDir(), "absent", "log")); err == nil {
+	if _, _, err := progressWriter(testRuntime(), io.Discard, true, filepath.Join(t.TempDir(), "absent", "log")); err == nil {
 		t.Fatal("invalid destination silently accepted")
 	}
 }

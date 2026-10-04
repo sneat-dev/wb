@@ -1357,17 +1357,17 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/cockpit_test.go",
+              "path": "internal/cli/cmdcockpit/command_test.go",
               "name": "TestCockpitLocalOpensTheLoginURL",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/cockpit_test.go",
+              "path": "internal/cli/cmdcockpit/command_test.go",
               "name": "TestCockpitJSONCarriesNoCodeAndOpensNothing",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/cockpit_test.go",
+              "path": "internal/cli/cmdcockpit/command_test.go",
               "name": "TestCockpitHostedUsesTheConfiguredURLAndStartsNoDaemon",
               "kind": "unit"
             }
@@ -1435,17 +1435,17 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/cockpit_export_test.go",
+              "path": "internal/cli/cmdcockpit/integration/export_test.go",
               "name": "TestCockpitExportWithNoRunningDaemonFailsAndStartsNothing",
-              "kind": "unit"
+              "kind": "integration"
             },
             {
-              "path": "cmd/wb/cockpit_export_test.go",
+              "path": "internal/cli/cmdcockpit/integration/export_test.go",
               "name": "TestCockpitExportCarriesOnlyTheMetadataSet",
-              "kind": "unit"
+              "kind": "integration"
             },
             {
-              "path": "cmd/wb/cockpit_export_test.go",
+              "path": "internal/cli/cmdcockpit/integration/export_test.go",
               "name": "TestCockpitExportHasNoWayToStartAnything",
               "kind": "unit"
             }

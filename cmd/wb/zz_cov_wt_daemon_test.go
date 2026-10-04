@@ -60,7 +60,7 @@ func TestCwWtDaemonServeCmdValidationAndShortLivedServe(t *testing.T) {
 	deps := daemonTestDependencies(t, root)
 
 	// A non-loopback listener is refused with a usage error.
-	_, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonServeCmd(&invocation{}, deps) }, "--listen", "0.0.0.0:1234")
+	_, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("serve", &invocation{}, deps) }, "--listen", "0.0.0.0:1234")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("non-loopback listen exit = %d (%v)", code, err)
 	}
@@ -75,13 +75,13 @@ func TestCwWtDaemonServeCmdValidationAndShortLivedServe(t *testing.T) {
 	if err := (daemon.Store{Path: statePath}).Save(ready); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonServeCmd(&invocation{}, deps) }, "--listen", "127.0.0.1:0", "--lifecycle-state", statePath)
+	_, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("serve", &invocation{}, deps) }, "--listen", "127.0.0.1:0", "--lifecycle-state", statePath)
 	if err == nil || !strings.Contains(err.Error(), "no longer owns a starting lifecycle state") {
 		t.Fatalf("managed start ownership error = %v", err)
 	}
 
 	// An out-of-range port passes the loopback check and fails at bind.
-	_, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonServeCmd(&invocation{}, deps) }, "--listen", "127.0.0.1:99999")
+	_, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("serve", &invocation{}, deps) }, "--listen", "127.0.0.1:99999")
 	if err == nil || !strings.Contains(err.Error(), "listen for WB daemon") {
 		t.Fatalf("invalid listen port error = %v", err)
 	}
@@ -94,7 +94,7 @@ func TestCwWtDaemonServeCmdValidationAndShortLivedServe(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 		cancel()
 	}()
-	command := newDaemonServeCmd(&invocation{projectsRoot: serveRoot}, serveDeps)
+	command := daemonCommandForTest("serve", &invocation{projectsRoot: serveRoot}, serveDeps)
 	command.SilenceUsage = true
 	command.SilenceErrors = true
 	command.SetContext(ctx)
@@ -121,21 +121,21 @@ func TestCwWtDaemonStartStatusStopRestartRecoverInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
 	deps := daemonTestDependencies(t, root)
 
-	stdout, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStartCmd(&invocation{projectsRoot: root}, deps) })
+	stdout, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("start", &invocation{projectsRoot: root}, deps) })
 	if err != nil {
 		t.Fatalf("daemon start: %v", err)
 	}
 	if !strings.Contains(stdout, "daemon start:") {
 		t.Fatalf("daemon start stdout = %q", stdout)
 	}
-	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStatusCmd(&invocation{projectsRoot: root}, deps) })
+	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("status", &invocation{projectsRoot: root}, deps) })
 	if err != nil {
 		t.Fatalf("daemon status: %v", err)
 	}
 	if !strings.Contains(stdout, "daemon status:") {
 		t.Fatalf("daemon status stdout = %q", stdout)
 	}
-	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStatusCmd(&invocation{projectsRoot: root}, deps) }, "--json")
+	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("status", &invocation{projectsRoot: root}, deps) }, "--json")
 	if err != nil {
 		t.Fatalf("daemon status json: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestCwWtDaemonStartStatusStopRestartRecoverInProcess(t *testing.T) {
 		t.Fatalf("daemon status json = %q", stdout)
 	}
 
-	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStopCmd(&invocation{projectsRoot: root}, deps) })
+	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("stop", &invocation{projectsRoot: root}, deps) })
 	if err != nil {
 		t.Fatalf("daemon stop: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestCwWtDaemonStartStatusStopRestartRecoverInProcess(t *testing.T) {
 		t.Fatalf("daemon stop stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonRestartCmd(&invocation{projectsRoot: root}, deps) }, "--if-running")
+	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("restart", &invocation{projectsRoot: root}, deps) }, "--if-running")
 	if err != nil {
 		t.Fatalf("daemon restart --if-running: %v", err)
 	}
@@ -159,14 +159,14 @@ func TestCwWtDaemonStartStatusStopRestartRecoverInProcess(t *testing.T) {
 		t.Fatalf("daemon restart stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonRecoverCmd(&invocation{projectsRoot: root}, deps) })
+	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("recover", &invocation{projectsRoot: root}, deps) })
 	if err != nil {
 		t.Fatalf("daemon recover: %v", err)
 	}
 	if !strings.Contains(stdout, "daemon recover:") {
 		t.Fatalf("daemon recover stdout = %q", stdout)
 	}
-	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonRecoverCmd(&invocation{projectsRoot: root}, deps) }, "--format", "json")
+	stdout, _, err = cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("recover", &invocation{projectsRoot: root}, deps) }, "--format", "json")
 	if err != nil {
 		t.Fatalf("daemon recover json: %v", err)
 	}
@@ -176,11 +176,11 @@ func TestCwWtDaemonStartStatusStopRestartRecoverInProcess(t *testing.T) {
 
 	// A bogus format is a usage error for every daemon verb.
 	for name, build := range map[string]func() *cobra.Command{
-		"start":   func() *cobra.Command { return newDaemonStartCmd(&invocation{projectsRoot: root}, deps) },
-		"status":  func() *cobra.Command { return newDaemonStatusCmd(&invocation{projectsRoot: root}, deps) },
-		"stop":    func() *cobra.Command { return newDaemonStopCmd(&invocation{projectsRoot: root}, deps) },
-		"restart": func() *cobra.Command { return newDaemonRestartCmd(&invocation{projectsRoot: root}, deps) },
-		"recover": func() *cobra.Command { return newDaemonRecoverCmd(&invocation{projectsRoot: root}, deps) },
+		"start":   func() *cobra.Command { return daemonCommandForTest("start", &invocation{projectsRoot: root}, deps) },
+		"status":  func() *cobra.Command { return daemonCommandForTest("status", &invocation{projectsRoot: root}, deps) },
+		"stop":    func() *cobra.Command { return daemonCommandForTest("stop", &invocation{projectsRoot: root}, deps) },
+		"restart": func() *cobra.Command { return daemonCommandForTest("restart", &invocation{projectsRoot: root}, deps) },
+		"recover": func() *cobra.Command { return daemonCommandForTest("recover", &invocation{projectsRoot: root}, deps) },
 	} {
 		_, _, err := cwWtDaemonExec(t, root, build, "--format", "yaml")
 		if code := exitCodeOf(t, err); code != exitUsage {
@@ -189,7 +189,7 @@ func TestCwWtDaemonStartStatusStopRestartRecoverInProcess(t *testing.T) {
 	}
 
 	// --json with a conflicting --format is refused too.
-	if _, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStartCmd(&invocation{projectsRoot: root}, deps) }, "--json", "--format", "yaml"); err == nil {
+	if _, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("start", &invocation{projectsRoot: root}, deps) }, "--json", "--format", "yaml"); err == nil {
 		t.Fatal("daemon start --json with a conflicting --format must fail")
 	}
 }
@@ -202,14 +202,18 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 	// A failing token generator stops start before any state is written.
 	failingToken := deps
 	failingToken.Token = func() (string, error) { return "", errors.New("cwWt: token unavailable") }
-	if _, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStartCmd(&invocation{projectsRoot: root}, failingToken) }); err == nil || !strings.Contains(err.Error(), "cwWt: token unavailable") {
+	if _, _, err := cwWtDaemonExec(t, root, func() *cobra.Command {
+		return daemonCommandForTest("start", &invocation{projectsRoot: root}, failingToken)
+	}); err == nil || !strings.Contains(err.Error(), "cwWt: token unavailable") {
 		t.Fatalf("start with a failing token = %v", err)
 	}
 
 	// A failing process starter is reported.
 	failingStart := deps
 	failingStart.Start = func(string, []string, string) (int, error) { return 0, errors.New("cwWt: spawn failed") }
-	if _, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonStartCmd(&invocation{projectsRoot: root}, failingStart) }); err == nil {
+	if _, _, err := cwWtDaemonExec(t, root, func() *cobra.Command {
+		return daemonCommandForTest("start", &invocation{projectsRoot: root}, failingStart)
+	}); err == nil {
 		t.Fatal("start with a failing spawn must fail")
 	}
 
@@ -226,7 +230,9 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 	// more thing to report instead of a hard error.
 	unusableRoot := filepath.Join(blocker, "projects")
 	pinDaemonHome(t, unusableRoot)
-	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, unusableRoot, func() *cobra.Command { return newDaemonStatusCmd(&invocation{projectsRoot: unusableRoot}, deps) })
+	blockedStatus, _, blockedStatusErr := cwWtDaemonExec(t, unusableRoot, func() *cobra.Command {
+		return daemonCommandForTest("status", &invocation{projectsRoot: unusableRoot}, deps)
+	})
 	if blockedStatusErr != nil {
 		t.Fatalf("status against an unresolvable projects root = %v", blockedStatusErr)
 	}
@@ -237,7 +243,7 @@ func TestCwWtDaemonCommandErrorPropagation(t *testing.T) {
 
 	// recover --apply on a proven-stale-but-ineligible lock refuses; a plain
 	// dry run over a missing lock reports no_stale_owner and succeeds.
-	stdout, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return newDaemonRecoverCmd(&invocation{projectsRoot: root}, deps) }, "--apply")
+	stdout, _, err := cwWtDaemonExec(t, root, func() *cobra.Command { return daemonCommandForTest("recover", &invocation{projectsRoot: root}, deps) }, "--apply")
 	if err != nil {
 		t.Fatalf("recover --apply with no lock: %v (stdout=%s)", err, stdout)
 	}

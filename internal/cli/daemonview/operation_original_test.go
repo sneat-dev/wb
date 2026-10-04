@@ -1,4 +1,4 @@
-package main
+package daemonview
 
 import (
 	"bytes"
@@ -8,27 +8,6 @@ import (
 
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 )
-
-func TestCwCovDaemonOperationTerminalAndState(t *testing.T) {
-	for state, want := range map[daemonv1.OperationState]bool{
-		daemonv1.OperationState_OPERATION_STATE_SUCCEEDED:         true,
-		daemonv1.OperationState_OPERATION_STATE_FAILED:            true,
-		daemonv1.OperationState_OPERATION_STATE_CANCELLED:         true,
-		daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED: true,
-		daemonv1.OperationState_OPERATION_STATE_QUEUED:            false,
-		daemonv1.OperationState_OPERATION_STATE_RUNNING:           false,
-	} {
-		if got := daemonOperationTerminal(state); got != want {
-			t.Errorf("daemonOperationTerminal(%v) = %t, want %t", state, got, want)
-		}
-	}
-	if got := daemonOperationState(daemonv1.OperationState_OPERATION_STATE_RECOVERY_REQUIRED); got != "recovery_required" {
-		t.Errorf("daemonOperationState = %q", got)
-	}
-	if got := daemonOperationState(daemonv1.OperationState_OPERATION_STATE_QUEUED); got != "queued" {
-		t.Errorf("daemonOperationState(queued) = %q", got)
-	}
-}
 
 func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
 	operation := &daemonv1.Operation{
@@ -41,7 +20,7 @@ func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
 		TargetWorkerId: "worker-1",
 	}
 	var out bytes.Buffer
-	if err := writeDaemonOperation(&out, "text", operation); err != nil {
+	if err := Operation(&out, "text", operation); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -57,7 +36,7 @@ func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
 
 	// An unfinished operation with no worker and no tails prints one short line.
 	out.Reset()
-	if err := writeDaemonOperation(&out, "text", &daemonv1.Operation{
+	if err := Operation(&out, "text", &daemonv1.Operation{
 		OperationId: "wbo-2", State: daemonv1.OperationState_OPERATION_STATE_QUEUED, Cursor: "c-2", CpuUnits: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -68,7 +47,7 @@ func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := writeDaemonOperation(&out, "json", operation); err != nil {
+	if err := Operation(&out, "json", operation); err != nil {
 		t.Fatal(err)
 	}
 	var payload struct {
@@ -87,18 +66,5 @@ func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
 	}
 	if payload.StdoutTail != "hello\n" || payload.StderrTail != "warning\n" || payload.ArgumentCount != 2 {
 		t.Fatalf("payload tails = %+v", payload)
-	}
-}
-
-func TestCwCovWaitForDaemonOperationStopsOnTerminalState(t *testing.T) {
-	// A terminal operation is returned unchanged without any client call.
-	operation := &daemonv1.Operation{OperationId: "wbo-3", State: daemonv1.OperationState_OPERATION_STATE_SUCCEEDED}
-	var progress bytes.Buffer
-	result, err := waitForDaemonOperation(t.Context(), &progress, nil, operation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result != operation || progress.Len() != 0 {
-		t.Fatalf("terminal wait = (%+v, %q)", result, progress.String())
 	}
 }

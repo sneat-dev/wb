@@ -51,7 +51,7 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+		served <- serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -465,7 +465,7 @@ func TestCockpitInvalidConfigurationStopsTheDaemonFromServing(t *testing.T) {
 	command.SetContext(ctx)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err := serveDashboard(&invocation{projectsRoot: root}, command, deps, freeLoopbackAddress(t), daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+	err := serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, freeLoopbackAddress(t), daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	if err == nil || !strings.Contains(err.Error(), "cockpit configuration") || !strings.Contains(err.Error(), "cockpit.hosted_url") {
 		t.Fatalf("serveDashboard = %v, want an error naming the cockpit section", err)
 	}
@@ -487,7 +487,7 @@ func TestDaemonRefusesToServeOnAListenerBoundOutsideLoopback(t *testing.T) {
 	command.SetContext(context.Background())
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err = serveDashboard(&invocation{projectsRoot: root}, command, deps, "localhost:8766", daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+	err = serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, "localhost:8766", daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
 	var exit *exitError
 	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "192.0.2.10:8766") {
 		t.Fatalf("serveDashboard = %v, want a usage error naming the bound address", err)

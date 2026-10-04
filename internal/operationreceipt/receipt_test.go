@@ -2,9 +2,10 @@ package operationreceipt
 
 import (
 	"encoding/json"
-	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"reflect"
 	"testing"
+
+	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 )
 
 func TestReceiptPreservesActualOperationAndStableJSONFields(t *testing.T) {

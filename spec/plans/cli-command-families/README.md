@@ -577,8 +577,59 @@ race package took 22.340 seconds under a different batch/load, so the faster
 final run is an observation, not a controlled benchmark or CI-time promise.
 Active `WB_PROJECTS_ROOT` pins were redundant where explicit roots win;
 retired compatibility pins were separately removed. Actual environment
-forwarding remains tested. Further daemon, worker, peers and Cockpit CLI
-cutovers remain pending under this task.
+forwarding remains tested. The daemon and Cockpit CLI cutovers are recorded
+below; worker and peers remain pending under this task.
+
+The next coordinated cohort extracts Cockpit open/export into
+`internal/cli/cmdcockpit` and `internal/cockpitrun`. Its 50 original test
+responsibilities retain actual owner-channel authentication, export HTTP/store
+behavior and a fail-closed no-start guard. Local lifecycle defaults are created
+only inside the invoked Local operation; export has five read effects and no
+lifecycle bootstrap. The shared JSON selector preserves boolean-JSON precedence
+and removes the private duplicate. Exact final leaf profiles cover 214/214
+statements (83/83 family, independently covered by cheap unit tests, and 131/131
+service). The replaced command file is counted only at its final coordinates.
+Native export race tests passed in 2.985 seconds. Root callback coverage is 13/13. The joint gate initially passed 64 of 66
+selected cases. Its new invalid-listen fixture wrongly expected an empty
+directory, despite existing lifecycle directory/lock bookkeeping. The corrected
+case proves typed refusal, absent state/socket and released ownership. The
+no-start guard was updated for actual Go builtins/conversions, its exact local
+error closure and verified Alive/Client function-value bindings. Unknown calls,
+argument traversal and the original exactly-one launchd print check remain
+protected. Both failing cases passed targeted retries; no full-root rerun was
+needed. No repository-wide coverage is claimed.
+
+Daemon serve, lifecycle and operation commands are extracted alongside
+Cockpit with disjoint file ownership. The actual server composition remains a
+plain context/stream callback; controller, transport, queue and policy authority
+are reused. The alternate `wait operation` factory binds the actual new command
+constructor, without a sibling-family import. The daemon cohort preserves 96 original test responsibilities: 11 moved, 42
+retained native/adapted and 43 unchanged protected bodies. Its designated leaves
+cover 332/332 statements: command family 197, renderer 81, operation service 46,
+shared selector seven and terminal predicate one. The raw profile additionally
+contains 28 existing helper statements, excluded from these designated counts.
+All 42 retained native cases and the repeated-execution regression passed.
+The approved serve change keeps derived state paths execution-local, preventing
+the first invocation's resolved path from becoming a later implicit pin.
+
+Three moved serve-preparation error returns were closed with actual private
+blocked-path/malformed-record cases and an explicitly simulated per-instance
+Token error contract. They preserve error identity, unchanged records and no
+later listening/persistence; all three passed race tests. The daemon root
+factory/preparation/forwarder declarations cover 34/34 statements, plus the one
+changed alternate wait binding. With Cockpit's 13 root statements, the combined
+new/moved designation is 594/594 (546 leaves, 48 root). Identical production
+blocks use maximum hits across the preserved initial gate and targeted retries.
+The qualification-only worker heartbeat call and two unchanged server diagnostic
+statements remain unexecuted in this selection; they are separate from the
+new/moved scope. Server-body equality after parameter substitutions is recorded.
+
+All nine affected root/leaf test packages compile for Linux and Windows; those
+test binaries were not executed. Root-inclusive vet and lint passed, as did the
+private current-source WB build. The last neutral AST-only guard correction
+postdates target compilation and adds no platform-specific code. Final source
+review and normal-hook local commit bind the coordinated cohort; no publication
+or whole-CI timing improvement is implied.
 
 ### Task 8: Verify full cutover and land reviewed batches
 

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cli/daemonview"
+
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/sneat-dev/wb/internal/daemon"
@@ -65,7 +67,7 @@ func TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	projectsRoot := root
-	command := newDaemonStatusCmd(&invocation{projectsRoot: projectsRoot}, deps)
+	command := daemonCommandForTest("status", &invocation{projectsRoot: projectsRoot}, deps)
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{"--json"})
@@ -109,7 +111,7 @@ func TestDaemonRecoverReturnsJSONForActiveTransitionAndApplyRefuses(t *testing.T
 		args    []string
 		wantErr bool
 	}{{args: []string{"--json"}}, {args: []string{"--apply", "--json"}, wantErr: true}} {
-		command := newDaemonRecoverCmd(&invocation{projectsRoot: root}, deps)
+		command := daemonCommandForTest("recover", &invocation{projectsRoot: root}, deps)
 		var output bytes.Buffer
 		command.SetOut(&output)
 		command.SetErr(io.Discard)
@@ -159,7 +161,7 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 		t.Fatalf("probe errors = direct %q, effective %q", result.DirectTransportError, result.ReachabilityError)
 	}
 	var textOutput bytes.Buffer
-	if err := writeDaemonResult(&textOutput, "text", result); err != nil {
+	if err := daemonview.Result(&textOutput, "text", result); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"state=ready", "process_manager_running=true", "api_reachable=false", "direct_transport_reachable=false", `direct_transport_error="connect: operation not permitted"`, `api_probe_error="protected file bridge: bridge unavailable"`} {
@@ -168,7 +170,7 @@ func TestDaemonStatusSeparatesReadyStateFromFailedAPIProbe(t *testing.T) {
 		}
 	}
 	var jsonOutput bytes.Buffer
-	if err := writeDaemonResult(&jsonOutput, "json", result); err != nil {
+	if err := daemonview.Result(&jsonOutput, "json", result); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{`"process_manager_running": true`, `"reachable": false`, `"direct_transport_reachable": false`, `"direct_transport_error": "connect: operation not permitted"`, `"reachability_error": "protected file bridge: bridge unavailable"`, `"status": "ready"`} {
@@ -209,7 +211,7 @@ func TestDaemonStatusUsesAuthenticatedFileBridgeAfterDirectTransportDenial(t *te
 		t.Fatalf("bridge probe = root %q generation %q", probedRoot, probedGeneration)
 	}
 	var output bytes.Buffer
-	if err := writeDaemonResult(&output, "text", result); err != nil {
+	if err := daemonview.Result(&output, "text", result); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"api_reachable=true", "direct_transport_reachable=false", "api_transport=file_bridge", "direct_transport_error="} {
@@ -218,7 +220,7 @@ func TestDaemonStatusUsesAuthenticatedFileBridgeAfterDirectTransportDenial(t *te
 		}
 	}
 	output.Reset()
-	if err := writeDaemonResult(&output, "json", result); err != nil {
+	if err := daemonview.Result(&output, "json", result); err != nil {
 		t.Fatal(err)
 	}
 	var decoded daemonResult
@@ -239,7 +241,7 @@ func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
 				t.Fatal(err)
 			}
 			projectsRoot := root
-			command := newDaemonRestartCmd(&invocation{projectsRoot: projectsRoot}, deps)
+			command := daemonCommandForTest("restart", &invocation{projectsRoot: projectsRoot}, deps)
 			var stdout, stderr bytes.Buffer
 			command.SetOut(&stdout)
 			command.SetErr(&stderr)
@@ -263,16 +265,6 @@ func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
 				t.Fatalf("text result = %q", stdout.String())
 			}
 		})
-	}
-}
-
-func TestDaemonJSONShortcutRejectsConflictingFormat(t *testing.T) {
-	if _, err := daemonOutputFormat("yaml", true); err == nil {
-		t.Fatal("expected conflicting format to fail")
-	}
-	format, err := daemonOutputFormat("text", true)
-	if err != nil || format != "json" {
-		t.Fatalf("shortcut = %q, %v", format, err)
 	}
 }
 
