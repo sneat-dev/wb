@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-var exactGitObjectID = shared.ExactGitObjectID
-
 func ciDependencies() cmdci.Dependencies {
 	return cmdci.Dependencies{WaitChecks: orchestrate.WaitForCommitChecks, Audit: ciaudit.AuditBatch, ValidateBranch: validateCIBranch, Now: time.Now}
 }
