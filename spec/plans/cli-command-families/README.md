@@ -875,6 +875,36 @@ Capability metadata changes only thirteen policy test paths; all 790 references
 resolve. Independent final review and a local checkpoint precede continuation;
 publication remains deferred.
 
+The next two lanes extract complete worktree rename/relocate and dependency
+local propagation. Movement uses existing domain operations, actual admission
+and marker callbacks; shared branch-choice validation has genuine rename and
+create consumers. Three recording tests no longer mutate a global relocation
+callback and run independently. The native delayed progress reporter retains
+timer ownership, stop-before-completion and joined shutdown; controlled ticks
+prove rendering without ten-second test sleeps. Whole movement leaves, shared
+policy and reporter have 150/150 statements covered.
+
+Propagation moves native port construction to a Cobra-free owner that calls
+the existing concrete link engine. Store/home, timeout, cache, content hash,
+undo and record-before-filesystem authority remain unchanged. Five original
+command/render responsibilities move; the complete native link/undo/landing
+journey and four related root guards remain intact. Whole propagation leaves
+have 121/121 statements covered. A new writer fixture initially emitted no text;
+focused corrections now prove the original writer sentinel takes precedence
+when the same result also contains findings. Passing native cases were reused.
+
+One combined root race gate passed all 21 selected cases in 56.85 seconds. An
+initial root build stopped before any case ran because an import became unused
+when tests moved. Removing that import, an orphan writer type/method and a stale
+comment preserves producer and assertion bytes; failed receipts are retained.
+Current leaves and whole changed root declarations total 284/284 statements,
+not repository-wide coverage. Scoped lint/serial checks, root vet and target
+compilation pass. Unchanged integration compilation and private executable
+build receipts were reused; no expensive native journey was repeated after the
+test-only orphan removal. All 790 capability references still resolve with no
+metadata change. Final independent review precedes the local checkpoint;
+publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

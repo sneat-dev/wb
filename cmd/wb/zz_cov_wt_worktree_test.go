@@ -64,50 +64,12 @@ func TestCwWtPrintWorktreeCleanupAndRename(t *testing.T) {
 		t.Fatalf("empty cleanup = %q", got)
 	}
 
-	rename := []worktrees.RenameResult{
-		{OldTask: "old", Repository: "acme/a", NewWorktreeDir: "/tmp/new", NewBranch: "new", Applied: true, OldBranchDeleted: true, OldBranch: "old"},
-		{OldTask: "old", Repository: "acme/b", NewWorktreeDir: "/tmp/new2", NewBranch: "new", Applied: true},
-		{OldTask: "old", Repository: "acme/c", NewWorktreeDir: "/tmp/new3", Eligible: true},
-		{OldTask: "old", Repository: "acme/d", Reason: "dirty"},
-	}
-	out.Reset()
-	if err := printWorktreeRename(cwWtCmd(&out), rename, false); err != nil {
-		t.Fatal(err)
-	}
-	text = out.String()
-	for _, want := range []string{
-		"renamed old acme/a -> /tmp/new (new) and deleted old branch old",
-		"renamed old acme/b -> /tmp/new2 (new)\n",
-		"would rename old acme/c -> /tmp/new3", "skip old acme/d: dirty",
-		"1 eligible; dry-run only, pass --apply to rename",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("rename output missing %q:\n%s", want, text)
-		}
-	}
-	out.Reset()
-	if err := printWorktreeRename(cwWtCmd(&out), rename, true); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "2 renamed") {
-		t.Fatalf("rename apply output = %q", out.String())
-	}
-	out.Reset()
-	if err := printWorktreeRename(cwWtCmd(&out), nil, false); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "no WB worktrees matched\n" {
-		t.Fatalf("empty rename = %q", got)
-	}
-
-	// Write failures propagate in both.
+	// Cleanup write failures propagate.
 	for allow := 0; allow < 3; allow++ {
 		if err := printWorktreeCleanup(cwWtCmdWriter(&cwWtFailWriter{Allow: allow}), cleanup, false); err == nil {
 			t.Fatalf("printWorktreeCleanup with %d writes allowed returned nil", allow)
 		}
-		if err := printWorktreeRename(cwWtCmdWriter(&cwWtFailWriter{Allow: allow}), rename, false); err == nil {
-			t.Fatalf("printWorktreeRename with %d writes allowed returned nil", allow)
-		}
+
 	}
 }
 

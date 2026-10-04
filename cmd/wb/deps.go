@@ -52,7 +52,7 @@ type depsSetOptions struct {
 
 func newDepsCmd(inv *invocation) *cobra.Command {
 	command := cmddeps.New(newCLIRuntime(inv), cmddeps.Operations(newDependencyService(), openBrowser))
-	command.AddCommand(newDepsPublishCmd(inv), newDepsPropagateCmd(inv), cmddeps.NewPolicy(newCLIRuntime(inv), cmddeps.PolicyOperations(newPolicyService())), cmddeps.NewGoDirective(newCLIRuntime(inv), cmddeps.DirectiveOperations(newDependencyService())))
+	command.AddCommand(newDepsPublishCmd(inv), cmddeps.NewPropagate(newCLIRuntime(inv), cmddeps.PropagationOperations(newPropagationService())), cmddeps.NewPolicy(newCLIRuntime(inv), cmddeps.PolicyOperations(newPolicyService())), cmddeps.NewGoDirective(newCLIRuntime(inv), cmddeps.DirectiveOperations(newDependencyService())))
 	return command
 }
 func newDependencyService() *depsrun.Service {
@@ -105,4 +105,8 @@ func dependencyRepositories(inv *invocation, args []string, options depsSetOptio
 
 func newPolicyService() *depsrun.PolicyService {
 	return depsrun.NewPolicy(depsrun.DefaultPolicyDependencies(os.Stderr), usageError)
+}
+
+func newPropagationService() *depsrun.PropagationService {
+	return depsrun.NewPropagation(depsrun.DefaultPropagationDependencies())
 }

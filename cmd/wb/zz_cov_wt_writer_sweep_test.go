@@ -38,16 +38,6 @@ func TestCwWtWriterSweepCleanupRenameShellsAdopt(t *testing.T) {
 		return printWorktreeCleanup(cwWtCmdWriter(writer), cleanup, false)
 	})
 
-	rename := []worktrees.RenameResult{
-		{OldTask: "old", Repository: "acme/a", NewWorktreeDir: "/tmp/n", NewBranch: "new", Applied: true, OldBranchDeleted: true, OldBranch: "old"},
-		{OldTask: "old", Repository: "acme/b", NewWorktreeDir: "/tmp/n2", NewBranch: "new", Applied: true},
-		{OldTask: "old", Repository: "acme/c", NewWorktreeDir: "/tmp/n3", Eligible: true},
-		{OldTask: "old", Repository: "acme/d", Reason: "dirty"},
-	}
-	cwWtSweepWrites(t, 8, func(writer *cwWtFailWriter) error {
-		return printWorktreeRename(cwWtCmdWriter(writer), rename, false)
-	})
-
 	shells := worktrees.RetireShellsOutcome{
 		Results: []worktrees.RetiredShell{
 			{Task: "a", Path: "/tmp/a", Applied: true},
