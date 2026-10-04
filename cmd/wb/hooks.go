@@ -9,7 +9,6 @@ import (
 	"github.com/sneat-dev/wb/internal/agentguard"
 	"github.com/sneat-dev/wb/internal/claudesettings"
 	"github.com/sneat-dev/wb/internal/cli/cmdhooks"
-	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/wbexec"
@@ -54,11 +53,6 @@ func newHooksCmd(inv *invocation) *cobra.Command {
 	})
 }
 
-// These leaf adapters serve the remaining stream, worktree, skills and session commands.
-func hookExecutable() string                          { return wbexec.HookExecutable() }
-func shellQuote(value string) string                  { return wbexec.QuoteShellWord(value) }
-func argumentOrCurrent(args []string) string          { return shared.ArgumentOrCurrent(args) }
-func writeLine(writer io.Writer, values ...any) error { return shared.WriteLine(writer, values...) }
-func writeFormat(writer io.Writer, format string, values ...any) error {
-	return shared.WriteFormat(writer, format, values...)
-}
+// These adapters bind the native hook executable and shell quoting authorities.
+func hookExecutable() string         { return wbexec.HookExecutable() }
+func shellQuote(value string) string { return wbexec.QuoteShellWord(value) }

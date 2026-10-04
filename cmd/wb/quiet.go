@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdcatalog"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,6 @@ func (filter routineClaimNoteFilter) Write(payload []byte) (int, error) {
 // markQuietVerb makes a quiet-consuming verb findable by `wb commands --search
 // quiet`, next to the discovery terms it already carries.
 func markQuietVerb(command *cobra.Command) {
-	terms := command.Annotations[discoveryTermsAnnotation]
+	terms := command.Annotations[cmdcatalog.DiscoveryTermsAnnotation]
 	setDiscoveryTerms(command, strings.TrimSpace(terms+" quiet outcome only no progress pipe tail"))
 }

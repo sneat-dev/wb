@@ -1090,9 +1090,35 @@ moved tests. Independent final review and normal hooks precede local checkpoints
 publication remains deferred. Catalog/help and dashboard are the next cohesive
 cohorts; root registration and persistent-selector policy remain composition.
 
+### Catalog/help and dashboard command families
+
+Catalog traversal, search, help resolution and presentation now share one
+`cmdcatalog` owner. Root retains registration, grouping, invocation-wide selector
+policy and the actual coded-error factory. The quiet annotation read uses the
+canonical discovery key. Six pure originals follow the owner; thirteen real root
+contracts remain. Pinned Cobra source proves `Find` returns a nonnil command for
+these callers, so the unreachable recovery-hint fallback was removed.
+
+Dashboard command parsing and output have their own typed owner. The real default
+callback still delegates to the daemon controller; the controller and store are
+exercised with private controlled process/health dependencies, separately from
+the actual default-home refusal witness. These are not live child/launchd proofs.
+Nine isolated original ports run in parallel, as does the retained constructor
+case. Tests that pin process-wide home state remain serial with explicit reasons.
+
+The combined designated scope covers 211/211 statements: catalog/help150,
+dashboard40 and twelve whole root declarations21, including actual callbacks.
+The twenty-case combined root race gate passes in7.65seconds; leaf races pass ten
+catalog/help cases and twelve dashboard cases. This is scoped evidence, not a new
+repository-wide percentage or proof that full CI is faster. Three test-only root
+hook helper forwards were removed; their exact original predicates now call the
+shared implementations. All790 capability references resolve after three path
+updates. Final scoped checks and independent exact-state review precede the local
+checkpoint; publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
-**Status:** queued
+**Status:** in_progress
 **Verifies:** Complete user journey and all package contracts.
 
 Prove no old command implementations or unnecessary compatibility test copies

@@ -3248,17 +3248,17 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/dashboard_test.go",
+              "path": "internal/cli/cmddashboard/original_test.go",
               "name": "TestDashboardOpensHostedURL",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/dashboard_test.go",
+              "path": "internal/cli/cmddashboard/original_test.go",
               "name": "TestDashboardJSONDoesNotOpenBrowser",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/dashboard_test.go",
+              "path": "internal/cli/cmddashboard/original_test.go",
               "name": "TestDashboardLocalStartsDaemonAndOpensItsURL",
               "kind": "unit"
             },

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
 )
 
 func TestHooksCompositionUsesCurrentFlagsAndFreshLifecycleState(t *testing.T) {
@@ -67,30 +69,30 @@ func TestHooksSharedAdaptersPreserveLegacyBytesAndWriterErrors(t *testing.T) {
 	if got := shellQuote("l'été ü"); got != "'l'\\''été ü'" {
 		t.Fatal(got)
 	}
-	if got := argumentOrCurrent([]string{""}); got != "" {
+	if got := shared.ArgumentOrCurrent([]string{""}); got != "" {
 		t.Fatal(got)
 	}
-	if got := argumentOrCurrent([]string{"a", "b"}); got != "." {
+	if got := shared.ArgumentOrCurrent([]string{"a", "b"}); got != "." {
 		t.Fatal(got)
 	}
 	if hookExecutable() == "" {
 		t.Fatal("empty hook executable")
 	}
 	var out bytes.Buffer
-	if err := writeLine(&out, "hello", "é"); err != nil {
+	if err := shared.WriteLine(&out, "hello", "é"); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeFormat(&out, "%s %d\n", "world", 2); err != nil {
+	if err := shared.WriteFormat(&out, "%s %d\n", "world", 2); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "hello é\nworld 2\n" {
 		t.Fatal(out.String())
 	}
 	sentinel := errors.New("closed")
-	if err := writeLine(failingWriter{err: sentinel}, "message"); err != sentinel {
+	if err := shared.WriteLine(failingWriter{err: sentinel}, "message"); err != sentinel {
 		t.Fatal(err)
 	}
-	if err := writeFormat(failingWriter{err: sentinel}, "message"); err != sentinel {
+	if err := shared.WriteFormat(failingWriter{err: sentinel}, "message"); err != sentinel {
 		t.Fatal(err)
 	}
 }
