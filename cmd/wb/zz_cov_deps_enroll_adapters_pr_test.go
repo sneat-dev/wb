@@ -128,25 +128,6 @@ func TestCwDepsRemoteEnrollRefusalsAndCredentialReuse(t *testing.T) {
 	}
 }
 
-func TestCwDepsReadRemoteEnrollmentTokenRefusals(t *testing.T) {
-	if _, err := readRemoteEnrollmentToken(strings.NewReader("")); err == nil ||
-		!strings.Contains(err.Error(), "one non-empty token") {
-		t.Fatalf("empty token = %v", err)
-	}
-	if _, err := readRemoteEnrollmentToken(strings.NewReader("two tokens\n")); err == nil ||
-		!strings.Contains(err.Error(), "one non-empty token") {
-		t.Fatalf("two tokens = %v", err)
-	}
-	if _, err := readRemoteEnrollmentToken(strings.NewReader(strings.Repeat("x", 16<<10+2))); err == nil ||
-		!strings.Contains(err.Error(), "exceeds 16384 bytes") {
-		t.Fatalf("oversized token = %v", err)
-	}
-	token, err := readRemoteEnrollmentToken(strings.NewReader("  good-token \n"))
-	if err != nil || token != "good-token" {
-		t.Fatalf("token = %q, %v", token, err)
-	}
-}
-
 func TestCwDepsDefaultRemoteEnrollDependencies(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	deps := defaultRemoteEnrollDeps()

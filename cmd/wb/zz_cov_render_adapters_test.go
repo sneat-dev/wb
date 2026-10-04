@@ -15,30 +15,6 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func TestCwCovHumanAgeAndPublishedAgo(t *testing.T) {
-	for _, test := range []struct {
-		age  time.Duration
-		want string
-	}{
-		{0, "just now"},
-		{59 * time.Second, "just now"},
-		{90 * time.Second, "1m"},
-		{2 * time.Hour, "2h"},
-		{47 * time.Hour, "47h"},
-		{72 * time.Hour, "3d"},
-	} {
-		if got := humanAge(test.age); got != test.want {
-			t.Errorf("humanAge(%v) = %q, want %q", test.age, got, test.want)
-		}
-	}
-	if got := publishedAgo("just now"); got != "just now" {
-		t.Errorf("publishedAgo(just now) = %q", got)
-	}
-	if got := publishedAgo("2h"); got != "2h ago" {
-		t.Errorf("publishedAgo(2h) = %q", got)
-	}
-}
-
 func TestCwCovMachineRowsClassifyEveryEntry(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	entries := []remotestate.Entry{

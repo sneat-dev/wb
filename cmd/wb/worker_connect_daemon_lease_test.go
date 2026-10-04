@@ -91,7 +91,7 @@ func TestWorkerConnectLeasesAndExecutesARealQueuedOperation(t *testing.T) {
 		}
 	}()
 
-	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, deps)
+	command := workerConnectForTest(&invocation{projectsRoot: root}, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	command.SetContext(ctx)
 	var stdout, stderr bytes.Buffer

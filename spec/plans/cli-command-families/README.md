@@ -578,7 +578,7 @@ final run is an observation, not a controlled benchmark or CI-time promise.
 Active `WB_PROJECTS_ROOT` pins were redundant where explicit roots win;
 retired compatibility pins were separately removed. Actual environment
 forwarding remains tested. The daemon and Cockpit CLI cutovers are recorded
-below; worker and peers remain pending under this task.
+below; subsequent worker/peers cutovers and remaining host work are recorded here.
 
 The next coordinated cohort extracts Cockpit open/export into
 `internal/cli/cmdcockpit` and `internal/cockpitrun`. Its 50 original test
@@ -630,6 +630,70 @@ private current-source WB build. The last neutral AST-only guard correction
 postdates target compilation and adds no platform-specific code. Final source
 review and normal-hook local commit bind the coordinated cohort; no publication
 or whole-CI timing improvement is implied.
+
+The complete worker connection, registration, assignment, heartbeat, CPU
+admission and bounded-tail journey now lives in `internal/workerrun`, with
+parsing and announcement rendering in `internal/cli/cmdworker`. All 11 original
+test responsibilities have destinations; two genuine root factory and queued
+operation journeys remain. Native private-assignment tests stay in the service
+package, avoiding test-only exports. Existing daemonruntime, process, runqueue,
+runenv and operation receipt contracts remain authoritative; runexec's different
+synchronous execution contract was not broadened to share an incompatible loop.
+
+Worker designated coverage is 224/224: family 34, service 186 and root binding
+four. The complete native service race run passed 12 top-level cases in 1.350
+seconds package elapsed (1.971 including admission/build). Its initial sandbox
+listener refusal and a new StringArray repeat-execution fixture mistake are
+retained as failed receipts; the corrected sole command case passed. Pure
+command cases use independent parallel in-memory fixtures; actual writable
+queues, CPU pools and child-process tests retain private state and joined cleanup.
+
+All seven peers verbs now live in `internal/cli/cmdpeers`, with Cobra-free
+workflows in `internal/peersrun`. All 50 peers and eight reused-helper original
+responsibilities are preserved. Five authenticated admin/read tests remain at
+root; two renderer-only golden tests moved to the cheap command package.
+Existing peer handlers, authenticated admin transport, atomic file writes and
+protocol DTOs remain authoritative. Credential reading/private writing, origin
+comparison and age presentation each have one shared owner with genuine retained
+consumers. Invite's exclusive one-time token policy remains distinct from
+machine credential idempotency. The sole bool-state JSON encoding error catch
+was removed after review of its concrete producer; real filesystem checks remain.
+
+The invite rescue result retains the normalized attempted path internally while
+its JSON omits token_file and reveals the intended one-time token. Relative-path
+normalization, writer-error precedence and actual upstream trust JSON fields are
+asserted through command execution. Mutating mint/join/trust/persistence cases
+have private writable state; immutable render inputs are cloned when needed.
+Peers designated coverage is 537/537: family 172, service 279, credential 35,
+shared age eight, origin 13 and root 30. Identical dependency blocks are deduplicated
+before maximum-hit profile union. The first native race batch passed 41 top-level
+cases in 2.443 seconds including admission/build; no native authority rerun was
+needed to close subsequent pure service/adapter assertions.
+
+The private production-used admin builder permits native child/authenticated
+transport proof using existing daemon test dependencies; that is separate from
+actual platform-default refusal and does not establish native launchd startup.
+A writer helper thought unused still has two E2E consumers and is retained.
+Seven peers capability paths and one worker path moved to actual declarations;
+existing test kinds and names remain unchanged.
+
+The joint root race gate passed 26 of 27 selected cases. Its new join fixture
+wrongly expected success with default restart enabled: the test executable
+rejected the CLI arguments after state was saved. The corrected sole retry
+asserts the original wrapped child exit error, saved-state message, private
+config/credential persistence and secret-free output, then exercises real read
+bindings. That retry passed with source unchanged. Root attribution is 34/34,
+including genuine retained remote enrollment, remote rendering and Cockpit route
+consumers of changed shared forwarders. Combined worker/peers designation is
+761/761 (727 leaves, 34 root); no repository-wide or net coverage gain is claimed.
+
+Scoped vet and final lint passed. All ten affected test packages compiled for
+Linux and Windows, without executing those target binaries. The private
+current-source WB build passed after the final test corrections. Independent
+implementation review and normal-hook local commit bind this cohort; publication
+remains deferred. Remaining serving/hub and authenticated-client work has a
+read-only domain proposal and preliminary architecture review, requiring exact
+post-checkpoint ownership rebind before implementation.
 
 ### Task 8: Verify full cutover and land reviewed batches
 

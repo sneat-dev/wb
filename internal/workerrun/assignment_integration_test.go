@@ -1,4 +1,4 @@
-package main
+package workerrun
 
 import (
 	"bytes"
@@ -13,121 +13,62 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-
-	"github.com/spf13/cobra"
-
 	"github.com/sneat-dev/wb/internal/daemon"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
 	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
-func TestCwCovCanonicalWorkerRootsAndPermissions(t *testing.T) {
+func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) {
 	root := t.TempDir()
-	nested := filepath.Join(root, "repo")
-	if err := os.Mkdir(nested, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := canonicalWorkerRoots(nil); err == nil || !strings.Contains(err.Error(), "at least one --root") {
-		t.Fatalf("empty roots error = %v", err)
-	}
-	if _, err := canonicalWorkerRoots([]string{"relative/path"}); err == nil || !strings.Contains(err.Error(), "must be absolute") {
-		t.Fatalf("relative root error = %v", err)
-	}
-	if _, err := canonicalWorkerRoots([]string{filepath.Join(root, "absent")}); err == nil {
-		t.Fatal("a missing root must be refused")
-	}
-	file := filepath.Join(root, "file")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := canonicalWorkerRoots([]string{file}); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("file root error = %v", err)
-	}
-	// The same root named twice is canonicalized to one entry.
-	permitted, err := canonicalWorkerRoots([]string{root, root + string(filepath.Separator)})
+	service, err := workerTestService(t, root, "test-build", "worker-refusal", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(permitted) != 1 {
-		t.Fatalf("permitted = %v, want one deduplicated root", permitted)
-	}
-	if ok, err := workerPermitsDirectory(permitted, nested); err != nil || !ok {
-		t.Fatalf("nested directory = (%t, %v), want permitted", ok, err)
-	}
-	if ok, err := workerPermitsDirectory(permitted, "relative"); err == nil || ok {
-		t.Fatalf("relative cwd = (%t, %v), want a refusal", ok, err)
-	}
-	if ok, err := workerPermitsDirectory(permitted, filepath.Join(root, "absent")); err == nil || ok {
-		t.Fatalf("missing cwd = (%t, %v), want a refusal", ok, err)
-	}
-	if ok, err := workerPermitsDirectory(permitted, t.TempDir()); err != nil || ok {
-		t.Fatalf("outside cwd = (%t, %v), want a refusal", ok, err)
-	}
-}
-
-func TestCwCovWorkerTailBufferKeepsTheTailBounded(t *testing.T) {
-	var buffer workerTailBuffer
-	chunk := bytes.Repeat([]byte("a"), 40<<10)
-	if n, err := buffer.Write(chunk); err != nil || n != len(chunk) {
-		t.Fatalf("Write = (%d, %v)", n, err)
-	}
-	marker := []byte("TAIL-MARKER")
-	chunk2 := append(bytes.Repeat([]byte("b"), 40<<10), marker...)
-	if _, err := buffer.Write(chunk2); err != nil {
+	path, handler := daemonv1connect.NewDaemonServiceHandler(service)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := daemonv1connect.NewDaemonServiceClient(server.Client(), server.URL)
+	operation, err := client.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
+		WorkingDirectory: root, Argv: []string{"go", "version"}, TargetWorkerId: "refusing-worker",
+	}))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if buffer.Len() > 64<<10 {
-		t.Fatalf("buffer length = %d, want it bounded at 64KiB", buffer.Len())
+	registered, err := client.RegisterWorker(context.Background(), connect.NewRequest(&daemonv1.RegisterWorkerRequest{
+		WorkerId: "refusing-worker", Build: "test-build", ProtocolVersion: daemon.ProtocolVersion,
+		Os: "test", Arch: "test", CpuCapacity: 1, PermittedRoots: []string{root},
+	}))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !bytes.HasSuffix(buffer.Bytes(), marker) {
-		t.Fatalf("the retained window must be the tail, ending in the newest bytes")
+	registration := registered.Msg.Registration
+	leased, err := client.LeaseOperation(context.Background(), connect.NewRequest(&daemonv1.LeaseOperationRequest{
+		WorkerId: registration.WorkerId, WorkerGeneration: registration.WorkerGeneration, WaitMilliseconds: 1,
+	}))
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestCwCovWorkerConnectCommandValidation(t *testing.T) {
-	root := t.TempDir()
-	build := func() *cobra.Command { return newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies()) }
-	cases := map[string][]string{
-		"missing id":      {"--root", root},
-		"relative root":   {"--id", "cw-worker", "--root", "relative"},
-		"missing root":    {"--id", "cw-worker", "--root", filepath.Join(root, "absent")},
-		"no roots at all": {"--id", "cw-worker"},
-		"unknown format":  {"--id", "cw-worker", "--root", root, "--format", "toml"},
+	if err := (New(Dependencies{})).assignment(context.Background(), "", &bytes.Buffer{}, client, registration, []string{t.TempDir()}, leased.Msg.Assignment); err != nil {
+		t.Fatal(err)
 	}
-	for name, args := range cases {
-		_, _, err := cwCovExec(t, root, build, args...)
-		if err == nil {
-			t.Errorf("%s: worker connect accepted an invalid invocation", name)
-			continue
-		}
-		if code := exitCodeOf(t, err); code != exitUsage {
-			t.Errorf("%s: exit = %d, want usage", name, code)
-		}
+	completed, err := client.GetOperation(context.Background(), connect.NewRequest(&daemonv1.GetOperationRequest{OperationId: operation.Msg.OperationId}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Msg.State != daemonv1.OperationState_OPERATION_STATE_FAILED || !strings.Contains(completed.Msg.Error, "outside permitted roots") {
+		t.Fatalf("refused operation = %#v", completed.Msg)
 	}
 }
-
-func TestCwCovWorkerCmdSurface(t *testing.T) {
-	command := newWorkerCmd(&invocation{}, defaultDaemonDependencies())
-	sub, _, err := command.Find([]string{"connect"})
-	if err != nil || sub == command {
-		t.Fatalf("worker connect subcommand is missing: %v", err)
-	}
-	connect := newWorkerConnectCmd(&invocation{}, defaultDaemonDependencies())
-	for _, name := range []string{"id", "root", "cpu-capacity", "format", "json"} {
-		if connect.Flags().Lookup(name) == nil {
-			t.Errorf("worker connect is missing --%s", name)
-		}
-	}
-}
-
 func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
 	if err := os.Mkdir(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	service, err := daemonTestService(t, root, "test-build", "cw-worker-run", func() error { return errors.New("raw disabled") })
+	service, err := workerTestService(t, root, "test-build", "cw-worker-run", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,11 +108,7 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		SchedulerGeneration: registration.SchedulerGeneration, OperationId: "op", LeaseId: "lease",
 		WorkingDirectory: work, Argv: []string{"go", "version"},
 	}
-	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, defaultDaemonDependencies())
-	command.SetContext(ctx)
-	command.SetOut(&bytes.Buffer{})
-	command.SetErr(&bytes.Buffer{})
-	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, mismatched); err == nil ||
+	if err := (New(Dependencies{})).assignment(ctx, root, &bytes.Buffer{}, client, registration, []string{root}, mismatched); err == nil ||
 		!strings.Contains(err.Error(), "different worker") {
 		t.Fatalf("mismatched generation error = %v", err)
 	}
@@ -181,13 +118,13 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		SchedulerGeneration: registration.SchedulerGeneration, OperationId: "op", LeaseId: "lease",
 		WorkingDirectory: work,
 	}
-	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, empty); err == nil ||
+	if err := (New(Dependencies{})).assignment(ctx, root, &bytes.Buffer{}, client, registration, []string{root}, empty); err == nil ||
 		!strings.Contains(err.Error(), "without a command") {
 		t.Fatalf("empty argv error = %v", err)
 	}
 
 	assignment := leased.Msg.Assignment
-	err = executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, assignment)
+	err = (New(Dependencies{})).assignment(ctx, root, &bytes.Buffer{}, client, registration, []string{root}, assignment)
 	if err != nil {
 		t.Fatalf("executeWorkerAssignment: %v", err)
 	}
@@ -204,17 +141,13 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 		t.Errorf("stdout tail = %q, want the child's output", completed.Msg.StdoutTail)
 	}
 }
-
-// An operation submitted with an explicit CpuUnits (the trusted raw-execution
-// fallback) must be admitted through the explicit budget-sum pool rather than
-// argv-based reclassification (PR #628, M4).
 func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
 	if err := os.Mkdir(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	service, err := daemonTestService(t, root, "test-build", "cw-worker-explicit", func() error { return errors.New("raw disabled") })
+	service, err := workerTestService(t, root, "test-build", "cw-worker-explicit", func() error { return errors.New("raw disabled") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,11 +183,7 @@ func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
 	if assignment.CpuUnits == 0 {
 		t.Fatal("assignment lost the explicit CpuUnits; test fixture no longer proves the explicit path")
 	}
-	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, defaultDaemonDependencies())
-	command.SetContext(ctx)
-	command.SetOut(&bytes.Buffer{})
-	command.SetErr(&bytes.Buffer{})
-	if err := executeWorkerAssignment(&invocation{projectsRoot: root}, command, client, registration, []string{root}, assignment); err != nil {
+	if err := (New(Dependencies{})).assignment(ctx, root, &bytes.Buffer{}, client, registration, []string{root}, assignment); err != nil {
 		t.Fatalf("executeWorkerAssignment with explicit CpuUnits: %v", err)
 	}
 	// Positive proof that the explicit CpuUnits actually went through

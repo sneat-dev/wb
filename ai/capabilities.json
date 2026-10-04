@@ -7300,7 +7300,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_test.go",
+              "path": "cmd/wb/peers_integration_test.go",
               "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
               "kind": "integration"
             }
@@ -7362,7 +7362,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_test.go",
+              "path": "cmd/wb/peers_integration_test.go",
               "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
               "kind": "integration"
             }
@@ -7424,7 +7424,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_test.go",
+              "path": "cmd/wb/peers_integration_test.go",
               "name": "TestPeersGetRendersAPeerDetailOrTheUpstream",
               "kind": "integration"
             }
@@ -7489,7 +7489,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_test.go",
+              "path": "cmd/wb/peers_integration_test.go",
               "name": "TestPeersInvitePrintsTokenOnceOrWritesTokenFile",
               "kind": "integration"
             }
@@ -7555,7 +7555,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_join_test.go",
+              "path": "internal/cli/cmdpeers/integration/join_original_test.go",
               "name": "TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical",
               "kind": "integration"
             }
@@ -7617,7 +7617,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_test.go",
+              "path": "cmd/wb/peers_integration_test.go",
               "name": "TestPeersListRendersDownstreamAndUpstreamRows",
               "kind": "integration"
             }
@@ -7679,7 +7679,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/peers_test.go",
+              "path": "cmd/wb/peers_integration_test.go",
               "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
               "kind": "integration"
             }
@@ -12860,7 +12860,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worker_test.go",
+              "path": "internal/workerrun/roots_test.go",
               "name": "TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots",
               "kind": "unit"
             },

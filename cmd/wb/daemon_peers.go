@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/peers"
 
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/daemon"
@@ -29,7 +30,7 @@ import (
 // network access this environment does not have, so this task takes the
 // spec's explicit fallback instead: plain JSON handlers behind the same
 // owner-token check. See the PR description for the tradeoff.
-const peersRPCPrefix = "/wb.peers.v1/"
+const peersRPCPrefix = peers.RPCPrefix
 
 // newPeerAdminHTTPHandler serves the owner-token peer admin routes. mount is
 // nil, or has a nil PeerAdmin, when no hub is configured — every route then
@@ -62,18 +63,9 @@ type peerAdminHandler struct {
 	viewer     hub.Viewer
 }
 
-type peerInviteRequest struct {
-	Name   string `json:"name"`
-	Rotate bool   `json:"rotate"`
-}
+type peerInviteRequest = peers.InviteRequest
 
-type peerInviteResponse struct {
-	PeerID    string    `json:"peer_id"`
-	Name      string    `json:"name"`
-	Token     string    `json:"token"`
-	CreatedAt time.Time `json:"created_at"`
-	Rotated   bool      `json:"rotated"`
-}
+type peerInviteResponse = peers.InviteResponse
 
 func (handler peerAdminHandler) invite(w http.ResponseWriter, r *http.Request) {
 	var request peerInviteRequest
@@ -91,17 +83,9 @@ func (handler peerAdminHandler) invite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-type peerNameOrIDRequest struct {
-	Peer string `json:"peer"`
-}
+type peerNameOrIDRequest = peers.NameOrIDRequest
 
-type peerTrustResponse struct {
-	PeerID         string    `json:"peer_id"`
-	Name           string    `json:"name"`
-	Trust          string    `json:"trust"`
-	ResetPending   bool      `json:"reset_pending"`
-	TrustChangedAt time.Time `json:"trust_changed_at"`
-}
+type peerTrustResponse = peers.TrustResponse
 
 func peerTrustResponseFrom(record hub.PeerRecord) peerTrustResponse {
 	return peerTrustResponse{
@@ -138,12 +122,7 @@ func (handler peerAdminHandler) unblock(w http.ResponseWriter, r *http.Request) 
 	writePeerAdminJSON(w, http.StatusOK, peerTrustResponseFrom(record))
 }
 
-type peerDisconnectResponse struct {
-	PeerID       string `json:"peer_id"`
-	Name         string `json:"name"`
-	Disconnected bool   `json:"disconnected"`
-	Message      string `json:"message"`
-}
+type peerDisconnectResponse = peers.DisconnectResponse
 
 func (handler peerAdminHandler) disconnect(w http.ResponseWriter, r *http.Request) {
 	var request peerNameOrIDRequest

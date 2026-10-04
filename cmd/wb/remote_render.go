@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
+
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -66,25 +68,9 @@ func machineRows(entries []remotestate.Entry, now time.Time, stale time.Duration
 // enough to be stable in tests, fine enough to be useful.
 // publishedAgo phrases an age for prose: "just now" stays as is, "2h"
 // becomes "2h ago".
-func publishedAgo(age string) string {
-	if age == "just now" {
-		return age
-	}
-	return age + " ago"
-}
+func publishedAgo(age string) string { return shared.PublishedAgo(age) }
 
-func humanAge(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
-}
+func humanAge(d time.Duration) string { return shared.HumanAge(d) }
 
 // writeMachinesTable renders one fixed-width row per machine for `wb remote
 // machines`. PUBLISHED_AT carries the exact RFC3339 UTC instant; PUBLISHED
