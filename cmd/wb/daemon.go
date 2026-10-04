@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/sneat-dev/wb/internal/cli/cmddaemon"
-	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/daemonhost"
 	"github.com/sneat-dev/wb/internal/daemonoperation"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
@@ -49,11 +48,6 @@ func daemonCommandDependencies(deps daemonDependencies) cmddaemon.Dependencies {
 		Submit: service.Submit, Get: service.Get, Wait: service.Wait, Cancel: service.Cancel, Getwd: os.Getwd,
 		SystemdUnit: func() string { return daemonruntime.DaemonSystemdUnitName(os.Getenv) }, Getuid: os.Getuid,
 	}
-}
-
-// Remaining dashboard/worker consumers use the exact shared selector.
-func daemonOutputFormat(format string, jsonOut bool) (string, error) {
-	return shared.SelectJSONFormat(format, jsonOut)
 }
 
 type daemonDependencies struct {
