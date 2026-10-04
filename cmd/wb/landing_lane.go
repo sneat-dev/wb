@@ -3,8 +3,6 @@ package main
 import (
 	"os"
 
-	"github.com/spf13/cobra"
-
 	"github.com/sneat-dev/wb/internal/landingcontext"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 )
@@ -26,12 +24,4 @@ func landingLaneGuardRequest(inv *invocation, command, reason string, takeOver b
 // hold then clears itself once its heartbeat goes stale.
 func releaseWorktreeMergeLane(inv *invocation, receipt orchestrate.WorktreeMergeReceipt) {
 	landingcontext.ReleaseWorktreeLane(inv.projectsRoot, receipt, os.Getpid())
-}
-
-// addLandingLaneTakeoverFlag adds the one sanctioned override for a refused
-// landing lane: --take-over-lane, which requires --lane-reason (already present
-// or added by the caller) to be non-empty. See internal/landinglane.
-func addLandingLaneTakeoverFlag(command *cobra.Command, takeOver *bool) {
-	command.Flags().BoolVar(takeOver, "take-over-lane", false,
-		"override a refused landing lane held by a different WB session; requires --lane-reason <text>, which is recorded on the lane and the receipt")
 }

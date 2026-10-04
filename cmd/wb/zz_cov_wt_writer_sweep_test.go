@@ -8,7 +8,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/worktreeend"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
@@ -25,32 +24,6 @@ func cwWtSweepWrites(t *testing.T, max int, run func(writer *cwWtFailWriter) err
 		}
 	}
 	t.Fatalf("no write budget up to %d let the renderer finish", max)
-}
-
-func TestCwWtWriterSweepCleanupRenameShellsAdopt(t *testing.T) {
-	cleanup := []worktrees.CleanupResult{
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/a"}, Applied: true, RemoteDeleted: true, WorktreeResidueRemoved: true},
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/b"}, Applied: true},
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/c"}, Eligible: true},
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/d"}, Reason: "not merged"},
-	}
-	cwWtSweepWrites(t, 8, func(writer *cwWtFailWriter) error {
-		return printWorktreeCleanup(cwWtCmdWriter(writer), cleanup, false)
-	})
-
-	shells := worktrees.RetireShellsOutcome{
-		Results: []worktrees.RetiredShell{
-			{Task: "a", Path: "/tmp/a", Applied: true},
-			{Task: "b", Path: "/tmp/b", Eligible: true},
-			{Task: "c", Path: "/tmp/c", Error: "boom"},
-			{Task: "d", Path: "/tmp/d", Reason: "still has members"},
-		},
-		Totals: map[string]int{"would_retire": 1},
-	}
-	cwWtSweepWrites(t, 8, func(writer *cwWtFailWriter) error {
-		return printRetireTaskShells(cwWtCmdWriter(writer), shells)
-	})
-
 }
 
 func TestCwWtWriterSweepEndMarkerRescueAndLogVerb(t *testing.T) {

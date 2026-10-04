@@ -3,17 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/agentguard"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"io"
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
-
-	"github.com/sneat-dev/wb/internal/agentguard"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // quietVerbs are the lifecycle verbs the quiet mode exists for
@@ -178,29 +175,6 @@ func TestInventoryProgressIsSilentUnderQuietEvenWhenVerbose(t *testing.T) {
 		if got := out.Len() > 0; got == quiet {
 			t.Errorf("quiet = %t: inventory progress wrote %q", quiet, out.String())
 		}
-	}
-}
-
-func TestWorktreeMergeProgressIsSilentUnderQuiet(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		quiet bool
-	}{{"default reports", false}, {"quiet reports nothing", true}} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			var stderr bytes.Buffer
-			command := &cobra.Command{}
-			command.SetErr(&stderr)
-			campaign := newWorktreeMergeProgress(&invocation{quiet: test.quiet}, command, worktreeMergeFlags{progress: true})
-			if reporter := campaign.reporter(); (reporter != nil) == test.quiet {
-				t.Fatalf("reporter present = %t under quiet = %t", reporter != nil, test.quiet)
-			}
-			finishWorktreeMergeProgress(campaign, orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeComplete}, nil)
-			if test.quiet && stderr.Len() > 0 {
-				t.Fatalf("quiet worktree merge wrote to stderr: %q", stderr.String())
-			}
-		})
 	}
 }
 

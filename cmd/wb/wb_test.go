@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/spf13/cobra"
 )
@@ -24,23 +23,5 @@ func TestPrintWorktreeEndNotApplied(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "nothing was changed; re-run with --apply") {
 		t.Fatalf("expected re-run hint, got %q", buf.String())
-	}
-}
-
-func TestWriteWorktreeMergeReceiptFindings(t *testing.T) {
-	t.Parallel()
-	receipt := orchestrate.WorktreeMergeReceipt{
-		Repository: "sneat-dev/wb",
-		Target:     "main",
-		Findings: []orchestrate.WorktreeMergeFinding{
-			{Code: "c1", Message: "m1"},
-		},
-	}
-	buf := &bytes.Buffer{}
-	if err := writeWorktreeMergeReceipt(buf, "text", receipt); err != nil {
-		t.Fatalf("writeWorktreeMergeReceipt: %v", err)
-	}
-	if !strings.Contains(buf.String(), "finding: c1: m1") {
-		t.Fatalf("expected finding line, got %q", buf.String())
 	}
 }

@@ -1,123 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-// cwWtCmd builds a bare cobra command whose stdout is the given writer, which
-// is all the print helpers in worktree.go need.
-func cwWtCmd(out *bytes.Buffer) *cobra.Command {
-	command := &cobra.Command{}
-	command.SetOut(out)
-	var errOut bytes.Buffer
-	command.SetErr(&errOut)
-	return command
-}
 
 func cwWtCmdWriter(writer *cwWtFailWriter) *cobra.Command {
 	command := &cobra.Command{}
 	command.SetOut(writer)
 	return command
-}
-
-func TestCwWtPrintWorktreeCleanupAndRename(t *testing.T) {
-	cleanup := []worktrees.CleanupResult{
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/a"}, Applied: true, RemoteDeleted: true, WorktreeResidueRemoved: true},
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/b"}, Applied: true},
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/c"}, Eligible: true},
-		{ListResult: worktrees.ListResult{Task: "t", Repository: "acme/d"}, Reason: "not merged"},
-	}
-	var out bytes.Buffer
-	if err := printWorktreeCleanup(cwWtCmd(&out), cleanup, false); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"removed t acme/a and remote branch (WB removed the checkout Git unregistered but could not delete)",
-		"removed t acme/b\n", "would remove t acme/c", "skip t acme/d: not merged",
-		"1 eligible; dry-run only, pass --apply to remove",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("cleanup output missing %q:\n%s", want, text)
-		}
-	}
-	out.Reset()
-	if err := printWorktreeCleanup(cwWtCmd(&out), cleanup, true); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "2 removed") {
-		t.Fatalf("cleanup apply output = %q", out.String())
-	}
-	out.Reset()
-	if err := printWorktreeCleanup(cwWtCmd(&out), nil, true); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "no WB worktrees matched\n" {
-		t.Fatalf("empty cleanup = %q", got)
-	}
-
-	// Cleanup write failures propagate.
-	for allow := 0; allow < 3; allow++ {
-		if err := printWorktreeCleanup(cwWtCmdWriter(&cwWtFailWriter{Allow: allow}), cleanup, false); err == nil {
-			t.Fatalf("printWorktreeCleanup with %d writes allowed returned nil", allow)
-		}
-
-	}
-}
-
-func TestCwWtPrintRetireTaskShells(t *testing.T) {
-	outcome := worktrees.RetireShellsOutcome{
-		Results: []worktrees.RetiredShell{
-			{Task: "applied", Path: "/tmp/a", Applied: true},
-			{Task: "eligible", Path: "/tmp/b", Eligible: true},
-			{Task: "failed", Path: "/tmp/c", Error: "boom"},
-			{Task: "skipped", Path: "/tmp/d", Reason: "still has members"},
-		},
-		Totals: map[string]int{"retired": 1, "would_retire": 2},
-	}
-	var out bytes.Buffer
-	if err := printRetireTaskShells(cwWtCmd(&out), outcome); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"retired      applied /tmp/a", "would retire eligible /tmp/b",
-		"failed       failed /tmp/c: boom", "skip         skipped /tmp/d: still has members",
-		"2 would retire",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("shells output missing %q:\n%s", want, text)
-		}
-	}
-	out.Reset()
-	outcome.Apply = true
-	if err := printRetireTaskShells(cwWtCmd(&out), outcome); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "1 retired") {
-		t.Fatalf("shells apply output = %q", out.String())
-	}
-	out.Reset()
-	if err := printRetireTaskShells(cwWtCmd(&out), worktrees.RetireShellsOutcome{}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "no WB task directories found\n" {
-		t.Fatalf("empty shells = %q", got)
-	}
-
-	for allow := 0; allow < 2; allow++ {
-		if err := printRetireTaskShells(cwWtCmdWriter(&cwWtFailWriter{Allow: allow}), outcome); err == nil {
-			t.Fatalf("printRetireTaskShells with %d writes allowed returned nil", allow)
-		}
-	}
 }
 
 func TestCwWtRequireOutputFormat(t *testing.T) {
@@ -127,46 +22,6 @@ func TestCwWtRequireOutputFormat(t *testing.T) {
 	err := requireOutputFormat("yaml", "text", "json")
 	if err == nil || !strings.Contains(err.Error(), "text or json") {
 		t.Fatalf("refused value = %v", err)
-	}
-}
-
-func TestCwWtCleanupTaskNameHelpers(t *testing.T) {
-	outcome := worktrees.CleanupOutcome{
-		Results: []worktrees.CleanupResult{
-			{ListResult: worktrees.ListResult{Task: "alpha"}, Applied: true},
-			{ListResult: worktrees.ListResult{Task: "beta"}},
-		},
-		Artifacts: []worktrees.LifecycleArtifact{{Task: "gamma", Applied: true}},
-	}
-	applied := appliedCleanupTaskNames(outcome)
-	if !applied["alpha"] || applied["beta"] || !applied["gamma"] {
-		t.Fatalf("applied task names = %v", applied)
-	}
-
-	if !namedCleanupApplySatisfied([]string{"alpha"}, outcome) {
-		t.Fatal("a single applied task must satisfy the check")
-	}
-	if namedCleanupApplySatisfied([]string{"beta"}, outcome) {
-		t.Fatal("an unapplied task must not satisfy the check")
-	}
-	if !namedCleanupApplySatisfied([]string{"alpha", "beta"}, outcome) {
-		t.Fatal("multi-task selections are always satisfied")
-	}
-	// An empty resolution falls back to the requested name.
-	if namedCleanupApplySatisfied([]string{"alpha"}, worktrees.CleanupOutcome{}) {
-		t.Fatal("an empty outcome must not satisfy a named apply")
-	}
-	if namedCleanupApplySatisfied(nil, worktrees.CleanupOutcome{}) != true {
-		t.Fatal("an empty selection is trivially satisfied")
-	}
-	// A resolved identity that differs from the selector is judged by the
-	// resolved name.
-	resolved := worktrees.CleanupOutcome{
-		ResolvedTasks: []string{"session-resume-1"},
-		Results:       []worktrees.CleanupResult{{ListResult: worktrees.ListResult{Task: "session-resume-1"}, Applied: true}},
-	}
-	if !namedCleanupApplySatisfied([]string{"logical-effort"}, resolved) {
-		t.Fatal("a resolved identity that applied must satisfy the check")
 	}
 }
 

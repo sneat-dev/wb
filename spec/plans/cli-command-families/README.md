@@ -67,6 +67,16 @@ commands or CI coverage policy.
   Keep a small genuine root/executable journey suite, not copies of all family
   tests in the executable package.
 
+Parallel execution is part of each extraction batch. The extractor traces test
+helpers for global environment, working-directory and shared fixture mutations;
+uses private roots or per-instance inputs where they preserve the actual test
+purpose; and adds `t.Parallel()` to applicable migrated and new tests immediately.
+Independent table children may run in parallel when their state is isolated.
+Genuine process-wide cases remain serial with a concrete reason. Preserve original
+assertion predicates and native authority, qualifying any fixture-input ports
+explicitly. One scoped race batch verifies extraction and concurrency together;
+a separate later parallelization pass is not the default.
+
 ### Pilot acceptance and measurement
 
 The layout pilot must preserve production behavior, remove its command logic
@@ -980,6 +990,38 @@ pass. Passing unrelated checks were reused for that narrow two-test derivative.
 No production coverage, whole root suite or global CI benchmark was rerun.
 All 790 named capability references resolve without metadata changes. Independent
 final review precedes the local checkpoint; publication remains deferred.
+
+### Worktree retirement and merge command families
+
+Cleanup, abort, GC and retire now live in the command package, using direct
+native operations and the root's actual admission, ownership and claim-release
+callbacks. Twelve original tests move; 100 companion declarations are unchanged.
+The complete merge/land/prepare/resume/revert and fourteen recovery commands
+also move together, binding 21 existing typed operations. Their 73 original
+responsibilities comprise 29 leaf tests, 26 retained root roles and 18 unchanged
+protected bodies. The root retains genuine constructors and policy adapters.
+Controlled operation/exit-classifier tests are distinct from native Git evidence.
+
+Parallel execution was added during extraction: isolated migrated/new cases
+and independent table children run in parallel; eight genuine merge host-load
+or environment originals remain serial. Seven retirement producer files cover
+433/433 statements; two merge producer files cover 686/686. Eight whole changed
+root declarations, including their real callback closures, cover 34/34. The
+combined reviewed scope is 1,153/1,153; this is not repository-wide coverage.
+One combined root race batch passed all 46 selected cases in 352.05 seconds.
+One additional applied-filter case passed in 11.37 seconds, proving that abort
+keeps the excluded checkout and reports skipped claim release.
+
+Independent source review accepted both families. Shared lint identified five
+newly unused root helpers; only those declarations and unused imports were
+removed after reference checks. Current scoped lint, vet, Linux/Windows
+compilation and the private executable build pass. Eleven moved capability
+references were rebound; all 790 named tests resolve. Two leaf scheduling edits
+occurred during the root gate: its original whole-bundle mismatch is retained,
+while actual root execution inputs stayed unchanged. Their separate race proof
+and final source binding qualify reuse of the passing root gate. No duplicate
+native run or global coverage measurement was performed. Work remains local
+on the shared branch, with publication deferred.
 
 ### Task 8: Verify full cutover and land reviewed batches
 

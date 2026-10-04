@@ -1954,7 +1954,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -14663,7 +14663,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeLandDefaultsToCleanup",
               "kind": "unit"
             }
@@ -15910,7 +15910,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             },
@@ -16282,7 +16282,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence",
               "kind": "integration"
             }
@@ -16718,7 +16718,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -16804,7 +16804,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -16891,7 +16891,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -17095,7 +17095,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -17200,7 +17200,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence",
               "kind": "integration"
             }
@@ -17292,7 +17292,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             },
@@ -17405,7 +17405,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }

@@ -5,20 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/hostload"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runqueue"
+	"github.com/sneat-dev/wb/internal/testenv"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/hostload"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/runqueue"
-	"github.com/sneat-dev/wb/internal/testenv"
-	unix "github.com/sneat-dev/wb/internal/unixcompat"
-	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // withHostLoad temporarily replaces hostload.System, the Reader every
@@ -225,60 +223,6 @@ func TestRunCommandHonorsExplicitProjectsRootForCPUAdmission(t *testing.T) {
 	}
 }
 
-func TestCheckHostLoadAdmissionRefusesWorktreeMergeCandidateValidation(t *testing.T) {
-	withHostLoad(t, 999.0)
-	admission, err := checkHostLoadAdmission(worktreeMergeFlags{})
-	if err == nil {
-		t.Fatal("checkHostLoadAdmission(saturated host) = nil, want a refusal")
-	}
-	if !strings.Contains(err.Error(), "--allow-saturated-host") {
-		t.Errorf("refusal %q does not mention the override flag", err)
-	}
-	if admission != nil {
-		t.Errorf("checkHostLoadAdmission(saturated host) admission = %+v, want nil on refusal", admission)
-	}
-}
-
-func TestCheckHostLoadAdmissionAllowSaturatedHostOverrides(t *testing.T) {
-	withHostLoad(t, 999.0)
-	admission, err := checkHostLoadAdmission(worktreeMergeFlags{allowSaturatedHost: true})
-	if err != nil {
-		t.Fatalf("checkHostLoadAdmission with --allow-saturated-host = %v, want nil", err)
-	}
-	if admission == nil {
-		t.Fatal("checkHostLoadAdmission with --allow-saturated-host recorded no admission")
-	}
-	if !admission.Overridden {
-		t.Errorf("admission.Overridden = false, want true for --allow-saturated-host")
-	}
-	if admission.Load != 999.0 {
-		t.Errorf("admission.Load = %v, want 999.0", admission.Load)
-	}
-	if admission.Floor <= 0 {
-		t.Errorf("admission.Floor = %v, want > 0", admission.Floor)
-	}
-	if admission.CheckedAt.IsZero() {
-		t.Error("admission.CheckedAt is zero")
-	}
-}
-
-func TestCheckHostLoadAdmissionAdmitsBelowFloor(t *testing.T) {
-	withHostLoad(t, 0.01)
-	admission, err := checkHostLoadAdmission(worktreeMergeFlags{})
-	if err != nil {
-		t.Fatalf("checkHostLoadAdmission(quiet host) = %v, want nil", err)
-	}
-	if admission == nil {
-		t.Fatal("checkHostLoadAdmission(quiet host) recorded no admission")
-	}
-	if admission.Overridden {
-		t.Error("admission.Overridden = true, want false without --allow-saturated-host")
-	}
-	if admission.Load != 0.01 {
-		t.Errorf("admission.Load = %v, want 0.01", admission.Load)
-	}
-}
-
 // TestHostLoadCheckSkippableCoversTheDocumentedShapes exercises
 // hostLoadCheckSkippable's decision directly: a resume/land step is gated on
 // host load only when it will actually run local CPU-heavy validation. A
@@ -287,102 +231,6 @@ func TestCheckHostLoadAdmissionAdmitsBelowFloor(t *testing.T) {
 // left — so it must skip the check. Everything else, including
 // validation_failed and a published receipt whose candidate has since moved
 // on from what was validated, must still be gated.
-func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
-	validated := orchestrate.WorktreeMergeReceipt{
-		Status:      orchestrate.WorktreeMergePublished,
-		PullRequest: "https://github.com/acme/app/pull/1",
-		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("a", 40)},
-		ValidationIdentity: &orchestrate.WorktreeMergeValidationIdentity{
-			CandidateSHA: strings.Repeat("a", 40),
-		},
-		Validation: quality.VerificationReport{Status: quality.StatusPassed},
-	}
-	if !hostLoadCheckSkippable(validated, false, false, "") {
-		t.Error("published + validated-for-exact-candidate receipt must skip the host-load check")
-	}
-
-	complete := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeComplete}
-	if !hostLoadCheckSkippable(complete, false, false, "") {
-		t.Error("complete receipt must skip the host-load check")
-	}
-
-	validationFailed := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeValidationFailed}
-	if hostLoadCheckSkippable(validationFailed, false, false, "") {
-		t.Error("validation_failed receipt must still be gated by the host-load check")
-	}
-
-	preparing := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergePreparing}
-	if hostLoadCheckSkippable(preparing, false, false, "") {
-		t.Error("preparing receipt must still be gated by the host-load check")
-	}
-
-	stalePublished := orchestrate.WorktreeMergeReceipt{
-		Status:      orchestrate.WorktreeMergePublished,
-		PullRequest: "https://github.com/acme/app/pull/1",
-		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("b", 40)},
-		ValidationIdentity: &orchestrate.WorktreeMergeValidationIdentity{
-			CandidateSHA: strings.Repeat("a", 40), // stale: does not match the current candidate
-		},
-		Validation: quality.VerificationReport{Status: quality.StatusPassed},
-	}
-	if hostLoadCheckSkippable(stalePublished, false, false, "") {
-		t.Error("published receipt whose validation identity no longer matches the candidate must still be gated")
-	}
-
-	// sneat-dev/wb#591: a receipt whose exact candidate SHA was deferred to
-	// the pull-request route's authoritative CI (never validated locally at
-	// all) has nothing left to run locally either.
-	deferred := orchestrate.WorktreeMergeReceipt{
-		Status:      orchestrate.WorktreeMergePublished,
-		PullRequest: "https://github.com/acme/app/pull/1",
-		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("c", 40)},
-		Validation:  quality.VerificationReport{Status: quality.StatusSkipped},
-		ValidationDeferral: &orchestrate.WorktreeMergeValidationDeferral{
-			Route: orchestrate.WorktreeMergeRoutePullRequest, CandidateSHA: strings.Repeat("c", 40),
-		},
-	}
-	if !hostLoadCheckSkippable(deferred, false, false, "") {
-		t.Error("PR-route-deferred receipt must skip the host-load check")
-	}
-
-	staleDeferred := deferred
-	staleDeferred.Candidate = orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("d", 40)}
-	if hostLoadCheckSkippable(staleDeferred, false, false, "") {
-		t.Error("a deferral for a candidate SHA that no longer matches must still be gated")
-	}
-
-	// A receipt just advanced by an engine-driven server-side update-branch
-	// merge (TargetRefreshes) has already had its published head moved to
-	// the current candidate SHA by GitHub; only remote observation/merge is
-	// left, so it must also skip the check.
-	engineUpdated := orchestrate.WorktreeMergeReceipt{
-		Status:                orchestrate.WorktreeMergeChecksPending,
-		PullRequest:           "https://github.com/acme/app/pull/1",
-		Candidate:             orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("e", 40)},
-		PublishedCandidateSHA: strings.Repeat("e", 40),
-		TargetRefreshes:       []orchestrate.WorktreeMergeTargetRefresh{{NewCandidateSHA: strings.Repeat("e", 40)}},
-	}
-	if !hostLoadCheckSkippable(engineUpdated, false, false, "") {
-		t.Error("engine-updated receipt whose published head matches the candidate must skip the host-load check")
-	}
-
-	// Minor finding (sneat-dev/wb#591 red-team follow-up): --validate-locally
-	// or --route direct on THIS call always runs a heavy local validation
-	// pass next, regardless of any deferral or already-validated identity
-	// recorded on the receipt, so it must never be skippable.
-	if hostLoadCheckSkippable(deferred, true, false, "") {
-		t.Error("--validate-locally on this call must never be skippable, even for an otherwise-deferred receipt")
-	}
-	if hostLoadCheckSkippable(deferred, false, false, orchestrate.WorktreeMergeRouteDirect) {
-		t.Error("--route direct on this call must never be skippable, even for an otherwise-deferred receipt")
-	}
-	if hostLoadCheckSkippable(validated, true, false, "") {
-		t.Error("--validate-locally on this call must never be skippable, even for an already-validated receipt")
-	}
-	if !hostLoadCheckSkippable(validated, false, false, orchestrate.WorktreeMergeRouteAuto) {
-		t.Error("an explicit --route auto (the CLI default) must not change the otherwise-skippable outcome")
-	}
-}
 
 // TestHostLoadCheckSkippableAllowUnfencedNeverSkippable is the Minor 10
 // regression from the sneat-dev/wb#591 round 3 red-team follow-up:
@@ -390,20 +238,6 @@ func TestHostLoadCheckSkippableCoversTheDocumentedShapes(t *testing.T) {
 // unreadable required-check policy as a merge gate, which forces a real
 // local validation run just like --validate-locally or --route direct, so
 // it was missing from hostLoadCheckSkippable's never-skippable list.
-func TestHostLoadCheckSkippableAllowUnfencedNeverSkippable(t *testing.T) {
-	deferred := orchestrate.WorktreeMergeReceipt{
-		Status:      orchestrate.WorktreeMergePublished,
-		PullRequest: "https://github.com/acme/app/pull/1",
-		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("c", 40)},
-		Validation:  quality.VerificationReport{Status: quality.StatusSkipped},
-		ValidationDeferral: &orchestrate.WorktreeMergeValidationDeferral{
-			Route: orchestrate.WorktreeMergeRoutePullRequest, CandidateSHA: strings.Repeat("c", 40),
-		},
-	}
-	if hostLoadCheckSkippable(deferred, false, true, "") {
-		t.Error("--allow-unfenced on this call must never be skippable, even for an otherwise-deferred receipt")
-	}
-}
 
 // TestWorktreeMergeResumeOfCompleteReceiptProceedsUnderSaturatedLoad exercises
 // the actual `wb worktree merge resume` command end to end: a complete

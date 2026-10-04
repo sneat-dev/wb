@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"io"
 	"strings"
 	"testing"
-
-	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
 // A landing whose merge succeeded but whose cleanup failed exits with its own
@@ -34,7 +36,7 @@ func TestWorktreeLandExitsDistinctlyWhenTheMergeLandedButTheTailDidNot(t *testin
 				Status: test.status, ReceiptPath: "/r/receipt.json",
 				ResumeArgs: []string{"worktree", "merge", "resume", "/r/receipt.json", "--progress"},
 			}
-			got := landedIncompleteExit(receipt, test.err)
+			got := runMergeOutcomeForTest(t, receipt, test.err)
 			if test.wantPlainOf != nil || test.err == nil {
 				if got != test.err {
 					t.Fatalf("landedIncompleteExit = %v, want the error unchanged (%v)", got, test.err)
@@ -54,7 +56,7 @@ func TestWorktreeLandExitsDistinctlyWhenTheMergeLandedButTheTailDidNot(t *testin
 func TestWorktreeLandResumeCommandFallsBackToTheReceiptPath(t *testing.T) {
 	t.Parallel()
 	receipt := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeLanded, ReceiptPath: "/r/receipt.json"}
-	got := landedIncompleteExit(receipt, errors.New("boom"))
+	got := runMergeOutcomeForTest(t, receipt, errors.New("boom"))
 	if !strings.Contains(got.Error(), "resume with: wb worktree merge resume /r/receipt.json") {
 		t.Fatalf("no fallback resume command: %v", got)
 	}
@@ -76,3 +78,21 @@ func TestRootHelpDocumentsTheLandedIncompleteExitCode(t *testing.T) {
 
 // Every write of the landed-incomplete report is checked: a closed stdout
 // surfaces as an error at whichever line it fails.
+
+func runMergeOutcomeForTest(t *testing.T, receipt orchestrate.WorktreeMergeReceipt, cause error) error {
+	t.Helper()
+	root := t.TempDir()
+	inv := &invocation{projectsRoot: root, quiet: true}
+	ops := cmdworktree.DefaultMergeOperations()
+	ops.PeekWorktreeMergeValidationDeferral = func(context.Context, string, []string, string, orchestrate.WorktreeMergeRoute, bool, bool, ...string) (bool, error) {
+		return true, nil
+	}
+	ops.RunWorktreeMerge = func(context.Context, orchestrate.WorktreeMergePrepareOptions, orchestrate.WorktreeMergeLandOptions) (orchestrate.WorktreeMergeReceipt, error) {
+		return receipt, cause
+	}
+	cmd := cmdworktree.NewMerge(newCLIRuntime(inv), ops, mergeBindings())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{root})
+	return cmd.Execute()
+}
