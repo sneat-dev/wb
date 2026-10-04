@@ -1,4 +1,4 @@
-package main
+package cmdsync
 
 import (
 	"bytes"
@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 	"github.com/sneat-dev/wb/internal/syncreport"
+	"github.com/spf13/cobra"
 )
 
 func writeSyncReportCommandFixture(t *testing.T) string {
@@ -39,15 +41,16 @@ The local branch has two commits not present upstream.
 }
 
 func TestSyncReportValidateLoadsAndValidatesTheWholeBatch(t *testing.T) {
+	t.Parallel()
 	directory := writeSyncReportCommandFixture(t)
 	validated := false
-	deps := syncReportCommandDeps{
-		validate: func(_ context.Context, report syncreport.Report) error {
+	deps := ReportOperations{Load: syncreport.LoadDirectory,
+		Validate: func(_ context.Context, report syncreport.Report) error {
 			validated = report.ID == "sync-20260908T145950Z" && len(report.Records) == 1
 			return nil
 		},
 	}
-	command := newSyncReportValidateCmd(deps)
+	command := newSyncReportValidateCmd(deps, func(*cobra.Command, string) {})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{directory})
@@ -63,17 +66,18 @@ func TestSyncReportValidateLoadsAndValidatesTheWholeBatch(t *testing.T) {
 }
 
 func TestSyncReportPublishReturnsImmutableViewerURL(t *testing.T) {
+	t.Parallel()
 	directory := writeSyncReportCommandFixture(t)
-	deps := syncReportCommandDeps{
-		validate: func(context.Context, syncreport.Report) error { return nil },
-		publish: func(_ context.Context, repository, root string, report syncreport.Report) (gitrepo.SyncReportPublishResult, error) {
+	deps := ReportOperations{Load: syncreport.LoadDirectory,
+		Validate: func(context.Context, syncreport.Report) error { return nil },
+		Publish: func(_ context.Context, repository, root string, report syncreport.Report) (gitrepo.SyncReportPublishResult, error) {
 			if repository != "alice/workbench" || root != "/fleet" || len(report.Records) != 1 {
 				t.Fatalf("unexpected publish input: %s %s %#v", repository, root, report)
 			}
 			return gitrepo.SyncReportPublishResult{CommitSHA: strings.Repeat("a", 40), Paths: []string{"sync-reports/$records/x.md"}}, nil
 		},
 	}
-	command := newSyncReportPublishCmd(&invocation{projectsRoot: "/fleet"}, deps)
+	command := newSyncReportPublishCmd(syncRuntime(&shared.Flags{ProjectsRoot: "/fleet"}), deps, func(*cobra.Command, string) {})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetArgs([]string{directory, "--repo", "alice/workbench", "--format", "json"})

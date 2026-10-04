@@ -7,8 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdremote"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/remotepublish"
+	"github.com/sneat-dev/wb/internal/remoterun"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
@@ -60,32 +62,13 @@ func loadRemote(deps remoteDeps, projectsRoot string) (remotestate.Config, remot
 }
 
 func newRemoteCmd(inv *invocation) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "remote",
-		Short: "Publish this machine's fleet state and read other machines' state",
-		Long: `wb remote shares WB fleet state across machines through a store
-configured in ~/.config/wb/wb.yaml:
-
-` + remotestate.ConfigSnippet + `
-
-For the authenticated outbound HTTPS hub:
-
-` + remotestate.HubConfigSnippet + `
-
-  wb remote publish    scan this machine and publish its snapshot
-  wb remote enroll     securely install a hosted-hub machine credential
-  wb remote status     cross-machine worklist from the store
-  wb remote machines   one line per machine with publish age
-  wb remote claim      claim a task, or refresh your own claim on it
-  wb remote release    release this machine's remote claim on a task
-  wb remote claims     list every claim in the store, with staleness`,
-	}
-	cmd.AddCommand(newRemotePublishCmd(inv))
-	cmd.AddCommand(newRemoteStatusCmd(inv))
-	cmd.AddCommand(newRemoteMachinesCmd(inv))
-	cmd.AddCommand(newRemoteClaimCmd(inv))
-	cmd.AddCommand(newRemoteReleaseCmd(inv))
-	cmd.AddCommand(newRemoteClaimsCmd(inv))
-	cmd.AddCommand(newRemoteEnrollCmd(inv))
-	return cmd
+	service := remoterun.New(remoterun.DefaultDependencies(newCLIErrorRuntime().ExitError))
+	enroll := remoterun.NewEnroll(remoterun.DefaultEnrollDependencies(), newCLIErrorRuntime().ExitError)
+	return cmdremote.New(newCLIRuntime(inv), cmdremote.Operations{Claim: service.Claim, Release: service.Release, Machines: service.Machines, Claims: service.Claims, Status: service.Status, Enroll: enroll.Enroll, Heartbeat: universalProgressHeartbeat,
+		Publish: func(req remotepublish.Request, progress remotepublish.Progress, notes io.Writer) (remotepublish.Result, error) {
+			return remotepublish.New(remotePublishDependencies(defaultRemoteDeps())).Publish(req, progress, notes)
+		}})
+}
+func remoteService(deps remoteDeps) *remoterun.Service {
+	return remoterun.New(remoterun.Dependencies{ConfigPath: func() string { return deps.configPath }, Login: deps.login, Open: deps.open, Now: deps.now, ExitError: newCLIErrorRuntime().ExitError})
 }

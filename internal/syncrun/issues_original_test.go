@@ -1,8 +1,9 @@
-package main
+package syncrun
 
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,6 @@ func syncReportHome(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_PROJECTS_ROOT", root)
 	home := filepath.Join(root, ".wb")
 	// The state directory is created lazily by the writer; tests that chmod it
 	// to prove the unwritable path need it on disk first.
@@ -48,6 +48,7 @@ func syncReportMetaForTest() fleetsync.RunMeta {
 }
 
 func TestWriteSyncIssuesReportWritesToWBHome(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -70,6 +71,7 @@ func TestWriteSyncIssuesReportWritesToWBHome(t *testing.T) {
 }
 
 func TestWriteSyncIssuesReportOverwritesRatherThanAppends(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 	path := filepath.Join(home, "last-sync-issues.md")
@@ -95,6 +97,7 @@ func TestWriteSyncIssuesReportOverwritesRatherThanAppends(t *testing.T) {
 }
 
 func TestWriteSyncIssuesReportLeavesNoTemporaryFileAfterASuccessfulWrite(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -113,6 +116,7 @@ func TestWriteSyncIssuesReportLeavesNoTemporaryFileAfterASuccessfulWrite(t *test
 }
 
 func TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	// A directory sitting at the report's own path makes os.Rename fail
 	// *after* the temporary file exists, which is the only situation in which
@@ -139,6 +143,7 @@ func TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails(t *testi
 }
 
 func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	if err := os.Chmod(home, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
@@ -157,6 +162,7 @@ func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing
 }
 
 func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -165,8 +171,7 @@ func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
 		Status: fleetsync.Failed,
 		Err:    errors.New("git pull: transport failure"),
 	}}
-	code := finishSync(&invocation{}, syncReportMetaForTest(), results, false, false, remoteDeps{},
-		filepath.Dir(home), "", 1, &out, &errOut)
+	code := Finalize(syncReportMetaForTest(), results, Options{ProjectsRoot: filepath.Dir(home), Workers: 1}, Effects{}, &out, &errOut)
 
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
@@ -181,6 +186,7 @@ func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
 }
 
 func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	if err := os.Chmod(home, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
@@ -188,8 +194,7 @@ func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
 	var out, errOut bytes.Buffer
 
-	code := finishSync(&invocation{}, syncReportMetaForTest(), nil, false, false, remoteDeps{},
-		filepath.Dir(home), "", 1, &out, &errOut)
+	code := Finalize(syncReportMetaForTest(), nil, Options{ProjectsRoot: filepath.Dir(home), Workers: 1}, Effects{Markers: func([]fleetsync.Result, string, io.Writer) {}}, &out, &errOut)
 
 	// The exit code is the point of this test and holds either way, so it is
 	// asserted before the skip: a report WB could not write must never fail a
@@ -206,6 +211,7 @@ func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
 }
 
 func TestWriteSyncIssuesReportRedactsCredentialedRemoteURLs(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -233,6 +239,7 @@ func TestWriteSyncIssuesReportRedactsCredentialedRemoteURLs(t *testing.T) {
 }
 
 func TestWriteSyncIssuesReportLeavesOrdinaryURLsUnchanged(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -253,6 +260,7 @@ func TestWriteSyncIssuesReportLeavesOrdinaryURLsUnchanged(t *testing.T) {
 }
 
 func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
+	t.Parallel()
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -273,6 +281,7 @@ func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
 // chmod, or rename failure deterministically needs the injector.
 
 func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "issues.md")
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
 	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -281,6 +290,7 @@ func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCreateFailure(t *testing.T)
 }
 
 func TestWriteSyncIssuesFileInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "issues.md")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
 	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -289,6 +299,7 @@ func TestWriteSyncIssuesFileInjectedHonoursAnInjectedWriteFailure(t *testing.T) 
 }
 
 func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "issues.md")
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
 	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -297,6 +308,7 @@ func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCloseFailure(t *testing.T) 
 }
 
 func TestWriteSyncIssuesFileInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "issues.md")
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
 	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -305,9 +317,12 @@ func TestWriteSyncIssuesFileInjectedHonoursAnInjectedChmodFailure(t *testing.T) 
 }
 
 func TestWriteSyncIssuesFileInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "issues.md")
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
 	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
 		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
 	}
 }
+
+var errBoomForCmdWB = errors.New("command test injected failure")

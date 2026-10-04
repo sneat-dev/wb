@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -70,39 +69,6 @@ func setGitIdentity(t *testing.T) {
 // state-repo origin, and a wb.yaml pointing at it.
 type remoteFixture struct {
 	projectsRoot, origin, configPath string
-}
-
-type slowStatusProvider struct {
-	delay                               time.Duration
-	statusCalls, listCalls, claimsCalls int
-}
-
-func (provider *slowStatusProvider) Publish(context.Context, remotestate.Snapshot) (remotestate.PublishResult, error) {
-	return remotestate.PublishResult{}, errors.New("unexpected Publish call")
-}
-
-func (provider *slowStatusProvider) List(context.Context) ([]remotestate.Entry, error) {
-	provider.listCalls++
-	return nil, errors.New("unexpected List call")
-}
-
-func (provider *slowStatusProvider) Claim(context.Context, remotestate.Claim, remotestate.ClaimMode, string) (remotestate.ClaimOutcome, error) {
-	return remotestate.ClaimOutcome{}, errors.New("unexpected Claim call")
-}
-
-func (provider *slowStatusProvider) Release(context.Context, string, string, string, bool) (remotestate.ReleaseOutcome, error) {
-	return remotestate.ReleaseOutcome{}, errors.New("unexpected Release call")
-}
-
-func (provider *slowStatusProvider) Claims(context.Context) ([]remotestate.ClaimEntry, error) {
-	provider.claimsCalls++
-	return nil, errors.New("unexpected Claims call")
-}
-
-func (provider *slowStatusProvider) Status(context.Context) (remotestate.StatusSnapshot, error) {
-	provider.statusCalls++
-	time.Sleep(provider.delay)
-	return remotestate.StatusSnapshot{}, nil
 }
 
 func newRemoteFixture(t *testing.T, machine string) remoteFixture {
@@ -208,194 +174,16 @@ func publishTwo(t *testing.T) (remoteFixture, time.Time) {
 	return f, at
 }
 
-func TestRemoteMachinesFlagsStaleEntries(t *testing.T) {
-	f, at := publishTwo(t)
-	var out bytes.Buffer
-	if err := runRemoteMachines(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, true, &out); err != nil {
-		t.Fatal(err)
-	}
-	var rows []remoteMachineRow
-	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
-		t.Fatalf("json: %v: %s", err, out.String())
-	}
-	if len(rows) != 2 || rows[0].Key != "alice/laptop" || rows[0].Stale || rows[1].Key != "bob/vm" || !rows[1].Stale {
-		t.Fatalf("rows = %+v", rows)
-	}
-}
-
 // TestRemoteMachinesTableHasPublishedAtColumn proves the human-readable
 // table carries the exact RFC3339 UTC publish timestamp, not just the
 // coarse relative age: an operator diffing snapshots across machines needs
 // the real instant, and "9h" alone cannot be compared across two rows
 // published on different days.
-func TestRemoteMachinesTableHasPublishedAtColumn(t *testing.T) {
-	f, at := publishTwo(t)
-	var out bytes.Buffer
-	if err := runRemoteMachines(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, false, &out); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	header := strings.SplitN(text, "\n", 2)[0]
-	fields := strings.Fields(header)
-	atCol, ageCol := -1, -1
-	for i, f := range fields {
-		switch f {
-		case "PUBLISHED_AT":
-			atCol = i
-		case "PUBLISHED":
-			ageCol = i
-		}
-	}
-	if atCol == -1 {
-		t.Fatalf("header = %q, want a PUBLISHED_AT column", header)
-	}
-	if ageCol == -1 || atCol >= ageCol {
-		t.Fatalf("header = %q, want PUBLISHED_AT before the PUBLISHED (age) column", header)
-	}
-	if !strings.Contains(text, at.Format(time.RFC3339)) {
-		t.Fatalf("table = %q, want alice's RFC3339 published_at %s", text, at.Format(time.RFC3339))
-	}
-}
-
-func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
-	f, at := publishTwo(t)
-	var out, errOut bytes.Buffer
-	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "", false, &out, &errOut); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{"remote provider: git (git:team/wb-state)", "stale=1", "alice/laptop", "acme/widgets", "1 untracked file", "bob/vm", "STALE"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("status output lacks %q:\n%s", want, text)
-		}
-	}
-}
-
-func TestRemoteStatusDiagnosticsReportProviderMismatch(t *testing.T) {
-	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
-	cfg := remotestate.Config{Provider: "hub", URL: "https://wb.example", Machine: "vm"}
-	entries := []remotestate.Entry{{Snapshot: remotestate.Snapshot{Login: "alice", Machine: "laptop", PublishedAt: now, RemoteStore: "git:team/wb-state"}}}
-	rows := machineRows(entries, now, 24*time.Hour)
-	diagnostics := buildRemoteStatusDiagnostics(cfg, entries, rows, now)
-	if diagnostics.Provider != "hub" || diagnostics.Store != "hub:https://wb.example" || len(diagnostics.Mismatches) != 1 {
-		t.Fatalf("diagnostics = %#v", diagnostics)
-	}
-	if !strings.Contains(diagnostics.Mismatches[0], "alice/laptop publishes via git:team/wb-state") {
-		t.Fatalf("mismatch = %q", diagnostics.Mismatches[0])
-	}
-}
-
-func TestRemoteStatusUsesOneProviderReadAndHeartbeatsWithoutContaminatingJSON(t *testing.T) {
-	provider := &slowStatusProvider{delay: 35 * time.Millisecond}
-	configPath := filepath.Join(t.TempDir(), "wb.yaml")
-	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	deps := remoteDeps{
-		configPath: configPath,
-		open: func(remotestate.Config, string) (remotestate.Provider, error) {
-			return provider, nil
-		},
-		now:               func() time.Time { return time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC) },
-		progressHeartbeat: 5 * time.Millisecond,
-	}
-	var stdout, stderr bytes.Buffer
-	if err := runRemoteStatus(deps, t.TempDir(), 24*time.Hour, "", true, &stdout, &stderr); err != nil {
-		t.Fatal(err)
-	}
-	if provider.statusCalls != 1 || provider.listCalls != 0 || provider.claimsCalls != 0 {
-		t.Fatalf("provider calls: Status=%d List=%d Claims=%d, want 1/0/0", provider.statusCalls, provider.listCalls, provider.claimsCalls)
-	}
-	if !json.Valid(stdout.Bytes()) {
-		t.Fatalf("stdout is not one JSON document: %q", stdout.String())
-	}
-	if strings.Contains(stdout.String(), "remote status:") {
-		t.Fatalf("progress contaminated stdout: %q", stdout.String())
-	}
-	if count := strings.Count(stderr.String(), "remote status: refreshing machines and claims"); count < 3 {
-		t.Fatalf("stderr emitted %d refresh liveness events, want at least 3: %q", count, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "remote status: refreshed 0 machines, 0 claims") {
-		t.Fatalf("stderr lacks terminal summary: %q", stderr.String())
-	}
-}
-
-func TestRemoteStatusMachineFilterAndErrorRowsDoNotFail(t *testing.T) {
-	f, at := publishTwo(t)
-	other := filepath.Join(t.TempDir(), "other")
-	remoteGit(t, t.TempDir(), "clone", "-q", f.origin, other)
-	bad := filepath.Join(other, "machines", "carol", "desk", "snapshot.yaml")
-	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(bad, []byte("schema_version: 99\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	remoteGit(t, other, "add", "-A")
-	remoteGit(t, other, "commit", "-q", "-m", "corrupt")
-	remoteGit(t, other, "push", "-q", "origin", "main")
-
-	var out, errOut bytes.Buffer
-	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "", true, &out, &errOut); err != nil {
-		t.Fatalf("error rows must not fail the command: %v", err)
-	}
-	if !strings.Contains(out.String(), "schema_version 99") {
-		t.Fatalf("error row missing: %s", out.String())
-	}
-
-	out.Reset()
-	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "bob/vm", false, &out, &errOut); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out.String(), "alice/laptop") || !strings.Contains(out.String(), "bob/vm") {
-		t.Fatalf("--machine filter not applied: %s", out.String())
-	}
-}
 
 // TestRemoteStatusMachineFilterNoMatchWritesToStderr proves an unmatched
 // --machine reports on stderr (a typo'd key must not look like "everyone is
 // clean") without failing the command: the store itself is fine, only the
 // filter matched nothing.
-func TestRemoteStatusMachineFilterNoMatchWritesToStderr(t *testing.T) {
-	f, at := publishTwo(t)
-	var out, errOut bytes.Buffer
-	if code := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "carol/desk", false, &out, &errOut); code != nil {
-		t.Fatalf("err = %v, want nil (exit code stays 0)", code)
-	}
-	if out.String() != "" {
-		t.Fatalf("stdout = %q, want empty when nothing matched", out.String())
-	}
-	if !strings.Contains(errOut.String(), "no machine carol/desk in the remote store") {
-		t.Fatalf("stderr = %q, want the no-match message", errOut.String())
-	}
-}
-
-func TestMachineRowsTreatsZeroPublishedAtAsError(t *testing.T) {
-	entries := []remotestate.Entry{
-		{
-			Snapshot: remotestate.Snapshot{
-				SchemaVersion: 1,
-				Login:         "test",
-				Machine:       "machine",
-				PublishedAt:   time.Time{}, // zero time
-			},
-			Error: "",
-		},
-	}
-	rows := machineRows(entries, time.Now(), 24*time.Hour)
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	if rows[0].Error == "" {
-		t.Fatalf("row.Error must be non-empty for zero PublishedAt")
-	}
-	if rows[0].Stale {
-		t.Fatalf("row.Stale must be false when there's an error")
-	}
-	if rows[0].Age != "" {
-		t.Fatalf("row.Age must be empty when there's an error")
-	}
-}
 
 // TestMachineRowsSeenReflectsLastSeen proves SEEN and STALE key off the
 // effective heartbeat (max of published_at and last_seen_at), while
@@ -403,71 +191,11 @@ func TestMachineRowsTreatsZeroPublishedAtAsError(t *testing.T) {
 // published a day ago but claimed a task an hour ago is live (fresh claim
 // activity), and an operator diffing PUBLISHED vs SEEN must be able to see
 // that the two diverged.
-func TestMachineRowsSeenReflectsLastSeen(t *testing.T) {
-	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
-	oldPublish := now.Add(-48 * time.Hour)
-	freshSeen := now.Add(-1 * time.Hour)
-	entries := []remotestate.Entry{
-		{
-			Snapshot: remotestate.Snapshot{
-				SchemaVersion: 1,
-				Login:         "alice",
-				Machine:       "laptop",
-				PublishedAt:   oldPublish,
-				LastSeenAt:    freshSeen,
-			},
-		},
-	}
-	rows := machineRows(entries, now, 24*time.Hour)
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	row := rows[0]
-	if row.Error != "" {
-		t.Fatalf("row.Error = %q, want none", row.Error)
-	}
-	if row.Stale {
-		t.Fatalf("row.Stale = true, want false: fresh claim activity (1h) must beat the 24h stale window even though PublishedAt is 48h old")
-	}
-	if row.Age != "2d" {
-		t.Fatalf("row.Age (PUBLISHED) = %q, want the raw publish age 2d", row.Age)
-	}
-	if row.Seen != "1h" {
-		t.Fatalf("row.Seen = %q, want the effective-heartbeat age 1h", row.Seen)
-	}
-	if !row.SeenAt.Equal(freshSeen) {
-		t.Fatalf("row.SeenAt = %v, want %v", row.SeenAt, freshSeen)
-	}
-}
 
 // TestMachineRowsZeroPublishedButLastSeenIsNotError proves the spec's
 // distinction precisely: a snapshot with a zero PublishedAt is only an
 // error row when LastSeenAt is ALSO zero. A non-zero LastSeenAt alone is
 // enough of a liveness signal to render normally.
-func TestMachineRowsZeroPublishedButLastSeenIsNotError(t *testing.T) {
-	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
-	entries := []remotestate.Entry{
-		{
-			Snapshot: remotestate.Snapshot{
-				SchemaVersion: 1,
-				Login:         "alice",
-				Machine:       "laptop",
-				PublishedAt:   time.Time{},
-				LastSeenAt:    now.Add(-1 * time.Hour),
-			},
-		},
-	}
-	rows := machineRows(entries, now, 24*time.Hour)
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	if rows[0].Error != "" {
-		t.Fatalf("row.Error = %q, want none: zero PublishedAt with non-zero LastSeenAt must not be an error row", rows[0].Error)
-	}
-	if rows[0].Stale {
-		t.Fatalf("row.Stale = true, want false: LastSeenAt is fresh")
-	}
-}
 
 func TestSyncPublishFlagIsRegistered(t *testing.T) {
 	cmd := newSyncCmd(&invocation{})
@@ -546,7 +274,7 @@ func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
 func TestRemotePublishCommandDispatchesToRunRemotePublishWithProgress(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	_, _, err := cwCovExec(t, root, func() *cobra.Command { return newRemotePublishCmd(&invocation{}) }, "--dry-run")
+	_, _, err := cwCovExec(t, root, func() *cobra.Command { return remoteCommandForTest(&invocation{}, "publish") }, "--dry-run")
 	var exit *exitError
 	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("err = %v, want the same usage error as an unconfigured direct runRemotePublish call", err)

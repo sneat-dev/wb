@@ -40,7 +40,7 @@ func remoteCLIExecute(t *testing.T, command *cobra.Command, args ...string) (str
 
 func TestRemoteClaimCLIWiresIntoRunRemoteClaim(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteClaimCmd(&invocation{projectsRoot: root}), "task-7")
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "claim"), "task-7")
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote claim wiring: err=%v out=%q", err, out)
 	}
@@ -48,7 +48,7 @@ func TestRemoteClaimCLIWiresIntoRunRemoteClaim(t *testing.T) {
 
 func TestRemoteReleaseCLIWiresIntoRunRemoteRelease(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteReleaseCmd(&invocation{projectsRoot: root}), "task-7")
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "release"), "task-7")
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote release wiring: err=%v out=%q", err, out)
 	}
@@ -56,7 +56,7 @@ func TestRemoteReleaseCLIWiresIntoRunRemoteRelease(t *testing.T) {
 
 func TestRemoteClaimsCLIWiresIntoRunRemoteClaims(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteClaimsCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "claims"))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote claims wiring: err=%v out=%q", err, out)
 	}
@@ -64,7 +64,7 @@ func TestRemoteClaimsCLIWiresIntoRunRemoteClaims(t *testing.T) {
 
 func TestRemoteMachinesCLIWiresIntoRunRemoteMachines(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteMachinesCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "machines"))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote machines wiring: err=%v out=%q", err, out)
 	}
@@ -72,7 +72,7 @@ func TestRemoteMachinesCLIWiresIntoRunRemoteMachines(t *testing.T) {
 
 func TestRemoteStatusCLIWiresIntoRunRemoteStatus(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteStatusCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "status"))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote status wiring: err=%v out=%q", err, out)
 	}
@@ -80,7 +80,7 @@ func TestRemoteStatusCLIWiresIntoRunRemoteStatus(t *testing.T) {
 
 func TestRemoteEnrollCLIWiresIntoRunRemoteEnroll(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteEnrollCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "enroll"))
 	if err == nil || !strings.Contains(err.Error(), "--machine is required") {
 		t.Fatalf("wb remote enroll wiring: err=%v out=%q", err, out)
 	}

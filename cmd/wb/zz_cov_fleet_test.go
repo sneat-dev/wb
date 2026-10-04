@@ -117,41 +117,6 @@ func cwCovProjectsRoot(t *testing.T, repos ...string) string {
 	return root
 }
 
-func TestCwCovReportPrintAndRecordBuckets(t *testing.T) {
-	var rep report
-	// record() streams immediately, so the whole sequence is captured: that
-	// streaming is the point (progress is visible as each repo completes).
-	out := cwCovCaptureStdout(t, func() {
-		rep.record(&rep.updated, "✓", "acme/b")
-		rep.record(&rep.updated, "✓", "acme/a")
-		rep.record(&rep.skipped, "·", "acme/skipped")
-		rep.record(&rep.forked, "+", "acme/fork")
-		rep.record(&rep.archived, "×", "acme/archived")
-		rep.record(&rep.errors, "✗", "zebra failure")
-		rep.record(&rep.errors, "✗", "alpha failure")
-		rep.print()
-	})
-
-	if len(rep.updated) != 2 || rep.updated[0] != "acme/b" || rep.updated[1] != "acme/a" {
-		t.Fatalf("record did not append in call order: %+v", rep.updated)
-	}
-
-	for _, want := range []string{
-		"Summary", "Updated  2", "Skipped  1", "Forks    1", "Archived 1", "Errors   2",
-		"✓ acme/a", "✓ acme/b", "· acme/skipped", "+ acme/fork", "× acme/archived",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("report output missing %q:\n%s", want, out)
-		}
-	}
-	// Errors are sorted in the summary so a rerun reads the same and the list
-	// is scannable. The streamed per-repo lines above keep completion order.
-	summary := out[strings.Index(out, "Summary"):]
-	if strings.Index(summary, "alpha failure") > strings.Index(summary, "zebra failure") {
-		t.Errorf("errors are not sorted:\n%s", summary)
-	}
-}
-
 func TestCwCovFleetCommandsEmitReportsInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", t.TempDir())
 	root := cwCovProjectsRoot(t, "acme/clean", "acme/dirty")

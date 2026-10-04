@@ -6,6 +6,7 @@ import (
 )
 
 func TestCwCovHumanAgeAndPublishedAgo(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		age  time.Duration
 		want string

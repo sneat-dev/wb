@@ -6218,7 +6218,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/sync_test.go",
+              "path": "internal/syncrun/original_test.go",
               "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts",
               "kind": "unit"
             },
@@ -8357,12 +8357,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteClaimAcquireReleaseRoundTrip",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteClaimTakeOverRequiresStaleness",
               "kind": "integration"
             }
@@ -8427,7 +8427,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteClaimsListsWithStaleness",
               "kind": "integration"
             }
@@ -8496,7 +8496,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_enroll_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteEnrollKeepsCredentialOutOfOutputAndConfig",
               "kind": "integration"
             },
@@ -8566,7 +8566,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteMachinesFlagsStaleEntries",
               "kind": "integration"
             }
@@ -8700,12 +8700,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteReleaseHeldByOtherRefusesWithoutForce",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteReleaseJSONOutcome",
               "kind": "integration"
             }
@@ -8770,7 +8770,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteStatusRendersCrossMachineWorklist",
               "kind": "integration"
             }
@@ -11828,7 +11828,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/sync_report_test.go",
+              "path": "internal/syncrun/issues_original_test.go",
               "name": "TestFinishSyncWritesReportEvenWhenARepositoryFailed",
               "kind": "integration"
             },
@@ -11923,7 +11923,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/sync_report_command_test.go",
+              "path": "internal/cli/cmdsync/report_original_test.go",
               "name": "TestSyncReportPublishReturnsImmutableViewerURL",
               "kind": "unit"
             },
@@ -11992,7 +11992,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/sync_report_command_test.go",
+              "path": "internal/cli/cmdsync/report_original_test.go",
               "name": "TestSyncReportValidateLoadsAndValidatesTheWholeBatch",
               "kind": "unit"
             },

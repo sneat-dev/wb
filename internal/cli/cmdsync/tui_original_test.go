@@ -1,6 +1,6 @@
 //go:build e2e
 
-package main
+package cmdsync
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/tui"
 )
 
@@ -170,4 +172,39 @@ func TestE2ERunSyncTUIReportsProgramCancellation(t *testing.T) {
 	if len(results) != 0 {
 		t.Fatalf("canceled TUI results = %+v, want none", results)
 	}
+}
+
+func fetchableFixtureAt(t *testing.T, root, originName, clonePath, content string) {
+	t.Helper()
+	origin := filepath.Join(root, originName)
+	if _, statErr := os.Stat(origin); statErr != nil {
+		testenv.InitBareRemoteForTest(t, origin)
+	}
+	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, filepath.Dir(clonePath), "clone", origin, filepath.Base(clonePath))
+	runGit(t, clonePath, "config", "user.email", "wb@example.test")
+	runGit(t, clonePath, "config", "user.name", "WB Test")
+	if err := os.WriteFile(filepath.Join(clonePath, "README.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, clonePath, "add", ".")
+	runGit(t, clonePath, "commit", "-m", "init")
+	runGit(t, clonePath, "push", "-u", "origin", "main")
+}
+func runGit(t *testing.T, dir string, args ...string) { t.Helper(); testenv.Git(t, dir, args...) }
+
+func scratchGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }

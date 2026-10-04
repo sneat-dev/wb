@@ -1049,6 +1049,47 @@ vet, Linux/Windows compilation and the private executable build pass; cross
 compilation is not execution. Independent review precedes the local checkpoint.
 Work accumulates on the shared branch; publication remains deferred.
 
+### Remote and sync/report command families
+
+All seven remote commands delegate to typed CLI/service owners; command stdout,
+stderr and publication notes now honor the current Cobra writers. A real private
+Git regression proved the previous stdout bypass before the fix. Shared native
+provider, custody and publication authorities remain in their existing owners.
+Pure and private-repository test ports run in parallel; genuine config/process
+cases remain serial with reasons. Age formatting has one neutral implementation.
+
+Sync/report now has independent command and service owners. Plain and interactive
+sync share the native Batch worker loop. Zero workers retain the original no-work
+result; negative workers retain the inherited UI diagnostic. A headless early-quit
+witness preserves nonempty final-model results while cancelling and joining
+workers. The actual service consumes the private stream-selection helper; its
+original tests follow that owner. Unused legacy report code is removed.
+Plain sync preserves a result for every selected repository even when its context
+is cancelled; only the TUI opts into stopping pending jobs. Eight affected race
+cases pass, including actual private Git failures under a cancelled context.
+Whole Batch/TUI profile rows were refreshed after that accounting repair.
+
+The complete designated scope covers 885/885 statements: remote producers509,
+sync/report producers351 and thirteen whole root/shared declarations25, including
+actual closures. This is scoped coverage, not a new repository-wide percentage.
+Whole obsolete enrollment and sync summary/run profile rows are excluded after
+repairs. Native originals, controlled failure observations and private filesystem
+proof remain distinct. Initial test-premise failures and narrow repairs are kept.
+
+The combined root race run passed25 of32 cases in20.79seconds; seven standalone
+harnesses accidentally executed their attached parent help. Detaching the real
+factory children preserves original assertions. Those seven plus the two advisory
+adapter contracts passed in a narrow eight-case retry in5.58seconds. The earlier
+build-only missing shared provider fixture failure is also retained; the exact
+original fixture was restored for its genuine retirement test callers.
+
+Linux/Windows compilation, scoped vet and the private build pass. Lint surfaced
+seven helpers left unused by extraction; their exact declaration removals are
+recorded separately from the command refactor. Capability references follow actual
+moved tests. Independent final review and normal hooks precede local checkpoints;
+publication remains deferred. Catalog/help and dashboard are the next cohesive
+cohorts; root registration and persistent-selector policy remain composition.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued
