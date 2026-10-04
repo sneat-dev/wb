@@ -19,7 +19,11 @@ type mergeAcknowledgementDocument interface {
 		WorktreeMergeLegacyConflictIdentity |
 		WorktreeMergeMissingCleanupAcknowledgement |
 		WorktreeMergeValidationFailureSupersession |
-		WorktreeMergeSelfSupersessionCorrection
+		WorktreeMergeSelfSupersessionCorrection |
+		WorktreeMergeRetiredPublicationAcknowledgement |
+		WorktreeMergeStrandedLandingAcknowledgement |
+		WorktreeMergeUnpublishedValidationFailureAcknowledgement |
+		WorktreeMergePublishedCandidateAdoption
 }
 
 // persistMergeAcknowledgement stages the complete audit bytes before atomic
@@ -57,10 +61,10 @@ func persistMergeAcknowledgement[T mergeAcknowledgementDocument](path, tempPatte
 	return publish(temporaryPath, path, inj)
 }
 
-// A conflict advance publishes its immutable bridge before syncing the parent.
+// An immutable acknowledgement is linked before syncing its parent.
 // On a later open or sync error the published bridge remains available; its
 // caller retains the original recovery/error policy. Production binds os.Open.
-func publishConflictAcknowledgement(temporaryPath, path string, inj *filewrite.Injector, openDirectory func(string) (*os.File, error)) error {
+func publishMergeAcknowledgementAndSyncDirectory(temporaryPath, path string, inj *filewrite.Injector, openDirectory func(string) (*os.File, error)) error {
 	if err := filewrite.LinkPath(temporaryPath, path, inj); err != nil {
 		return err
 	}

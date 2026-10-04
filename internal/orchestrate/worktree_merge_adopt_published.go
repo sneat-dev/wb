@@ -188,44 +188,9 @@ func persistPublishedCandidateAdoption(path string, a WorktreeMergePublishedCand
 // linkPublishedCandidateAdoption = os.Link alias that used to serve as this
 // function's only test seam.
 func persistPublishedCandidateAdoptionInjected(path string, a WorktreeMergePublishedCandidateAdoption, inj *filewrite.Injector) error {
-	b, err := json.MarshalIndent(a, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	f, err := filewrite.CreateTemp(filepath.Dir(path), ".published-candidate-adoption-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporary := f.Name()
-	defer func() { _ = os.Remove(temporary) }()
-	if err := filewrite.ChmodFile(f, 0600, temporary, inj); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := filewrite.Write(f, b, temporary, inj); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := filewrite.Sync(f, temporary, inj); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := filewrite.Close(f, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.LinkPath(temporary, path, inj); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	return persistMergeAcknowledgement(path, ".published-candidate-adoption-*.tmp", a, func(temporaryPath, path string, inj *filewrite.Injector) error {
+		return publishMergeAcknowledgementAndSyncDirectory(temporaryPath, path, inj, os.Open)
+	}, inj)
 }
 
 func validatePublishedCandidateAdoptionSources(ctx context.Context, receipt WorktreeMergeReceipt) error {

@@ -245,36 +245,7 @@ func persistUnpublishedValidationFailureAcknowledgement(path string, ack Worktre
 // passes its own Injector directly to reach a
 // create/chmod/write/sync/close/rename failure branch deterministically.
 func persistUnpublishedValidationFailureAcknowledgementInjected(path string, ack WorktreeMergeUnpublishedValidationFailureAcknowledgement, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".unpublished-validation-failure-ack-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.Rename(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".unpublished-validation-failure-ack-*.tmp", ack, filewrite.Rename, inj)
 }
 
 func readUnpublishedValidationFailureAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeUnpublishedValidationFailureAcknowledgement, error) {

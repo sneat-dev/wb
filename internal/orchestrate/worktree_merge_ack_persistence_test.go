@@ -190,7 +190,7 @@ func TestConflictAcknowledgementKeepsPublishedRecordOnDirectoryErrors(t *testing
 			} else {
 				inj = &filewrite.Injector{Step: filewrite.StepDirSync, Err: sentinel}
 			}
-			if err := publishConflictAcknowledgement(temporaryPath, path, inj, openDirectory); !errors.Is(err, sentinel) {
+			if err := publishMergeAcknowledgementAndSyncDirectory(temporaryPath, path, inj, openDirectory); !errors.Is(err, sentinel) {
 				t.Fatalf("post-publication error = %v, want sentinel", err)
 			}
 			got, err := os.ReadFile(path)

@@ -330,9 +330,7 @@ func recoveryCanonicalMatches(projectsRoot, repository, actualCanonical string) 
 // normalization separately, while recorded conflict advancement requires an
 // exact base before it may inspect or adopt a descendant.
 func recoveryClaimMatches(claim *worktrees.WorkLogClaimView, receipt WorktreeMergeReceipt, path string) bool {
-	return claim != nil && claim.Task == receipt.Candidate.Task && claim.Repository == receipt.Repository &&
-		filepath.Clean(claim.Worktree) == filepath.Clean(path) && claim.Branch == receipt.Candidate.Branch &&
-		claim.Base == receipt.Target && claim.Lifecycle == "active"
+	return mergeClaimMatchesIdentity(claim, receipt.Repository, receipt.Candidate.Task, path, receipt.Candidate.Branch) && claim.Base == receipt.Target
 }
 
 func recordRecoveredMergeCandidate(receipt *WorktreeMergeReceipt, head string) {

@@ -133,6 +133,36 @@ a new complete package or repository percentage. The next proposed domain is
 common candidate claim identity, with base and authorization policies retained
 at their individual admission owners.
 
+### Candidate custody and remaining audit persistence checkpoint
+
+Isolated same-base patches were composed on `coverage-refactor` at `4ede4c95`,
+including disjoint acknowledgement-file hunks. Twenty-five selected race
+cases passed in 96.433s. The profile left only the renamed existing conflict
+writer callback unexecuted; its existing native filesystem publication case
+passed in a 3.234s focused run. Passing source-identical, exact-coordinate
+profiles cover 97/97 statements across 15 whole production declarations.
+Two orphaned imports were caught and removed at the initial build, before
+tests ran. Scoped lint/vet, Linux/Windows compilation and spec lint passed.
+
+Candidate admission now shares active claim repository/task/path/branch
+identity. Base and BaseSHA rules, replacement's nonempty task requirement,
+observed-descendant exceptions, native Guard/Work Log proofs and error order
+remain local. Three entry points bind the native runner to private implementations
+for deterministic negative command observations.
+
+Four remaining audit writers reuse the existing typed staging helper. Their
+103 statements become five caller statements, retaining three replacing Rename
+protocols and adoption's no-replace Link plus parent-directory sync. The helper's
+closed document union is widened; the directory-sync publisher has a neutral
+name, with its existing conflict caller and test qualified accordingly. The linked
+destination remains present when subsequent directory open/sync fails.
+
+The complete equivalent before-scope contained 191 statements at the exact
+committed checkpoint; the current scope contains 97, a net reduction of 94.
+This is a bounded code/coverage result, not a refreshed complete package total.
+Next proposed domains are prepare-continuation helpers and audit readback/
+eligibility; the public prepare/land pipeline remains a later cutover.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

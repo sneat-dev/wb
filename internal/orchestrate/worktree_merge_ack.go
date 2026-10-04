@@ -1557,89 +1557,6 @@ func requireCandidateContainsImmutableClaimBase(ctx context.Context, candidateWo
 	return nil
 }
 
-func validateMergeAcknowledgementCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (*worktrees.WorkLogClaimView, error) {
-	guard, err := worktrees.Guard(ctx, candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
-	if err != nil {
-		return nil, fmt.Errorf("guard candidate %s: %w", candidate.Worktree, err)
-	}
-	if guard.Kind != "linked" || guard.Transient || guard.Branch != candidate.Branch || filepath.Clean(guard.Path) != filepath.Clean(candidate.Worktree) {
-		return nil, fmt.Errorf("candidate %s no longer has its exact linked-worktree identity", candidate.Worktree)
-	}
-	if err := requireCleanMergeWorktree(ctx, candidate.Worktree); err != nil {
-		return nil, fmt.Errorf("candidate is not clean: %w", err)
-	}
-	head, err := mergeRevision(ctx, defaultRunner, candidate.Worktree, "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("read candidate HEAD: %w", err)
-	}
-	if head != candidate.SHA {
-		return nil, fmt.Errorf("candidate HEAD %s does not match receipted candidate %s", head, candidate.SHA)
-	}
-	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: candidate.Worktree})
-	if err != nil {
-		return nil, fmt.Errorf("load candidate Work Log: %w", err)
-	}
-	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Repository != receipt.Repository || view.Claim.Task != candidate.Task ||
-		filepath.Clean(view.Claim.Worktree) != filepath.Clean(candidate.Worktree) || view.Claim.Branch != candidate.Branch || view.Claim.Base != receipt.Target || view.Claim.BaseSHA == "" {
-		return nil, errors.New("candidate has no active Work Log claim matching the immutable receipt target and identity")
-	}
-	return view.Claim, nil
-}
-
-func validatePrepareFailureSupersessionCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (*worktrees.WorkLogClaimView, string, error) {
-	if receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed {
-		claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
-		return claim, "", err
-	}
-	observedHead, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
-	if err != nil {
-		return nil, "", fmt.Errorf("read candidate HEAD: %w", err)
-	}
-	observedCandidate := receipt.Candidate
-	observedCandidate.SHA = observedHead
-	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, observedCandidate)
-	if err != nil {
-		return nil, "", err
-	}
-	if observedHead == receipt.Candidate.SHA {
-		return claim, "", nil
-	}
-	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, observedHead)
-	if err != nil {
-		return nil, "", fmt.Errorf("verify candidate descendant ancestry: %w", err)
-	}
-	if !contains {
-		return nil, "", fmt.Errorf("candidate HEAD %s is not a descendant of receipted candidate %s", observedHead, receipt.Candidate.SHA)
-	}
-	return claim, observedHead, nil
-}
-
-func validateValidationFailureReplacement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, replacementPath string) (WorktreeMergeCandidate, *worktrees.WorkLogClaimView, error) {
-	guard, err := worktrees.Guard(ctx, replacementPath, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
-	if err != nil {
-		return WorktreeMergeCandidate{}, nil, fmt.Errorf("guard replacement worktree %s: %w", replacementPath, err)
-	}
-	if guard.Kind != "linked" || guard.Transient || guard.Branch == receipt.Target {
-		return WorktreeMergeCandidate{}, nil, fmt.Errorf("replacement worktree %s has no exact non-target linked-worktree identity", replacementPath)
-	}
-	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
-		return WorktreeMergeCandidate{}, nil, fmt.Errorf("replacement is not clean: %w", err)
-	}
-	head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
-	if err != nil {
-		return WorktreeMergeCandidate{}, nil, fmt.Errorf("read replacement HEAD: %w", err)
-	}
-	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
-	if err != nil {
-		return WorktreeMergeCandidate{}, nil, fmt.Errorf("load replacement Work Log: %w", err)
-	}
-	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Repository != receipt.Repository || view.Claim.Task == "" ||
-		filepath.Clean(view.Claim.Worktree) != filepath.Clean(guard.Path) || view.Claim.Branch != guard.Branch || view.Claim.Base != receipt.Target || view.Claim.BaseSHA == "" {
-		return WorktreeMergeCandidate{}, nil, errors.New("replacement has no authoritative active Work Log claim matching its identity")
-	}
-	return WorktreeMergeCandidate{Task: view.Claim.Task, Worktree: guard.Path, Branch: guard.Branch, SHA: head}, view.Claim, nil
-}
-
 func sourceSHAs(sources []WorktreeMergeSource) []string {
 	values := make([]string, 0, len(sources))
 	for _, source := range sources {
@@ -2192,7 +2109,7 @@ func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandi
 // dir-sync failure branch deterministically.
 func persistConflictCandidateAdvanceInjected(path string, ack WorktreeMergeConflictCandidateAdvance, inj *filewrite.Injector) error {
 	return persistMergeAcknowledgement(path, ".conflict-candidate-advance-*.tmp", ack, func(temporaryPath, path string, inj *filewrite.Injector) error {
-		return publishConflictAcknowledgement(temporaryPath, path, inj, os.Open)
+		return publishMergeAcknowledgementAndSyncDirectory(temporaryPath, path, inj, os.Open)
 	}, inj)
 }
 
