@@ -510,13 +510,9 @@ func persistReceiptCollisionAcknowledgementInjected(path string, ack WorktreeMer
 }
 
 func readReceiptCollisionAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
-	}
 	var ack WorktreeMergeReceiptCollisionAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("decode receipt-collision acknowledgement %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "receipt-collision acknowledgement", &ack); err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -916,13 +912,9 @@ func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMe
 }
 
 func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt) (WorktreeMergePreparedRebatch, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergePreparedRebatch{}, err
-	}
 	var rebatch WorktreeMergePreparedRebatch
-	if err := json.Unmarshal(contents, &rebatch); err != nil {
-		return WorktreeMergePreparedRebatch{}, fmt.Errorf("decode prepared rebatch %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "prepared rebatch", &rebatch); err != nil {
+		return WorktreeMergePreparedRebatch{}, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -2113,13 +2105,9 @@ func persistLandedFailureAcknowledgementInjected(path string, ack WorktreeMergeL
 }
 
 func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeLandedFailureAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeLandedFailureAcknowledgement{}, err
-	}
 	var ack WorktreeMergeLandedFailureAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("decode landed-failure acknowledgement %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "landed-failure acknowledgement", &ack); err != nil {
+		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	if ack.SchemaVersion != worktreeMergeLandedFailureAcknowledgementSchemaVersion || ack.Status != "landed_failure_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.CurrentTargetSHA == "" || ack.CandidateSHA == "" || ack.ClaimBaseSHA == "" ||
@@ -2209,13 +2197,9 @@ func persistConflictCandidateAdvanceInjected(path string, ack WorktreeMergeConfl
 }
 
 func readConflictCandidateAdvance(path string) (WorktreeMergeConflictCandidateAdvance, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeConflictCandidateAdvance{}, err
-	}
 	var ack WorktreeMergeConflictCandidateAdvance
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return ack, fmt.Errorf("decode conflict-candidate advance %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "conflict-candidate advance", &ack); err != nil {
+		return ack, err
 	}
 	if ack.SchemaVersion != worktreeMergeConflictCandidateAdvanceSchemaVersion ||
 		ack.Status != "conflict_candidate_advanced" || ack.AcknowledgementPath != path ||
@@ -2273,13 +2257,9 @@ func persistLegacyValidationFailureIdentityInjected(path string, ack WorktreeMer
 }
 
 func readLegacyValidationFailureIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyValidationFailureIdentity, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeLegacyValidationFailureIdentity{}, err
-	}
 	var ack WorktreeMergeLegacyValidationFailureIdentity
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeLegacyValidationFailureIdentity{}, fmt.Errorf("decode legacy validation-failed identity %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "legacy validation-failed identity", &ack); err != nil {
+		return WorktreeMergeLegacyValidationFailureIdentity{}, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -2338,13 +2318,9 @@ func persistLegacyConflictIdentityInjected(path string, ack WorktreeMergeLegacyC
 }
 
 func readLegacyConflictIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyConflictIdentity, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeLegacyConflictIdentity{}, err
-	}
 	var ack WorktreeMergeLegacyConflictIdentity
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeLegacyConflictIdentity{}, fmt.Errorf("decode legacy conflict identity %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "legacy conflict identity", &ack); err != nil {
+		return WorktreeMergeLegacyConflictIdentity{}, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -2522,13 +2498,9 @@ func persistMissingCleanupAcknowledgementInjected(path string, ack WorktreeMerge
 }
 
 func readMissingCleanupAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeMissingCleanupAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeMissingCleanupAcknowledgement{}, err
-	}
 	var ack WorktreeMergeMissingCleanupAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return ack, fmt.Errorf("decode missing-cleanup acknowledgement %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "missing-cleanup acknowledgement", &ack); err != nil {
+		return ack, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -2601,8 +2573,8 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	var ack WorktreeMergeValidationFailureSupersession
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("decode validation-failed supersession %s: %w", path, err)
+	if err := decodeMergeAcknowledgement(contents, path, "validation-failed supersession", &ack); err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -2859,13 +2831,9 @@ func sameSelfSupersessionCorrection(left, right WorktreeMergeSelfSupersessionCor
 }
 
 func readSelfSupersessionCorrection(path string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession) (WorktreeMergeSelfSupersessionCorrection, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return WorktreeMergeSelfSupersessionCorrection{}, err
-	}
 	var correction WorktreeMergeSelfSupersessionCorrection
-	if err := json.Unmarshal(contents, &correction); err != nil {
-		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("decode self-supersession correction %s: %w", path, err)
+	if err := readMergeAcknowledgement(path, "self-supersession correction", &correction); err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
 	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {

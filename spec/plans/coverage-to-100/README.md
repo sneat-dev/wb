@@ -43,10 +43,14 @@ Where things stand on 2026-09-25 (main e0dcfda6, the #768 batch; earlier main 49
 
 The founder approved proceeding with `internal/orchestrate` after the CLI root
 reached 851/851 native statements across source-matched full and focused
-passing profiles. Continue in the shared `cli-refactor` worktree; accumulate
-reviewed local commits and defer publication until the coordinated batch.
-Two Sol Medium implementation lanes own disjoint domains, with Sol High
-independent review and one coordinator owning Git, documentation and gates.
+passing profiles. The first orchestration checkpoint was committed on
+`cli-refactor`; the updated goal accumulates reviewed local commits on
+`coverage-refactor` and defers publication until the coordinated batch.
+Two Sol Medium implementation lanes author disjoint domains in isolated source
+copies of the same committed checkpoint. The coordinator applies their verified
+changes to the managed worktree and owns Git, documentation and package gates;
+Sol High performs independent review. Authors do not run Git or Go checks in
+their source copies. Preserve pending edits before rebinding either lane.
 
 The latest complete nightly baseline (`3e7737d0`, 2026-10-03) records 1,544
 uncovered statements in `internal/orchestrate`. It is prioritization evidence,
@@ -103,6 +107,31 @@ Next, consolidate typed acknowledgement read/decode stages, preserving each
 reader's partial-result policy, validation order and legacy error wrapping.
 Preload published-candidate recovery separately; reuse custody helpers only
 where its authorization policy remains equivalent.
+
+### Acknowledgement readers and published recovery checkpoint
+
+Two isolated author copies were applied byte-for-byte to `coverage-refactor`
+at `958a7f1d`. Fourteen selected cases, including three retained native legacy
+and replay witnesses, passed with the race detector in 64.059s. The first
+profile covers all 129 statements across 13 whole changed/new declarations.
+No repair run was needed. Linux/Windows test compilation, scoped lint/vet and
+specification lint passed.
+
+Nine readers now share native file-read and JSON-decode stages while retaining
+their individual zero/partial return policies. Supersession still validates
+the receipt before decoding; the legacy recovery reader remains unchanged.
+Published recovery uses its supplied runner for both ancestry observations,
+with native positive evidence and exact negative-routing regression tests.
+Its published predecessor, receipt status/failure/time and history/local-sync
+policies remain distinct from unpublished conflict recovery.
+
+These eleven original declarations contained 146 statements and 26 uncovered
+statements in the historical profile, with body hashes verified against the
+committed before-source. The replacement scope contains 129 fully covered
+statements, a net reduction of 17. This remains a domain checkpoint rather than
+a new complete package or repository percentage. The next proposed domain is
+common candidate claim identity, with base and authorization policies retained
+at their individual admission owners.
 
 ## Founder decisions (2026-09-23)
 
