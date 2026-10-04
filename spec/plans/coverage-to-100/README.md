@@ -39,6 +39,71 @@ Where things stand on 2026-09-25 (main e0dcfda6, the #768 batch; earlier main 49
 
 **Readiness caveat.** `specscore plan readiness coverage-to-100` reported `ready: true` while this plan's own `Status:` was `Blocked` and task-1 was unmet (before 2026-09-23) — it does not read this Plan's Status field or GitHub PR state (verified 2026-09-23; see task-1). Agents check this plan's `Status:` field and task-1 directly, not `specscore plan readiness`. Filed as [specscore/specscore-cli#216](https://github.com/specscore/specscore-cli/issues/216).
 
+## Orchestration continuation (2026-10-04)
+
+The founder approved proceeding with `internal/orchestrate` after the CLI root
+reached 851/851 native statements across source-matched full and focused
+passing profiles. Continue in the shared `cli-refactor` worktree; accumulate
+reviewed local commits and defer publication until the coordinated batch.
+Two Sol Medium implementation lanes own disjoint domains, with Sol High
+independent review and one coordinator owning Git, documentation and gates.
+
+The latest complete nightly baseline (`3e7737d0`, 2026-10-03) records 1,544
+uncovered statements in `internal/orchestrate`. It is prioritization evidence,
+not a new current percentage. Of its 296 partially/uncovered functions, 295
+have byte-identical current bodies at the continuation checkpoint `ca7243d8`.
+The initial refactoring domains are:
+
+- Nine acknowledgement writers: consolidate their repeated JSON/temp-file
+  staging, preserving three rename, five no-replace link and one link plus
+  parent-directory sync publication protocols. Keep schemas, custody checks,
+  primary errors and cleanup ordering.
+- Four resolved-conflict recovery helpers: share canonical-path comparison,
+  common claim identity and final receipt reset. Preserve exact-base versus
+  historical-base policies, native DAG proofs and acknowledgement-before-reset
+  ordering. Four existing command-observation entry points bind the native
+  runner to private implementations; negative tests refuse exact commands and
+  delegate all other commands to real Git. The large public prepare/land
+  functions remain unchanged.
+- Lock-owner metadata contracts: private descriptor tests cover canonical
+  ownership records, oversized/malformed records and unavailable descriptors.
+
+Batch code and tests before execution. New tests use private inputs and run in
+parallel where applicable. After both implementation lanes freeze source, run
+one focused race/profile batch with necessary existing native witnesses; require
+100% of each whole changed function and every new helper. Run scoped lint/vet
+and supported-platform compilation. Measure actual uncovered-statement gain,
+removed duplication and execution time; do not infer a global gain from a
+package move or an old profile. Full-package integration verification remains
+required before eventual publication. Do not lower coverage policy or remove
+native custody/real-Git assertions to make the gate cheaper.
+
+### First orchestration checkpoint
+
+The acknowledgement persistence, resolved-conflict recovery and lock metadata
+batch covers 254/254 statements across 32 whole production declarations,
+including closures. The initial 40-case race/profile run passed in 98.410s;
+three measured gaps were closed by a passing three-case repair in 16.041s.
+Only passing profiles with identical production hashes and exact block/statement
+coordinates were combined for statement reachability; original profiles retain
+their execution counts. A failed first repair exposed a fixture claim-identity
+error and is excluded from the accepted coverage evidence.
+
+The same domains contained 429 statements and 69 uncovered statements in the
+source-matched historical baseline. Consolidating nine writers reduced their
+223 statements to 42 fully covered statements while retaining distinct atomic
+publication protocols. The complete batch removes 175 production statements.
+This is a bounded domain result, not a refreshed package or repository total.
+Native AST comparison proves 114 other merge declarations, including public
+prepare/land, are unchanged. Linux/Windows test compilation, scoped lint/vet
+and specification lint passed. Five retained serial Git journeys account for
+67.990s of the initial run; fixture isolation remains a performance opportunity.
+
+Next, consolidate typed acknowledgement read/decode stages, preserving each
+reader's partial-result policy, validation order and legacy error wrapping.
+Preload published-candidate recovery separately; reuse custody helpers only
+where its authorization policy remains equivalent.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

@@ -506,36 +506,7 @@ func sameReceiptCollisionAcknowledgement(left, right WorktreeMergeReceiptCollisi
 // package-level linkReceiptCollisionAcknowledgement var this replaces used
 // to let a test do by reassignment.
 func persistReceiptCollisionAcknowledgementInjected(path string, ack WorktreeMergeReceiptCollisionAcknowledgement, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".receipt-collision-ack-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.LinkPath(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".receipt-collision-ack-*.tmp", ack, filewrite.LinkPath, inj)
 }
 
 func readReceiptCollisionAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
@@ -809,36 +780,7 @@ func persistPreparedWorktreeMergeRebatch(path string, rebatch WorktreeMergePrepa
 // its own Injector directly to reach a create/chmod/write/sync/close/rename
 // failure branch deterministically.
 func persistPreparedWorktreeMergeRebatchInjected(path string, rebatch WorktreeMergePreparedRebatch, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(rebatch, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".prepared-rebatch-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.Rename(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".prepared-rebatch-*.tmp", rebatch, filewrite.Rename, inj)
 }
 
 // persistPreparedWorktreeMergeRebatchForPrepare is a narrow test seam for the
@@ -2167,36 +2109,7 @@ func persistLandedFailureAcknowledgement(path string, ack WorktreeMergeLandedFai
 // its own Injector directly to reach a create/chmod/write/sync/close/rename
 // failure branch deterministically.
 func persistLandedFailureAcknowledgementInjected(path string, ack WorktreeMergeLandedFailureAcknowledgement, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".landed-validation-failed-ack-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.Rename(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".landed-validation-failed-ack-*.tmp", ack, filewrite.Rename, inj)
 }
 
 func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeLandedFailureAcknowledgement, error) {
@@ -2290,44 +2203,9 @@ func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandi
 // its own Injector directly to reach a create/chmod/write/sync/close/link/
 // dir-sync failure branch deterministically.
 func persistConflictCandidateAdvanceInjected(path string, ack WorktreeMergeConflictCandidateAdvance, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".conflict-candidate-advance-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	if err := filewrite.LinkPath(temporaryPath, path, inj); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	return persistMergeAcknowledgement(path, ".conflict-candidate-advance-*.tmp", ack, func(temporaryPath, path string, inj *filewrite.Injector) error {
+		return publishConflictAcknowledgement(temporaryPath, path, inj, os.Open)
+	}, inj)
 }
 
 func readConflictCandidateAdvance(path string) (WorktreeMergeConflictCandidateAdvance, error) {
@@ -2391,36 +2269,7 @@ func persistLegacyValidationFailureIdentity(path string, ack WorktreeMergeLegacy
 // its own Injector directly to reach a create/chmod/write/sync/close/link
 // failure branch deterministically.
 func persistLegacyValidationFailureIdentityInjected(path string, ack WorktreeMergeLegacyValidationFailureIdentity, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".legacy-validation-failed-identity-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.LinkPath(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".legacy-validation-failed-identity-*.tmp", ack, filewrite.LinkPath, inj)
 }
 
 func readLegacyValidationFailureIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyValidationFailureIdentity, error) {
@@ -2485,36 +2334,7 @@ func persistLegacyConflictIdentity(path string, ack WorktreeMergeLegacyConflictI
 // its own Injector directly to reach a create/chmod/write/sync/close/link
 // failure branch deterministically.
 func persistLegacyConflictIdentityInjected(path string, ack WorktreeMergeLegacyConflictIdentity, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".legacy-conflict-identity-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.LinkPath(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".legacy-conflict-identity-*.tmp", ack, filewrite.LinkPath, inj)
 }
 
 func readLegacyConflictIdentity(path string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (WorktreeMergeLegacyConflictIdentity, error) {
@@ -2698,36 +2518,7 @@ func persistMissingCleanupAcknowledgement(path string, ack WorktreeMergeMissingC
 // its own Injector directly to reach a create/chmod/write/sync/close/link
 // failure branch deterministically.
 func persistMissingCleanupAcknowledgementInjected(path string, ack WorktreeMergeMissingCleanupAcknowledgement, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".missing-cleanup-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.LinkPath(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".missing-cleanup-*.tmp", ack, filewrite.LinkPath, inj)
 }
 
 func readMissingCleanupAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeMissingCleanupAcknowledgement, error) {
@@ -2798,36 +2589,7 @@ func persistValidationFailureSupersession(path string, ack WorktreeMergeValidati
 // its own Injector directly to reach a create/chmod/write/sync/close/rename
 // failure branch deterministically.
 func persistValidationFailureSupersessionInjected(path string, ack WorktreeMergeValidationFailureSupersession, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".validation-failed-supersession-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.Rename(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".validation-failed-supersession-*.tmp", ack, filewrite.Rename, inj)
 }
 
 func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt) (WorktreeMergeValidationFailureSupersession, error) {
@@ -3136,34 +2898,5 @@ func readSelfSupersessionCorrection(path string, receipt WorktreeMergeReceipt, s
 // package-level linkSelfSupersessionCorrection var this replaces used to
 // let a test do by reassignment.
 func persistSelfSupersessionCorrectionInjected(path string, correction WorktreeMergeSelfSupersessionCorrection, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(correction, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".validation-failed-self-supersession-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.LinkPath(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".validation-failed-self-supersession-*.tmp", correction, filewrite.LinkPath, inj)
 }
