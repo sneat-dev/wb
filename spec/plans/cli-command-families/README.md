@@ -1143,6 +1143,17 @@ in ordinary CI profiles remains a separate feasibility question. Capability
 references resolve; final scoped checks and independent review precede the local
 checkpoint. Publication remains deferred.
 
+### Retirement ownership boundary
+
+One private Git fixture is shared across three sequential cases for login
+refusal, empty login and an unrelated durable claim. The claim is read before
+and after retirement checks to prove it remains unchanged. Login observations
+are controlled; private store writes and reads use the actual Git provider.
+The two-case root race batch passes in 6.70 seconds and covers the whole current
+retirement ownership function (25/25 statements). Existing serial test reasons
+now precede declarations so WB quality scanning recognizes them. Publication
+remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** in_progress

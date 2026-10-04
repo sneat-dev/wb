@@ -77,8 +77,8 @@ func TestRepoStatusRejectsRootFleetSelectorBeforeBackend(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Genuine os.UserHomeDir fallback contract mutates process-wide HOME/USERPROFILE and WB_PROJECTS_ROOT.
 func TestDefaultProjectsRootUsesActualHomeContract(t *testing.T) {
-	//nolint:paralleltest // Genuine os.UserHomeDir fallback contract mutates process-wide HOME/USERPROFILE and WB_PROJECTS_ROOT.
 	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
 		t.Skip("os.UserHomeDir uses an OS-defined constant fallback on this platform")
 	}
@@ -125,8 +125,8 @@ func TestLandingGuardPreservesExistingAnnotationAndPointer(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Clears actual process identity environment and changes the existing global session resolver fixture.
 func TestMutationAdmissionAutoUsesControlledRegistryObservation(t *testing.T) {
-	//nolint:paralleltest // Clears actual process identity environment and changes the existing global session resolver fixture.
 	for _, name := range []string{worktrees.EnvAgentPID, worktrees.EnvAgentRuntime, worktrees.EnvAgentModel, worktrees.EnvAgentID, worktrees.EnvSessionID} {
 		t.Setenv(name, "")
 	}
