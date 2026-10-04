@@ -121,10 +121,55 @@ func TestCollaborationCommandsOwnerJoinMessageAndTransfer(t *testing.T) {
 	}
 }
 
+func TestWorktreeRebindCommandRequiresExpectedRootAndRecordsAudit(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(root, "retired-worktree-root")
+	oldCheckout := worktreecollab.Checkout{ID: "rebind-checkout", Root: oldRoot, GitDir: filepath.Join(root, "gitdir"), CommonDir: filepath.Join(root, "common")}
+	currentCheckout := oldCheckout
+	currentCheckout.Root = root
+	store := worktreecollab.NewStore(filepath.Join(root, ".wb"))
+	if _, err := store.WithLocked(context.Background(), oldCheckout, func(state *worktreecollab.State, found bool) error {
+		if found {
+			t.Fatal("unexpected fixture state")
+		}
+		return state.Take(worktreecollab.TakeRequest{Caller: "owner", ExpectedOwner: worktreecollab.NoOwner, At: time.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := worktreecollab.Service{Store: store, Ports: worktreecollab.ServicePorts{
+		Resolve:     func(context.Context, string) (worktreecollab.Checkout, error) { return currentCheckout, nil },
+		Caller:      func() (string, error) { return "owner", nil },
+		Live:        func(string) (bool, error) { return true, nil },
+		OwnerStatus: func(string) (string, error) { return "live", nil },
+		ObserveLegacy: func(worktreecollab.Checkout) (worktreecollab.ObservedOwner, error) {
+			return worktreecollab.ObservedOwner{}, nil
+		},
+		ObserveLegacyForInspection: func(worktreecollab.Checkout) (worktreecollab.ObservedOwner, error) {
+			return worktreecollab.ObservedOwner{}, nil
+		},
+		Now: time.Now, NewMessageID: func() (string, error) { return "message", nil },
+	}}
+	factory := func() (worktreecollab.Service, error) { return service, nil }
+	if out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), root); err == nil || out != "" || !strings.Contains(err.Error(), "--expected-root is required") {
+		t.Fatalf("missing expected root = %q, %v", out, err)
+	}
+	out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), root, "--expected-root", oldRoot)
+	if err != nil || !strings.Contains(out, oldRoot+" -> "+root) {
+		t.Fatalf("explicit rebind = %q, %v", out, err)
+	}
+	loaded, found, err := store.Load(currentCheckout)
+	if err != nil || !found || len(loaded.CheckoutRebinds) != 1 || loaded.CheckoutRebinds[0].Actor != "owner" {
+		t.Fatalf("rebind audit snapshot = %+v, %t, %v", loaded, found, err)
+	}
+}
+
 func TestCollaborationCommandBoundaryErrorsAndQuietInbox(t *testing.T) {
 	factory, caller := collaborationCommandFixture(t)
 	failing := func() (worktreecollab.Service, error) { return worktreecollab.Service{}, errors.New("factory failed") }
-	for _, build := range []func(collaborationServiceFactory) *cobra.Command{newWorktreeJoinCmd, newWorktreeLeaveCmd, newWorktreeTakeOwnershipCmd, newWorktreeTransferOwnershipCmd, newWorktreeMessageSendCmd, newWorktreeMessageInboxCmd, newWorktreeMessageAckCmd} {
+	for _, build := range []func(collaborationServiceFactory) *cobra.Command{newWorktreeJoinCmd, newWorktreeLeaveCmd, newWorktreeTakeOwnershipCmd, newWorktreeTransferOwnershipCmd, newWorktreeRebindCmd, newWorktreeMessageSendCmd, newWorktreeMessageInboxCmd, newWorktreeMessageAckCmd} {
 		command := build(failing)
 		args := []string{"worktree"}
 		switch command.Name() {
@@ -132,6 +177,8 @@ func TestCollaborationCommandBoundaryErrorsAndQuietInbox(t *testing.T) {
 			args = append(args, "--expected-owner", "none")
 		case "transfer-ownership":
 			args = append(args, "--to-session", "peer")
+		case "rebind":
+			args = append(args, "--expected-root", "/old")
 		case "send":
 			args = append(args, "--to-session", "peer", "--idempotency-key", "one", "--message-file", "-")
 		case "ack":

@@ -106,6 +106,22 @@ func (service Service) Leave(ctx context.Context, idOrPath string) (State, error
 	})
 }
 
+// Rebind repairs only a stale checkout root after a caller explicitly names
+// the prior path. Caller() binds the operation to a live registered WB
+// session, and Store.Rebind additionally requires that session to be the
+// current owner.
+func (service Service) Rebind(ctx context.Context, idOrPath, expectedRoot string) (State, error) {
+	checkout, err := service.checkout(ctx, idOrPath)
+	if err != nil {
+		return State{}, err
+	}
+	caller, err := service.caller()
+	if err != nil {
+		return State{}, err
+	}
+	return service.Store.Rebind(ctx, checkout, expectedRoot, caller, service.Ports.Now())
+}
+
 func (service Service) Take(ctx context.Context, idOrPath, expected string, force bool, reason string) (State, error) {
 	checkout, err := service.checkout(ctx, idOrPath)
 	if err != nil {

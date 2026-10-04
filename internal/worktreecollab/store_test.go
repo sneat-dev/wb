@@ -364,3 +364,87 @@ func TestStoreLoadRefusesFaultsAndDirectoryReplacement(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreRebindRequiresExactRetiredCheckoutAndAdmittedActor(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		oldExists     bool
+		joinPeer      bool
+		changeCurrent func(Checkout) Checkout
+		expectedRoot  string
+		actor         string
+		wantError     string
+	}{
+		{name: "retired root and matching Git identity", expectedRoot: "old", actor: "owner"},
+		{name: "old root still exists", oldExists: true, expectedRoot: "old", actor: "owner", wantError: "still exists"},
+		{name: "Git identity changed", expectedRoot: "old", actor: "owner", changeCurrent: func(checkout Checkout) Checkout { checkout.GitDir += "/other"; return checkout }, wantError: "prior and current checkout identities"},
+		{name: "expected root compare mismatch", expectedRoot: "somewhere-else", actor: "owner", wantError: "prior and current checkout identities"},
+		{name: "actor is not admitted", expectedRoot: "old", actor: "stranger", wantError: "current owner"},
+		{name: "admitted non-owner cannot rebind", expectedRoot: "old", actor: "peer", joinPeer: true, wantError: "current owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldRoot := filepath.Join(dir, "old")
+			currentRoot := filepath.Join(dir, "current")
+			if err := os.Mkdir(currentRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.oldExists {
+				if err := os.Mkdir(oldRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			oldCheckout := Checkout{ID: "checkout-1", Root: oldRoot, GitDir: filepath.Join(dir, "repo", ".git", "worktrees", "one"), CommonDir: filepath.Join(dir, "repo", ".git")}
+			store := NewStore(filepath.Join(dir, ".wb"))
+			if _, err := store.WithLocked(context.Background(), oldCheckout, func(state *State, found bool) error {
+				if found {
+					t.Fatal("unexpected fixture state")
+				}
+				if err := state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow}); err != nil {
+					return err
+				}
+				if tc.joinPeer {
+					return state.Join("peer", testNow.Add(time.Second))
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			currentCheckout := oldCheckout
+			currentCheckout.Root = currentRoot
+			if tc.changeCurrent != nil {
+				currentCheckout = tc.changeCurrent(currentCheckout)
+			}
+			expected := oldRoot
+			if tc.expectedRoot == "somewhere-else" {
+				expected = filepath.Join(dir, tc.expectedRoot)
+			}
+			state, err := store.Rebind(context.Background(), currentCheckout, expected, tc.actor, testNow.Add(time.Minute))
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("Rebind error = %v, want containing %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Checkout != currentCheckout || state.Revision != 2 || len(state.CheckoutRebinds) != 1 {
+				t.Fatalf("rebound snapshot = %+v", state)
+			}
+			change := state.CheckoutRebinds[0]
+			if change.PreviousRoot != oldRoot || change.CurrentRoot != currentRoot || change.Actor != "owner" || !change.At.Equal(testNow.Add(time.Minute)) {
+				t.Fatalf("audit record = %+v", change)
+			}
+			loaded, found, err := store.Load(currentCheckout)
+			if err != nil || !found || loaded.Checkout.Root != currentRoot {
+				t.Fatalf("Load after rebind = %+v, %t, %v", loaded, found, err)
+			}
+		})
+	}
+}
