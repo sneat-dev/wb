@@ -1176,6 +1176,26 @@ persisted atomic profile counts the real main entrypoint and contains only
 a measurement of complete CI duration. Linux/Windows compilation and final
 checkpoint review remain separate checks. Publication remains deferred.
 
+### Scoped coverage and merge composition repairs
+
+Repository-configured shard packages are intersected with the selected canonical
+package scope. Requests are still resolved and checked for duplicate aliases
+before exclusion; explicit requests remain strict. If no configured shard is
+selected, the selected packages run once through the existing unsharded path.
+Three whole changed coverage/configuration functions cover 191/191 statements.
+The affected 43-case race batch passes in 12.24 seconds; three narrow gap cases
+pass in 2.44 seconds. New isolated fixture tests run in parallel.
+
+Root merge callbacks now call the shared landing-context owner directly,
+retaining usage-error translation and actual process identity. They no longer
+construct fresh invocation state. The existing source guard and two private
+store contract cases pass under race in 13.11 seconds and cover the whole
+merge binding function (5/5 statements). Original constructors remain unchanged.
+Final lint identifies two now-unused link-guard forwarders; their removal is
+recorded in a separate cleanup commit. A fresh complete `cmd/wb` coverage
+measurement follows these repairs; earlier failed runs do not establish a new
+package percentage. Publication remains deferred.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** in_progress

@@ -253,7 +253,7 @@ func TestRunShardedCoverageRetriesOnlyFailedShardsAndMergesFinalProfiles(t *test
 	profile := filepath.Join(module, "merged.cov")
 	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, profile, []string{"./serial"}, 8, "", "", 0, 5*time.Second, 1, func(event Progress) {
 		progress = append(progress, event)
-	}, nil)
+	}, nil, false)
 	if err != nil {
 		t.Fatalf("selective sharded retry: %v\n%s", err, output)
 	}
@@ -317,7 +317,7 @@ func TestRunShardedCoverageStopsAStuckShardAtItsDeadline(t *testing.T) {
 	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/shard-timeout\n\ngo 1.24\n")
 	writeGoShardFixturePackage(t, module, "serial", "package serial\n", shardDeadlineStuckFixture)
 	started := time.Now()
-	_, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "unused.cov"), []string{"./serial"}, 2, "", "", 0, 30*time.Millisecond, 0, nil, nil)
+	_, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "unused.cov"), []string{"./serial"}, 2, "", "", 0, 30*time.Millisecond, 0, nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout error = %v, want deadline", err)
 	}

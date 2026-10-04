@@ -107,7 +107,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 	if discoveryTimeout <= 0 {
 		discoveryTimeout = shardAttemptTimeout
 	}
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, options.redBase, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, options.Env, packagePatterns, options.coverPackages)
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, options.redBase, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, options.Env, options.configGoShardPackages && !options.ExplicitGoTestSharding, packagePatterns, options.coverPackages)
 	if errors.Is(context.Cause(checkCtx), errLogicalCheckTimeout) {
 		return output, attempts, fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
@@ -222,7 +222,7 @@ func ValidateGoCoveragePackagePatterns(patterns []string) error {
 
 // redBase is nil for every measurement except the merge base of a per-change
 // ratchet: see redBaseRecorder for the only failures it lets a job survive.
-func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, redBase *redBaseRecorder, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), environment []string, selectedPackagePatterns ...[]string) (string, int, error) {
+func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, redBase *redBaseRecorder, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), environment []string, allowConfiguredOutside bool, selectedPackagePatterns ...[]string) (string, int, error) {
 	packagePatterns := []string{"./..."}
 	if len(selectedPackagePatterns) > 0 {
 		packagePatterns = selectedPackagePatterns[0]
@@ -246,6 +246,7 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 	nativeEnvironment := nativeCoverageEnvironment(environment, canonical)
 	shardedPackages := make([]string, 0, len(requestedPackages))
 	shardedSet := map[string]bool{}
+	seenRequestedPackages := map[string]bool{}
 	selectedSet := make(map[string]bool, len(allPackages))
 	for _, packagePath := range allPackages {
 		selectedSet[packagePath] = true
@@ -260,11 +261,15 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 		if len(packages) != 1 {
 			return "", 0, fmt.Errorf("shard package %q resolved to %d packages; name exactly one package", requested, len(packages))
 		}
-		if !selectedSet[packages[0]] {
-			return "", 0, fmt.Errorf("shard package %q resolves outside selected package scope", requested)
-		}
-		if shardedSet[packages[0]] {
+		if seenRequestedPackages[packages[0]] {
 			return "", 0, fmt.Errorf("duplicate shard package %q", requested)
+		}
+		seenRequestedPackages[packages[0]] = true
+		if !selectedSet[packages[0]] {
+			if allowConfiguredOutside {
+				continue
+			}
+			return "", 0, fmt.Errorf("shard package %q resolves outside selected package scope", requested)
 		}
 		shardedSet[packages[0]] = true
 		shardedPackages = append(shardedPackages, packages[0])

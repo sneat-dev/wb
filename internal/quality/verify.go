@@ -56,6 +56,9 @@ type RunOptions struct {
 	// GoShardPackages on the command line. Repository policy remains validated
 	// and supplies lint commands, but cannot silently broaden this selection.
 	ExplicitGoTestSharding bool
+	// configGoShardPackages tracks validated repository defaults. Explicit
+	// overrides remain strict even when they copy configuration-derived options.
+	configGoShardPackages bool
 	// GoLintCommands replaces the default `go vet ./...` lint step with the
 	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
 	// keeps exact tool pins reproducible without invoking a shell.

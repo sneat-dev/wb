@@ -20,6 +20,6 @@ func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfil
 }
 
 func runShardedCoverageWithDiagnosticsAndProgress(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, reporter func(Progress)) (string, error) {
-	output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx, nil, module, outputProfile, requestedPackages, shardCount, diagnosticsDir, repository, 0, 0, 0, reporter, nil)
+	output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx, nil, module, outputProfile, requestedPackages, shardCount, diagnosticsDir, repository, 0, 0, 0, reporter, nil, false)
 	return output, err
 }

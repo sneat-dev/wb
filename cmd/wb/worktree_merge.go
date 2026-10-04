@@ -1,7 +1,10 @@
 package main
 
 import (
+	"os"
+
 	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
+	"github.com/sneat-dev/wb/internal/landingcontext"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/spf13/cobra"
 )
@@ -17,16 +20,16 @@ func mergeBindings() cmdworktree.MergeBindings {
 	return cmdworktree.MergeBindings{
 		Admission: requireMutationAdmission, Initiator: mutationInitiator, Discovery: setDiscoveryTerms, Quiet: markQuietVerb, Landing: markLandingGuard,
 		RefusePaths: func(root string, paths []string) error {
-			return refuseLinkedWorktrees(&invocation{projectsRoot: root}, paths)
+			return landingGuardError(landingcontext.CheckWorktrees(root, paths))
 		},
 		RefuseReceipt: func(root string, path string) error {
-			return refuseLinkedReceiptWorktrees(&invocation{projectsRoot: root}, path)
+			return landingGuardError(landingcontext.CheckReceipt(root, path))
 		},
 		LaneRequest: func(root, command, reason string, takeOver bool) orchestrate.LaneGuardRequest {
-			return landingLaneGuardRequest(&invocation{projectsRoot: root}, command, reason, takeOver)
+			return landingcontext.LaneRequest(root, command, reason, takeOver, os.Getpid())
 		},
 		ReleaseLane: func(root string, receipt orchestrate.WorktreeMergeReceipt) {
-			releaseWorktreeMergeLane(&invocation{projectsRoot: root}, receipt)
+			landingcontext.ReleaseWorktreeLane(root, receipt, os.Getpid())
 		},
 		CheckoutUpdated: lifecycleCheckoutUpdated,
 	}
