@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cli/daemonview"
 
+	"github.com/sneat-dev/wb/internal/daemonhost"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/sneat-dev/wb/internal/daemon"
@@ -83,6 +84,7 @@ func TestDaemonStatusReportsAReachableDaemonFromAnotherHome(t *testing.T) {
 func TestServeDashboardNamesTheEndpointItCouldNotBind(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +93,7 @@ func TestServeDashboardNamesTheEndpointItCouldNotBind(t *testing.T) {
 	address := held.Addr().String()
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 
-	err = serveDashboard("", context.Background(), os.Stdout, os.Stderr, deps, address, store, "owner-token", true, false)
+	err = newDaemonHost(deps).Serve(context.Background(), daemonhost.Request{ProjectsRoot: "", Listen: address, Quiet: true, ManagedStart: false}, os.Stdout, os.Stderr)
 	if err == nil {
 		t.Fatal("serving on a held endpoint must fail")
 	}
@@ -108,20 +110,6 @@ func TestServeDashboardNamesTheEndpointItCouldNotBind(t *testing.T) {
 // AC: a-daemon-outlives-its-directory-only-by-stopping
 
 // AC: units-do-not-bake-in-a-resolved-path
-
-func TestReportPinnedLifecycleStateIsNeverSilent(t *testing.T) {
-	var out bytes.Buffer
-	reportPinnedLifecycleState(&out, "", "/home/a/.wb/runtime/daemon-state.json")
-	if out.String() != "" {
-		t.Fatalf("an unpinned daemon reported %q", out.String())
-	}
-	reportPinnedLifecycleState(&out, "/old/daemon-state.json", "/home/a/.wb/runtime/daemon-state.json")
-	for _, want := range []string{"/old/daemon-state.json", "/home/a/.wb/runtime/daemon-state.json"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("pinned report %q does not name %q", out.String(), want)
-		}
-	}
-}
 
 // The failure this feature was written after: a daemon answers, this home
 // records nothing, and the leftover lives in a state home WB used to write.

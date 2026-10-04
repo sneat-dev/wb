@@ -5,16 +5,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/daemonhost"
+	"github.com/sneat-dev/wb/internal/hubconfig"
+	"github.com/sneat-dev/wb/internal/hubstore"
+	"github.com/sneat-dev/wb/internal/testenv"
 
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/cli/cmdpeers"
@@ -30,7 +38,7 @@ type peerCommandFixture struct {
 	now        func() time.Time
 }
 
-func testPeersDeps(t *testing.T, adminServer, readServer *httptest.Server) peerCommandFixture {
+func testPeersDeps(t *testing.T, adminServer *peerAdminHostFixture, readServer *httptest.Server) peerCommandFixture {
 	t.Helper()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	deps := peersrun.Dependencies{ConfigPath: func() string { return config }, Abs: filepath.Abs, Do: (&http.Client{Timeout: 5 * time.Second}).Do, Admin: func(context.Context, string) (peersrun.AdminOperations, error) {
@@ -38,12 +46,17 @@ func testPeersDeps(t *testing.T, adminServer, readServer *httptest.Server) peerC
 		return peersrun.AdminOperations{}, nil
 	}, ListenAddress: func(string) (string, error) { return "", os.ErrNotExist }}
 	if adminServer != nil {
-		if err := os.WriteFile(config, []byte("hub:\n  store:\n    engine: memory\n"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		client := &peerAdminClient{httpClient: fakeDaemonHTTPClient(adminServer.Listener.Addr().String(), "owner-token")}
-		deps.Admin = func(context.Context, string) (peersrun.AdminOperations, error) {
-			return peerAdminOperations(client), nil
+		deps.ConfigPath = func() string { return adminServer.configPath }
+		deps.Admin = func(_ context.Context, _ string) (peersrun.AdminOperations, error) {
+			state, found, err := newDaemonController(adminServer.deps, adminServer.root).LoadState()
+			if err != nil || !found || state.Status != daemon.StatusReady {
+				t.Fatalf("private host lifecycle: %+v, found=%t, err=%v", state, found, err)
+			}
+			httpClient, err := daemonruntime.LocalHTTPClient(adminServer.root, state.OwnerToken)
+			if err != nil {
+				return peersrun.AdminOperations{}, err
+			}
+			return peerAdminOperations(&peerAdminClient{httpClient: httpClient}), nil
 		}
 	}
 	if readServer != nil {
@@ -64,14 +77,6 @@ func executePeerFixture(t *testing.T, ctx context.Context, deps peerCommandFixtu
 	command.SilenceErrors = true
 	return command.Execute()
 }
-func fakeDaemonHTTPClient(serverAddr, token string) *http.Client {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "tcp", serverAddr)
-		},
-	}
-	return &http.Client{Transport: daemonruntime.WithOwnerToken(token, transport)}
-}
 
 type fixedPeerSource struct {
 	list   []peers.Record
@@ -79,13 +84,107 @@ type fixedPeerSource struct {
 	found  bool
 }
 
-func newPeerAdminTestServer(t *testing.T) (*httptest.Server, *hubMount) {
-	t.Helper()
-	mount, _ := peerAdminTestMount(t)
-	server := httptest.NewServer(daemonruntime.AuthenticatedHandler("owner-token", newPeerAdminHTTPHandler(mount)))
-	t.Cleanup(server.Close)
-	return server, mount
+type peerAdminHostFixture struct {
+	root, configPath string
+	deps             daemonDependencies
 }
+
+// newPeerAdminTestServer owns an actual durable hub and native daemon host.
+// The command/client/service assertions below use the production owner channel.
+func newPeerAdminTestServer(t *testing.T) (*peerAdminHostFixture, hub.PeerTrustStore) {
+	t.Helper()
+	return newPeerAdminTestServerWithEngine(t, hubconfig.EngineInGitDB)
+}
+
+func newPeerAdminTestServerWithEngine(t *testing.T, engine string) (*peerAdminHostFixture, hub.PeerTrustStore) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("native Host owner-channel fixture requires supported Unix local transport; Windows is compilation-only")
+	}
+	started := time.Now()
+	root, err := os.MkdirTemp("/tmp", "wb-peer-host-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	storePath := filepath.Join(root, "hub-store")
+	if err := os.Mkdir(storePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the real database transaction lock in this private project, even
+	// when invoked by a managed Git hook with inherited GIT_DIR/configuration.
+	if engine == hubconfig.EngineInGitDB {
+		git := exec.CommandContext(t.Context(), "git", "-C", storePath, "init", "-q")
+		git.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+		if raw, err := git.CombinedOutput(); err != nil {
+			t.Fatalf("private hub Git init: %v: %s", err, raw)
+		}
+		testenv.ConfigureGitAutoMaintenanceOff(t, storePath)
+	}
+
+	backend, closer, err := hubstore.Open(t.Context(), hubconfig.Store{Engine: engine, Path: storePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+	trust, _ := hub.NewPeerStores(backend)
+	configPath := filepath.Join(root, "wb.yaml")
+	config := fmt.Sprintf("hub:\n  store:\n    engine: %s\n    path: %s\n", engine, storePath)
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deps := daemonTestDependencies(t, root)
+	deps.HubConfigPath = func() string { return configPath }
+	deps.Token = func() (string, error) { return "owner-token", nil }
+	deps.Alive = daemonruntime.ProcessAlive
+	deps.Getpid, deps.Getppid = os.Getpid, os.Getppid
+	deps.Now = func() time.Time { return time.Now().UTC() }
+	deps.ProcessStartTime = daemon.ProcessStartTime
+	deps.Health = defaultDaemonDependencies().Health
+	deps.Start = func(string, []string, string) (int, error) {
+		t.Error("ready host unexpectedly launched a second daemon")
+		return 0, errors.New("unexpected daemon start")
+	}
+	address := freeLoopbackAddress(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- newDaemonHost(deps).Serve(ctx, daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true}, io.Discard, io.Discard)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("private peer host shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("private peer host did not join")
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probe, cancelProbe := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		err := deps.Health(probe, address)
+		cancelProbe()
+		if err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("private peer host stopped before readiness: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("private peer host readiness: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Logf("private durable host setup: %s", time.Since(started))
+	return &peerAdminHostFixture{root: root, configPath: configPath, deps: deps}, trust
+}
+
 func (source fixedPeerSource) ListPeers(context.Context) ([]peers.Record, error) {
 	return source.list, nil
 }
@@ -100,9 +199,8 @@ func TestPeersInviteTokenFileWriteFailureStillReportsTheToken(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the read-only directory permission this test relies on")
 	}
-	adminServer, mount := newPeerAdminTestServer(t)
-	mount.PeerAdmin.MemoryEngine = false
-	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
+	adminServer, trust := newPeerAdminTestServer(t)
+	if err := trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
 		t.Fatal(err)
 	}
 	deps := testPeersDeps(t, adminServer, nil)
@@ -138,8 +236,8 @@ func TestPeersInviteTokenFileWriteFailureStillReportsTheToken(t *testing.T) {
 	}
 }
 func TestPeersBlockUnblockDisconnectCallTheOwnerPath(t *testing.T) {
-	adminServer, mount := newPeerAdminTestServer(t)
-	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
+	adminServer, trust := newPeerAdminTestServer(t)
+	if err := trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
 		t.Fatal(err)
 	}
 	deps := testPeersDeps(t, adminServer, nil)
@@ -169,13 +267,10 @@ func TestPeersBlockUnblockDisconnectCallTheOwnerPath(t *testing.T) {
 	}
 }
 func TestPeersInvitePrintsTokenOnceOrWritesTokenFile(t *testing.T) {
-	adminServer, mount := newPeerAdminTestServer(t)
-	// The fixture hub runs the memory engine, which invite refuses
-	// unconditionally (rotate included) — that refusal is exercised directly
-	// against the service in hub's own tests. This CLI-level test only cares
-	// about the token's presentation, so it lifts the engine restriction.
-	mount.PeerAdmin.MemoryEngine = false
-	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
+	adminServer, trust := newPeerAdminTestServer(t)
+	// The private ingitdb host persists the real invitation through the
+	// authenticated owner transport; this journey checks its token presentation.
+	if err := trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
 		t.Fatal(err)
 	}
 	deps := testPeersDeps(t, adminServer, nil)

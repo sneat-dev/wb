@@ -1,4 +1,4 @@
-package main
+package daemonhost
 
 import (
 	"bytes"
@@ -38,7 +38,7 @@ type webhookMode struct {
 // redeliveries and writer build the missed-webhook recovery sweep, and
 // tuning lets a test point it at a fake GitHub App API and skip the hourly
 // wait; production passes nil.
-func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bindings hub.InstallationBindingStore, pepper []byte, redeliveries hub.WebhookRedeliveryStore, writer narrate.Writer, tuning *hubTuning) (*webhookMode, error) {
+func newWebhookMode(cfg hubconfig.Config, states hub.InstallationStateStore, bindings hub.InstallationBindingStore, pepper []byte, redeliveries hub.WebhookRedeliveryStore, writer narrate.Writer, tuning *Tuning) (*webhookMode, error) {
 	app := cfg.GitHub.App
 	if app == nil {
 		return nil, nil

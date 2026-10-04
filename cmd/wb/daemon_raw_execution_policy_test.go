@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonhost"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"connectrpc.com/connect"
@@ -42,6 +43,7 @@ func TestServeDashboardRefusesARawCommandWithoutAnAdministratorOptIn(t *testing.
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	deps.HubConfigPath = func() string { return configPath }
 
 	address := freeLoopbackAddress(t)
@@ -55,7 +57,7 @@ func TestServeDashboardRefusesARawCommandWithoutAnAdministratorOptIn(t *testing.
 	command.SetErr(stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()

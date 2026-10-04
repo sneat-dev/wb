@@ -13,6 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/hubconfig"
+
 	"github.com/sneat-dev/wb/internal/peers"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
@@ -108,11 +112,22 @@ func TestPeersRootDefaultJoinAndReadBindingsUsePrivateState(t *testing.T) {
 	}
 }
 func TestPeersRootPrivateAdminBuilderPreservesRealClientSuccessAndRefusal(t *testing.T) {
+	server, _ := newPeerAdminTestServerWithEngine(t, hubconfig.EngineMemory)
+	// Keep the original injected lifecycle producer on its own private root.
+	// The distinct Host root supplies actual native authenticated Unix transport;
+	// this does not claim native platform startup or default-listen readiness.
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
-	server, _ := newPeerAdminTestServer(t)
-	deps.LocalClient = func(string, string) (*http.Client, error) {
-		return fakeDaemonHTTPClient(server.Listener.Addr().String(), "owner-token"), nil
+	state, found, err := newDaemonController(server.deps, server.root).LoadState()
+	if err != nil || !found || state.Status != daemon.StatusReady || state.OwnerToken == "" {
+		t.Fatalf("native Host state=%+v, found=%t, err=%v", state, found, err)
+	}
+	deps.Token = func() (string, error) { return state.OwnerToken, nil }
+	deps.LocalClient = func(requestedRoot, token string) (*http.Client, error) {
+		if requestedRoot != root || token != state.OwnerToken {
+			t.Fatalf("constructor transport requested root=%q token matches=%t", requestedRoot, token == state.OwnerToken)
+		}
+		return daemonruntime.LocalHTTPClient(server.root, token)
 	}
 	operations, err := newPeerAdminOperations(context.Background(), deps, root)
 	if err != nil {
@@ -123,8 +138,8 @@ func TestPeersRootPrivateAdminBuilderPreservesRealClientSuccessAndRefusal(t *tes
 	if !errors.As(err, &exit) || exit.code != exitFindings {
 		t.Fatalf("memory-engine authenticated refusal=%v", err)
 	}
-	// The existing controller fixture owns launch/state effects. This proves the
-	// actual constructor and authenticated RPC, not platform-default launchd.
+	// The original controller fixture owns simulated launch/state effects.
+	// The authenticated RPC above uses the separately owned native Host.
 	bad := deps
 	sentinel := errors.New("launch refused")
 	bad.Start = func(string, []string, string) (int, error) { return 0, sentinel }

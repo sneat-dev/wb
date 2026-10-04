@@ -2793,7 +2793,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_hub_webhook_test.go",
+              "path": "internal/daemonhost/hub_webhook_test.go",
               "name": "TestWebhookModeVerifiesDeliveriesWithTheOperatorsSecret",
               "kind": "integration"
             },

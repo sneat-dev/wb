@@ -15,13 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonhost"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/remotestate"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
 	"github.com/sneat-dev/wb/hub/web"
-	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -86,15 +87,17 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("ghp_journey\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("hub:\n  store:\n    engine: memory\n    path: "+root+"\n  github:\n    token_file: "+tokenFile+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("remote:\n  provider: git\n  repo: acme/private-state\n  machine: journey\nhub:\n  store:\n    engine: memory\n    path: "+root+"\n  github:\n    token_file: "+tokenFile+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	deps := daemonTestDependencies(t, root)
+
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	deps.HubConfigPath = func() string { return configPath }
 	// A test cannot wait out the 30s configuration floor, and its GitHub has
 	// no rate limit to protect.
-	deps.hubTuning = &hubTuning{APIBaseURL: api.URL, PollInterval: 150 * time.Millisecond}
+	deps.hubTuning = &daemonhost.Tuning{APIBaseURL: api.URL, PollInterval: 150 * time.Millisecond}
 
 	address := freeLoopbackAddress(t)
 	console := &journal{}
@@ -106,7 +109,7 @@ func TestSelfHostedBenchWholeJourney(t *testing.T) {
 	command.SetErr(console)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", false, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: projectsRoot, Listen: address, Quiet: false, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -208,9 +211,13 @@ func (buffer *journal) contains(text string) bool {
 // name the narration will use.
 func publishInventory(t *testing.T, address, configPath string) string {
 	t.Helper()
-	machine, err := localMachineName(configPath)
+	remoteConfig, err := remotestate.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	machine := remoteConfig.Machine
+	if remoteConfig.Publish.PublishEvery() != 0 {
+		t.Fatal("whole-journey fixture must not publish to a remote repository")
 	}
 	tokenPath := filepath.Join(filepath.Dir(configPath), "credentials", fmt.Sprintf("hub-local-%s.token", machine))
 	raw, err := os.ReadFile(tokenPath) //nolint:gosec // written by the daemon under this test's own root.

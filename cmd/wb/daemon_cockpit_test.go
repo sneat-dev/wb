@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonhost"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/spf13/cobra"
@@ -38,6 +38,7 @@ import (
 func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	deps.HubConfigPath = cockpitConfigFile(t, "cockpit:\n  refresh_interval: 45s\n  anonymous_metadata: false\n")
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
@@ -51,7 +52,7 @@ func TestCockpitIsMountedOnTheLoopbackListenerWithoutAHub(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -424,25 +425,6 @@ func TestCockpitFleetOptionsObservePullRequestsThroughTheWatcherWithTheConfigure
 // registers the fleet routes on a server and requests them before the
 // snapshotter has started: an empty warming-up document and a 401 for the
 // README without a session.
-func TestCockpitRegisterFleetServesTheWarmingDocumentBeforeTheFirstSnapshot(t *testing.T) {
-	t.Parallel()
-	const address = "127.0.0.1:8766"
-	server := newCockpitServer(address, wbconfig.DefaultCockpitConfig())
-	snapshotter := registerCockpitFleet(server, cockpitfleet.Options{})
-	api := server.Mounts()[cockpit.APIPrefix]
-	for target, want := range map[string]int{"/api/v1/cockpit/fleet": http.StatusOK, cockpitfleet.ReadmePath + "?repository=x": http.StatusUnauthorized} {
-		request := httptest.NewRequest(http.MethodGet, target, nil)
-		request.Host = address
-		recorder := httptest.NewRecorder()
-		api.ServeHTTP(recorder, request)
-		if recorder.Code != want {
-			t.Errorf("%s = %d %s, want %d", target, recorder.Code, recorder.Body.String(), want)
-		}
-	}
-	if body := fleetBody(snapshotter); !strings.Contains(string(body), `"warming_up":true`) {
-		t.Error("a snapshotter that has not started is not warming up")
-	}
-}
 
 // cockpitConfigFile writes a wb.yaml and returns the path function the daemon's
 // dependencies take.
@@ -458,6 +440,7 @@ func cockpitConfigFile(t *testing.T, content string) func() string {
 func TestCockpitInvalidConfigurationStopsTheDaemonFromServing(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	deps.HubConfigPath = cockpitConfigFile(t, "cockpit:\n  hosted_url: not-a-url\n")
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -465,7 +448,7 @@ func TestCockpitInvalidConfigurationStopsTheDaemonFromServing(t *testing.T) {
 	command.SetContext(ctx)
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err := serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, freeLoopbackAddress(t), daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+	err := newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: freeLoopbackAddress(t), Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	if err == nil || !strings.Contains(err.Error(), "cockpit configuration") || !strings.Contains(err.Error(), "cockpit.hosted_url") {
 		t.Fatalf("serveDashboard = %v, want an error naming the cockpit section", err)
 	}
@@ -477,6 +460,7 @@ func TestCockpitInvalidConfigurationStopsTheDaemonFromServing(t *testing.T) {
 func TestDaemonRefusesToServeOnAListenerBoundOutsideLoopback(t *testing.T) {
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	real, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +471,7 @@ func TestDaemonRefusesToServeOnAListenerBoundOutsideLoopback(t *testing.T) {
 	command.SetContext(context.Background())
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err = serveDashboard(root, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, "localhost:8766", daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}, "owner-token", true, false)
+	err = newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: "localhost:8766", Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	var exit *exitError
 	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "192.0.2.10:8766") {
 		t.Fatalf("serveDashboard = %v, want a usage error naming the bound address", err)
@@ -508,51 +492,7 @@ func (listener *fakeBoundListener) Addr() net.Addr { return listener.bound }
 // TestCockpitServerKeepsSessionsInMemorySoARestartEndsThem pins what the
 // daemon builds: a session established on one run's server is unknown to the
 // next run's (cockpit#ac:session-ends-on-logout-and-restart).
-func TestCockpitServerKeepsSessionsInMemorySoARestartEndsThem(t *testing.T) {
-	t.Parallel()
-	const address = "127.0.0.1:8766"
-	var key string
-	session := func(server *cockpit.Server, cookie *http.Cookie) string {
-		request := httptest.NewRequest(http.MethodGet, "/api/v1/cockpit/session", nil)
-		request.Host = address
-		request.AddCookie(cookie)
-		request.Header.Set(cockpit.SessionKeyHeader, key)
-		recorder := httptest.NewRecorder()
-		server.Mounts()[cockpit.APIPrefix].ServeHTTP(recorder, request)
-		return recorder.Body.String()
-	}
-	config := wbconfig.DefaultCockpitConfig()
-	first := newCockpitServer(address, config)
-	issued, err := first.MintLoginCode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	key = issued.Key
-	request := httptest.NewRequest(http.MethodGet, cockpit.LoginPath+"?code="+issued.Code, nil)
-	request.Host = address
-	recorder := httptest.NewRecorder()
-	first.Mounts()[cockpit.PagePrefix].ServeHTTP(recorder, request)
-	cookies := recorder.Result().Cookies()
-	if recorder.Code != http.StatusSeeOther || len(cookies) != 1 {
-		t.Fatalf("login = %d with %d cookies", recorder.Code, len(cookies))
-	}
-	if body := session(first, cookies[0]); !strings.Contains(body, `"principal":"owner"`) {
-		t.Fatalf("session on the run that set it = %q", body)
-	}
-	restarted := newCockpitServer(address, config)
-	if body := session(restarted, cookies[0]); !strings.Contains(body, `"principal":"anonymous-local"`) || strings.Contains(body, "repo.content.read") {
-		t.Fatalf("session after a restart = %q, want anonymous-local", body)
-	}
-}
 
 // TestCockpitLoginCodeRouteIsRefusedByTheFileBridge pins that the file
 // bridge, which dispatches into the same mux as the unix socket, forwards
 // only the DaemonService procedures it lists.
-
-// fleetBody is the fleet document as a request without Accept-Encoding would
-// receive it, from the snapshotter's prepared bytes.
-func fleetBody(snapshotter *cockpitfleet.Snapshotter) []byte {
-	recorder := httptest.NewRecorder()
-	cockpit.ServePayload(recorder, httptest.NewRequest(http.MethodGet, "/", nil), snapshotter.Payload())
-	return recorder.Body.Bytes()
-}

@@ -1,4 +1,4 @@
-package main
+package daemonhost
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/credentialfile"
 
 	"github.com/sneat-dev/wb/api/githubapp"
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
@@ -78,11 +80,11 @@ type hubMount struct {
 	viewer hub.Viewer
 }
 
-// hubTuning overrides the two values a whole-journey end-to-end test cannot
+// Tuning overrides the two values a whole-journey end-to-end test cannot
 // live with: GitHub's origin, which a test replaces with a fake server, and
 // the poll interval, whose 30s configuration floor is far longer than a test
 // may run. Nothing outside a test sets it; production passes nil.
-type hubTuning struct {
+type Tuning struct {
 	APIBaseURL   string
 	PollInterval time.Duration
 	// RedeliverySweepInterval overrides the missed-webhook recovery sweep's
@@ -315,7 +317,7 @@ func composeWorkbenchAPI(readAPI, hubAPI, peersAPI http.Handler) http.Handler {
 // mountHub builds the hub and the embedded dashboard when wb.yaml has a hub
 // section. It returns (nil, nil) when the section is absent, which is the
 // path every operator who does not self-host takes.
-func mountHub(ctx context.Context, configPath, listenAddress string, writer narrate.Writer, tuning *hubTuning) (*hubMount, error) {
+func mountHub(ctx context.Context, configPath, listenAddress string, writer narrate.Writer, tuning *Tuning) (*hubMount, error) {
 	cfg, found, err := hubconfig.Load(configPath)
 	if err != nil || !found {
 		return nil, err
@@ -324,7 +326,7 @@ func mountHub(ctx context.Context, configPath, listenAddress string, writer narr
 	if err != nil {
 		return nil, err
 	}
-	mount, err := buildHubMount(ctx, cfg, store, configPath, listenAddress, writer, tuning)
+	mount, err := buildHubMount(ctx, cfg, store, configPath, listenAddress, writer, tuning, os.Hostname)
 	if err != nil {
 		_ = closer.Close()
 		return nil, err
@@ -333,8 +335,8 @@ func mountHub(ctx context.Context, configPath, listenAddress string, writer narr
 	return mount, nil
 }
 
-func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.DocumentStore, configPath, listenAddress string, writer narrate.Writer, tuning *hubTuning) (*hubMount, error) {
-	machine, err := localMachineName(configPath)
+func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.DocumentStore, configPath, listenAddress string, writer narrate.Writer, tuning *Tuning, hostname func() (string, error)) (*hubMount, error) {
+	machine, err := localMachineName(configPath, hostname)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +367,7 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 		Backend: store, Pepper: pepper, HubMachineName: machine, MemoryEngine: cfg.Store.Engine == hubconfig.EngineMemory,
 	}
 	peersSource := hubPeerReadSource{trust: peerTrust, queuedWork: hub.NewQueuedWorkStore(store)}
-	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize(localIdentityID))
+	peersAPI := peers.NewHandler(hub.APIPrefix+"/peers", peersSource, peersViewerAuthorize())
 
 	export := &machineExportSource{}
 	owner := &hubOwnerCheck{}
@@ -462,21 +464,11 @@ func buildHubMount(ctx context.Context, cfg hubconfig.Config, store githubapp.Do
 	}, nil
 }
 
-// peersViewerAuthorize matches the always-true loopback-operator viewer the
-// sibling read routes already apply (readAPI's ViewerResolver): only this
-// machine can reach the loopback listener, so there is nothing further to
-// check today. It exists so the peers read route is not structurally
-// different from its siblings, and has a real gate to grow into once a
-// non-trivial viewer exists.
-func peersViewerAuthorize(identityID string) peers.Authorize {
-	resolver := localWorkbenchViewerResolver{identityID: identityID}
-	return func(request *http.Request) error {
-		viewer, err := resolver.Viewer(request)
-		if err != nil || !viewer.Authenticated {
-			return errors.New("unauthorized")
-		}
-		return nil
-	}
+// peersViewerAuthorize permits the local peers read model behind the host's
+// required loopback listener. Owner/admin/bearer and export gates remain separate;
+// the workbench read API still uses its authenticated member viewer resolver.
+func peersViewerAuthorize() peers.Authorize {
+	return func(*http.Request) error { return nil }
 }
 
 // peersSource returns the hub-backed peers.Source, or nil when there is no
@@ -601,7 +593,7 @@ func truncateNodeID(nodeID string) string {
 // newHubPoller builds the polling ingester, or returns nil when no token file
 // is configured. Polling is the only ingestion a self-hoster gets by default,
 // and a token is the only thing it needs.
-func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer, tuning *hubTuning) *poller.Poller {
+func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots hub.MachineSnapshotStore, events hub.RepositoryEventStore, machine string, writer narrate.Writer, tuning *Tuning) *poller.Poller {
 	// Webhook mode replaces polling outright: the operator installed the App
 	// on the repositories they care about, so GitHub pushes every default-
 	// branch update and rename, and only the repository named by an event is
@@ -628,7 +620,7 @@ func newHubPoller(cfg hubconfig.Config, store githubapp.DocumentStore, snapshots
 }
 
 // tuningNow is the clock a test injects, or nil for the real one.
-func tuningNow(tuning *hubTuning) func() time.Time {
+func tuningNow(tuning *Tuning) func() time.Time {
 	if tuning == nil {
 		return nil
 	}
@@ -639,7 +631,7 @@ func tuningNow(tuning *hubTuning) func() time.Time {
 // injected. The configuration floor is deliberately not applied to the
 // override: it exists to protect GitHub's rate limit, and a test's fake
 // GitHub has none.
-func pollInterval(cfg hubconfig.Config, tuning *hubTuning) time.Duration {
+func pollInterval(cfg hubconfig.Config, tuning *Tuning) time.Duration {
 	if tuning != nil && tuning.PollInterval > 0 {
 		return tuning.PollInterval
 	}
@@ -680,6 +672,10 @@ func hubStateDirectory(cfg hubconfig.Config) string {
 // restarts: regenerating it would invalidate every token already written to
 // disk, so an enrolled machine would silently stop authenticating.
 func hubPepper(directory string) ([]byte, error) {
+	return hubPepperWithEffects(directory, os.MkdirAll, os.WriteFile)
+}
+
+func hubPepperWithEffects(directory string, mkdirAll func(string, os.FileMode) error, writeFile func(string, []byte, os.FileMode) error) ([]byte, error) {
 	if strings.TrimSpace(directory) == "" {
 		return nil, errors.New("hub state directory could not be resolved; set hub.store.path")
 	}
@@ -694,14 +690,14 @@ func hubPepper(directory string) ([]byte, error) {
 	case !errors.Is(err, os.ErrNotExist):
 		return nil, fmt.Errorf("read hub pepper: %w", err)
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := mkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create hub state directory: %w", err)
 	}
 	pepper := make([]byte, hubPepperBytes)
-	if _, err := rand.Read(pepper); err != nil {
-		return nil, fmt.Errorf("generate hub pepper: %w", err)
-	}
-	if err := os.WriteFile(path, pepper, 0o600); err != nil {
+	// Go 1.27 crypto/rand.Read fills this buffer or terminates the process.
+	// Keep real entropy before persistence; there is no returned failure.
+	_, _ = rand.Read(pepper)
+	if err := writeFile(path, pepper, 0o600); err != nil {
 		return nil, fmt.Errorf("write hub pepper: %w", err)
 	}
 	return pepper, nil
@@ -710,11 +706,11 @@ func hubPepper(directory string) ([]byte, error) {
 // localMachineName reuses remote.machine when the operator already named this
 // machine, so a hub they later point at the hosted instance keeps one name.
 // Otherwise the hostname is the name they would have typed anyway.
-func localMachineName(configPath string) (string, error) {
+func localMachineName(configPath string, hostname func() (string, error)) (string, error) {
 	if cfg, err := remotestate.LoadConfig(configPath); err == nil && strings.TrimSpace(cfg.Machine) != "" {
 		return cfg.Machine, nil
 	}
-	host, err := os.Hostname()
+	host, err := hostname()
 	if err != nil || strings.TrimSpace(host) == "" {
 		return "", errors.New("hub machine name could not be resolved; set remote.machine in wb.yaml")
 	}
@@ -743,7 +739,7 @@ func ensureLocalEnrollment(ctx context.Context, enrollment *hub.MachineEnrollmen
 	if err := os.Remove(tokenFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("replace local hub credential: %w", err)
 	}
-	if _, err := writePrivateCredential(tokenFile, response.Token); err != nil {
+	if _, err := credentialfile.WritePrivate(tokenFile, response.Token); err != nil {
 		return err
 	}
 	return wbconfig.SetRemoteHub(configPath, hubURL, machine, tokenFile)

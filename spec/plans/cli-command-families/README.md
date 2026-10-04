@@ -695,6 +695,45 @@ remains deferred. Remaining serving/hub and authenticated-client work has a
 read-only domain proposal and preliminary architecture review, requiring exact
 post-checkpoint ownership rebind before implementation.
 
+The next daemon-host cohort moves serving, hub/webhook/poller/enrollment,
+peer-server mounting and Cockpit mounting/export into `internal/daemonhost`.
+The root supplies the genuine FleetOptions producer and keeps client and remote
+publication code until their separate reviewed extractions. Forty-nine original
+tests move to their native owner; 22 root journeys remain adapted and 48 protected
+originals retain their responsibilities. A tagged helper with three genuine E2E
+consumers remains at root. Actual authenticated Unix transport, private durable
+Git stores, token/state ownership and shutdown cleanup remain authoritative.
+
+Private per-host state/path effects delegate to the existing daemon.Store methods
+and resolvers by default; stage tests replace only the failing observation. The
+hostname observation is an argument of one private helper, with os.Hostname supplied
+by its actual production caller. Config-first behavior and refusal bytes remain.
+The infallible crypto/rand.Read catch and a redundant always-successful loopback
+read authorizer were removed after examining their concrete producers; credential
+and write/export authorization remain intact.
+
+The 36 root cases passed across an initial 32 successes and targeted fixture
+retries. The 52 gap cases passed across 45 initial successes, six socket/home
+fixture corrections and a sole runtime-guard correction. The guard deliberately
+recreates an owned stopped record after disappearance, with PID zero, original
+token and actual failure reason. The final 37-case bounded hub refresh passed in
+3.381 seconds with all 54 Go source states unchanged. First failures remain in
+receipts; these are combined case results, not claims that the first suites passed.
+Actual macOS transport execution is distinct from Linux/Windows compilation and
+from injected lifecycle observations. Native Unix fixtures skip precisely on
+Windows; portable command and early-error cases remain runnable. No repository-wide
+coverage gain or end-to-end CI speed reduction is claimed.
+
+Two existing retained root journeys refreshed 12 final hub statements in 8.220
+seconds: the no-hub mount and the real self-hosted whole journey. A sole new
+nonlistener case closes the final viewer callback through the actual mounted
+private member dashboard read; its race run passed. The extracted daemon-host scope is 751/751 statements, with two genuine root
+bindings also covered (753/753 combined). Only final-source hub profiles are
+combined; changed serving files use fresh source-bound profiles, and unchanged
+files require exact source hash equality. Linux and Windows compilation, the
+private current-source WB build, capability declaration checks and SpecScore lint
+passed. Publication remains deferred while later reviewed domains are extracted.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued

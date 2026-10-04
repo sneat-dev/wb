@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cli/daemonview"
 
+	"github.com/sneat-dev/wb/internal/daemonhost"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/spf13/cobra"
@@ -30,6 +31,8 @@ func TestServeDashboardRecordsSupervisorFromEnvironment(t *testing.T) {
 	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
+
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	env := map[string]string{"INVOCATION_ID": "abc123", "SYSTEMD_EXEC_PID": "4242"}
 	deps.Getenv = func(name string) string { return env[name] }
 	deps.Getpid = func() int { return 4242 }
@@ -48,7 +51,7 @@ func TestServeDashboardRecordsSupervisorFromEnvironment(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: projectsRoot, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -87,6 +90,8 @@ func TestServeDashboardRecordsItsOwnObservedSystemdUnit(t *testing.T) {
 	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
+
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	deps.ObservedCgroupUnit = func(pid int) (string, bool) {
 		if pid != 4242 {
 			t.Fatalf("observedCgroupUnit probed unexpected pid %d", pid)
@@ -109,7 +114,7 @@ func TestServeDashboardRecordsItsOwnObservedSystemdUnit(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: projectsRoot, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -159,6 +164,8 @@ func TestServeDashboardTreatsInheritedInvocationIDAsUnsupervised(t *testing.T) {
 	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
+
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	// INVOCATION_ID present, but no SYSTEMD_EXEC_PID: exactly the inherited
 	// shape confirmed on a live host, where a shell or agent process started
 	// inside a systemd-supervised session inherits the variable without ever
@@ -181,7 +188,7 @@ func TestServeDashboardTreatsInheritedInvocationIDAsUnsupervised(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: projectsRoot, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -217,6 +224,8 @@ func TestServeDashboardRecordsLaunchdSupervisor(t *testing.T) {
 	projectsRoot := root
 
 	deps := daemonTestDependencies(t, root)
+
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	env := map[string]string{"XPC_SERVICE_NAME": "dev.sneat.wb.daemon"}
 	deps.Getenv = func(name string) string { return env[name] }
 	deps.Getppid = func() int { return 1 }
@@ -234,7 +243,7 @@ func TestServeDashboardRecordsLaunchdSupervisor(t *testing.T) {
 	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(projectsRoot, command.Context(), command.OutOrStdout(), command.ErrOrStderr(), deps, address, store, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: projectsRoot, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
