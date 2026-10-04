@@ -4,15 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/depsrun"
 	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/spf13/cobra"
 )
 
 func TestDepsRootRegistryAndLazyNativeBinding(t *testing.T) {
@@ -70,28 +68,9 @@ func TestDepsRootRegistryAndLazyNativeBinding(t *testing.T) {
 	// The actual npm selector adapter preserves native identity and selection progress.
 	var progress bytes.Buffer
 	campaign := newCampaignProgress(&progress, true, "npm selection")
-	selected, err := dependencyRepositories(inv, []string{"npm", "set", checkout}, depsSetOptions{parallel: 1, campaign: campaign})
+	selected, err := newDependencyService().Select(context.Background(), depsrun.Selection{ProjectsRoot: inv.projectsRoot, RepositoryPath: checkout, Parallel: 1, Progress: campaign.reporter()})
 	campaign.finish("selected")
 	if err != nil || len(selected) != 1 || selected[0].Slug != "acme/consumer" || !strings.Contains(progress.String(), "select repositories") {
 		t.Fatalf("selector=%+v err=%v progress=%q", selected, err, progress.String())
-	}
-}
-
-func TestDepsRootCompositeAdapterKeepsHomeEngineAndReportCustody(t *testing.T) {
-	t.Parallel()
-	home, engine := t.TempDir(), t.TempDir()
-	inv := &invocation{projectsRoot: home, nonInteractive: true}
-	command := &cobra.Command{}
-	command.SetOut(io.Discard)
-	command.SetErr(io.Discard)
-	command.SetContext(context.Background())
-	events := []deps.ReleaseEvent{{Dependency: "github.com/acme/provider", Version: "v1.2.0", Source: "explicit"}}
-	report, directory, err := executeDepsBumpWithRegistryPolicy(inv, command, deps.EcosystemGo, events, nil, depsSetOptions{maxWaves: 1}, deps.Options{GitHubDir: engine, Ref: "main", DryRun: true, Parallel: 1}, true)
-	if err != nil || report.Operation == "" || report.GitHubDir != engine || !strings.HasPrefix(directory, filepath.Join(home, ".wb", "reports")) {
-		t.Fatalf("report=%+v directory=%q err=%v", report, directory, err)
-	}
-	persisted, err := deps.LoadBumpReport(directory)
-	if err != nil || persisted.Operation != report.Operation || !persisted.RegistryLookupsSkipped {
-		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
 }

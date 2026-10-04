@@ -56,7 +56,7 @@ func TestAgentDispatchDepsWiresBeforeAndAfterCreateHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agentDispatchDeps: %v", err)
 	}
-	if err := refreshManagedHooksBeforeWorktreeCreate(testInvocation(t, root), []string{"acme/app"}); err == nil {
+	if err := worktreeCreateDependencies(testInvocation(t, root)).BeforeCreate(root, []string{"acme/app"}); err == nil {
 		t.Fatal("worktree create adapter must preserve missing-canonical refusal")
 	}
 	if deps.Home != home {

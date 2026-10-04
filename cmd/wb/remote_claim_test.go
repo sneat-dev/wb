@@ -959,41 +959,6 @@ func TestWorktreeCreateAutoClaimWiring(t *testing.T) {
 	}
 }
 
-func TestWorktreeCreateJSONDisabledShapeIsPlainArray(t *testing.T) {
-	results := []worktrees.CreateResult{{Repository: "acme/app"}}
-	got := worktreeCreateJSON(autoClaimResult{Outcome: "disabled"}, results)
-	data, err := json.Marshal(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var arr []worktrees.CreateResult
-	if err := json.Unmarshal(data, &arr); err != nil {
-		t.Fatalf("disabled shape must be the plain array exactly as before: %v: %s", err, data)
-	}
-	if len(arr) != 1 || arr[0].Repository != "acme/app" {
-		t.Fatalf("arr = %+v", arr)
-	}
-}
-
-func TestWorktreeCreateJSONAttemptedShapeWrapsResult(t *testing.T) {
-	results := []worktrees.CreateResult{{Repository: "acme/app"}}
-	got := worktreeCreateJSON(autoClaimResult{Outcome: "acquired"}, results)
-	data, err := json.Marshal(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var wrapped struct {
-		RemoteClaim autoClaimResult          `json:"remote_claim"`
-		Worktrees   []worktrees.CreateResult `json:"worktrees"`
-	}
-	if err := json.Unmarshal(data, &wrapped); err != nil {
-		t.Fatalf("attempted shape must wrap remote_claim + worktrees: %v: %s", err, data)
-	}
-	if wrapped.RemoteClaim.Outcome != "acquired" || len(wrapped.Worktrees) != 1 || wrapped.Worktrees[0].Repository != "acme/app" {
-		t.Fatalf("wrapped = %+v", wrapped)
-	}
-}
-
 // TestWorktreeCreateCLINoClaimKeepsPlainJSONArray drives the whole verb
 // through run(), the same entry point main() uses, proving --no-claim
 // actually threads from the flag into the RunE and that its JSON output

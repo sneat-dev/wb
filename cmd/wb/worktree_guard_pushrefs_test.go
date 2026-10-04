@@ -6,37 +6,6 @@ import (
 	"testing"
 )
 
-func TestPushOnlyDeletesRemoteRefsReadsGitsPrePushList(t *testing.T) {
-	t.Parallel()
-	zero, sha := strings.Repeat("0", 40), strings.Repeat("a", 40)
-	for _, test := range []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{"a deletion", "(delete) " + zero + " refs/heads/x " + sha + "\n", true},
-		{"an update", "refs/heads/x " + sha + " refs/heads/x " + zero + "\n", false},
-		{"nothing", "", false},
-		{"a malformed list is never trusted", "garbage\n", false},
-	} {
-		if got := pushOnlyDeletesRemoteRefs(strings.NewReader(test.input), func(any) bool { return false }); got != test.want {
-			t.Errorf("%s: pushOnlyDeletesRemoteRefs = %t, want %t", test.name, got, test.want)
-		}
-	}
-}
-
-func TestPushOnlyDeletesRemoteRefsNeverReadsATerminal(t *testing.T) {
-	t.Parallel()
-	zero, sha := strings.Repeat("0", 40), strings.Repeat("a", 40)
-	deletion := strings.NewReader("(delete) " + zero + " refs/heads/x " + sha + "\n")
-	if pushOnlyDeletesRemoteRefs(deletion, func(any) bool { return true }) {
-		t.Fatal("a terminal was treated as a pushed-ref list")
-	}
-	if deletion.Len() == 0 {
-		t.Fatal("a terminal's input was read")
-	}
-}
-
 // The hook-only flag answers before any checkout is inspected: a delete-only
 // push exits 0 even for a path the guard could not otherwise resolve, while a
 // push that updates a ref still reaches the guard.

@@ -4832,12 +4832,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/depsrun/publication_original_test.go",
               "name": "TestParseWorkflowInputsScopesValuesToAlignedTuples",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/integration/publication_original_test.go",
               "name": "TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport",
               "kind": "integration"
             },

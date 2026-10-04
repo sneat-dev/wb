@@ -120,51 +120,6 @@ func TestCwWtPrintRetireTaskShells(t *testing.T) {
 	}
 }
 
-func TestCwWtFormatCanonicalFreshness(t *testing.T) {
-	if got := formatCanonicalFreshness(nil); got != "not checked" {
-		t.Fatalf("nil freshness = %q", got)
-	}
-	withError := &worktrees.CanonicalFreshness{Status: worktrees.CanonicalFreshnessOffline, RemoteRef: "origin/main", Error: "network down"}
-	if got := formatCanonicalFreshness(withError); !strings.Contains(got, "status=") || !strings.Contains(got, "network down") {
-		t.Fatalf("error freshness = %q", got)
-	}
-	fresh := &worktrees.CanonicalFreshness{
-		Status: worktrees.CanonicalFreshnessCurrent, RemoteRef: "origin/main",
-		LocalSHA: "aaaa", RemoteSHA: "bbbb", Ahead: 1, Behind: 2,
-	}
-	got := formatCanonicalFreshness(fresh)
-	for _, want := range []string{"status=current", "target=origin/main", "local=aaaa", "remote=bbbb", "(1 ahead, 2 behind)"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("freshness text missing %q: %s", want, got)
-		}
-	}
-}
-
-func TestCwWtValidateWorktreeBranchFlags(t *testing.T) {
-	build := func(args ...string) *cobra.Command {
-		command := &cobra.Command{Use: "x", Args: cobra.ExactArgs(2)}
-		var branch string
-		command.Flags().StringVar(&branch, "branch", "", "")
-		command.Flags().StringVar(new(string), "branch-prefix", "", "")
-		command.SetArgs(args)
-		_ = command.ParseFlags(args)
-		return command
-	}
-	if err := validateWorktreeBranchFlags(build(), ""); err != nil {
-		t.Fatalf("no flags = %v", err)
-	}
-	if err := validateWorktreeBranchFlags(build("--branch", "b"), "b"); err != nil {
-		t.Fatalf("branch only = %v", err)
-	}
-	if err := validateWorktreeBranchFlags(build("--branch", "b", "--branch-prefix", "p"), "b"); err == nil {
-		t.Fatal("both flags must be refused")
-	}
-	command := build("--branch=")
-	if err := validateWorktreeBranchFlags(command, ""); err == nil || !strings.Contains(err.Error(), "must not be empty") {
-		t.Fatalf("explicitly empty branch = %v", err)
-	}
-}
-
 func TestCwWtRequireOutputFormat(t *testing.T) {
 	if err := requireOutputFormat("json", "text", "json"); err != nil {
 		t.Fatalf("allowed value = %v", err)

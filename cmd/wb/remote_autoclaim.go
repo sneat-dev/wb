@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/remotestate"
-	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/sneat-dev/wb/internal/worktreerun"
 )
 
 // autoClaimStale is the staleness window used by the best-effort auto-claim
@@ -20,10 +20,7 @@ const autoClaimStale = 24 * time.Hour
 // Outcome is one of: disabled, skipped, acquired, refreshed, held,
 // took_over. Detail carries the holder description for held/took_over and
 // the failure reason for skipped; it is empty otherwise.
-type autoClaimResult struct {
-	Outcome string `json:"outcome"`
-	Detail  string `json:"detail,omitempty"`
-}
+type autoClaimResult = worktreerun.RemoteClaimOutcome
 
 // tryAutoClaim best-effort claims task in the remote store before a
 // worktree is created. It never returns an error and never blocks the
@@ -253,20 +250,4 @@ func worktreeCreateAutoClaim(deps remoteDeps, noClaim bool, projectsRoot, task s
 		return autoClaimResult{Outcome: "disabled"}
 	}
 	return tryAutoClaim(deps, projectsRoot, task, autoClaimStale, out)
-}
-
-// worktreeCreateJSON selects what `worktree create --format json` encodes.
-// When no claim was attempted at all (outcome "disabled": no `remote:`
-// config, or --no-claim), it is the plain worktree results array exactly as
-// before this feature existed, so existing consumers see no change. Once a
-// claim was actually attempted or skipped, the outcome travels alongside
-// the results in a small wrapper instead.
-func worktreeCreateJSON(claim autoClaimResult, results []worktrees.CreateResult) any {
-	if claim.Outcome == "disabled" {
-		return results
-	}
-	return struct {
-		RemoteClaim autoClaimResult          `json:"remote_claim"`
-		Worktrees   []worktrees.CreateResult `json:"worktrees"`
-	}{RemoteClaim: claim, Worktrees: results}
 }

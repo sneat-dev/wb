@@ -905,6 +905,51 @@ test-only orphan removal. All 790 capability references still resolve with no
 metadata change. Final independent review precedes the local checkpoint;
 publication remains deferred.
 
+### Publication and worktree create/guard local checkpoint
+
+Publication now has a Cobra-free owner that composes the existing selection,
+npm release and dependency wave engines. Its nine native defaults retain real
+lock, filesystem and receipt authority. Check parsing, delayed flag reads,
+persist-before-output and output-before-later-error order remain intact. All
+39 original responsibilities are mapped to their actual owners; a mixed
+format/selection test is split along the real command/domain boundary.
+
+Create and guard use direct native operation callbacks. Prompt snapshots,
+registered identity, hook preparation, remote claims, checkout markers and
+publication findings preserve their original order and policies. Six pure
+original tests move; 98 unrelated declarations remain byte-identical. The
+remaining remote claim engine uses a neutral result DTO, without importing
+command rendering.
+
+The nine whole producer files and five whole changed root declarations cover
+505/505 statements. This is the reviewed extraction scope, not repository-wide
+coverage. One combined root race gate passed all 21 selected native cases in
+52.81 seconds. Original private Git, lock and store journeys are native;
+scripted npm/workflow provider observations are simulated external effects.
+No external publication was performed.
+
+All 16 create/guard tests are parallel. Publication now has 41/45 parallel
+leaf tests after removing ten redundant environment pins where explicit
+projects roots select every effectful path. Four genuine environment/PATH
+cases remain serial. The coherent publication batch passed in 3.728 seconds;
+newly scheduled cases were checked under race separately, without repeating
+unchanged native journeys. The final current preflight/render profiles replace
+all old coordinates after removing one redundant validation and two impossible
+serialization error returns. A strengthened closed report type-tree test
+rejects cycles and fallible custom marshalers; actual encoders and writer
+errors remain. Initial and post-resume validation still run.
+
+Scoped lint and serial checks, root vet, Linux/Windows target compilation and
+the private executable build pass. One newly orphaned root-only writer fixture
+was removed after all-tag reference closure; native passing evidence was
+reused for that test-only deletion. Two capability test paths were rebound and
+all 790 named references resolve. An intermediate failed publication gap log
+was accidentally overwritten; the evidence gap is recorded rather than
+reconstructed. Other failed fixtures were corrected and selectively verified.
+Independent final review precedes the local commit; publication remains
+deferred. Earlier extracted command packages are now being audited for safe
+parallel execution and unnecessary process-wide fixture mutations.
+
 ### Task 8: Verify full cutover and land reviewed batches
 
 **Status:** queued
