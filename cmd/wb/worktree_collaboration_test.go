@@ -174,3 +174,18 @@ func TestWorktreeRebindCommandRequiresExpectedRootAndRecordsAudit(t *testing.T) 
 		t.Fatalf("rebind audit snapshot = %+v, %t, %v", loaded, found, err)
 	}
 }
+
+func TestWorktreeRebindCommandPropagatesFactoryFailure(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("collaboration registry unavailable")
+	calls := 0
+	factory := func() (worktreecollab.Service, error) {
+		calls++
+		return worktreecollab.Service{}, failure
+	}
+	command := newWorktreeRebindCmd(factory)
+	output, err := executeCollaborationCommand(t, command, "/checkout", "--expected-root", "/retired")
+	if !errors.Is(err, failure) || output != "" || calls != 1 {
+		t.Fatalf("factory failure: output=%q err=%v calls=%d", output, err, calls)
+	}
+}
