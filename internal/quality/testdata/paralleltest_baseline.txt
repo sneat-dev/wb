@@ -3017,7 +3017,6 @@ internal/worktrees::TestWtLogCovSealCreateFailureBacklogClaim	serial pending cas
 internal/worktrees::TestWtLogCovSessionMoveReceiveSpec	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestWtLogCovSessionReceivePathHelpers	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestWtLogCovSessionReceivePhysicalCoordinates	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/worktrees::TestWtLogCovValidateDependencyDeltasWrapper	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestWtLogCovValidateExternalSourceOffer	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestWtLogCovValidateExternalSourceSession	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestWtLogCovValidateExternalTargetSessionAndReceipt	serial pending case-by-case review (sneat-dev/wb#623 baseline)

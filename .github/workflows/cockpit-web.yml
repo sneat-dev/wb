@@ -3,9 +3,9 @@ name: Cockpit web CI
 # No `paths:` filter on the trigger, on purpose. A path-filtered workflow does
 # not run at all when nothing matches, which leaves a required check pending
 # forever. This one always runs and decides inside the job whether anything
-# under cockpit/web (or this workflow, or .goreleaser.yml) changed, and whether
-# anything the whole-journey test exercises did; when nothing did it succeeds at
-# once, before Node is installed.
+# under cockpit/web (or this workflow, the capability manifest, or .goreleaser.yml)
+# changed, and whether anything the whole-journey test exercises did; when nothing
+# did it succeeds at once, before Node is installed.
 #
 # One job, not two: the stubbed browser tests and the whole-journey test need
 # the same Node, pnpm, dependencies and Playwright browser, so they share one
@@ -56,15 +56,15 @@ jobs:
             echo "journey=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # A change to this workflow or to the release config can break the
-          # Cockpit build too, so it counts. A renamed file counts by both
-          # its old and its new path.
-          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|\.github/workflows/cockpit-web\.yml$|\.github/actions/playwright-web-setup/|\.goreleaser\.yml$)'; then
+          # A change to this workflow, capability manifest, or release config can
+          # break the Cockpit build too, so it counts. A renamed file counts by
+          # both its old and its new path.
+          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|ai/capabilities\.json$|\.github/workflows/cockpit-web\.yml$|\.github/actions/playwright-web-setup/|\.goreleaser\.yml$)'; then
             echo "web=true" >> "$GITHUB_OUTPUT"
           else
             echo "web=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|cmd/wb/|internal/(cockpit|daemon|dashboard|wbhome|wbconfig|lifecyclehooks)/|go\.mod$|go\.sum$|\.github/workflows/cockpit-web\.yml$|\.github/actions/playwright-web-setup/|\.goreleaser\.yml$)'; then
+          if printf '%s\n' "$files" | grep -Eq '^(cockpit/web/|ai/capabilities\.json$|cmd/wb/|internal/(cockpit|daemon|dashboard|wbhome|wbconfig|lifecyclehooks)/|go\.mod$|go\.sum$|\.github/workflows/cockpit-web\.yml$|\.github/actions/playwright-web-setup/|\.goreleaser\.yml$)'; then
             echo "journey=true" >> "$GITHUB_OUTPUT"
           else
             echo "journey=false" >> "$GITHUB_OUTPUT"

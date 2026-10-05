@@ -80,7 +80,7 @@ const commands = new Map<string, Set<string>>()
 const derivedRequired = new Map<string, Set<string>>()
 for (const capability of manifest.capabilities) {
   for (const command of capability.surfaces.runtime?.commands ?? []) {
-    commands.set(command.path, new Set(command.flags ?? []))
+    commands.set(command.path, new Set([...(commands.get(command.path) ?? []), ...(command.flags ?? [])]))
     for (const mode of command.modes ?? []) {
       for (const clause of mode.split(/[;,]/)) {
         const match = /(--[a-z][a-z-]*) is required(?: with any one)?$/.exec(clause.trim())
@@ -179,6 +179,10 @@ describe('Copy command templates against the command manifest', () => {
     for (const [verb, flags] of Object.entries(REQUIRED_FLAGS)) {
       for (const flag of flags) expect(commands.get(verb)?.has(flag), `${verb} ${flag}`).toBe(true)
     }
+  })
+
+  it('unions flags when multiple capabilities document the same command', () => {
+    expect([...(commands.get('wb pr create') ?? [])]).toEqual(expect.arrayContaining(['--commit-all', '--message', '--quiet']))
   })
 
   it('lists a verb as pending only while the manifest lacks it', () => {

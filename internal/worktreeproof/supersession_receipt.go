@@ -34,6 +34,20 @@ type SupersessionReceipt struct {
 	OriginalPRHead           string                        `json:"original_pr_head,omitempty"`
 	DependencyDeltasComplete bool                          `json:"dependency_deltas_complete,omitempty"`
 	DependencyDeltas         []SupersessionDependencyDelta `json:"dependency_deltas,omitempty"`
+	// WorkflowAdoptions binds a newly introduced dependency-bearing workflow
+	// to identical bytes already present in a reviewed replacement at target.
+	// It is intentionally narrower than dependency PR evidence: it cannot
+	// certify package manifests, lockfiles, or modified existing workflows.
+	WorkflowAdoptions []SupersessionWorkflowAdoption `json:"workflow_adoptions,omitempty"`
+}
+
+// SupersessionWorkflowAdoption records exact evidence that one newly added
+// workflow file has already been reviewed and landed as part of a replacement.
+type SupersessionWorkflowAdoption struct {
+	Path           string `json:"path"`
+	SourceSHA256   string `json:"source_sha256"`
+	ReplacementSHA string `json:"replacement_sha"`
+	Reviewed       bool   `json:"reviewed"`
 }
 
 // SupersessionDependencyDelta is immutable, per-source-PR evidence used before

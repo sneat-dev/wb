@@ -325,6 +325,11 @@ func TestDependencyCampaignDetectionUsesMarkerAndLegacyDiffs(t *testing.T) {
 			if !supersessionService().DependencyCampaignWorktree(context.Background(), supersessionEntry(entry)) {
 				t.Fatalf("legacy dependency path %s was not detected", file)
 			}
+			if file == "package.json" {
+				if rejection := supersessionService().ValidateDependencyDeltasReason(context.Background(), SupersessionReceipt{}, supersessionEntry(entry)); !strings.Contains(rejection, "requires original_pr") {
+					t.Fatalf("direct dependency change accepted without evidence: %q", rejection)
+				}
+			}
 		})
 	}
 }

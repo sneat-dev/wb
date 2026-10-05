@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -56,6 +57,17 @@ type OwnerChange struct {
 	At       time.Time `json:"at"`
 }
 
+// CheckoutRebind records an explicit recovery when Git reuses a linked
+// worktree's administrative directory after the former checkout root has
+// been retired. It changes only the presentation root; the checkout ID,
+// GitDir, and CommonDir remain identical.
+type CheckoutRebind struct {
+	PreviousRoot string    `json:"previous_root"`
+	CurrentRoot  string    `json:"current_root"`
+	Actor        string    `json:"actor"`
+	At           time.Time `json:"at"`
+}
+
 type Message struct {
 	ID         string    `json:"id"`
 	Sequence   uint64    `json:"sequence"`
@@ -83,17 +95,18 @@ type SendReceipt struct {
 // are separate from ordinary inbox capacity, so a full user inbox cannot
 // prevent a transfer or recovery.
 type State struct {
-	Version      int                    `json:"version"`
-	Checkout     Checkout               `json:"checkout"`
-	Revision     uint64                 `json:"revision"`
-	Owner        string                 `json:"owner"`
-	OwnerEpoch   uint64                 `json:"owner_epoch"`
-	Members      map[string]Member      `json:"members"`
-	OwnerChanges []OwnerChange          `json:"owner_changes"`
-	Notices      map[string]OwnerChange `json:"notices"`
-	Inboxes      map[string][]Message   `json:"inboxes"`
-	Requests     map[string]SendReceipt `json:"requests"`
-	Cursors      map[string]uint64      `json:"cursors"`
+	Version         int                    `json:"version"`
+	Checkout        Checkout               `json:"checkout"`
+	Revision        uint64                 `json:"revision"`
+	Owner           string                 `json:"owner"`
+	OwnerEpoch      uint64                 `json:"owner_epoch"`
+	Members         map[string]Member      `json:"members"`
+	OwnerChanges    []OwnerChange          `json:"owner_changes"`
+	CheckoutRebinds []CheckoutRebind       `json:"checkout_rebinds,omitempty"`
+	Notices         map[string]OwnerChange `json:"notices"`
+	Inboxes         map[string][]Message   `json:"inboxes"`
+	Requests        map[string]SendReceipt `json:"requests"`
+	Cursors         map[string]uint64      `json:"cursors"`
 }
 
 type TakeRequest struct {
@@ -138,14 +151,39 @@ func New(checkout Checkout) (State, error) {
 }
 
 func (state State) Validate(checkout Checkout) error {
-	if state.Version != SchemaVersion || state.Checkout != checkout || !validID(state.Owner) {
-		return fmt.Errorf("coordination state does not match the exact checkout and owner")
+	if err := state.validateEnvelope(); err != nil {
+		return err
+	}
+	if state.Checkout != checkout {
+		return fmt.Errorf("coordination state does not match the exact checkout")
+	}
+	return nil
+}
+
+func (state State) validateEnvelope() error {
+	if state.Version != SchemaVersion || !validID(state.Owner) {
+		return fmt.Errorf("coordination state version or owner is invalid")
 	}
 	if _, ok := state.Members[state.Owner]; !ok {
 		return fmt.Errorf("coordination owner is not joined")
 	}
 	if state.Members == nil || state.Inboxes == nil || state.Requests == nil || state.Cursors == nil || state.Notices == nil {
 		return fmt.Errorf("coordination state collections are incomplete")
+	}
+	return nil
+}
+
+// ValidateRebind permits only an exact root-path correction for the same
+// checkout identity, after the caller supplies the root observed before the
+// worktree path changed. All other checkout fields remain strictly bound.
+func (state State) ValidateRebind(checkout Checkout, expectedRoot string) error {
+	if err := state.validateEnvelope(); err != nil {
+		return err
+	}
+	if expectedRoot == "" || !filepath.IsAbs(expectedRoot) || filepath.Clean(expectedRoot) != expectedRoot ||
+		expectedRoot == checkout.Root || state.Checkout.Root != expectedRoot ||
+		state.Checkout.ID != checkout.ID || state.Checkout.GitDir != checkout.GitDir || state.Checkout.CommonDir != checkout.CommonDir {
+		return fmt.Errorf("coordination rebind does not match the exact prior and current checkout identities")
 	}
 	return nil
 }

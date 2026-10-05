@@ -1,7 +1,6 @@
 package worktrees
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -443,23 +442,6 @@ func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
 				t.Fatalf("rejection %q does not contain %q", rejection, tc.wantSub)
 			}
 		})
-	}
-}
-
-func TestWtLogCovValidateDependencyDeltasWrapper(t *testing.T) {
-	entry := ListResult{Task: "plain-task", Branch: "wb/plain-task", WorktreeDir: t.TempDir()}
-	if err := ValidateDependencyDeltas(context.Background(), SupersessionReceipt{Version: 1}, entry); err != nil {
-		t.Fatalf("generic receipt should not require dependency proof: %v", err)
-	}
-	withEvidence := SupersessionReceipt{Version: 1, DependencyDeltasComplete: true}
-	err := ValidateDependencyDeltas(context.Background(), withEvidence, entry)
-	if err == nil || !strings.Contains(err.Error(), "requires original_pr") {
-		t.Fatalf("dependency evidence without original_pr error = %v", err)
-	}
-	campaign := ListResult{Task: "deps-upgrade", Branch: "wb/deps/upgrade"}
-	err = ValidateDependencyDeltas(context.Background(), SupersessionReceipt{Version: 1}, campaign)
-	if err == nil || !strings.Contains(err.Error(), "dependency campaign supersession requires original_pr") {
-		t.Fatalf("campaign receipt error = %v", err)
 	}
 }
 

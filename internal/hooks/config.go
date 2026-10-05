@@ -469,34 +469,80 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 # Vet only the packages the commit touches. Vetting ./... would compile the
 # whole module and turn a save point into a release gate.
-packages="$(printf '%s\n' "$changed" | while IFS= read -r file; do
+#
+# A package belongs to the module of its nearest enclosing go.mod. A nested
+# module (its own go.mod, no go.work) is not part of the root module, so its
+# packages cannot be loaded from the repository root: they are grouped by
+# module and each group is vetted from its own module directory. A staged file
+# under no go.mod at all is not vetted, and a repository with no go.mod at its
+# root is not vetted at all (exit above). (WB-831)
+nearest_module() {
+    candidate="$1"
+    while :; do
+        if [ -f "$candidate/go.mod" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        [ "$candidate" != "." ] || return 1
+        parent=${candidate%/*}
+        [ "$parent" != "$candidate" ] || parent=.
+        candidate=$parent
+    done
+}
+tab="$(printf '\t')"
+# One "module<TAB>package" line per staged package, the package expressed
+# relative to its module the way "go vet" expects it.
+targets="$(printf '%s\n' "$changed" | while IFS= read -r file; do
     # Avoid nested command-substitution/case parsing differences in macOS
     # /bin/sh while preserving paths that contain spaces.
     dir=${file%/*}
     [ "$dir" != "$file" ] || dir=.
-    if [ "$dir" = "." ]; then
-        printf '%s\n' "."
+    module="$(nearest_module "$dir")" || continue
+    if [ "$dir" = "$module" ]; then
+        package="."
+    elif [ "$module" = "." ]; then
+        package="./$dir"
     else
-        printf './%s\n' "$dir"
+        package="./${dir#"$module"/}"
     fi
+    printf '%s\t%s\n' "$module" "$package"
 done | sort -u)"
-if [ -z "$packages" ]; then
+if [ -z "$targets" ]; then
     exit 0
 fi
-# A deleted or moved package no longer resolves; vet reports that as an error,
-# which is not what this commit did wrong. Only vet packages that still exist.
-existing=""
-for package in $packages; do
-    if [ -d "$package" ]; then
-        existing="$existing $package"
+modules="$(printf '%s\n' "$targets" | while IFS="$tab" read -r module package; do
+    printf '%s\n' "$module"
+done | sort -u)"
+failed=0
+while IFS= read -r module; do
+    # A deleted or moved package no longer resolves; vet reports that as an
+    # error, which is not what this commit did wrong. Only vet packages that
+    # still exist.
+    set --
+    while IFS="$tab" read -r target_module package; do
+        if [ "$target_module" = "$module" ] && [ -d "$module/$package" ]; then
+            set -- "$@" "$package"
+        fi
+    done <<EOF_TARGETS
+$targets
+EOF_TARGETS
+    if [ "$#" -eq 0 ]; then
+        continue
     fi
-done
-if [ -z "$existing" ]; then
-    exit 0
-fi
-# shellcheck disable=SC2086
-if ! go vet $existing; then
-    echo "WB hook: go vet failed on the packages in this commit." >&2
+    # </dev/null: the loop's stdin is the list of remaining modules, which a
+    # go wrapper that reads stdin must not be able to swallow.
+    if ! ( cd "./$module" && go vet "$@" </dev/null ); then
+        if [ "$module" = "." ]; then
+            echo "WB hook: go vet failed on the packages in this commit." >&2
+        else
+            echo "WB hook: go vet failed on the packages in this commit, in module $module." >&2
+        fi
+        failed=1
+    fi
+done <<EOF_MODULES
+$modules
+EOF_MODULES
+if [ "$failed" -ne 0 ]; then
     exit 1
 fi
 `, true
