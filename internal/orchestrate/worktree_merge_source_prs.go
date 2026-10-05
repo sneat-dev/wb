@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -45,6 +46,10 @@ func reconcileAbsorbedSourcePullRequests(ctx context.Context, projectsRoot strin
 }
 
 func absorbedSourceHeads(ctx context.Context, repository string, receipt WorktreeMergeReceipt, timeout time.Duration, retry int) ([]string, error) {
+	return absorbedSourceHeadsWithRunner(ctx, defaultRunner, repository, receipt, timeout, retry)
+}
+
+func absorbedSourceHeadsWithRunner(ctx context.Context, run runner.Runner, repository string, receipt WorktreeMergeReceipt, timeout time.Duration, retry int) ([]string, error) {
 	if receipt.TargetSHA == "" || receipt.Candidate.SHA == "" {
 		return nil, fmt.Errorf("landing receipt lacks target or candidate identity")
 	}
@@ -54,7 +59,7 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 			heads[source.SHA] = true
 		}
 	}
-	output, _, err := runCommand(ctx, defaultRunner, timeout, retry, repository, "git", "rev-list", "--merges", "--parents", receipt.TargetSHA+".."+receipt.Candidate.SHA)
+	output, _, err := runCommand(ctx, run, timeout, retry, repository, "git", "rev-list", "--merges", "--parents", receipt.TargetSHA+".."+receipt.Candidate.SHA)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +82,7 @@ func absorbedSourceHeads(ctx context.Context, repository string, receipt Worktre
 		// candidate absorbed - report it and reconcileAbsorbedSourcePullRequests
 		// would go looking for, and close, an unrelated already-merged
 		// pull request that happens to sit in the target's own ancestry.
-		alreadyInTarget, ancestorErr := isMergeAncestor(ctx, repository, head, receipt.TargetSHA)
+		alreadyInTarget, ancestorErr := isMergeAncestorWithRunner(ctx, run, repository, head, receipt.TargetSHA)
 		if ancestorErr == nil && alreadyInTarget {
 			continue
 		}
@@ -120,17 +125,13 @@ func reconcileAbsorbedSourcePullRequestsWithProgress(
 			reconciliation.ObservedBase = view.Base.Ref
 			reconciliation.UpdatedAt = time.Now().UTC()
 			if view.Head.SHA != head {
-				reconciliation.Outcome = "head_advanced"
-				reconciliation.Reason = fmt.Sprintf("pull request head advanced to %s", view.Head.SHA)
-				if err := persist(*receipt); err != nil {
+				if err := recordSourcePullRequestReconciliation(receipt, reconciliation, "head_advanced", fmt.Sprintf("pull request head advanced to %s", view.Head.SHA), persist); err != nil {
 					return err
 				}
 				continue
 			}
 			if view.Base.Ref != receipt.Target || view.Base.Repo == nil || view.Base.Repo.FullName != receipt.Repository {
-				reconciliation.Outcome = "base_mismatch"
-				reconciliation.Reason = fmt.Sprintf("pull request targets %s, not %s", view.Base.Ref, receipt.Target)
-				if err := persist(*receipt); err != nil {
+				if err := recordSourcePullRequestReconciliation(receipt, reconciliation, "base_mismatch", fmt.Sprintf("pull request targets %s, not %s", view.Base.Ref, receipt.Target), persist); err != nil {
 					return err
 				}
 				continue
@@ -165,24 +166,26 @@ func reconcileAbsorbedSourcePullRequestsWithProgress(
 					return fmt.Errorf("close absorbed source pull request %s: %w", view.HTMLURL, err)
 				}
 				reconciliation.Closed = true
-				reconciliation.Outcome = "closed_absorbed"
-				reconciliation.Reason = "exact source head was absorbed by the verified batch landing"
 				reconciliation.UpdatedAt = time.Now().UTC()
-				if err := persist(*receipt); err != nil {
+				if err := recordSourcePullRequestReconciliation(receipt, reconciliation, "closed_absorbed", "exact source head was absorbed by the verified batch landing", persist); err != nil {
 					return err
 				}
 			} else if !strings.EqualFold(view.State, "open") {
 				reconciliation.Closed = true
-				reconciliation.Outcome = "already_closed"
-				reconciliation.Reason = "exact source pull request was already closed when the batch landing was reconciled"
 				reconciliation.UpdatedAt = time.Now().UTC()
-				if err := persist(*receipt); err != nil {
+				if err := recordSourcePullRequestReconciliation(receipt, reconciliation, "already_closed", "exact source pull request was already closed when the batch landing was reconciled", persist); err != nil {
 					return err
 				}
 			}
 		}
 	}
 	return nil
+}
+
+func recordSourcePullRequestReconciliation(receipt *WorktreeMergeReceipt, item *WorktreeMergeSourcePullRequestReconciliation, outcome, reason string, persist func(WorktreeMergeReceipt) error) error {
+	item.Outcome = outcome
+	item.Reason = reason
+	return persist(*receipt)
 }
 
 func findSourcePullRequestReconciliation(receipt *WorktreeMergeReceipt, number int, sourceSHA string) *WorktreeMergeSourcePullRequestReconciliation {

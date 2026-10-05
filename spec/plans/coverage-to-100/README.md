@@ -567,6 +567,33 @@ unchanged, bringing the bounded local ledger to 216 unique declarations and
 4,055 statements. This is not a refreshed repository coverage percentage or
 remote publication.
 
+### Absorbed-source reconciliation checkpoint
+
+Absorbed-source pull-request reconciliation now shares one concrete outcome,
+reason and persistence operation across four real refusal/terminal branches.
+Timestamp assignment and caller-owned Closed/Commented state remain explicit;
+a successful comment is durably recorded before any close request. Head
+discovery threads the existing Runner through real Git queries while its native
+wrapper retains the outer reconciliation consumer. The outer owner and other
+companion functions remain source-identical.
+
+All eleven whole declarations cover 144/144 statements and every block,
+including closures, from two passing profiles of identical source. Seventeen
+selected race groups passed in 16.324 seconds, covering 143/144; one additional
+parallel native ancestor-exclusion group passed in 7.501 seconds. A real private
+Git DAG proves the old recorded source is already contained in the target,
+retains only the genuine new source head, and leaves HEAD unchanged. The
+observation-only Runner delegates every positive Git operation. Full atomic
+tuple sets, held original bytes, whole body hashes and native fixture binary
+match across both profiles; no changed-body or failed-profile credit is used.
+
+Linux/Windows compilation, scoped vet, lint and specification lint passed.
+Pure/native independent fixtures run in parallel; the process-environment
+provider fixture remains serial. Independent review and normal hooks precede
+the local checkpoint. All 216 prior accepted bodies remain unchanged, bringing
+the bounded local ledger to 227 unique declarations and 4,199 statements.
+These cohorts do not constitute current repository coverage or publication.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
