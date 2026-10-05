@@ -1,13 +1,16 @@
+//go:build e2e
+
 package orchestrate
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type forwardClosureRunner struct {
@@ -58,7 +61,7 @@ func forwardClosurePinnedBytes(t *testing.T, paths ...string) func() {
 }
 func forwardClosureCorrection(t *testing.T, r WorktreeMergeReceipt, s WorktreeMergeValidationFailureSupersession, o WorktreeMergePublishedForwardRepairOptions) WorktreeMergeSelfSupersessionCorrection {
 	t.Helper()
-	candidate, claim, err := validateValidationFailureReplacement(t.Context(), o.ProjectsRoot, r, o.Sources[1])
+	candidate, claim, err := validateValidationFailureReplacementWithRunner(t.Context(), defaultRunner, o.ProjectsRoot, r, o.Sources[1])
 	if err != nil {
 		t.Fatal(err)
 	}

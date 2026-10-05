@@ -11,10 +11,6 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func canonicalForMergeSource(ctx context.Context, source string) (string, error) {
-	return canonicalForMergeSourceWithRunner(ctx, defaultRunner, source)
-}
-
 func canonicalForMergeSourceWithRunner(ctx context.Context, run runner.Runner, source string) (string, error) {
 	rootOutput, _, err := runCommand(ctx, run, 0, 0, source, "git", "rev-parse", "--show-toplevel")
 	if err != nil {

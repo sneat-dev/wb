@@ -1,12 +1,15 @@
+//go:build e2e
+
 package orchestrate
 
 import (
 	"context"
-	"github.com/sneat-dev/wb/internal/runner"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 func terminalSyncOwnerCanonicalFixture(t *testing.T) (engineFixture, string, string) {

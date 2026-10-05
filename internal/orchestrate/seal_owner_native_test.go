@@ -1,9 +1,12 @@
+//go:build e2e
+
 package orchestrate
 
 import (
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func sealOwnerAdvanceSource(t *testing.T, f engineFixture, r WorktreeMergeReceipt, source worktrees.CreateResult) string {

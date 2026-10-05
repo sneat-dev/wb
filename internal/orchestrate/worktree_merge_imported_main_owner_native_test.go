@@ -1,9 +1,12 @@
+//go:build e2e
+
 package orchestrate
 
 import (
 	"context"
-	"github.com/sneat-dev/wb/internal/runner"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type importedMainArchiveRefusal struct {

@@ -1,11 +1,14 @@
+//go:build e2e
+
 package orchestrate
 
 import (
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // landFinalInstallNativeDirectCIContractGH preserves the existing native

@@ -1,14 +1,17 @@
+//go:build e2e
+
 package orchestrate
 
 import (
 	"bytes"
 	"context"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type conflictReplacementNativeFixture struct {

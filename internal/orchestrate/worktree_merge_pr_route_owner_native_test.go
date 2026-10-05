@@ -1,16 +1,19 @@
+//go:build e2e
+
 package orchestrate
 
 import (
 	"context"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/runner"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // The hosted observation is scripted separately. Every commit/ref/tree in this

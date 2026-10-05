@@ -4,13 +4,14 @@ package orchestrate
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/runner"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestE2EMergeSourceCanonicalUsesNativeCommonDirectory(t *testing.T) {
@@ -23,7 +24,7 @@ func TestE2EMergeSourceCanonicalUsesNativeCommonDirectory(t *testing.T) {
 	}
 	// Canonical Git returns a relative .git; linked Git returns the shared absolute common directory.
 	for _, path := range []string{f.canonical, source.WorktreeDir} {
-		got, err := canonicalForMergeSource(t.Context(), path)
+		got, err := canonicalForMergeSourceWithRunner(t.Context(), defaultRunner, path)
 		if err != nil || got != physical {
 			t.Fatalf("canonical for %s = %q, %v; want %q", path, got, err, physical)
 		}

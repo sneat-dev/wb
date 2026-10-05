@@ -1,12 +1,15 @@
+//go:build e2e
+
 package orchestrate
 
 import (
 	"context"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // This observer never substitutes a successful Git result. Its after hook is

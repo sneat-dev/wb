@@ -1,7 +1,6 @@
 package orchestrate
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,30 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-// sealOwnerRunner only refuses selected native observations or mutates a private
-// fixture around a real command. It never supplies successful Git/custody output.
-type sealOwnerRunner struct {
-	runner.Runner
-	before func(context.Context, string, string, []string) error
-	after  func(context.Context, string, string, []string, runner.Result, error)
-}
-
-func (r *sealOwnerRunner) RunOpts(ctx context.Context, dir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
-	if r.before != nil {
-		if err := r.before(ctx, dir, name, args); err != nil {
-			return runner.Result{}, err
-		}
-	}
-	result, err := r.Runner.RunOpts(ctx, dir, opts, name, args...)
-	if r.after != nil {
-		r.after(ctx, dir, name, args, result, err)
-	}
-	return result, err
-}
 
 // This is the original seal's historical validation-failure record recipe,
 // rooted explicitly. Native Prepare/claims/locks/Git are real; recording an

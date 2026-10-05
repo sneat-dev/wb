@@ -1,11 +1,14 @@
+//go:build e2e
+
 package orchestrate
 
 import (
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func terminalOwnerAssertReleasedAndUnchanged(t *testing.T, root string, r WorktreeMergeReceipt, before []byte) {

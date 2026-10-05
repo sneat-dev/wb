@@ -74,10 +74,6 @@ func validatePrepareFailureSupersessionCandidateWithRunner(ctx context.Context, 
 	return claim, observedHead, nil
 }
 
-func validateValidationFailureReplacement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, replacementPath string) (WorktreeMergeCandidate, *worktrees.WorkLogClaimView, error) {
-	return validateValidationFailureReplacementWithRunner(ctx, defaultRunner, projectsRoot, receipt, replacementPath)
-}
-
 func validateValidationFailureReplacementWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt WorktreeMergeReceipt, replacementPath string) (WorktreeMergeCandidate, *worktrees.WorkLogClaimView, error) {
 	guard, err := worktrees.Guard(ctx, replacementPath, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
 	if err != nil {

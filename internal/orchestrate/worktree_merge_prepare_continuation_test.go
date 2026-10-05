@@ -1,19 +1,12 @@
 package orchestrate
 
 import (
-	"github.com/sneat-dev/wb/internal/runner"
 	"path/filepath"
 	"strings"
 	"testing"
-)
 
-func preparingContinuationReceipt(f conflictRecoveryFixture) WorktreeMergeReceipt {
-	receipt := f.receipt
-	receipt.ID = receipt.Candidate.Task
-	receipt.Status = WorktreeMergePreparing
-	receipt.Candidate.SHA = f.head
-	return receipt
-}
+	"github.com/sneat-dev/wb/internal/runner"
+)
 
 func advanceContinuationSource(t *testing.T, f conflictRecoveryFixture) []WorktreeMergeSource {
 	t.Helper()

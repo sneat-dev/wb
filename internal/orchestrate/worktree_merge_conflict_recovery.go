@@ -269,16 +269,6 @@ func conflictCandidateNeedsValidationWithStore(receipt WorktreeMergeReceipt, sto
 	return receipt.Status == WorktreeMergePreparing, nil
 }
 
-// proveConflictResolvedCandidateTargetNormalization permits the one explicit
-// recovery exception for a conflict-resolved candidate whose immutable Work
-// Log base predates the receipt target snapshot. It never rewrites either
-// historical record. The candidate must already contain the immutable claim
-// base, the receipt target, and the freshly fetched current remote target; the
-// caller separately proves every receipted source is also contained.
-func proveConflictResolvedCandidateTargetNormalization(ctx context.Context, worktree, target, receiptTarget, claimBase, head string, timeout time.Duration, retry int) error {
-	return proveConflictTargetNormalizationWithRunner(ctx, defaultRunner, worktree, target, receiptTarget, claimBase, head, timeout, retry)
-}
-
 func proveConflictTargetNormalizationWithRunner(ctx context.Context, run runner.Runner, worktree, target, receiptTarget, claimBase, head string, timeout time.Duration, retry int) error {
 	for _, evidence := range []struct {
 		label    string

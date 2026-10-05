@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/cli/remotepublishview"
-	"github.com/sneat-dev/wb/internal/cockpitoptions"
 	"github.com/sneat-dev/wb/internal/remotepublish"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
@@ -147,13 +146,4 @@ func cockpitConfigFile(t *testing.T, content string) func() string {
 		t.Fatal(err)
 	}
 	return func() string { return path }
-}
-
-func publishConfig(publish remotestate.PublishConfig) remotestate.Config {
-	return remotestate.Config{Provider: "git", Repo: "acme/wb-state", Machine: "mac", Publish: publish}
-}
-func testCockpitDependencies(host string) cockpitoptions.Dependencies {
-	deps := cockpitoptions.DefaultDependencies("", testExitFactory)
-	deps.Hostname = func() (string, error) { return host, nil }
-	return deps
 }

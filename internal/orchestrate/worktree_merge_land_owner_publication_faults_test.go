@@ -1,12 +1,15 @@
+//go:build e2e
+
 package orchestrate
 
 import (
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func landOwnerPrivateProviderRefusal(t *testing.T, pattern string) string {

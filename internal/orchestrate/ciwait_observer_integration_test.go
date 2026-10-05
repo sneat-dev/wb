@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate_test
 
 import (
@@ -6,14 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/spf13/pflag"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/spf13/pflag"
 )
 
 const (

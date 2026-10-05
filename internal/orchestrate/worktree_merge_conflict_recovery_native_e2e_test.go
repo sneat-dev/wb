@@ -4,14 +4,15 @@ package orchestrate
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/runner"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestE2EConflictRecoveryNativeProofAndAppendOnlyAcknowledgement(t *testing.T) {
@@ -251,7 +252,7 @@ func TestE2EConflictRecoveryHistoricalNormalizationUsesNativeDAG(t *testing.T) {
 	runEngineGit(t, f.receipt.Candidate.Worktree, "fetch", "origin", "main")
 	runEngineGit(t, f.receipt.Candidate.Worktree, "merge", "--no-edit", target)
 	head := strings.TrimSpace(runEngineGit(t, f.receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-	if err := proveConflictResolvedCandidateTargetNormalization(t.Context(), f.receipt.Candidate.Worktree, "main", target, oldBase, head, 5*time.Second, 0); err != nil {
+	if err := proveConflictTargetNormalizationWithRunner(t.Context(), defaultRunner, f.receipt.Candidate.Worktree, "main", target, oldBase, head, 5*time.Second, 0); err != nil {
 		t.Fatal(err)
 	}
 	receipt := f.receipt
@@ -294,7 +295,7 @@ func TestE2EConflictRecoveryHistoricalNormalizationUsesNativeDAG(t *testing.T) {
 	runEngineGit(t, f.engine.canonical, "add", "later.txt")
 	runEngineGit(t, f.engine.canonical, "commit", "-m", "test: later remote target")
 	runEngineGit(t, f.engine.canonical, "push", "origin", "main")
-	if err := proveConflictResolvedCandidateTargetNormalization(t.Context(), f.receipt.Candidate.Worktree, "main", target, oldBase, head, 5*time.Second, 0); err == nil {
+	if err := proveConflictTargetNormalizationWithRunner(t.Context(), defaultRunner, f.receipt.Candidate.Worktree, "main", target, oldBase, head, 5*time.Second, 0); err == nil {
 		t.Fatal("unmerged current remote target accepted")
 	}
 	failed := f.receipt

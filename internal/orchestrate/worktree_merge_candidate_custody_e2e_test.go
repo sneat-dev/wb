@@ -4,12 +4,13 @@ package orchestrate
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 func TestE2ECandidateCustodyNativeAdmissionsAndSupersessionDescendant(t *testing.T) {
@@ -39,7 +40,7 @@ func TestE2ECandidateCustodyNativeAdmissionsAndSupersessionDescendant(t *testing
 	}
 	replacement := createMergeSource(t, f.engine, "custody-replacement", "wb/custody-replacement", "replacement.txt", "replacement\n")
 	replacementSHA := strings.TrimSpace(runEngineGit(t, replacement.WorktreeDir, "rev-parse", "HEAD"))
-	candidate, claim, err := validateValidationFailureReplacement(t.Context(), f.engine.githubDir, exact, replacement.WorktreeDir)
+	candidate, claim, err := validateValidationFailureReplacementWithRunner(t.Context(), defaultRunner, f.engine.githubDir, exact, replacement.WorktreeDir)
 	want := WorktreeMergeCandidate{Task: "custody-replacement", Worktree: replacement.WorktreeDir, Branch: replacement.Branch, SHA: replacementSHA}
 	if err != nil || claim == nil || candidate != want || claim.BaseSHA != replacement.BaseSHA {
 		t.Fatalf("native replacement=%+v want=%+v claim=%+v error=%v", candidate, want, claim, err)
@@ -92,7 +93,7 @@ func TestE2ECandidateCustodyNativeAdmissionRefusals(t *testing.T) {
 				t.Fatalf("native candidate fault=%s claim=%+v error=%v", fault, claim, err)
 			}
 			if both {
-				if candidate, claim, err := validateValidationFailureReplacement(t.Context(), f.engine.githubDir, receipt, path); err == nil || claim != nil || candidate != (WorktreeMergeCandidate{}) || !reflect.DeepEqual(receipt, before) {
+				if candidate, claim, err := validateValidationFailureReplacementWithRunner(t.Context(), defaultRunner, f.engine.githubDir, receipt, path); err == nil || claim != nil || candidate != (WorktreeMergeCandidate{}) || !reflect.DeepEqual(receipt, before) {
 					t.Fatalf("native replacement fault=%s candidate=%+v claim=%+v error=%v", fault, candidate, claim, err)
 				}
 			}
