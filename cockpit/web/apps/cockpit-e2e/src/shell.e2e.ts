@@ -104,14 +104,26 @@ test('the palette opens with Control+K, groups what matches and opens the highli
   await expect(page.locator('app-overlays')).toBeAttached()
   // Home's own lazy sections load right after the first page; their last heading says they are in.
   await expect(page.getByRole('heading', { level: 2, name: 'Cleanup' })).toBeVisible()
-  const requestsBefore: string[] = []
-  page.on('request', (request) => requestsBefore.push(request.url()))
+  const backendRequestsBefore: string[] = []
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url())
+    if (!pathname.startsWith('/api/')) return
+    // Home's machine strip polls this read endpoint independently of the palette.
+    if (pathname === '/api/v1/cockpit/machine-metrics' && request.method() === 'GET') return
+    backendRequestsBefore.push(`${request.method()} ${pathname}`)
+  })
+  await page.route('**/api/v1/cockpit/palette-probe', (route) => route.fulfill({ json: { probe: true } }))
+  const probe = await page.evaluate(async () => (await fetch('/api/v1/cockpit/palette-probe')).json())
+  expect(probe).toEqual({ probe: true })
+  expect(backendRequestsBefore).toEqual(['GET /api/v1/cockpit/palette-probe'])
+  backendRequestsBefore.length = 0
+
   await page.keyboard.press('Control+k')
   const dialog = page.getByRole('dialog', { name: 'Search' })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('combobox')).toBeFocused()
-  // Opening it needed no request (Home's machine strip polls the metrics every 10 seconds, whatever the palette does).
-  expect(requestsBefore.filter((url) => !url.includes('/machine-metrics'))).toEqual([])
+  // The palette may lazy-load its JavaScript chunk, but opening it must not fetch backend data.
+  expect(backendRequestsBefore).toEqual([])
 
   await dialog.getByRole('combobox').fill('cli')
   await expect(dialog.getByRole('group').first()).toBeVisible()

@@ -13,6 +13,7 @@ import (
 )
 
 func TestDependencyChangesFailClosedAtEveryGitBoundary(t *testing.T) {
+	t.Parallel()
 	const workflow = ".github/workflows/check.yml"
 	const manifest = "package.json"
 	boom := errors.New("unreadable git object")
@@ -31,6 +32,7 @@ func TestDependencyChangesFailClosedAtEveryGitBoundary(t *testing.T) {
 		{name: "new workflow is classified", file: workflow, stage: "new-workflow", want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			entry := SupersessionEntry{CanonicalDir: "/repo", HeadSHA: "source", RemoteTargetSHA: "target"}
 			if tc.stage == "identity" {
 				entry.CanonicalDir = ""
@@ -114,6 +116,7 @@ func TestDependencyCampaignWorktreeRecognizesLegacyHints(t *testing.T) {
 }
 
 func TestValidateDependencyDeltasReasonRequiresWorkflowAdoptionProof(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, want            string
 		entry                 SupersessionEntry
@@ -130,6 +133,7 @@ func TestValidateDependencyDeltasReasonRequiresWorkflowAdoptionProof(t *testing.
 		{name: "workflow adoption cannot replace dependency PR", receipt: SupersessionReceipt{OriginalPR: "https://example.test/pr/1", WorkflowAdoptions: []SupersessionWorkflowAdoption{{Path: ".github/workflows/ci.yml"}}}, want: "cannot replace exact dependency PR evidence"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			service := SupersessionService{Ports: SupersessionPorts{
 				ReadCampaignMarker: func(string) (bool, error) { return tc.marker, nil },
 				Git: func(_ context.Context, _ string, args ...string) (string, error) {
@@ -175,6 +179,7 @@ func TestValidateDependencyDeltasReasonRequiresWorkflowAdoptionProof(t *testing.
 }
 
 func TestValidateWorkflowAdoptionsRejectsUnprovenEvidence(t *testing.T) {
+	t.Parallel()
 	const workflowPath = ".github/workflows/check.yml"
 	const source = "source"
 	replacement, target := strings.Repeat("c", 40), strings.Repeat("b", 40)
@@ -252,6 +257,7 @@ func TestValidateWorkflowAdoptionsRejectsUnprovenEvidence(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := validReceipt()
 			e := SupersessionEntry{CanonicalDir: "/repo", HeadSHA: source, RemoteTargetSHA: target}
 			p := SupersessionPorts{IsAncestor: func(context.Context, string, string, string) (bool, error) { return true, nil }, ReadGitFileBytes: func(_ context.Context, _, _, _ string) ([]byte, error) { return body, nil }}
@@ -278,6 +284,7 @@ func TestValidateWorkflowAdoptionsRejectsUnprovenEvidence(t *testing.T) {
 		{name: "changed path does not match proof", change: func(_ *SupersessionReceipt, c []dependencyChange) { c[0].path = ".github/workflows/other.yml" }},
 		{name: "not an added workflow", change: func(_ *SupersessionReceipt, c []dependencyChange) { c[0].added = false }}} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := validReceipt()
 			changes := []dependencyChange{{path: workflowPath, added: true}}
 			tc.change(&r, changes)
@@ -291,6 +298,7 @@ func TestValidateWorkflowAdoptionsRejectsUnprovenEvidence(t *testing.T) {
 }
 
 func TestDependencyContentParsersRejectMalformedInputsAndCompareResolutionData(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, file             string
 		before, after          []byte
@@ -315,6 +323,7 @@ func TestDependencyContentParsersRejectMalformedInputsAndCompareResolutionData(t
 		{"workflow head malformed", ".github/workflows/test.yml", []byte("jobs: {}\n"), []byte("jobs: [\n"), false, true},
 		{"unrecognized file ignored", "README.md", []byte("a"), []byte("b"), false, false}} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			changed, err := dependencyContentChanged(tc.file, tc.before, tc.after)
 			if (err != nil) != tc.wantError || changed != tc.wantChanged {
 				t.Fatalf("dependencyContentChanged = %v, %v", changed, err)
@@ -349,6 +358,7 @@ func TestDependencyContentParsersRejectMalformedInputsAndCompareResolutionData(t
 }
 
 func TestCanonicalYAMLNodeRejectsMalformedTreeShapes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		node *yaml.Node
@@ -361,6 +371,7 @@ func TestCanonicalYAMLNodeRejectsMalformedTreeShapes(t *testing.T) {
 		{"nested invalid mapping", &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Content: []*yaml.Node{{Kind: yaml.SequenceNode}, {Kind: yaml.ScalarNode}}}}}, "key is not scalar"},
 		{"unsupported node", &yaml.Node{Kind: yaml.AliasNode}, "unsupported YAML node kind"}} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := canonicalYAMLNode(tc.node); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("canonicalYAMLNode error = %v, want %q", err, tc.want)
 			}
