@@ -4,6 +4,7 @@ package daemonruntime
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,7 +15,11 @@ func TestForeignNativeDirectoryCannotBecomeRuntimeRoot(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("foreign-owner refusal requires a non-root account")
 	}
-	info, err := os.Lstat("/private/etc")
+	root, err := filepath.EvalSymlinks("/etc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +27,7 @@ func TestForeignNativeDirectoryCannotBecomeRuntimeRoot(t *testing.T) {
 	if !ok || int(native.Uid) == os.Getuid() {
 		t.Skip("no foreign-owner directory premise")
 	}
-	if err := secureDaemonRuntime("/private/etc"); err == nil || !strings.Contains(err.Error(), "owned") {
+	if err := secureDaemonRuntime(root); err == nil || !strings.Contains(err.Error(), "owned") {
 		t.Fatalf("foreign-root error=%v", err)
 	}
 }

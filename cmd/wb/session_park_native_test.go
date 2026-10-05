@@ -21,6 +21,12 @@ import (
 )
 
 func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
+	// Exercise the real preflight without requiring an installed agent harness.
+	bin := t.TempDir()
+	for _, name := range []string{"tmux", "codex"} {
+		writeJourneyExecutable(t, filepath.Join(bin, name), "#!/bin/sh\nexit 99\n")
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	projects := setUpRenameCLIFixture(t)
 	source := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-refusal-source", Machine: "source",
 		Runtime: "codex", Model: "test", StartedAt: time.Now().UTC().Add(-time.Minute)}

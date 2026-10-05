@@ -208,9 +208,20 @@ func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	launches, attachments, projections := 0, 0, 0
+	launches, attachments, projections, preflights := 0, 0, 0, 0
 	deps := sessionrun.DefaultResumeDependencies()
+	// Launch is injected below; keep preflight scoped to this parallel test.
+	deps.PreflightLocal = func(record session.Record) error {
+		preflights++
+		if record.Runtime != source.Runtime {
+			t.Fatalf("preflight runtime=%q, want %q", record.Runtime, source.Runtime)
+		}
+		return nil
+	}
 	deps.WithLocalCustody = func(_ context.Context, _ string, _ sessionpark.Bundle, replayAttemptID string, proceed func(*worktrees.ParkedLocalCustody) error) error {
+		if preflights != 1 {
+			t.Fatalf("custody reached with %d preflights, want 1", preflights)
+		}
 		if replayAttemptID != "" {
 			t.Fatalf("fresh zero-member resume admitted replay attempt %q", replayAttemptID)
 		}
@@ -283,8 +294,8 @@ func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
 		return output
 	}
 	first, second := run(), run()
-	if first.Replay || !second.Replay || first.SuccessorWBSessionID != second.SuccessorWBSessionID || launches != 1 || attachments != 1 || projections != 2 {
-		t.Fatalf("first=%#v second=%#v launches=%d attachments=%d projections=%d", first, second, launches, attachments, projections)
+	if first.Replay || !second.Replay || first.SuccessorWBSessionID != second.SuccessorWBSessionID || launches != 1 || attachments != 1 || projections != 2 || preflights != 1 {
+		t.Fatalf("first=%#v second=%#v launches=%d attachments=%d projections=%d preflights=%d", first, second, launches, attachments, projections, preflights)
 	}
 }
 
@@ -304,11 +315,22 @@ func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) 
 				t.Fatal(err)
 			}
 			crash := errors.New("injected coordinator crash")
-			starts, attaches, afterCalls, projections := 0, 0, 0, 0
+			starts, attaches, afterCalls, projections, preflights := 0, 0, 0, 0, 0
 			var stable sessionlaunch.Result
 			var replayIDs []string
 			deps := sessionrun.DefaultResumeDependencies()
+			// Launch is injected below; keep preflight scoped to this parallel test.
+			deps.PreflightLocal = func(record session.Record) error {
+				preflights++
+				if record.Runtime != source.Runtime {
+					t.Fatalf("preflight runtime=%q, want %q", record.Runtime, source.Runtime)
+				}
+				return nil
+			}
 			deps.WithLocalCustody = func(_ context.Context, _ string, _ sessionpark.Bundle, replayAttemptID string, proceed func(*worktrees.ParkedLocalCustody) error) error {
+				if preflights != 1 {
+					t.Fatalf("custody reached with %d preflights, want 1", preflights)
+				}
 				replayIDs = append(replayIDs, replayAttemptID)
 				return proceed(nil)
 			}
@@ -374,8 +396,8 @@ func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) 
 			if crashPoint == "after release before source finalize" {
 				wantStarts = 1
 			}
-			if starts != wantStarts || attaches != 2 || projections != 1 || len(replayIDs) != 2 || replayIDs[0] != "" || replayIDs[1] != stable.AttemptID {
-				t.Fatalf("starts=%d attaches=%d projections=%d replayIDs=%#v stable=%#v", starts, attaches, projections, replayIDs, stable)
+			if preflights != 1 || starts != wantStarts || attaches != 2 || projections != 1 || len(replayIDs) != 2 || replayIDs[0] != "" || replayIDs[1] != stable.AttemptID {
+				t.Fatalf("starts=%d attaches=%d projections=%d preflights=%d replayIDs=%#v stable=%#v", starts, attaches, projections, preflights, replayIDs, stable)
 			}
 			final, err := store.Load(parkedID)
 			if err != nil || final.Status != sessionpark.StatusResumed || final.Successor == nil || final.Successor.WBSessionID != stable.WBSessionID {

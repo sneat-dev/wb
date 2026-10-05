@@ -25,6 +25,8 @@ func TestDepsRootRegistryAndLazyNativeBinding(t *testing.T) {
 	origin := t.TempDir()
 	runGit(t, origin, "init", "--bare", "-b", "main")
 	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
+	runGit(t, checkout, "config", "user.name", "WB Test")
+	runGit(t, checkout, "config", "user.email", "wb-test@example.invalid")
 	runGit(t, checkout, "add", "go.mod")
 	runGit(t, checkout, "commit", "-m", "seed dependency module")
 	runGit(t, checkout, "remote", "add", "origin", origin)
