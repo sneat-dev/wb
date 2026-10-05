@@ -419,7 +419,7 @@ jobs:
       - name: Test native Windows atomic receipt publication
         run: >-
           go test ./internal/filewrite ./internal/orchestrate ./internal/unixcompat -count=1 -json
-          -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'
+          -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsImmutablePublicationRefusesWithoutReplacingWinner|TestWindowsPortableSentinelsMatchNativeErrors|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 

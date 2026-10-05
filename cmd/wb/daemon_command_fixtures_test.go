@@ -4,14 +4,12 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/daemonruntime"
-	"github.com/sneat-dev/wb/internal/operationreceipt"
 	"github.com/spf13/cobra"
 )
 
 type daemonResult = daemonruntime.Result
 type daemonHubStatus = daemonruntime.HubStatus
 type daemonRecoveryResult = daemonruntime.RecoveryResult
-type daemonOperationResult = operationreceipt.Receipt
 
 // daemonCommandForTest selects a fresh child of the actual production family binding.
 func daemonCommandForTest(path string, inv *invocation, deps daemonDependencies) *cobra.Command {
