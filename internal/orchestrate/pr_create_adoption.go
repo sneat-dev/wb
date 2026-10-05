@@ -96,28 +96,25 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 			}
 		}
 	}
-	if !draft {
-		created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create",
-			"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", body)
-		if createErr != nil {
-			return "", false, createErr
+	createBody := body
+	if draft {
+		if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
+			createBody = prmeta.Append(createBody, prmeta.Provenance{Effort: manifest.EffortID})
 		}
-		if createdURL := lastNonEmptyLine(created); createdURL != "" {
-			return createdURL, false, nil
-		}
-		return "", false, fmt.Errorf("gh pr create returned no pull request URL")
 	}
-	draftBody := body
-	if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
-		draftBody = prmeta.Append(draftBody, prmeta.Provenance{Effort: manifest.EffortID})
+	arguments := []string{"pr", "create", "--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", createBody}
+	if draft {
+		arguments = append(arguments, "--draft")
 	}
-	created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create",
-		"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", draftBody, "--draft")
+	created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", arguments...)
 	if createErr != nil {
 		return "", false, createErr
 	}
 	if createdURL := lastNonEmptyLine(created); createdURL != "" {
 		return createdURL, false, nil
 	}
-	return "", false, fmt.Errorf("gh pr create --draft returned no pull request URL")
+	if draft {
+		return "", false, fmt.Errorf("gh pr create --draft returned no pull request URL")
+	}
+	return "", false, fmt.Errorf("gh pr create returned no pull request URL")
 }
