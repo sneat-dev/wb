@@ -594,6 +594,35 @@ the local checkpoint. All 216 prior accepted bodies remain unchanged, bringing
 the bounded local ledger to 227 unique declarations and 4,199 statements.
 These cohorts do not constitute current repository coverage or publication.
 
+### Paired Go dependency-evidence checkpoint
+
+Paired dependency-upgrade validation reuses the actual Git blob reader,
+modfile parser and checksum helpers. No new seam, wrapper or general router was
+added. The only production change removes a redundant version-validity guard:
+the pinned parser's actual File.add/parseVersion chain with a nil fixer already
+rejects invalid required versions before constructing these entries. Exact
+parser and full guard bytes are independently bound; native custody consumers
+and the other six whole function bodies remain unchanged.
+
+Seven whole functions cover all 85 statements and every block, including
+closures, in one fresh passing scoped race run: six selected groups passed in
+14.479 seconds. Four new groups and their independent table children run in
+parallel; a real private committed Git seed creates immutable source/target blob
+pairs before read-only subtests. Original dependency and absorbed-conflict
+native witnesses remain selected. Tests cover module identity/directness/path
+changes, parsing, duplicates, upgrades/downgrades, byte-level non-version edits,
+checksum multiplicity, missing native blobs and exact error contracts.
+
+The first run found a new fixture token replacement also matched the prefix in
+the module declaration. The repaired row changes only the require directive and
+retains the intended same-cardinality different-path refusal assertion. No
+production behavior was changed to satisfy the case; the failed profile is
+excluded entirely. Linux/Windows compilation, scoped vet, lint and specification
+lint passed on the repaired source. Independent review and normal hooks precede
+the local checkpoint. All 227 prior accepted bodies remain source-identical;
+the bounded local ledger becomes 234 declarations and 4,284 statements. This
+is not refreshed repository coverage or remote publication.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

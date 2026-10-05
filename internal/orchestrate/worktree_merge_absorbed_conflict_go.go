@@ -73,9 +73,6 @@ func goModDependencyUpgrades(source, target string) (map[string][2]string, error
 		if !exists || sourceRequirement.indirect != targetRequirement.Indirect {
 			return nil, errors.New("go.mod require path set or directness changed")
 		}
-		if !semver.IsValid(sourceRequirement.version) || !semver.IsValid(targetRequirement.Mod.Version) {
-			return nil, fmt.Errorf("go.mod dependency %s has a non-semver version", targetRequirement.Mod.Path)
-		}
 		comparison := semver.Compare(targetRequirement.Mod.Version, sourceRequirement.version)
 		if comparison < 0 {
 			return nil, fmt.Errorf("go.mod dependency %s is a downgrade", targetRequirement.Mod.Path)
