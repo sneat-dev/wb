@@ -330,10 +330,6 @@ func requirePublishedForwardRepairExpectations(options WorktreeMergePublishedFor
 	return nil
 }
 
-func inspectPublishedForwardRepairSources(ctx context.Context, projectsRoot string, paths []string, target string) ([]WorktreeMergeSource, string, string, error) {
-	return inspectPublishedForwardRepairSourcesWithRunner(ctx, defaultRunner, projectsRoot, paths, target)
-}
-
 func inspectPublishedForwardRepairSourcesWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, paths []string, target string) ([]WorktreeMergeSource, string, string, error) {
 	sources, repository, canonical, err := inspectWorktreeMergeSourcesWithRunner(ctx, run, projectsRoot, paths, target)
 	if err != nil {
@@ -427,10 +423,6 @@ func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt,
 		}
 	}
 	return roots
-}
-
-func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, roots []WorktreeMergeValidationFailureSealRoot, timeout time.Duration, retry int) error {
-	return mergePublishedForwardRepairRootsWithRunner(ctx, defaultRunner, worktree, roots, timeout, retry)
 }
 
 func mergePublishedForwardRepairRootsWithRunner(ctx context.Context, run runner.Runner, worktree string, roots []WorktreeMergeValidationFailureSealRoot, timeout time.Duration, retry int) error {

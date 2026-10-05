@@ -277,12 +277,10 @@ func TestPrepareConflictWorktreeMergeReplacementRetiresNewCandidateAfterEvidence
 		ExpectedReceiptSHA256: receiptHash, ExpectedImmutableClaimSHA256: sha256Hex(claimBytes), ExpectedCurrentTargetSHA: target,
 		Apply: true, Actor: "reviewer", Reason: "prove failed construction retires its unconsumed candidate",
 	}
-	previous := beforeConflictCandidateRefreshFinalRevalidation
-	beforeConflictCandidateRefreshFinalRevalidation = func() {
+	beforeFinalRevalidation := func() {
 		writeEngineFile(t, filepath.Join(receipt.Sources[0].Worktree, "late-drift.txt"), "drift\n")
 	}
-	defer func() { beforeConflictCandidateRefreshFinalRevalidation = previous }()
-	if result, err := PrepareConflictWorktreeMergeReplacement(context.Background(), options); err == nil || result.Candidate.Worktree != "" || !strings.Contains(err.Error(), "source") {
+	if result, err := prepareConflictWorktreeMergeReplacement(context.Background(), options, defaultRunner, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, os.ReadFile, nil, beforeFinalRevalidation); err == nil || result.Candidate.Worktree != "" || !strings.Contains(err.Error(), "source") {
 		t.Fatalf("final evidence drift = %+v err=%v", result, err)
 	}
 	assertNoConflictCandidateRefresh(t, fixture, receipt, options)

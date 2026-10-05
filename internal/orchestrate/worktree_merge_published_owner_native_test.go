@@ -92,7 +92,7 @@ func TestPublishedOwnerRootMergesUseNativeGitAndAbortConflicts(t *testing.T) {
 				}
 				roots = []WorktreeMergeValidationFailureSealRoot{{Kind: "native", SHA: rootSHA}, {Kind: "duplicate", SHA: rootSHA}}
 			}
-			err := mergePublishedForwardRepairRoots(context.Background(), dir, roots, 5*time.Second, 0)
+			err := mergePublishedForwardRepairRootsWithRunner(context.Background(), defaultRunner, dir, roots, 5*time.Second, 0)
 			if stage == "empty duplicate contained" || stage == "clean merge" {
 				if err != nil {
 					t.Fatal(err)

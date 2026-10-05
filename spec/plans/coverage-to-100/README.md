@@ -409,6 +409,42 @@ the source-qualified local ledger to 169 unique declarations and 3,260 statement
 All prior 163 accepted declaration bodies remain byte-identical. This is a bounded
 local checkpoint, not repository-wide coverage or a remote delivery receipt.
 
+### Conflict-replacement checkpoint
+
+Conflict replacement now uses one private owner with per-invocation observation
+ports at its existing stages. Initial inspection and both temporal revalidations
+reuse the same concrete state and existing runner-aware helpers. Native Create,
+Guard, Work Log, locks, content merge and Abort remain genuine. Refusal retires
+only a newly created candidate; resumed candidates remain. Primary errors and
+secondary native Abort errors preserve their original policy.
+
+The last two production callers of published-forward native bridge wrappers now
+use their existing runner-aware implementations. Both obsolete wrappers were
+removed and their four genuine test calls qualified with the native default
+runner. Other shared production bodies remain byte-identical. Including the new
+private owner, this cutover reduces the package's production declaration count
+by one. The original global-hook test passes its same mutation to the private
+invocation; other original assertions remain unchanged.
+
+A fresh scoped race run passed all 18 top-level tests in 180.774 seconds and
+covered all 169 statements in nine whole declarations, including closures and
+every block. Linux and Windows test compilation, scoped vet and lint, and
+specification lint passed. Independent native groups run in parallel; process
+environment cases restore exact original values before native checks.
+
+The first run failed two test groups: native receipt parsing rejected an invalid
+schema earlier than the expected owner diagnostic, and post-creation fault cases
+waited for a progress event that production does not emit. Test-only corrections
+use the actual creation start plus native List, Guard and Work Log corroboration,
+and add a native locked second-read validation refusal. The failed profile is
+diagnostic only; the fresh passing profile covers the complete scope. No
+production guard was weakened to reach these branches.
+
+The two retired one-statement wrappers are removed from the accepted ledger.
+The other 167 bodies and 3,258 statements stay source-qualified. Adding this scope
+gives 176 unique declarations and 3,427 accepted statements locally. This is a
+bounded cohort ledger, not current repository coverage or remote publication.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

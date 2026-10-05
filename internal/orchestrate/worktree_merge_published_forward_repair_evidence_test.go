@@ -108,7 +108,7 @@ func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) 
 		options := baseOptions
 		options.Sources = append([]string(nil), baseOptions.Sources...)
 		options.ExpectedSourceSHAs = append([]string(nil), baseOptions.ExpectedSourceSHAs...)
-		sources, repository, canonical, err := inspectPublishedForwardRepairSources(context.Background(), options.ProjectsRoot, options.Sources, receipt.Target)
+		sources, repository, canonical, err := inspectPublishedForwardRepairSourcesWithRunner(context.Background(), defaultRunner, options.ProjectsRoot, options.Sources, receipt.Target)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,7 +161,7 @@ func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) 
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				baselineSources, baselineRepository, baselineCanonical, err := inspectPublishedForwardRepairSources(ctx, baseOptions.ProjectsRoot, baseOptions.Sources, receipt.Target)
+				baselineSources, baselineRepository, baselineCanonical, err := inspectPublishedForwardRepairSourcesWithRunner(ctx, defaultRunner, baseOptions.ProjectsRoot, baseOptions.Sources, receipt.Target)
 				if err != nil {
 					return err
 				}
@@ -259,7 +259,7 @@ func TestPublishedForwardRepairRevalidationBindsExistingCorrection(t *testing.T)
 	if !foundReplacement {
 		t.Fatalf("corrected replacement absent from planned roots: %+v", plan.RequiredRoots)
 	}
-	sources, repository, canonical, err := inspectPublishedForwardRepairSources(context.Background(), options.ProjectsRoot, options.Sources, receipt.Target)
+	sources, repository, canonical, err := inspectPublishedForwardRepairSourcesWithRunner(context.Background(), defaultRunner, options.ProjectsRoot, options.Sources, receipt.Target)
 	if err != nil {
 		t.Fatal(err)
 	}
