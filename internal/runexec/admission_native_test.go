@@ -3,13 +3,12 @@ package runexec
 import (
 	"context"
 	"github.com/sneat-dev/wb/internal/runqueue"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"testing"
 	"time"
 )
 
-const holderHoldDuration = AdmissionGrace + 150*time.Millisecond
+const holderHoldDuration = 350 * time.Millisecond
 
 type eventRecorder struct{ events []QueueEvent }
 
@@ -40,23 +39,41 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 	holderPID := os.Getpid()
 	holderAnnouncement := held.Announce(runqueue.Participant{PID: holderPID, Summary: "go build"})
 	released := make(chan struct{})
+	readyToRelease := make(chan struct{})
 	go func() {
-		// Hold from the moment the waiter is genuinely queued, and for longer
-		// than AdmissionGrace, so the wait goes through the
-		// queued+heartbeat path rather than resolving as immediate.
-		testenv.WaitForQueued(t, root, budget)
-		time.Sleep(holderHoldDuration)
+		// Keep the native budget occupied until the observer has actually
+		// reported two waiting heartbeats; scheduler delays cannot shorten
+		// the contract to a lucky fixed-duration sleep.
+		<-readyToRelease
 		holderAnnouncement.Cleanup()
 		held.Release()
 		close(released)
 	}()
-	t.Cleanup(func() { <-released })
+	t.Cleanup(func() {
+		select {
+		case <-readyToRelease:
+		default:
+			close(readyToRelease)
+		}
+		<-released
+	})
 
 	var out eventRecorder
-	progress := out.report
+	observedHeartbeats := 0
+	progress := func(event QueueEvent) {
+		out.report(event)
+		if event.Kind == WaitingHeartbeat {
+			observedHeartbeats++
+			if observedHeartbeats == 2 {
+				close(readyToRelease)
+			}
+		}
+	}
 	self := runqueue.Participant{PID: os.Getpid(), Summary: "go test", Worktree: "/w/waiter"}
 
-	lease, _, waited, err := nativeAdmission(context.Background(), root, []string{"go", "test", "./..."}, self, progress)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	lease, _, waited, err := nativeAdmission(ctx, root, []string{"go", "test", "./..."}, self, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,15 +111,20 @@ func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T)
 	root := t.TempDir()
 	var out eventRecorder
 	progress := out.report
-	self := runqueue.Participant{PID: 1, Summary: "go test"}
+	self := runqueue.Participant{PID: os.Getpid(), Summary: "go test"}
 
-	lease, _, waited, err := nativeAdmission(context.Background(), root, []string{"go", "test", "./..."}, self, progress)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	lease, units, _, err := nativeAdmission(ctx, root, []string{"go", "test", "./..."}, self, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(lease.Release)
-	if waited >= AdmissionGrace {
-		t.Fatalf("waited = %s, want an immediate admission on an empty queue", waited)
+	// Admission is a queue protocol outcome, not a wall-clock latency SLA.
+	// Race/coverage instrumentation and filesystem scheduling can exceed the
+	// grace period without any competing holder or queue wait.
+	if lease == nil || units <= 0 {
+		t.Fatalf("native admission returned no governed lease: lease=%v units=%d", lease, units)
 	}
 	if len(out.events) != 1 || out.events[0].Kind != ImmediatelyAdmitted {
 		t.Fatalf("immediate events=%+v", out.events)
