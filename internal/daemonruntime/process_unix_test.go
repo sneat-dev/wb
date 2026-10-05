@@ -29,3 +29,15 @@ func TestDaemonCheckOtherRootNeverRefusesOffMacOS(t *testing.T) {
 		t.Fatalf("daemonCheckOtherRoot = %v", err)
 	}
 }
+
+func TestStartDaemonProcessObservesTestModeBeforeAnyFileEffect(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	logPath := filepath.Join(root, "not-created", "child.log")
+	if pid, err := defaultNativeOperations().startDaemonProcess(filepath.Join(root, "ordinary-child"), nil, logPath); pid != 0 || err == nil {
+		t.Fatalf("observed test mode pid=%d err=%v", pid, err)
+	}
+	if _, err := os.Stat(filepath.Dir(logPath)); !os.IsNotExist(err) {
+		t.Fatalf("test refusal created log directory: %v", err)
+	}
+}

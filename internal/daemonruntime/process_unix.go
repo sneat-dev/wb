@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"testing"
 
 	"github.com/sneat-dev/wb/internal/daemon"
 )
@@ -37,7 +38,12 @@ func (native nativeOperations) stopDaemonProcess(pid int, _ daemon.Supervisor, _
 }
 
 func (native nativeOperations) startDaemonProcess(executable string, args []string, logPath string) (int, error) {
-	if err := daemonRefuseTestBinary(executable); err != nil {
+	return native.startDaemonProcessForMode(executable, args, logPath, testing.Testing())
+}
+
+// Production always observes its real process mode before any native effect.
+func (native nativeOperations) startDaemonProcessForMode(executable string, args []string, logPath string, isTestProcess bool) (int, error) {
+	if err := daemonRefuseTestBinaryForMode(executable, isTestProcess); err != nil {
 		return 0, err
 	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
