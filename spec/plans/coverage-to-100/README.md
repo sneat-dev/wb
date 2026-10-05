@@ -683,6 +683,23 @@ cohorts are not a refreshed package or repository coverage percentage. The batch
 is independently reviewed and committed locally with normal hooks; publication
 remains deferred to the coordinated final boundary.
 
+### Shared terminal refusal fixture checkpoint
+
+The seven incomplete-terminal-evidence refusal cases reuse one genuine landed
+and externally sealed private fixture. Each row retains its original mutation,
+Resume options and refusal assertions. Unaffected custody and target state are
+checked before restoration; exact record bytes/modes and row-owned refs are
+restored and native terminal proof, absence and lock release are verified before
+the next row. The rows remain serial because their environment and baseline
+are shared. Failed rows or incomplete restoration stop the parent.
+
+All seven original children pass with race and coverage instrumentation. The
+observed group runtime fell from 82.12 to 14.81 seconds (82.0% lower);
+this is one before/after observation, not a repeated benchmark or package-wide
+speed claim. Production is unchanged, so no coverage credit is added. Scoped
+platform compilation, vet, lint and specification lint pass. The reviewed change
+is accumulated as a local commit; remote publication remains deferred.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

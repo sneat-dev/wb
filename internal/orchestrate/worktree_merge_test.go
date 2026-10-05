@@ -2276,19 +2276,227 @@ func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *test
 			},
 		},
 	}
+	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	type fileSnapshot struct {
+		contents []byte
+		mode     os.FileMode
+	}
+	snapshots := map[string]fileSnapshot{}
+	for _, claim := range claims {
+		for _, path := range []string{claim, terminalWorkLogPath(claim), sealedTerminalOutboxPath(claim)} {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshots[path] = fileSnapshot{contents: contents, mode: info.Mode().Perm()}
+		}
+	}
+	receiptBytes, err := os.ReadFile(landed.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptInfo, err := os.Stat(landed.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectations, err := terminalWorkLogExpectations(landed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	remoteTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "ls-remote", "--heads", "origin", "refs/heads/"+landed.Target))
+	verifyAuthority := func(ctx context.Context, affected string, localPresent, remotePresent bool) error {
+		for path, snapshot := range snapshots {
+			if path == affected {
+				continue
+			}
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(contents, snapshot.contents) || info.Mode().Perm() != snapshot.mode {
+				return fmt.Errorf("unaffected native custody changed: %s", path)
+			}
+		}
+		head, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(head) != canonicalHead {
+			return fmt.Errorf("canonical target changed: %s", head)
+		}
+		remote, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+landed.Target)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(remote) != remoteTarget {
+			return fmt.Errorf("remote target changed: %s", remote)
+		}
+		for _, expectation := range expectations {
+			if _, err := os.Lstat(expectation.Worktree); !os.IsNotExist(err) {
+				return fmt.Errorf("terminal worktree no longer absent: %s: %v", expectation.Worktree, err)
+			}
+			local, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
+			if err != nil {
+				return err
+			}
+			wantLocal := ""
+			if localPresent && expectation.Task == landed.Candidate.Task {
+				wantLocal = expectation.Branch
+			}
+			if strings.TrimSpace(local) != wantLocal {
+				return fmt.Errorf("unexpected local cleanup ref %s: %s", expectation.Branch, local)
+			}
+			remote, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
+			if err != nil {
+				return err
+			}
+			wantRemote := ""
+			if remotePresent && expectation.Task == landed.Candidate.Task {
+				wantRemote = landed.Candidate.SHA + "\trefs/heads/" + expectation.Branch
+			}
+			if strings.TrimSpace(remote) != wantRemote {
+				return fmt.Errorf("unexpected remote cleanup ref %s: %s", expectation.Branch, remote)
+			}
+		}
+		return nil
+	}
+	verifyBaseline := func(ctx context.Context) error {
+		if err := verifyAuthority(ctx, "", false, false); err != nil {
+			return err
+		}
+		contents, err := os.ReadFile(landed.ReceiptPath)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(landed.ReceiptPath)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(contents, receiptBytes) || info.Mode().Perm() != receiptInfo.Mode().Perm() {
+			return fmt.Errorf("full native receipt baseline changed")
+		}
+		if err := worktrees.ValidateRemovedTerminalWorkLogs(fixture.githubDir, expectations); err != nil {
+			return err
+		}
+		if err := requireTerminalCleanupBranchesAbsent(ctx, fixture.githubDir, landed, expectations, 0, 0); err != nil {
+			return err
+		}
+		lock, err := AcquireOperationLock(fixture.githubDir, landed.Lane, true)
+		if err != nil {
+			return fmt.Errorf("resume did not release native operation lock: %w", err)
+		}
+		return lock.Release()
+	}
+	if err := verifyBaseline(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture, _, landed, claims := landedTerminalCleanupFixture(t)
-			externallyTerminalizeMergeCleanup(t, fixture, &landed)
+		restored := false
+		ok := t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := verifyBaseline(ctx); err != nil {
+				t.Fatal(err)
+			}
+			affected := ""
+			switch test.name {
+			case "missing terminal", "mismatched terminal":
+				affected = terminalWorkLogPath(claims[landed.Candidate.Task])
+			case "tampered immutable claim digest":
+				affected = claims[landed.Candidate.Task]
+			case "missing sealed outbox", "mismatched sealed outbox":
+				affected = sealedTerminalOutboxPath(claims[landed.Candidate.Task])
+			}
+			localRef := test.name == "local branch remains"
+			remoteRef := test.name == "remote branch remains"
+			restore := func(ctx context.Context) error {
+				if affected != "" {
+					snapshot := snapshots[affected]
+					if err := os.WriteFile(affected, snapshot.contents, snapshot.mode); err != nil {
+						return err
+					}
+					if err := os.Chmod(affected, snapshot.mode); err != nil {
+						return err
+					}
+				}
+				if localRef {
+					current, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "for-each-ref", "--format=%(objectname)", "refs/heads/"+landed.Candidate.Branch)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(current) != "" && strings.TrimSpace(current) != landed.Candidate.SHA {
+						return fmt.Errorf("refuse restoring unexpected local row ref: %s", current)
+					}
+					if _, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "update-ref", "-d", "refs/heads/"+landed.Candidate.Branch); err != nil {
+						return err
+					}
+				}
+				if remoteRef {
+					current, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+landed.Candidate.Branch)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(current) != "" {
+						if strings.TrimSpace(current) != landed.Candidate.SHA+"\trefs/heads/"+landed.Candidate.Branch {
+							return fmt.Errorf("refuse restoring unexpected remote row ref: %s", current)
+						}
+						if _, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "push", "origin", ":refs/heads/"+landed.Candidate.Branch); err != nil {
+							return err
+						}
+					}
+				}
+				if err := os.WriteFile(landed.ReceiptPath, receiptBytes, receiptInfo.Mode().Perm()); err != nil {
+					return err
+				}
+				if err := os.Chmod(landed.ReceiptPath, receiptInfo.Mode().Perm()); err != nil {
+					return err
+				}
+				if err := verifyBaseline(ctx); err != nil {
+					return err
+				}
+				restored = true
+				return nil
+			}
+			t.Cleanup(func() {
+				if restored {
+					return
+				}
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cleanupCancel()
+				if err := restore(cleanupCtx); err != nil {
+					t.Errorf("restore owned native baseline: %v", err)
+				}
+			})
+			// Every original row recipe and refusal predicate below stays intact.
 			test.breakEvidence(t, fixture, landed, claims)
 			failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 				ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
 				Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
 			})
+			unaffectedErr := verifyAuthority(ctx, affected, localRef, remoteRef)
+			if restoreErr := restore(ctx); restoreErr != nil {
+				t.Fatalf("restore shared native fixture: %v", restoreErr)
+			}
+			if unaffectedErr != nil {
+				t.Fatalf("refusal changed unaffected authority before restoration: %v", unaffectedErr)
+			}
 			if err == nil || !strings.Contains(err.Error(), test.want) || failed.Status == WorktreeMergeComplete {
 				t.Fatalf("terminal cleanup refusal = %+v err=%v, want %q", failed, err, test.want)
 			}
 		})
+		if !ok || !restored {
+			t.Fatal("stop shared native baseline after failed row or incomplete restoration")
+		}
 	}
 }
 
