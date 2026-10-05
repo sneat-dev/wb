@@ -123,10 +123,9 @@ func (store Store) Rebind(ctx context.Context, checkout Checkout, expectedRoot, 
 	if err := checkout.Validate(); err != nil {
 		return State{}, err
 	}
+	// The locked change callback validates expectedRoot against the prior checkout
+	// before changing the revision, so this hook only checks that the path is retired.
 	ensureOldRootAbsent := func() error {
-		if expectedRoot == "" || !filepath.IsAbs(expectedRoot) || filepath.Clean(expectedRoot) != expectedRoot {
-			return fmt.Errorf("expected previous root must be a clean absolute path")
-		}
 		if _, err := os.Lstat(expectedRoot); err == nil {
 			return fmt.Errorf("expected previous checkout root still exists; refusing rebind")
 		} else if !errors.Is(err, os.ErrNotExist) {

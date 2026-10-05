@@ -92,6 +92,27 @@ func TestDependencyChangesFailClosedAtEveryGitBoundary(t *testing.T) {
 	}
 }
 
+func TestDependencyCampaignWorktreeRecognizesLegacyHints(t *testing.T) {
+	t.Parallel()
+	service := SupersessionService{}
+	for _, tc := range []struct {
+		name  string
+		entry SupersessionEntry
+		want  bool
+	}{
+		{name: "dependency task prefix", entry: SupersessionEntry{Task: "deps-release"}, want: true},
+		{name: "dependency branch prefix", entry: SupersessionEntry{Branch: "wb/deps/update"}, want: true},
+		{name: "no worktree directory", entry: SupersessionEntry{Task: "sample", Branch: "feature/sample"}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := service.DependencyCampaignWorktree(context.Background(), tc.entry); got != tc.want {
+				t.Fatalf("dependency campaign = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateDependencyDeltasReasonRequiresWorkflowAdoptionProof(t *testing.T) {
 	for _, tc := range []struct {
 		name, want            string

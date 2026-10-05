@@ -448,3 +448,153 @@ func TestStoreRebindRequiresExactRetiredCheckoutAndAdmittedActor(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreRebindRejectsInvalidInputsWithoutChangingSnapshot(t *testing.T) {
+	t.Parallel()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(base, "retired")
+	currentRoot := filepath.Join(base, "current")
+	if err := os.Mkdir(currentRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldCheckout := testCheckout()
+	oldCheckout.Root = oldRoot
+	currentCheckout := oldCheckout
+	currentCheckout.Root = currentRoot
+	store := NewStore(filepath.Join(base, "private"))
+	if _, err := store.WithLocked(context.Background(), oldCheckout, func(state *State, found bool) error {
+		if found {
+			t.Fatal("unexpected existing coordination state")
+		}
+		return state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, expectedRoot, actor, wantError string
+		checkout                             Checkout
+		at                                   time.Time
+	}{
+		{name: "invalid actor", expectedRoot: oldRoot, actor: "bad actor", checkout: currentCheckout, at: testNow, wantError: "admitted actor"},
+		{name: "no owner actor", expectedRoot: oldRoot, actor: NoOwner, checkout: currentCheckout, at: testNow, wantError: "admitted actor"},
+		{name: "zero timestamp", expectedRoot: oldRoot, actor: "owner", checkout: currentCheckout, wantError: "admitted actor"},
+		{name: "invalid checkout", expectedRoot: oldRoot, actor: "owner", checkout: Checkout{Root: currentRoot}, at: testNow, wantError: "checkout identity is incomplete"},
+		{name: "expected root mismatch", expectedRoot: filepath.Join(base, "other"), actor: "owner", checkout: currentCheckout, at: testNow, wantError: "prior and current checkout identities"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := store.Rebind(context.Background(), tc.checkout, tc.expectedRoot, tc.actor, tc.at)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("Rebind error = %v, want containing %q", err, tc.wantError)
+			}
+			state, found, loadErr := store.Load(oldCheckout)
+			if loadErr != nil || !found || state.Checkout != oldCheckout || state.Revision != 1 || len(state.CheckoutRebinds) != 0 {
+				t.Fatalf("failed rebind changed stored state: state=%+v found=%t err=%v", state, found, loadErr)
+			}
+		})
+	}
+}
+
+func TestStoreRebindFilesystemInspectionErrorPreservesSnapshot(t *testing.T) {
+	t.Parallel()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := base + string(os.PathSeparator) + strings.Repeat("x", 256)
+	currentRoot := filepath.Join(base, "current")
+	if err := os.Mkdir(currentRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldCheckout := testCheckout()
+	oldCheckout.Root = oldRoot
+	currentCheckout := oldCheckout
+	currentCheckout.Root = currentRoot
+	store := NewStore(filepath.Join(base, "private"))
+	if _, err := store.WithLocked(context.Background(), oldCheckout, func(state *State, found bool) error {
+		if found {
+			t.Fatal("unexpected existing coordination state")
+		}
+		return state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Rebind(context.Background(), currentCheckout, oldRoot, "owner", testNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "inspect expected previous checkout root") {
+		t.Fatalf("filesystem inspection error = %v", err)
+	}
+	state, found, loadErr := store.Load(oldCheckout)
+	if loadErr != nil || !found || state.Checkout != oldCheckout || state.Revision != 1 || len(state.CheckoutRebinds) != 0 {
+		t.Fatalf("filesystem refusal changed stored state: state=%+v found=%t err=%v", state, found, loadErr)
+	}
+}
+
+func TestStoreRebindRejectsAlreadyCurrentRootAndKeepsState(t *testing.T) {
+	t.Parallel()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRoot := filepath.Join(base, "current")
+	if err := os.Mkdir(currentRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentCheckout := testCheckout()
+	currentCheckout.Root = currentRoot
+	store := NewStore(filepath.Join(base, "private"))
+	if _, err := store.WithLocked(context.Background(), currentCheckout, func(state *State, found bool) error {
+		if found {
+			t.Fatal("unexpected existing coordination state")
+		}
+		return state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Rebind(context.Background(), currentCheckout, filepath.Join(base, "retired"), "owner", testNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "prior and current checkout identities") {
+		t.Fatalf("already-current Rebind error = %v", err)
+	}
+	state, found, loadErr := store.Load(currentCheckout)
+	if loadErr != nil || !found || state.Checkout != currentCheckout || state.Revision != 1 || len(state.CheckoutRebinds) != 0 {
+		t.Fatalf("already-current refusal changed stored state: state=%+v found=%t err=%v", state, found, loadErr)
+	}
+}
+
+func TestStoreRebindRequiresInitializedStateAndValidEnvelope(t *testing.T) {
+	t.Parallel()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRoot := filepath.Join(base, "current")
+	if err := os.Mkdir(currentRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentCheckout := testCheckout()
+	currentCheckout.Root = currentRoot
+	oldRoot := filepath.Join(base, "retired")
+	emptyStore := NewStore(filepath.Join(base, "empty-private"))
+	if _, err := emptyStore.Rebind(context.Background(), currentCheckout, oldRoot, "owner", testNow); err == nil || !strings.Contains(err.Error(), "not initialized") {
+		t.Fatalf("uninitialized Rebind error = %v", err)
+	}
+	if _, found, err := emptyStore.Load(currentCheckout); err != nil || found {
+		t.Fatalf("refused uninitialized rebind published state: found=%t err=%v", found, err)
+	}
+
+	invalidEnvelope := testState(t)
+	invalidEnvelope.Owner = "absent-member"
+	if err := invalidEnvelope.ValidateRebind(currentCheckout, oldRoot); err == nil || !strings.Contains(err.Error(), "owner is not joined") {
+		t.Fatalf("invalid envelope rebind error = %v", err)
+	}
+	validState := testState(t)
+	validState.Checkout.Root = filepath.Join(base, "retired")
+	for _, expectedRoot := range []string{"", "retired", base + string(os.PathSeparator) + "sub" + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "retired"} {
+		if err := validState.ValidateRebind(currentCheckout, expectedRoot); err == nil {
+			t.Fatalf("ValidateRebind accepted unsafe expected root %q", expectedRoot)
+		}
+	}
+}
