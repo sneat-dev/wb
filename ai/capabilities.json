@@ -8167,7 +8167,7 @@
               "kind": "unit"
             },
             {
-              "path": "internal/orchestrate/pr_land_test.go",
+              "path": "internal/mechanicalchange/pr_land_test.go",
               "name": "TestMechanicalIsDecidedFromContent",
               "kind": "unit"
             },

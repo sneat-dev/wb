@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/mechanicalchange"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/locallink"
@@ -585,7 +587,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	for _, file := range files {
 		result.ChangedFiles = append(result.ChangedFiles, file.Filename)
 	}
-	verdict := ClassifyMechanical(files)
+	verdict := mechanicalchange.ClassifyMechanical(files)
 	result.Mechanical, result.NonManifest = verdict.Mechanical, verdict.NonManifest
 	result.Evidence["classification"] = "from-diff-content"
 	if !verdict.Mechanical {
@@ -1268,7 +1270,7 @@ func landPreflightRefusal(view PullRequestView, repository, number string) *land
 	return nil
 }
 
-func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]ChangedFile, error) {
+func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]mechanicalchange.ChangedFile, error) {
 	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   "repos/" + repository + "/pulls/" + url.PathEscape(number) + "/files?per_page=100",
@@ -1277,9 +1279,9 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 		return nil, fmt.Errorf("read changed files for %s#%s: %w", repository, number, err)
 	}
 	seen := map[string]bool{}
-	files := make([]ChangedFile, 0, 16)
+	files := make([]mechanicalchange.ChangedFile, 0, 16)
 	for _, response := range responses {
-		var page []ChangedFile
+		var page []mechanicalchange.ChangedFile
 		if err := json.Unmarshal(response.Body, &page); err != nil {
 			return nil, fmt.Errorf("decode changed files for %s#%s: %w", repository, number, err)
 		}
@@ -1547,14 +1549,6 @@ func approximateTokens(tokens int) string {
 		return fmt.Sprintf("%d", tokens)
 	}
 	return fmt.Sprintf("%.1fk", float64(tokens)/1000)
-}
-
-func limitStrings(values []string, limit int) []string {
-	if len(values) <= limit {
-		return values
-	}
-	trimmed := append([]string(nil), values[:limit]...)
-	return append(trimmed, fmt.Sprintf("and %d more", len(values)-limit))
 }
 
 // SourceCommit is one commit of the pull request's branch.

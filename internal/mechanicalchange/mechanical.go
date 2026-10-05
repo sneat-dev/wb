@@ -1,7 +1,8 @@
-package orchestrate
+package mechanicalchange
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"strings"
 )
@@ -369,4 +370,12 @@ func (verdict MechanicalVerdict) Summary() string {
 		return "the change is not a mechanical dependency bump"
 	}
 	return strings.Join(limitStrings(verdict.Reasons, 5), "; ")
+}
+
+func limitStrings(values []string, limit int) []string {
+	if len(values) <= limit {
+		return values
+	}
+	trimmed := append([]string(nil), values[:limit]...)
+	return append(trimmed, fmt.Sprintf("and %d more", len(values)-limit))
 }
