@@ -4,16 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/ciaudit"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	progresspkg "github.com/sneat-dev/wb/internal/progress"
-	"github.com/spf13/cobra"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/ciaudit"
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	progresspkg "github.com/sneat-dev/wb/internal/progress"
+	"github.com/spf13/cobra"
 )
 
 const testHead = "0123456789012345678901234567890123456789"
@@ -29,8 +30,8 @@ type codedError struct {
 
 func (e *codedError) Error() string { return e.message }
 func dependencies() Dependencies {
-	return Dependencies{WaitChecks: func(context.Context, orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error) {
-		return orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed}, nil
+	return Dependencies{WaitChecks: func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+		return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed}, nil
 	}, Audit: func(ciaudit.BatchOptions) ([]ciaudit.Report, error) { return []ciaudit.Report{}, nil }, ValidateBranch: func(string) error { return nil }, Now: func() time.Time { return time.Date(2026, 10, 3, 12, 0, 0, 0, time.FixedZone("test", 3600)) }}
 }
 func execute(cmd *cobra.Command, args ...string) (string, string, error) {
@@ -52,14 +53,14 @@ func TestWaitRequestAndAliasesUseOneOperation(t *testing.T) {
 			deps := dependencies()
 			calls := 0
 			ctx := context.Background()
-			deps.WaitChecks = func(got context.Context, o orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error) {
+			deps.WaitChecks = func(got context.Context, o githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
 				calls++
-				if got != ctx || o.Repository != "acme/app" || o.PullRequest != "17" || o.Head != testHead || o.Target != "main" || o.Slice != shared.DefaultCIWaitSlice || o.CheckPollInterval != orchestrate.DefaultCheckPollInterval {
+				if got != ctx || o.Repository != "acme/app" || o.PullRequest != "17" || o.Head != testHead || o.Target != "main" || o.Slice != shared.DefaultCIWaitSlice || o.CheckPollInterval != githubchecks.DefaultCheckPollInterval {
 					t.Fatalf("request=%+v", o)
 				}
-				o.Progress(orchestrate.PullRequestWaitProgress{Observation: 1})
+				o.Progress(githubchecks.PullRequestWaitProgress{Observation: 1})
 				o.OperationProgress(progresspkg.Event{Detail: "callback wired"})
-				return orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed, Repository: o.Repository, Target: o.Target, Head: o.Head}, nil
+				return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Repository: o.Repository, Target: o.Target, Head: o.Head}, nil
 			}
 			var cmd *cobra.Command
 			args := append(waitArgs(), "--pr=17", "--format=json")
@@ -91,9 +92,9 @@ func TestWaitValidationPreventsOperationCalls(t *testing.T) {
 			t.Parallel()
 			deps := dependencies()
 			calls := 0
-			deps.WaitChecks = func(context.Context, orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error) {
+			deps.WaitChecks = func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
 				calls++
-				return orchestrate.PullRequestWaitResult{}, nil
+				return githubchecks.PullRequestWaitResult{}, nil
 			}
 			if test.branchError {
 				deps.ValidateBranch = func(string) error { return errors.New("branch refused") }
@@ -107,20 +108,20 @@ func TestWaitValidationPreventsOperationCalls(t *testing.T) {
 }
 func TestWaitOutcomesPreserveTypedExitAndResume(t *testing.T) {
 	t.Parallel()
-	for _, status := range []orchestrate.PullRequestWaitStatus{orchestrate.PullRequestWaitPassed, orchestrate.PullRequestWaitPending, orchestrate.PullRequestWaitFailed, orchestrate.PullRequestWaitStatus("rejected")} {
+	for _, status := range []githubchecks.PullRequestWaitStatus{githubchecks.PullRequestWaitPassed, githubchecks.PullRequestWaitPending, githubchecks.PullRequestWaitFailed, githubchecks.PullRequestWaitStatus("rejected")} {
 		for _, jsonOut := range []bool{false, true} {
 			t.Run(string(status)+map[bool]string{true: "/json", false: "/text"}[jsonOut], func(t *testing.T) {
 				t.Parallel()
 				deps := dependencies()
-				deps.WaitChecks = func(context.Context, orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error) {
-					return orchestrate.PullRequestWaitResult{Status: status, Repository: "acme/app", Head: testHead, Target: "main", Reason: "result reason"}, nil
+				deps.WaitChecks = func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+					return githubchecks.PullRequestWaitResult{Status: status, Repository: "acme/app", Head: testHead, Target: "main", Reason: "result reason"}, nil
 				}
 				args := append(waitArgs(), "--slice=2m", "--interval=1s")
 				if jsonOut {
 					args = append(args, "--json")
 				}
 				out, _, err := execute(newWaitCmd(runtime(func() string { return "root" }), deps), args...)
-				if status == orchestrate.PullRequestWaitPassed {
+				if status == githubchecks.PullRequestWaitPassed {
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -130,7 +131,7 @@ func TestWaitOutcomesPreserveTypedExitAndResume(t *testing.T) {
 						t.Fatalf("error=%v", err)
 					}
 				}
-				if status == orchestrate.PullRequestWaitPending && !strings.Contains(out, "wb") {
+				if status == githubchecks.PullRequestWaitPending && !strings.Contains(out, "wb") {
 					t.Fatalf("no resume: %s", out)
 				}
 				if !strings.Contains(out, "result reason") {
@@ -148,8 +149,8 @@ func TestWaitPropagatesOperationAndOutputErrors(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("operation refused")
 	deps := dependencies()
-	deps.WaitChecks = func(context.Context, orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error) {
-		return orchestrate.PullRequestWaitResult{}, boom
+	deps.WaitChecks = func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+		return githubchecks.PullRequestWaitResult{}, boom
 	}
 	_, stderr, err := execute(newWaitCmd(runtime(func() string { return "root" }), deps), waitArgs()...)
 	if !errors.Is(err, boom) || !strings.Contains(stderr, "operation refused") {
@@ -259,11 +260,11 @@ func TestAuditAndResumeOutputFailures(t *testing.T) {
 func TestPendingResumeKeepsExactIdentityAndFactoryError(t *testing.T) {
 	t.Parallel()
 	deps := dependencies()
-	deps.WaitChecks = func(ctx context.Context, o orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error) {
+	deps.WaitChecks = func(ctx context.Context, o githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
 		if o.Head != strings.Repeat("a", 40) || o.PullRequest != "17" {
 			t.Fatalf("options=%+v", o)
 		}
-		return orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPending, Reason: "continue"}, nil
+		return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPending, Reason: "continue"}, nil
 	}
 	r := runtime(func() string { return "root" })
 	want := errors.New("factory result")

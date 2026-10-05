@@ -1214,67 +1214,67 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitWaitsForStableRereadAfterLateSuiteRegistration",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitDirectTargetHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitPullRequestHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitFreshPullRequestDoesNotWaitForRedTargetCI",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsStalePullRequestBeforeChecks",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsPullRequestWithoutServerFreshnessFence",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsEmptyStrictFreshnessPolicy",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsTargetAdvanceAfterStablePullRequestChecks",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness",
               "kind": "integration"
             },
@@ -1289,37 +1289,37 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitCannotPassWithoutAuthoritativeBranchRules",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitCannotClaimAuthorityForRequiredWorkflowRule",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsIncompleteDirectCheckPagination",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsIncompleteDirectStatusPagination",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
               "name": "TestE2ECIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "path": "internal/githubchecks/ciwait_transient_read_test.go",
               "name": "TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "path": "internal/githubchecks/ciwait_transient_read_test.go",
               "name": "TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed",
               "kind": "integration"
             }

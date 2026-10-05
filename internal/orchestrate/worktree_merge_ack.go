@@ -13,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runner"
@@ -524,7 +527,7 @@ func validatePublishedUnlandedRebatch(ctx context.Context, projectsRoot string, 
 	if !strings.HasPrefix(strings.TrimSpace(remote), receipt.Candidate.SHA+"\t") {
 		return fmt.Errorf("checks-failed candidate ref drifted from %s", receipt.Candidate.SHA)
 	}
-	view, err := ReadPullRequest(ctx, receipt.Repository, receipt.PullRequest)
+	view, err := githubchecks.ReadPullRequest(ctx, receipt.Repository, receipt.PullRequest)
 	if err != nil {
 		return fmt.Errorf("read checks-failed pull request: %w", err)
 	}
@@ -660,7 +663,7 @@ func worktreeMergeReceiptPublishedUnlanded(receipt WorktreeMergeReceipt) bool {
 // a test cannot leave shared package state mutated for another test running
 // in parallel.
 func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pullRequest string, sleep func(time.Duration)) error {
-	numberText, err := PullRequestNumber(pullRequest)
+	numberText, err := githubchecks.PullRequestNumber(pullRequest)
 	if err != nil {
 		return fmt.Errorf("resolve superseded pull request number: %w", err)
 	}
@@ -688,11 +691,11 @@ func closeSupersededWorktreeMergePullRequest(ctx context.Context, repository, pu
 	// giving up.
 	const verifyAttempts = 3
 	const verifyDelay = 500 * time.Millisecond
-	var view PullRequestView
+	var view githubchecks.PullRequestView
 	var readErr error
 	for attempt := 1; attempt <= verifyAttempts; attempt++ {
-		view, readErr = ReadPullRequest(ctx, repository, numberText)
-		if readErr == nil || !IsTransientReadFailure(readErr) || attempt == verifyAttempts {
+		view, readErr = githubchecks.ReadPullRequest(ctx, repository, numberText)
+		if readErr == nil || !githubobserver.IsTransientReadFailure(readErr) || attempt == verifyAttempts {
 			break
 		}
 		sleep(verifyDelay)
@@ -844,7 +847,7 @@ func validateLandedFailureAcknowledgementReceipt(receipt WorktreeMergeReceipt, r
 			return fmt.Errorf("receipt %s is %s with invalid prepare failure state", receiptPath, receipt.Status)
 		}
 	case WorktreeMergePostTargetCIFailed:
-		if receipt.Phase != WorktreeMergePhaseLand || receipt.LandingSHA == "" || receipt.Checks.Status != PullRequestWaitFailed || receipt.Checks.Head != receipt.LandingSHA {
+		if receipt.Phase != WorktreeMergePhaseLand || receipt.LandingSHA == "" || receipt.Checks.Status != githubchecks.PullRequestWaitFailed || receipt.Checks.Head != receipt.LandingSHA {
 			return fmt.Errorf("receipt %s is %s without an exact failed post-target CI receipt", receiptPath, receipt.Status)
 		}
 	case WorktreeMergeLanded:

@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"strconv"
@@ -22,7 +22,7 @@ func TestCIFailureTextOwnerActionsIdentityAndPrefixPolicies(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			run, job, ok := githubActionsRunAndJob(row.input)
+			run, job, ok := ActionsRunAndJob(row.input)
 			if run != row.run || job != row.job || ok != row.ok {
 				t.Fatalf("identity=%q %q %t", run, job, ok)
 			}
@@ -121,7 +121,7 @@ func TestCIFailureTextOwnerDiagnosisPriorityAndSanitizedFallthrough(t *testing.T
 
 func TestCIFailureTextOwnerSummaryBoundsAndRuneCaps(t *testing.T) {
 	t.Parallel()
-	if got := summarizeCheckFailures(nil); got != "" {
+	if got := SummarizeFailures(nil); got != "" {
 		t.Fatalf("empty summary=%q", got)
 	}
 	for _, count := range []int{1, 3, 4, 5} {
@@ -138,7 +138,7 @@ func TestCIFailureTextOwnerSummaryBoundsAndRuneCaps(t *testing.T) {
 			if count == 5 {
 				want += " (+2 more failed checks)"
 			}
-			if got := summarizeCheckFailures(details); got != want {
+			if got := SummarizeFailures(details); got != want {
 				t.Fatalf("summary=%q want%q", got, want)
 			}
 		})

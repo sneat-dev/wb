@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func TestMissingCleanupOwnerEntryStagesRetainNativeReceipt(t *testing.T) {
@@ -75,7 +77,7 @@ func TestMissingCleanupNativeInputPoliciesRefuseBeforeEffects(t *testing.T) {
 		change     func(*WorktreeMergeReceipt)
 	}{
 		{"status", "exact landed cleanup-pending", func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergePrepared }},
-		{"checks", "completed exact checks", func(r *WorktreeMergeReceipt) { r.Checks.Status = PullRequestWaitFailed }},
+		{"checks", "completed exact checks", func(r *WorktreeMergeReceipt) { r.Checks.Status = githubchecks.PullRequestWaitFailed }},
 		{"candidate", "exact landed cleanup-pending", func(r *WorktreeMergeReceipt) { r.Candidate.Task = "" }},
 		{"source", "exact source identity", func(r *WorktreeMergeReceipt) { r.Sources[0].Branch = "" }},
 	} {
@@ -87,7 +89,7 @@ func TestMissingCleanupNativeInputPoliciesRefuseBeforeEffects(t *testing.T) {
 			changed.Phase = WorktreeMergePhaseLand
 			changed.Cleanup = true
 			changed.LandingSHA = r.Candidate.SHA
-			changed.Checks.Status = PullRequestWaitPassed
+			changed.Checks.Status = githubchecks.PullRequestWaitPassed
 			changed.CanonicalSync = "fast_forwarded"
 			row.change(&changed)
 			_, e := inspectMissingWorktreeMergeCleanup(t.Context(), defaultRunner, worktreeMergeReceiptSHA256, f.githubDir, changed, "reviewer", "negative record", 0, 0)

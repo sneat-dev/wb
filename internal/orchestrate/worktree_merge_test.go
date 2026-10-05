@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -91,12 +95,12 @@ func TestWorktreeMergeCheckProgressReportsObservableWait(t *testing.T) {
 	t.Parallel()
 	var events []progress.Event
 	reporter := func(event progress.Event) { events = append(events, event) }
-	reportWorktreeMergeCheckProgress(reporter, "candidate_checks")(PullRequestWaitProgress{
+	reportWorktreeMergeCheckProgress(reporter, "candidate_checks")(githubchecks.PullRequestWaitProgress{
 		Observation: 3,
-		Result: PullRequestWaitResult{
-			Status: PullRequestWaitPending,
+		Result: githubchecks.PullRequestWaitResult{
+			Status: githubchecks.PullRequestWaitPending,
 			Reason: "observed GitHub checks are still pending",
-			Checks: []RemoteCheck{{Name: "build", Bucket: "pass"}, {Name: "test", Bucket: "pending"}},
+			Checks: []githubchecks.RemoteCheck{{Name: "build", Bucket: "pass"}, {Name: "test", Bucket: "pending"}},
 		},
 		NextPoll: 30 * time.Second,
 	})
@@ -758,7 +762,7 @@ func TestResumeWorktreeMergeRefusesPostLandingTargetWithoutLanding(t *testing.T)
 	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", unrelated, landed.LandingSHA)
 	runEngineGit(t, fixture.canonical, "push", "--force", "origin", "main")
 	landed.Status = WorktreeMergePostTargetCIFailed
-	landed.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: landed.LandingSHA}
+	landed.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Head: landed.LandingSHA}
 	landed.CanonicalSync = ""
 	if err := persistWorktreeMergeReceipt(landed); err != nil {
 		t.Fatal(err)
@@ -2710,7 +2714,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
@@ -2794,7 +2798,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -2848,7 +2852,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

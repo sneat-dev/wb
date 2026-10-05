@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	progresspkg "github.com/sneat-dev/wb/internal/progress"
@@ -106,7 +108,7 @@ func TestCreateAndLandDefaultsAndPerInstanceIsolation(t *testing.T) {
 			t.Fatal(code, errOut.String())
 		}
 		deps.Land = func(_ context.Context, o orchestrate.PullRequestLandOptions) (orchestrate.PullRequestLandResult, error) {
-			if o.ProjectsRoot != root || o.Repository != "acme/app" || o.PullRequest != "2" || o.MergeMethod != "merge" || o.MergeMethodExplicit || o.Keep || o.NoAutoMerge || o.NoUpdateBranch || o.AllowUnfenced || o.Slice != shared.DefaultCIWaitSlice || o.CheckPollInterval != orchestrate.DefaultCheckPollInterval || len(o.KeepCommits) != 0 {
+			if o.ProjectsRoot != root || o.Repository != "acme/app" || o.PullRequest != "2" || o.MergeMethod != "merge" || o.MergeMethodExplicit || o.Keep || o.NoAutoMerge || o.NoUpdateBranch || o.AllowUnfenced || o.Slice != shared.DefaultCIWaitSlice || o.CheckPollInterval != githubchecks.DefaultCheckPollInterval || len(o.KeepCommits) != 0 {
 				t.Fatalf("defaults %+v", o)
 			}
 			return orchestrate.PullRequestLandResult{Outcome: orchestrate.LandSuccess}, nil
@@ -294,7 +296,7 @@ func TestLandingProgressIsSilentUnderQuiet(t *testing.T) {
 		progress := landingProgress(runtime, testDependencies(), command, true)
 		progress.Start("acme/app", "7", "", "")
 		progress.Update("started")
-		progress.Report(orchestrate.PullRequestWaitProgress{Observation: 1})
+		progress.Report(githubchecks.PullRequestWaitProgress{Observation: 1})
 		progress.OperationReporter("pr land")(progresspkg.Event{Phase: "merge"})
 		progress.FinishOperation("finished")
 		progress.Fail(io.EOF)

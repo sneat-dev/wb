@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
@@ -72,7 +72,8 @@ func ReadPullRequest(ctx context.Context, repository, selector string) (PullRequ
 	if strings.TrimSpace(repository) == "" {
 		return PullRequestView{}, fmt.Errorf("repository is required to read pull request %s", number)
 	}
-	body, err := githubGet(ctx, "", repository, "", "", "repos/"+repository+"/pulls/"+url.PathEscape(number))
+	bodyResponse, err := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(repository), Target: strings.TrimSpace(""), Head: strings.TrimSpace(""), Endpoint: "repos/" + repository + "/pulls/" + url.PathEscape(number), FreshWindow: 0})
+	body := bodyResponse.Body
 	if err != nil {
 		return PullRequestView{}, fmt.Errorf("read pull request %s#%s: %w", repository, number, err)
 	}
@@ -89,7 +90,7 @@ func ReadPullRequest(ctx context.Context, repository, selector string) (PullRequ
 // activeBranchRules reads every active rule for one branch, following GitHub's
 // link header. It returns one slice per page so callers keep the page-shaped
 // reading `--slurp` used to give them, with none of its version dependency.
-func activeBranchRules(ctx context.Context, repository, target string) ([][]githubActiveBranchRule, error) {
+func ActiveRules(ctx context.Context, repository, target string) ([][]ActiveBranchRule, error) {
 	endpoint := "repos/" + repository + "/rules/branches/" + url.PathEscape(target) + "?per_page=100"
 	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
@@ -99,19 +100,13 @@ func activeBranchRules(ctx context.Context, repository, target string) ([][]gith
 	if err != nil {
 		return nil, err
 	}
-	pages := make([][]githubActiveBranchRule, 0, len(responses))
+	pages := make([][]ActiveBranchRule, 0, len(responses))
 	for _, response := range responses {
-		var rules []githubActiveBranchRule
+		var rules []ActiveBranchRule
 		if err := json.Unmarshal(response.Body, &rules); err != nil {
 			return nil, fmt.Errorf("decode active branch rules for %s: %w", target, err)
 		}
 		pages = append(pages, rules)
-	}
-	if len(pages) == 0 {
-		// An unruled branch answers with an empty array, not with nothing; a
-		// caller that cannot tell those apart would treat "no rules" as "the
-		// read failed" and refuse a permitted route forever.
-		pages = append(pages, nil)
 	}
 	return pages, nil
 }
@@ -295,7 +290,7 @@ type pullRequestCheckOps struct {
 }
 
 func productionPullRequestCheckOps() pullRequestCheckOps {
-	return pullRequestCheckOps{ReadPullRequest, commitCheckRuns, commitStatuses, targetBranchRequiredChecks, failedCheckDetails}
+	return pullRequestCheckOps{ReadPullRequest, commitCheckRuns, commitStatuses, RequiredChecks, failedCheckDetails}
 }
 
 func pullRequestFailureDetailsWith(ctx context.Context, repository, selector string, ops pullRequestCheckOps) ([]CIFailureDetail, error) {

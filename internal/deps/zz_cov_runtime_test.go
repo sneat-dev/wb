@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -1237,7 +1239,7 @@ func TestRepositoryReportFromResultProjectsEveryField(t *testing.T) {
 		ChangedFiles:  []string{"z.txt", "a.txt"},
 		Verifications: []quality.VerificationEntry{{Language: "go", Check: quality.CheckTest, Status: quality.StatusPassed, Detail: "ok"}},
 		Commit:        "abc123", Pushed: true, PR: "https://example.test/pr/7",
-		Checks: []orchestrate.RemoteCheck{{Name: "ci/test", Bucket: "pass", Link: "https://example.test/check/1"}},
+		Checks: []githubchecks.RemoteCheck{{Name: "ci/test", Bucket: "pass", Link: "https://example.test/check/1"}},
 		Merged: true, Held: true,
 	}
 	report := repositoryReportFromResult(result)

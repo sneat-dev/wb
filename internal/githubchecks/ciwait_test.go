@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
@@ -16,11 +16,11 @@ import (
 
 func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
 	t.Parallel()
-	runID, jobID, ok := githubActionsRunAndJob("https://github.com/acme/app/actions/runs/123456/job/7890")
+	runID, jobID, ok := ActionsRunAndJob("https://github.com/acme/app/actions/runs/123456/job/7890")
 	if !ok || runID != "123456" || jobID != "7890" {
 		t.Fatalf("actions link parsed as run=%q job=%q ok=%t", runID, jobID, ok)
 	}
-	if _, _, ok := githubActionsRunAndJob("https://github.com/acme/app/checks/1"); ok {
+	if _, _, ok := ActionsRunAndJob("https://github.com/acme/app/checks/1"); ok {
 		t.Fatal("non-Actions check link was accepted")
 	}
 
@@ -44,7 +44,7 @@ func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
 // check must be named alongside its first diagnosis line.
 func TestSummarizeCheckFailuresNamesOneFailingCheck(t *testing.T) {
 	t.Parallel()
-	got := summarizeCheckFailures([]CIFailureDetail{
+	got := SummarizeFailures([]CIFailureDetail{
 		{Check: "Lint (golangci-lint)", Annotations: []CIFailureAnnotation{
 			{Path: "internal/orchestrate/pr_land.go", StartLine: 749, Message: "ineffectual assignment (ineffassign)"},
 		}},
@@ -67,7 +67,7 @@ func TestSummarizeCheckFailuresCapsSeveralFailingChecks(t *testing.T) {
 		{Check: "Coverage", Excerpt: "coverage failed here"},
 		{Check: "E2E", Excerpt: "e2e failed here"},
 	}
-	got := summarizeCheckFailures(details)
+	got := SummarizeFailures(details)
 	for _, name := range []string{"Lint", "Build", "Unit tests"} {
 		if !strings.Contains(got, name) {
 			t.Errorf("summary missing named check %q: %q", name, got)
@@ -532,16 +532,6 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 }
 
-func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
-	t.Parallel()
-	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {
-		t.Fatalf("default GitHub check poll interval = %s, want %s", got, DefaultCheckPollInterval)
-	}
-	if DefaultCheckPollInterval != 30*time.Second {
-		t.Fatalf("quota-aware default = %s, want 30s", DefaultCheckPollInterval)
-	}
-}
-
 func TestStableRereadDelayNeverExceedsThePollInterval(t *testing.T) {
 	t.Parallel()
 	if got := stableRereadDelay(DefaultCheckPollInterval, 0); got != DefaultStableRereadDelay {
@@ -655,7 +645,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 			t.Setenv("WB_CLASSIC_EXIT", fmt.Sprint(test.classicExit))
 			t.Setenv("WB_ACTIVE_RULES", test.rules)
 
-			checks, freshness, reason := targetBranchRequiredChecks(context.Background(), "acme/app", "main", true)
+			checks, freshness, reason := RequiredChecks(context.Background(), "acme/app", "main", true)
 			if test.wantReason != "" {
 				if !strings.Contains(reason, test.wantReason) {
 					t.Fatalf("reason = %q, want %q", reason, test.wantReason)

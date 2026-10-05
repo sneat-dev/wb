@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/runner"
@@ -132,7 +134,7 @@ func provePublishedCandidatePullRequest(ctx context.Context, run runner.Runner, 
 	if err != nil {
 		return err
 	}
-	v, err := ReadPullRequest(ctx, hostedRepository, selector)
+	v, err := githubchecks.ReadPullRequest(ctx, hostedRepository, selector)
 	if err != nil {
 		return err
 	}

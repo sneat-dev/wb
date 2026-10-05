@@ -1,9 +1,11 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
 
 func TestExpectedActionWaitRejectsIncompleteContractAndFailedJob(t *testing.T) {
@@ -41,11 +43,11 @@ func TestExpectedActionJobPendingRemainsMissing(t *testing.T) {
 
 //nolint:paralleltest // installDirectCITestGH changes the process-wide PATH.
 func TestExpectedActionRunExcludesOtherPullRequestOnSameSHA(t *testing.T) {
-	installDirectCITestGH(t)
-	t.Setenv("WB_TEST_RUNS", `{"total_count":1,"workflow_runs":[{"id":15,"workflow_id":300,"head_sha":"`+directCITestHead+`","head_branch":"integration","event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-27T09:00:00Z","check_suite_id":305,"pull_requests":[{"number":18,"base":{"ref":"main"}}]}]}`)
-	options := PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: directCITestHead,
+	testfixture.InstallDirectCIGH(t)
+	t.Setenv("WB_TEST_RUNS", `{"total_count":1,"workflow_runs":[{"id":15,"workflow_id":300,"head_sha":"`+testfixture.DirectCIHead+`","head_branch":"integration","event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-27T09:00:00Z","check_suite_id":305,"pull_requests":[{"number":18,"base":{"ref":"main"}}]}]}`)
+	options := PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: testfixture.DirectCIHead,
 		ExpectedActionChecks: &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: []string{"build"}}}
-	bySuite, runs, reason := githubActionsRunsForHead(context.Background(), options)
+	bySuite, runs, reason := ActionsRunsForHead(context.Background(), options)
 	if reason != "" || len(bySuite) != 0 || len(runs) != 0 {
 		t.Fatalf("other PR run remained: suites=%v runs=%v reason=%q", bySuite, runs, reason)
 	}
@@ -53,9 +55,9 @@ func TestExpectedActionRunExcludesOtherPullRequestOnSameSHA(t *testing.T) {
 
 //nolint:paralleltest // installDirectCITestGH changes the process-wide PATH.
 func TestExpectedActionChecksExcludeUnknownWorkflowSuite(t *testing.T) {
-	installDirectCITestGH(t)
+	testfixture.InstallDirectCIGH(t)
 	t.Setenv("WB_TEST_CHECK_RUNS", `{"total_count":1,"check_runs":[{"id":91,"name":"Unrelated workflow job","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":999}}]}`)
-	options := PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: directCITestHead,
+	options := PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: testfixture.DirectCIHead,
 		ExpectedActionChecks: &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: []string{"build"}}}
 	checks, pending, reason := commitCheckRuns(context.Background(), options)
 	if reason != "" || pending {

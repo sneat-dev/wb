@@ -6,7 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	progresspkg "github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -36,7 +37,7 @@ func (progress *Checks) Start(repository, pullRequest, target, head string) {
 	progress.live.Start("ci wait: observing " + identity)
 }
 
-func (progress *Checks) Report(event orchestrate.PullRequestWaitProgress) {
+func (progress *Checks) Report(event githubchecks.PullRequestWaitProgress) {
 	progress.observations = event.Observation
 	passed, pending, failed := checkBucketCounts(event.Result.Checks)
 	completed := passed + failed
@@ -58,7 +59,7 @@ func (progress *Checks) Report(event orchestrate.PullRequestWaitProgress) {
 	progress.live.Update(message)
 }
 
-func activeCheckNames(checks []orchestrate.RemoteCheck, limit int) string {
+func activeCheckNames(checks []githubchecks.RemoteCheck, limit int) string {
 	names := make([]string, 0, limit)
 	remaining := 0
 	for _, check := range checks {
@@ -79,7 +80,7 @@ func activeCheckNames(checks []orchestrate.RemoteCheck, limit int) string {
 	return strings.Join(names, ", ")
 }
 
-func (progress *Checks) Finish(result orchestrate.PullRequestWaitResult) {
+func (progress *Checks) Finish(result githubchecks.PullRequestWaitResult) {
 	progress.live.Finish(fmt.Sprintf(
 		"ci wait: %s after %d polls; %d checks observed",
 		result.Status, progress.observations, len(result.Checks),
@@ -117,7 +118,7 @@ func (progress *Checks) Fail(err error) {
 	progress.live.Finish(message)
 }
 
-func checkBucketCounts(checks []orchestrate.RemoteCheck) (passed, pending, failed int) {
+func checkBucketCounts(checks []githubchecks.RemoteCheck) (passed, pending, failed int) {
 	for _, check := range checks {
 		switch check.Bucket {
 		case "pass", "skipping":

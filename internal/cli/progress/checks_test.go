@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	progresspkg "github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -16,10 +17,10 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 	var out bytes.Buffer
 	progress := NewChecks(&out, true)
 	progress.Start("acme/app", "42", "main", "0123456789012345678901234567890123456789")
-	progress.Report(orchestrate.PullRequestWaitProgress{
+	progress.Report(githubchecks.PullRequestWaitProgress{
 		Observation: 1,
 		NextPoll:    30 * time.Second,
-		Result: orchestrate.PullRequestWaitResult{Checks: []orchestrate.RemoteCheck{
+		Result: githubchecks.PullRequestWaitResult{Checks: []githubchecks.RemoteCheck{
 			{Name: "lint", Bucket: "pass"},
 			{Name: "check-run:test", Bucket: "pending"},
 			{Name: "check-run:integration", Bucket: "pending"},
@@ -27,14 +28,14 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 			{Name: "check-run:release", Bucket: "pending"},
 		}},
 	})
-	progress.Report(orchestrate.PullRequestWaitProgress{
+	progress.Report(githubchecks.PullRequestWaitProgress{
 		Observation: 2,
-		Result: orchestrate.PullRequestWaitResult{StableObservations: 2, Checks: []orchestrate.RemoteCheck{
+		Result: githubchecks.PullRequestWaitResult{StableObservations: 2, Checks: []githubchecks.RemoteCheck{
 			{Name: "lint", Bucket: "pass"},
 			{Name: "test", Bucket: "pass"},
 		}},
 	})
-	progress.Finish(orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed, Checks: make([]orchestrate.RemoteCheck, 2)})
+	progress.Finish(githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Checks: make([]githubchecks.RemoteCheck, 2)})
 
 	rendered := out.String()
 	for _, want := range []string{

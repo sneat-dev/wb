@@ -1,16 +1,17 @@
 //go:build e2e
 
-package orchestrate_test
+package githubchecks_test
 
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 //nolint:paralleltest // Real observer fixtures replace process PATH and private-state environment.
@@ -46,7 +47,7 @@ exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--format=json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatalf("machine JSON was not preserved: %v; stdout=%s", err, stdout.String())
 	}
@@ -104,7 +105,7 @@ exit 30
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			var stdout, stderr bytes.Buffer
 			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "10s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-			var output orchestrate.PullRequestWaitResult
+			var output githubchecks.PullRequestWaitResult
 			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +152,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("WB_CI_WAIT_STATE", state)
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/docs", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +204,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("WB_CI_WAIT_STATE", state)
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/docs", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +259,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	// The fixture sequences its receipts by observation, not by elapsed time, so
 	// the slice budget only has to outlast four observations on any runner.
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -304,9 +305,9 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CI_WAIT_STATE", state)
-	previousDelay := orchestrate.DefaultStableRereadDelay
-	orchestrate.DefaultStableRereadDelay = 300 * time.Millisecond
-	t.Cleanup(func() { orchestrate.DefaultStableRereadDelay = previousDelay })
+	previousDelay := githubchecks.DefaultStableRereadDelay
+	githubchecks.DefaultStableRereadDelay = 300 * time.Millisecond
+	t.Cleanup(func() { githubchecks.DefaultStableRereadDelay = previousDelay })
 	var stdout, stderr bytes.Buffer
 	// The interval leaves no room for a second quota-cadence poll inside the
 	// slice, exactly like a default 30s cadence against real CI. A check set
@@ -314,7 +315,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	// its stable reread within this same slice on the shorter confirmation
 	// delay instead of returning a pending receipt the caller has to resume.
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +369,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			var stdout, stderr bytes.Buffer
 			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", "100ms", "--json"}, &stdout, &stderr)
-			var output orchestrate.PullRequestWaitResult
+			var output githubchecks.PullRequestWaitResult
 			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 				t.Fatal(err)
 			}
@@ -433,7 +434,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			var stdout, stderr bytes.Buffer
 			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", "100ms", "--json"}, &stdout, &stderr)
-			var output orchestrate.PullRequestWaitResult
+			var output githubchecks.PullRequestWaitResult
 			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 				t.Fatal(err)
 			}
@@ -503,7 +504,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +539,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +572,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +605,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +638,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +671,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -703,7 +704,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +736,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +776,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("WB_TARGET_STATE", state)
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +804,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -831,7 +832,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +858,7 @@ exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +885,7 @@ exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
@@ -911,7 +912,7 @@ exit 31
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "task/integration", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
-	var output orchestrate.PullRequestWaitResult
+	var output githubchecks.PullRequestWaitResult
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}

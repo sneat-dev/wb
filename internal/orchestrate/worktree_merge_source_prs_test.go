@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 type fakeSourcePullRequestRemote struct {
-	byHead        map[string][]PullRequestView
+	byHead        map[string][]githubchecks.PullRequestView
 	comments      map[int]bool
 	closed        map[int]int
 	posted        map[int]int
@@ -21,7 +23,7 @@ type fakeSourcePullRequestRemote struct {
 	closeErr      error
 }
 
-func (fake *fakeSourcePullRequestRemote) associated(_ context.Context, _ string, head string) ([]PullRequestView, error) {
+func (fake *fakeSourcePullRequestRemote) associated(_ context.Context, _ string, head string) ([]githubchecks.PullRequestView, error) {
 	if fake.associatedErr != nil {
 		return nil, fake.associatedErr
 	}
@@ -55,8 +57,8 @@ func (fake *fakeSourcePullRequestRemote) close(_ context.Context, _ string, numb
 	return nil
 }
 
-func sourcePullRequestView(number int, state, head, base string) PullRequestView {
-	view := PullRequestView{Number: number, State: state, HTMLURL: fmt.Sprintf("https://github.com/acme/app/pull/%d", number)}
+func sourcePullRequestView(number int, state, head, base string) githubchecks.PullRequestView {
+	view := githubchecks.PullRequestView{Number: number, State: state, HTMLURL: fmt.Sprintf("https://github.com/acme/app/pull/%d", number)}
 	view.Head.SHA = head
 	view.Base.Ref = base
 	view.Base.Repo = &struct {
@@ -69,7 +71,7 @@ func TestReconcileAbsorbedSourcePullRequestClosesExactHeadOnce(t *testing.T) {
 	t.Parallel()
 	const source = "1111111111111111111111111111111111111111"
 	remote := &fakeSourcePullRequestRemote{
-		byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
+		byHead:   map[string][]githubchecks.PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
 		comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{},
 	}
 	receipt := WorktreeMergeReceipt{
@@ -99,7 +101,7 @@ func TestReconcileAbsorbedSourcePullRequestCommentFailureLeavesItOpen(t *testing
 	t.Parallel()
 	const source = "1111111111111111111111111111111111111111"
 	remote := &fakeSourcePullRequestRemote{
-		byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
+		byHead:   map[string][]githubchecks.PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}},
 		comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}, commentErr: errors.New("comment unavailable"),
 	}
 	receipt := WorktreeMergeReceipt{
@@ -128,7 +130,7 @@ func TestReconcileAbsorbedSourcePullRequestRefusesDriftedIdentity(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			remote := &fakeSourcePullRequestRemote{
-				byHead:   map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", test.head, test.base)}},
+				byHead:   map[string][]githubchecks.PullRequestView{source: {sourcePullRequestView(7, "open", test.head, test.base)}},
 				comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{},
 			}
 			receipt := WorktreeMergeReceipt{Repository: "acme/app", Target: "main", PullRequest: "9", LandingSHA: "2222222222222222222222222222222222222222"}
@@ -245,7 +247,7 @@ func TestReconcileAbsorbedSourcePullRequestsSkipsBatchPRAndDuplicateAssociations
 	t.Parallel()
 	const source = "1111111111111111111111111111111111111111"
 	remote := &fakeSourcePullRequestRemote{
-		byHead: map[string][]PullRequestView{source: {
+		byHead: map[string][]githubchecks.PullRequestView{source: {
 			sourcePullRequestView(9, "open", source, "main"),
 			sourcePullRequestView(7, "closed", source, "main"),
 			sourcePullRequestView(7, "closed", source, "main"),
@@ -278,7 +280,7 @@ func TestReconcileAbsorbedSourcePullRequestsStopsOnRemoteOrReceiptFailure(t *tes
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			remote := &fakeSourcePullRequestRemote{byHead: map[string][]PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
+			remote := &fakeSourcePullRequestRemote{byHead: map[string][]githubchecks.PullRequestView{source: {sourcePullRequestView(7, "open", source, "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
 			tc.configure(remote)
 			receipt := WorktreeMergeReceipt{Repository: "acme/app", Target: "main", LandingSHA: "landed"}
 			err := reconcileAbsorbedSourcePullRequestsWith(context.Background(), &receipt, []string{source}, remote, func(WorktreeMergeReceipt) error { return tc.persistErr })

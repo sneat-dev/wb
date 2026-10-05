@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -413,7 +417,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(testfixture.WithEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_LAND_STATE", fixture.state)
@@ -472,32 +476,32 @@ func TestPullRequestLandPartitionsLongTimeoutIntoBoundedSlices(t *testing.T) {
 		t.Fatalf("wait slices = %v, want %v", got, want)
 	}
 	for _, slice := range got {
-		if slice > MaxForegroundCheckWaitSlice {
-			t.Fatalf("slice %s exceeds %s", slice, MaxForegroundCheckWaitSlice)
+		if slice > githubchecks.MaxForegroundCheckWaitSlice {
+			t.Fatalf("slice %s exceeds %s", slice, githubchecks.MaxForegroundCheckWaitSlice)
 		}
 	}
 }
 
 func TestPullRequestLandContinuesPendingBoundedSlicesWithinTotalBudget(t *testing.T) {
 	t.Parallel()
-	options := PullRequestWaitOptions{
+	options := githubchecks.PullRequestWaitOptions{
 		Repository: "acme/app", PullRequest: "7", Target: "main", Head: strings.Repeat("a", 40),
 		Slice: 20 * time.Minute, CheckPollInterval: time.Minute,
 	}
 	var observed []time.Duration
-	result, err := waitForPullRequestLandChecksWith(context.Background(), options, func(_ context.Context, current PullRequestWaitOptions) (PullRequestWaitResult, error) {
+	result, err := waitForPullRequestLandChecksWith(context.Background(), options, func(_ context.Context, current githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
 		observed = append(observed, current.Slice)
-		status := PullRequestWaitPending
+		status := githubchecks.PullRequestWaitPending
 		if len(observed) == 3 {
-			status = PullRequestWaitPassed
+			status = githubchecks.PullRequestWaitPassed
 		}
-		return PullRequestWaitResult{Status: status}, nil
+		return githubchecks.PullRequestWaitResult{Status: status}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != PullRequestWaitPassed {
-		t.Fatalf("status = %s, want %s", result.Status, PullRequestWaitPassed)
+	if result.Status != githubchecks.PullRequestWaitPassed {
+		t.Fatalf("status = %s, want %s", result.Status, githubchecks.PullRequestWaitPassed)
 	}
 	want := []time.Duration{9 * time.Minute, 9 * time.Minute, 2 * time.Minute}
 	if !slices.Equal(observed, want) {
@@ -556,7 +560,7 @@ func TestLandPullRequestResumeReconcilesMergeAfterTransientWriteAndRead(t *testi
 	options.Keep = false
 
 	first, err := LandPullRequest(context.Background(), options)
-	if err == nil || !IsTransientGitHubFailure(err) || !strings.Contains(err.Error(), "resumable: wb pr land acme/app#7") {
+	if err == nil || !githubobserver.IsTransientGitHubFailure(err) || !strings.Contains(err.Error(), "resumable: wb pr land acme/app#7") {
 		t.Fatalf("first landing = %+v err=%v, want resumable transient failure", first, err)
 	}
 	if fixture.readState(t, "merged") != "true" {
@@ -886,7 +890,7 @@ func TestSavingsCountEveryAbsorbedCallAndLabelTheEstimate(t *testing.T) {
 // find it. It used to interpolate the base branch, which named nothing.
 func TestAggregatedBodyNamesTheRepositoryAndNumber(t *testing.T) {
 	t.Parallel()
-	view := PullRequestView{Number: 41, Title: "feat: the change", Body: "Summary."}
+	view := githubchecks.PullRequestView{Number: 41, Title: "feat: the change", Body: "Summary."}
 	view.Base.Ref = "main"
 	view.Base.Repo = &struct {
 		FullName string `json:"full_name"`

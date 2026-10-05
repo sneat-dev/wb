@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -24,21 +26,21 @@ func (options WorktreeMergeLandOptions) checkWaitSlice() time.Duration {
 	return slice
 }
 
-func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {
+func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (githubchecks.PullRequestWaitResult, error) {
 	slice := options.checkWaitSlice()
 	interval := options.CheckPollInterval
 	if interval <= 0 {
-		interval = DefaultCheckPollInterval
+		interval = githubchecks.DefaultCheckPollInterval
 	}
 	if interval >= slice {
-		return PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than wait slice %s", interval, slice)
+		return githubchecks.PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than wait slice %s", interval, slice)
 	}
 	// One slice can still run several minutes of CI observation: keep the
 	// lane's heartbeat fresh throughout so it never goes stale out from under
 	// this still-live session. See startLandingLaneHeartbeat. A no-op when
 	// options.Lane was never populated (no guard running for this call).
 	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane.Owner.WBSessionID, 0)
-	waitOptions := PullRequestWaitOptions{
+	waitOptions := githubchecks.PullRequestWaitOptions{
 		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
 		// --allow-unfenced is durable because a private repository can expose
 		// neither PR nor post-target branch-policy authority. Both phases still
@@ -51,20 +53,20 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 	if deferral := receipt.ValidationDeferral; pullRequest == "" && deferral != nil && deferral.Route == WorktreeMergeRouteDirect {
 		if deferral.CandidateSHA != head || deferral.DirectCIPullRequest == "" || deferral.DirectCIPullRequestNumber <= 0 || deferral.DirectCIBase == "" || deferral.DirectCIWorkflowID <= 0 {
 			stopLaneHeartbeat()
-			return PullRequestWaitResult{Status: PullRequestWaitFailed}, fmt.Errorf("direct CI deferral is not pinned to exact landed head %s", head)
+			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed}, fmt.Errorf("direct CI deferral is not pinned to exact landed head %s", head)
 		}
 		directCI = &worktreeMergeDirectCIContract{PullRequest: deferral.DirectCIPullRequest, PullRequestNumber: deferral.DirectCIPullRequestNumber, Base: deferral.DirectCIBase, WorkflowID: deferral.DirectCIWorkflowID}
 		waitOptions.AllowTargetDescendant = false
-		waitOptions.ExpectedActionChecks = &ExpectedActionChecks{WorkflowID: directCI.WorkflowID, Event: "pull_request", PullRequestNumber: directCI.PullRequestNumber, PullRequestBase: directCI.Base, Names: directCIGoChecks}
+		waitOptions.ExpectedActionChecks = &githubchecks.ExpectedActionChecks{WorkflowID: directCI.WorkflowID, Event: "pull_request", PullRequestNumber: directCI.PullRequestNumber, PullRequestBase: directCI.Base, Names: directCIGoChecks}
 	}
-	result, err := WaitForCommitChecks(ctx, waitOptions)
+	result, err := githubchecks.WaitForCommitChecks(ctx, waitOptions)
 	stopLaneHeartbeat()
 	if err != nil {
 		return result, err
 	}
-	if result.Status == PullRequestWaitPassed && directCI != nil {
+	if result.Status == githubchecks.PullRequestWaitPassed && directCI != nil {
 		if err := verifyWorktreeMergeDirectCIPullRequest(ctx, receipt, *directCI, head); err != nil {
-			result.Status = PullRequestWaitFailed
+			result.Status = githubchecks.PullRequestWaitFailed
 			result.Reason = "direct CI pull request identity changed: " + err.Error()
 			return result, fmt.Errorf("%s", result.Reason)
 		}
@@ -79,11 +81,11 @@ func worktreeMergeCheckPhase(pullRequest string) string {
 	return "target_checks"
 }
 
-func reportWorktreeMergeCheckProgress(reporter progress.Reporter, phase string) func(PullRequestWaitProgress) {
+func reportWorktreeMergeCheckProgress(reporter progress.Reporter, phase string) func(githubchecks.PullRequestWaitProgress) {
 	if reporter == nil {
 		return nil
 	}
-	return func(event PullRequestWaitProgress) {
+	return func(event githubchecks.PullRequestWaitProgress) {
 		passed, pending, failed := 0, 0, 0
 		for _, check := range event.Result.Checks {
 			switch check.Bucket {
@@ -97,11 +99,11 @@ func reportWorktreeMergeCheckProgress(reporter progress.Reporter, phase string) 
 		}
 		var state progress.State
 		switch event.Result.Status {
-		case PullRequestWaitPending:
+		case githubchecks.PullRequestWaitPending:
 			state = progress.Waiting
-		case PullRequestWaitPassed:
+		case githubchecks.PullRequestWaitPassed:
 			state = progress.Completed
-		case PullRequestWaitFailed:
+		case githubchecks.PullRequestWaitFailed:
 			state = progress.Failed
 		default:
 			state = progress.Running
@@ -185,11 +187,11 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 
 // worktreeMergeCheckResultError formats an already-observed result. It neither
 // observes checks nor grants direct-CI identity authority.
-func worktreeMergeCheckResultError(receiptPath string, allowUnfenced bool, result PullRequestWaitResult) error {
+func worktreeMergeCheckResultError(receiptPath string, allowUnfenced bool, result githubchecks.PullRequestWaitResult) error {
 	switch result.Status {
-	case PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPassed:
 		return nil
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPending:
 		return fmt.Errorf("exact-head checks remain pending: %s; resume with wb worktree merge resume %s", result.Reason, receiptPath)
 	default:
 		if !allowUnfenced && strings.Contains(result.Reason, "strict up-to-date fence") {
@@ -198,7 +200,7 @@ func worktreeMergeCheckResultError(receiptPath string, allowUnfenced bool, resul
 		// #600: name each failing check and its first error line rather than
 		// leaving the caller to hand-roll the same log scraping WB already
 		// did while observing the checks.
-		if summary := summarizeCheckFailures(result.FailureDetails); summary != "" {
+		if summary := githubchecks.SummarizeFailures(result.FailureDetails); summary != "" {
 			return fmt.Errorf("exact-head checks failed: %s; %s", result.Reason, summary)
 		}
 		return fmt.Errorf("exact-head checks failed: %s", result.Reason)

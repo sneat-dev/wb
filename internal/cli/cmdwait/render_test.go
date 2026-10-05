@@ -3,12 +3,13 @@ package cmdwait
 import (
 	"bytes"
 	"errors"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/waitrun"
-	"github.com/spf13/cobra"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/waitrun"
+	"github.com/spf13/cobra"
 )
 
 func TestWaitPRResumeLineQuotesSelectorsForAShell(t *testing.T) {
@@ -38,9 +39,9 @@ func TestWaitPRPrintsTheFailingLineNotJustTheCheckName(t *testing.T) {
 		Selector: "acme/app#3",
 		Status:   waitrun.Settled,
 		Failed:   []string{"Tests"},
-		Failures: []orchestrate.CIFailureDetail{{
+		Failures: []githubchecks.CIFailureDetail{{
 			Check: "Tests",
-			Annotations: []orchestrate.CIFailureAnnotation{{
+			Annotations: []githubchecks.CIFailureAnnotation{{
 				Path: "cmd/wb/daemon_file_bridge_test.go", StartLine: 149,
 				Message: "old daemon operation count = 0, <nil>",
 			}},
@@ -63,7 +64,7 @@ func TestWaitPRPrintsTheFailingLineNotJustTheCheckName(t *testing.T) {
 func TestWaitPRFallsBackToAnExcerptWhenGitHubAnnotatedNothing(t *testing.T) {
 	t.Parallel()
 	target := waitrun.Target{
-		Failures: []orchestrate.CIFailureDetail{{
+		Failures: []githubchecks.CIFailureDetail{{
 			Check:   "Build",
 			Excerpt: "undefined: waitForThing\nexit status 2",
 		}},
@@ -83,7 +84,7 @@ func TestWaitPRFallsBackToAnExcerptWhenGitHubAnnotatedNothing(t *testing.T) {
 func TestWaitPRReportsTheReasonWhenThereIsNeitherAnnotationNorExcerpt(t *testing.T) {
 	t.Parallel()
 	target := waitrun.Target{
-		Failures: []orchestrate.CIFailureDetail{{
+		Failures: []githubchecks.CIFailureDetail{{
 			Check:  "Lint",
 			Reason: "GitHub Actions run/job identifiers were not available for this check",
 		}},
@@ -123,8 +124,8 @@ func TestWaitOutputShowsAnnotationsExcerptsAndMissingRequiredChecks(t *testing.T
 	output := waitrun.Output{Targets: []waitrun.Target{{
 		Selector: "acme/app#42", Status: waitrun.Settled, State: "open", Checks: map[string]int{"passed": 2},
 		Failed: []string{"unit", "lint"}, Blocked: []string{"security"}, Reason: "checks failed",
-		Failures: []orchestrate.CIFailureDetail{
-			{Check: "unit", Annotations: []orchestrate.CIFailureAnnotation{{Path: "cmd/app.go", StartLine: 27, Message: "wrong value"}, {Path: "cmd/other.go", Message: "missing import"}}},
+		Failures: []githubchecks.CIFailureDetail{
+			{Check: "unit", Annotations: []githubchecks.CIFailureAnnotation{{Path: "cmd/app.go", StartLine: 27, Message: "wrong value"}, {Path: "cmd/other.go", Message: "missing import"}}},
 			{Check: "lint", Excerpt: "first finding\nsecond finding\n"},
 			{Check: "build", Reason: "compiler stopped"},
 		},
@@ -148,7 +149,7 @@ func TestWaitOutputShowsAnnotationsExcerptsAndMissingRequiredChecks(t *testing.T
 func TestRenderingReturnsEachWriterFailure(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("writer refused")
-	output := waitrun.Output{Targets: []waitrun.Target{{Selector: "acme/app#1", Status: waitrun.Pending, Failures: []orchestrate.CIFailureDetail{{Check: "one", Annotations: []orchestrate.CIFailureAnnotation{{Path: "go.mod", Message: "bad"}}}, {Check: "two", Excerpt: "failure"}, {Check: "three"}}, Blocked: []string{"security"}}}, ResumeArgs: []string{"wb", "wait", "pr", "acme/app#1"}}
+	output := waitrun.Output{Targets: []waitrun.Target{{Selector: "acme/app#1", Status: waitrun.Pending, Failures: []githubchecks.CIFailureDetail{{Check: "one", Annotations: []githubchecks.CIFailureAnnotation{{Path: "go.mod", Message: "bad"}}}, {Check: "two", Excerpt: "failure"}, {Check: "three"}}, Blocked: []string{"security"}}}, ResumeArgs: []string{"wb", "wait", "pr", "acme/app#1"}}
 	for failAt := 1; failAt <= 5; failAt++ {
 		writer := &recordingWriter{failAt: failAt, err: failure}
 		if err := printWaitOutput(writer, output); err != failure {

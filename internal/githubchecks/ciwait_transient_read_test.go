@@ -1,32 +1,15 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
-
-// installTransientReadTestGH puts a fake gh on PATH and pins the observer
-// state dir so retries stay hermetic per test, without the reread-specific
-// observation counter installRereadTestGH also wires up.
-func installTransientReadTestGH(t *testing.T, script string) {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
 
 // A direct-target CI observation whose target-head read is killed by signal
 // exactly once (a saturated host, exactly the incident this AC exists to
@@ -35,7 +18,7 @@ func installTransientReadTestGH(t *testing.T, script string) {
 func TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	failedOnce := filepath.Join(dir, "failed-once")
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   if [ ! -f "`+failedOnce+`" ]; then
     touch "`+failedOnce+`"
@@ -81,7 +64,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 // resumable in another foreground slice — never a hard failure. Only an
 // authoritative GitHub answer (404, 401, ordinary 403, drift) is terminal.
 func TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   kill -9 $$
 fi
@@ -112,7 +95,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 func TestCIWaitTransientReadRecordsRetryTelemetry(t *testing.T) {
 	dir := t.TempDir()
 	failedOnce := filepath.Join(dir, "failed-once")
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
   if [ ! -f "`+failedOnce+`" ]; then
     touch "`+failedOnce+`"
@@ -163,7 +146,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 // transient failure racing the slice deadline, not from a test built to hit
 // it. This test hits it on every run instead of relying on that race.
 func TestWaitForCommitChecksTreatsExhaustedTransientPullRequestIdentityReadAsPendingNotFailed(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
   kill -9 $$
 fi
@@ -194,7 +177,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 // — flaky-coverage sweep found it covered on only 6 of 8 runs for the same
 // reason as the sibling test above.
 func TestWaitForCommitChecksTreatsExhaustedTransientCandidateAncestryReadAsPendingNotFailed(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then
   echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"`+rereadTestHead+`","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0
 fi
@@ -237,7 +220,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 //
 //nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
 func TestWaitForCommitChecksTreatsExhaustedTransientCommitChecksReadAsPendingNotFailed(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"`+rereadTestHead+`"}}'; exit 0
 fi
@@ -261,98 +244,5 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 	if result.ObservedTargetHead != rereadTestHead {
 		t.Fatalf("ObservedTargetHead = %q, want the matched exact target head to have already been recorded", result.ObservedTargetHead)
-	}
-}
-
-// TestPullRequestCommitParentsDecodesTheParentSHAsFromGitHub covers
-// worktree_merge_pr_land.go's pullRequestCommitParents: its one GitHub read
-// (a plain `gh api repos/.../commits/<sha>`) and the parents it decodes from
-// the response had no unit-tier test reaching them at all -- every existing
-// caller-level test for the update-branch-proof path scripts the fake gh
-// only up to the local git/merge-tree steps that resolve the ordinary case
-// without ever needing a live commit-parents read. installTransientReadTestGH
-// (this file) already puts a fake gh on PATH without needing
-// runnertest.AllowRealProcess, since it goes through a direct exec.Command
-// in internal/githubobserver rather than through task-24's guarded runner.
-//
-//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
-func TestPullRequestCommitParentsDecodesTheParentSHAsFromGitHub(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
-if [ "$1" = api ] && [ "$2" = 'repos/acme/app/commits/deadbeefcafe' ]; then
-  echo '{"sha":"deadbeefcafe","parents":[{"sha":"parent1sha"},{"sha":"parent2sha"}]}'; exit 0
-fi
-echo "unexpected gh args: $*" >&2; exit 30
-`)
-	parents, err := pullRequestCommitParents(context.Background(), "acme/app", "deadbeefcafe")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"parent1sha", "parent2sha"}; !slices.Equal(parents, want) {
-		t.Fatalf("parents = %v, want %v", parents, want)
-	}
-}
-
-// TestCommitTreeSHAReadsTheTreeSHAFromGitHub covers
-// worktree_merge_stranded.go's commitTreeSHA: the same kind of gap as
-// pullRequestCommitParents above, a plain `gh api repos/.../git/commits/<sha>`
-// read whose decoded tree SHA no unit-tier test exercised.
-//
-//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
-func TestCommitTreeSHAReadsTheTreeSHAFromGitHub(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
-if [ "$1" = api ] && [ "$2" = 'repos/acme/app/git/commits/deadbeefcafe' ]; then
-  echo '{"sha":"deadbeefcafe","tree":{"sha":"treeshavalue"}}'; exit 0
-fi
-echo "unexpected gh args: $*" >&2; exit 30
-`)
-	tree, err := commitTreeSHA(context.Background(), "acme/app", "deadbeefcafe")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tree != "treeshavalue" {
-		t.Fatalf("tree = %q, want %q", tree, "treeshavalue")
-	}
-}
-
-// TestPullRequestCommitParentsSurfacesADecodeError covers
-// pullRequestCommitParents' own json.Unmarshal error return: a `gh api`
-// call that succeeds (exit 0) but returns a body GitHub's own commit schema
-// never produces is a decode failure, not an absent commit, so it must come
-// back as an error rather than an empty parent list.
-//
-//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
-func TestPullRequestCommitParentsSurfacesADecodeError(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
-if [ "$1" = api ] && [ "$2" = 'repos/acme/app/commits/deadbeefcafe' ]; then
-  echo 'not valid json'; exit 0
-fi
-echo "unexpected gh args: $*" >&2; exit 30
-`)
-	_, err := pullRequestCommitParents(context.Background(), "acme/app", "deadbeefcafe")
-	if err == nil {
-		t.Fatal("err = nil, want a decode error for a body that is not valid JSON")
-	}
-	if !strings.Contains(err.Error(), "decode commit parents") {
-		t.Fatalf("err = %v, want it to name the decode failure", err)
-	}
-}
-
-// TestCommitTreeSHASurfacesADecodeError covers commitTreeSHA's own
-// json.Unmarshal error return, the same shape as the test above.
-//
-//nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
-func TestCommitTreeSHASurfacesADecodeError(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
-if [ "$1" = api ] && [ "$2" = 'repos/acme/app/git/commits/deadbeefcafe' ]; then
-  echo 'not valid json'; exit 0
-fi
-echo "unexpected gh args: $*" >&2; exit 30
-`)
-	_, err := commitTreeSHA(context.Background(), "acme/app", "deadbeefcafe")
-	if err == nil {
-		t.Fatal("err = nil, want a decode error for a body that is not valid JSON")
-	}
-	if !strings.Contains(err.Error(), "decode commit") {
-		t.Fatalf("err = %v, want it to name the decode failure", err)
 	}
 }

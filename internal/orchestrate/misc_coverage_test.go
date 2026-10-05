@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -93,7 +95,7 @@ func TestOrchCovFetchMemoIsANoOpWhenNilAndCountsWhenNot(t *testing.T) {
 }
 
 func TestOrchCovGitHubReadReportsACommandFailure(t *testing.T) {
-	orchCovInstallGH(t, `#!/bin/sh
+	testfixture.InstallGH(t, `#!/bin/sh
 echo "boom" >&2
 exit 1
 `)

@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
 
 func TestMergeValidationPlanRejectsUnknownRouteBeforeObservation(t *testing.T) {
@@ -103,7 +105,7 @@ func TestMergeValidationPlanDirectCIInputsAndPartialRefusals(t *testing.T) {
 	} {
 		//nolint:paralleltest // Process-wide environment changes in installDirectCITestGH; these rows share their parent environment and remain sequential.
 		t.Run(tt.name, func(t *testing.T) {
-			installDirectCITestGH(t)
+			testfixture.InstallDirectCIGH(t)
 			plan, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "integration", tt.requested, tt.local, tt.unfenced, "17")
 			want := WorktreeMergeRouteDirect
 			if tt.requested == WorktreeMergeRoutePullRequest {
@@ -116,7 +118,7 @@ func TestMergeValidationPlanDirectCIInputsAndPartialRefusals(t *testing.T) {
 	}
 	//nolint:paralleltest // Process-wide environment changes in installDirectCITestGH; these rows share their parent environment and remain sequential.
 	t.Run("only first optional argument is considered", func(t *testing.T) {
-		installDirectCITestGH(t)
+		testfixture.InstallDirectCIGH(t)
 		plan, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "integration", WorktreeMergeRouteDirect, false, false, "  ", "17")
 		if err != nil || plan.Defer || plan.DirectCI != nil || plan.Route.Route != WorktreeMergeRouteDirect {
 			t.Fatalf("blank first argument = %#v, %v", plan, err)
@@ -128,7 +130,7 @@ func TestMergeValidationPlanDirectCIInputsAndPartialRefusals(t *testing.T) {
 	})
 	//nolint:paralleltest // Process-wide environment changes in installDirectCITestGH; these rows share their parent environment and remain sequential.
 	t.Run("contract error retains resolved route", func(t *testing.T) {
-		installDirectCITestGH(t)
+		testfixture.InstallDirectCIGH(t)
 		plan, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "integration", WorktreeMergeRouteDirect, false, false, "not-a-PR")
 		if err == nil || !strings.Contains(err.Error(), "direct CI deferral cannot prove open head PR and workflow:") || plan.Route.Route != WorktreeMergeRouteDirect || plan.Defer || plan.DirectCI != nil {
 			t.Fatalf("contract refusal = %#v, %v", plan, err)

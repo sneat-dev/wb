@@ -9,7 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	progresspkg "github.com/sneat-dev/wb/internal/progress"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +20,7 @@ func TestCIProgressRootAdaptersShareRenderer(t *testing.T) {
 	var out bytes.Buffer
 	p := newCIWaitProgress(&out, true)
 	p.start("acme/app", "7", "main", "abc")
-	p.report(orchestrate.PullRequestWaitProgress{Observation: 1})
+	p.report(githubchecks.PullRequestWaitProgress{Observation: 1})
 	p.operationReporter("land")(progresspkg.Event{Detail: "forwarded"})
 	p.update("custom")
 	p.finishOperation("done")

@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
 // An operator holds a pull request in whichever form their source gave them:
@@ -20,11 +21,11 @@ func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
 	if got := command.Flags().Lookup("timeout").DefValue; got != shared.DefaultCIWaitSlice.String() {
 		t.Fatalf("--timeout default = %s, want %s", got, shared.DefaultCIWaitSlice)
 	}
-	if got := command.Flags().Lookup("poll-interval").DefValue; got != orchestrate.DefaultCheckPollInterval.String() {
-		t.Fatalf("--poll-interval default = %s, want %s", got, orchestrate.DefaultCheckPollInterval)
+	if got := command.Flags().Lookup("poll-interval").DefValue; got != githubchecks.DefaultCheckPollInterval.String() {
+		t.Fatalf("--poll-interval default = %s, want %s", got, githubchecks.DefaultCheckPollInterval)
 	}
-	if shared.DefaultCIWaitSlice <= orchestrate.DefaultCheckPollInterval {
-		t.Fatalf("default timeout %s must outlive poll interval %s", shared.DefaultCIWaitSlice, orchestrate.DefaultCheckPollInterval)
+	if shared.DefaultCIWaitSlice <= githubchecks.DefaultCheckPollInterval {
+		t.Fatalf("default timeout %s must outlive poll interval %s", shared.DefaultCIWaitSlice, githubchecks.DefaultCheckPollInterval)
 	}
 }
 

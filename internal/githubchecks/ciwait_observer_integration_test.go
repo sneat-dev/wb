@@ -1,6 +1,6 @@
 //go:build e2e
 
-package orchestrate_test
+package githubchecks_test
 
 import (
 	"bytes"
@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/spf13/pflag"
 )
@@ -64,7 +65,7 @@ const (
 // the actual observer operation directly, without a CLI command or fake waiter.
 func observeForTest(t *testing.T, args []string, out, diagnostic *bytes.Buffer) int {
 	t.Helper()
-	options := orchestrate.PullRequestWaitOptions{}
+	options := githubchecks.PullRequestWaitOptions{}
 	flags := pflag.NewFlagSet("observer-fixture", pflag.ContinueOnError)
 	flags.SetOutput(diagnostic)
 	flags.StringVar(&options.Repository, "repo", "", "")
@@ -72,13 +73,13 @@ func observeForTest(t *testing.T, args []string, out, diagnostic *bytes.Buffer) 
 	flags.StringVar(&options.Target, "target", "", "")
 	flags.StringVar(&options.Head, "head", "", "")
 	flags.DurationVar(&options.Slice, "slice", 8*time.Minute, "")
-	flags.DurationVar(&options.CheckPollInterval, "interval", orchestrate.DefaultCheckPollInterval, "")
+	flags.DurationVar(&options.CheckPollInterval, "interval", githubchecks.DefaultCheckPollInterval, "")
 	flags.Bool("json", false, "")
 	flags.String("format", "text", "")
 	if err := flags.Parse(args[2:]); err != nil {
 		t.Fatal(err)
 	}
-	result, err := orchestrate.WaitForCommitChecks(context.Background(), options)
+	result, err := githubchecks.WaitForCommitChecks(context.Background(), options)
 	if err != nil {
 		fmt.Fprintln(diagnostic, err)
 		return exitFindings
@@ -86,7 +87,7 @@ func observeForTest(t *testing.T, args []string, out, diagnostic *bytes.Buffer) 
 	if err := json.NewEncoder(out).Encode(result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Status == orchestrate.PullRequestWaitPassed {
+	if result.Status == githubchecks.PullRequestWaitPassed {
 		return exitOK
 	}
 	return exitFindings

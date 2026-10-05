@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 // enablePullRequestAutoMerge asks GitHub to merge this pull request once its
@@ -91,7 +93,7 @@ func autoMergeBypassesAGuard(ctx context.Context, options PullRequestLandOptions
 	if options.AllowUnfenced {
 		return ""
 	}
-	_, freshnessAuthority, reason := targetBranchRequiredChecks(ctx, options.Repository, target, true)
+	_, freshnessAuthority, reason := githubchecks.RequiredChecks(ctx, options.Repository, target, true)
 	if reason != "" {
 		return "target policy unreadable: " + reason
 	}

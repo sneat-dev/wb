@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -45,11 +47,11 @@ func TestCheckObservationOwnerWaitBudgetAndPhase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			options := WorktreeMergeLandOptions{WaitSlice: DefaultCheckPollInterval, CheckPollInterval: tc.interval,
+			options := WorktreeMergeLandOptions{WaitSlice: githubchecks.DefaultCheckPollInterval, CheckPollInterval: tc.interval,
 				Progress: func(progress.Event) { t.Fatal("invalid poll budget started CI observation") }}
 			got, err := waitForWorktreeMergeChecks(t.Context(), WorktreeMergeReceipt{}, options, "", "", false)
-			want := "CI poll interval " + DefaultCheckPollInterval.String() + " must be shorter than wait slice " + DefaultCheckPollInterval.String()
-			if err == nil || err.Error() != want || !reflect.DeepEqual(got, PullRequestWaitResult{}) {
+			want := "CI poll interval " + githubchecks.DefaultCheckPollInterval.String() + " must be shorter than wait slice " + githubchecks.DefaultCheckPollInterval.String()
+			if err == nil || err.Error() != want || !reflect.DeepEqual(got, githubchecks.PullRequestWaitResult{}) {
 				t.Fatalf("default poll refusal = %+v, %v; want empty result and %q", got, err, want)
 			}
 		})
@@ -63,21 +65,21 @@ func TestCheckObservationOwnerProgressPreservesObservedBucketsAndCadence(t *test
 	}
 	for _, tc := range []struct {
 		name   string
-		status PullRequestWaitStatus
+		status githubchecks.PullRequestWaitStatus
 		want   progress.State
 	}{
-		{"pending", PullRequestWaitPending, progress.Waiting},
-		{"passed", PullRequestWaitPassed, progress.Completed},
-		{"failed", PullRequestWaitFailed, progress.Failed},
-		{"unknown", PullRequestWaitStatus("unknown"), progress.Running},
+		{"pending", githubchecks.PullRequestWaitPending, progress.Waiting},
+		{"passed", githubchecks.PullRequestWaitPassed, progress.Completed},
+		{"failed", githubchecks.PullRequestWaitFailed, progress.Failed},
+		{"unknown", githubchecks.PullRequestWaitStatus("unknown"), progress.Running},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var events []progress.Event
 			report := reportWorktreeMergeCheckProgress(func(e progress.Event) { events = append(events, e) }, "target_checks")
-			observed := PullRequestWaitProgress{Observation: 4, NextPoll: 100 * time.Millisecond, Result: PullRequestWaitResult{
+			observed := githubchecks.PullRequestWaitProgress{Observation: 4, NextPoll: 100 * time.Millisecond, Result: githubchecks.PullRequestWaitResult{
 				Status: tc.status, StableObservations: 1, Reason: "provider reason",
-				Checks: []RemoteCheck{{Bucket: "pass"}, {Bucket: "skipping"}, {Bucket: "fail"}, {Bucket: "cancel"}, {Bucket: "pending"}, {Bucket: "unknown"}},
+				Checks: []githubchecks.RemoteCheck{{Bucket: "pass"}, {Bucket: "skipping"}, {Bucket: "fail"}, {Bucket: "cancel"}, {Bucket: "pending"}, {Bucket: "unknown"}},
 			}}
 			report(observed)
 			if len(events) != 1 || events[0].State != tc.want || events[0].Phase != "target_checks" || events[0].Operation != "worktree_merge" || events[0].Detail != "poll 4: 2 passed, 2 pending, 2 failed; stable 1/2; next poll in 100ms" {
@@ -102,24 +104,24 @@ func TestCheckObservationOwnerTerminalResultPolicy(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name     string
-		status   PullRequestWaitStatus
+		status   githubchecks.PullRequestWaitStatus
 		reason   string
 		unfenced bool
 		want     string
 	}{
-		{"passed", PullRequestWaitPassed, "stable", false, ""},
-		{"pending", PullRequestWaitPending, "jobs registering", false, "exact-head checks remain pending: jobs registering; resume with wb worktree merge resume /private/receipt.json"},
-		{"strict fence", PullRequestWaitFailed, "missing strict up-to-date fence", false, "exact-head checks failed: missing strict up-to-date fence; resume with wb worktree merge resume /private/receipt.json --allow-unfenced"},
-		{"allowed fence", PullRequestWaitFailed, "missing strict up-to-date fence", true, "exact-head checks failed: missing strict up-to-date fence"},
-		{"ordinary failure", PullRequestWaitFailed, "required job failed", false, "exact-head checks failed: required job failed"},
-		{"unknown", PullRequestWaitStatus("unrecognized"), "unknown outcome", false, "exact-head checks failed: unknown outcome"},
+		{"passed", githubchecks.PullRequestWaitPassed, "stable", false, ""},
+		{"pending", githubchecks.PullRequestWaitPending, "jobs registering", false, "exact-head checks remain pending: jobs registering; resume with wb worktree merge resume /private/receipt.json"},
+		{"strict fence", githubchecks.PullRequestWaitFailed, "missing strict up-to-date fence", false, "exact-head checks failed: missing strict up-to-date fence; resume with wb worktree merge resume /private/receipt.json --allow-unfenced"},
+		{"allowed fence", githubchecks.PullRequestWaitFailed, "missing strict up-to-date fence", true, "exact-head checks failed: missing strict up-to-date fence"},
+		{"ordinary failure", githubchecks.PullRequestWaitFailed, "required job failed", false, "exact-head checks failed: required job failed"},
+		{"unknown", githubchecks.PullRequestWaitStatus("unrecognized"), "unknown outcome", false, "exact-head checks failed: unknown outcome"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result := PullRequestWaitResult{Status: tc.status, Reason: tc.reason, Repository: "acme/app", Head: "exact", StableObservations: 2,
-				Checks: []RemoteCheck{{Name: "build", Bucket: "pass"}}, Evidence: map[string]string{"authority": "supplied record"}}
+			result := githubchecks.PullRequestWaitResult{Status: tc.status, Reason: tc.reason, Repository: "acme/app", Head: "exact", StableObservations: 2,
+				Checks: []githubchecks.RemoteCheck{{Name: "build", Bucket: "pass"}}, Evidence: map[string]string{"authority": "supplied record"}}
 			before := result
-			before.Checks = append([]RemoteCheck(nil), result.Checks...)
+			before.Checks = append([]githubchecks.RemoteCheck(nil), result.Checks...)
 			before.Evidence = map[string]string{"authority": "supplied record"}
 			err := worktreeMergeCheckResultError("/private/receipt.json", tc.unfenced, result)
 			if (err == nil) != (tc.want == "") || err != nil && err.Error() != tc.want {
@@ -130,7 +132,7 @@ func TestCheckObservationOwnerTerminalResultPolicy(t *testing.T) {
 			}
 		})
 	}
-	result := PullRequestWaitResult{Status: PullRequestWaitFailed, Reason: "required check failed", FailureDetails: []CIFailureDetail{{Check: "unit", Excerpt: "compile failed"}}}
+	result := githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Reason: "required check failed", FailureDetails: []githubchecks.CIFailureDetail{{Check: "unit", Excerpt: "compile failed"}}}
 	if err := worktreeMergeCheckResultError("receipt", false, result); err == nil || !strings.Contains(err.Error(), "required check failed") || !strings.Contains(err.Error(), "unit") || !strings.Contains(err.Error(), "compile failed") {
 		t.Fatalf("first actual finding omitted: %v", err)
 	}

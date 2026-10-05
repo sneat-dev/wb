@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/mechanicalchange"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
@@ -133,7 +135,7 @@ type PullRequestLandOptions struct {
 	// rejecting an otherwise valid long-running landing.
 	Slice             time.Duration
 	CheckPollInterval time.Duration
-	Progress          func(PullRequestWaitProgress)
+	Progress          func(githubchecks.PullRequestWaitProgress)
 	OperationProgress progress.Reporter
 	// Events receives one structured record per invocation, whatever the
 	// outcome. A refusal is the most useful event of all — it is the one that
@@ -267,7 +269,7 @@ type PullRequestLandResult struct {
 	// "no linked issue" finding in Evidence["closes"], never a refusal.
 	Closes []int `json:"closes,omitempty"`
 
-	Checks *PullRequestWaitResult `json:"checks,omitempty"`
+	Checks *githubchecks.PullRequestWaitResult `json:"checks,omitempty"`
 
 	BranchDeleted bool   `json:"branch_deleted"`
 	LandingOnBase bool   `json:"landing_on_base"`
@@ -357,10 +359,10 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 // Any authoritative GitHub failure, refusal, or validation error is returned
 // unchanged.
 func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions, result PullRequestLandResult) error {
-	if err == nil || !IsTransientGitHubFailure(err) {
+	if err == nil || !githubobserver.IsTransientGitHubFailure(err) {
 		return err
 	}
-	number, numberErr := PullRequestNumber(options.PullRequest)
+	number, numberErr := githubchecks.PullRequestNumber(options.PullRequest)
 	if numberErr != nil {
 		return err
 	}
@@ -461,7 +463,7 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 }
 
 func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullRequestLandResult, error) {
-	number, err := PullRequestNumber(options.PullRequest)
+	number, err := githubchecks.PullRequestNumber(options.PullRequest)
 	if err != nil {
 		return PullRequestLandResult{}, err
 	}
@@ -503,7 +505,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// Re-read the pull request now. A value read at session start is a
 	// snapshot, and everything below is decided against the live one.
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_pull_request", progress.Started, options.Repository+"#"+number, 0, 0)
-	view, err := ReadPullRequest(ctx, options.Repository, number)
+	view, err := githubchecks.ReadPullRequest(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
@@ -783,7 +785,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// awaitLandablePullRequest for why arming happens first and why this is
 	// a loop rather than one check before one wait.
 	var (
-		waited         PullRequestWaitResult
+		waited         githubchecks.PullRequestWaitResult
 		mergedByGitHub bool
 		updateRefusal  *landRefusal
 	)
@@ -807,12 +809,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
 	if mergedByGitHub {
-		waited.Status = PullRequestWaitPassed
+		waited.Status = githubchecks.PullRequestWaitPassed
 		result.Evidence["merged_by"] = "github auto-merge"
 	}
 	switch waited.Status {
-	case PullRequestWaitPassed:
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPending:
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksPending
 		result.Reason = waited.Reason + "; run the resume command in the background - it carries a budget above the foreground harness ceiling"
@@ -851,7 +853,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			// checks were not the problem.
 			result.RefusalCode = LandRefusalUnfencedTarget
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number + " --allow-unfenced"
-		} else if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
+		} else if summary := githubchecks.SummarizeFailures(waited.FailureDetails); summary != "" {
 			// #600: name each failing check and its first error line rather
 			// than leaving the caller to hand-roll the same log scraping WB
 			// already did while observing the checks.
@@ -923,7 +925,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// is different content in a different order, and merging it on the
 		// strength of a receipt for something else is exactly the substitution
 		// the head-SHA lease exists to prevent. Wait for its own.
-		rewritten := PullRequestWaitOptions{
+		rewritten := githubchecks.PullRequestWaitOptions{
 			Repository:        options.Repository,
 			PullRequest:       number,
 			Target:            view.Base.Ref,
@@ -940,10 +942,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}
 		result.Checks = &reobserved
 		result.AbsorbedPolls += reobserved.StableObservations
-		if reobserved.Status != PullRequestWaitPassed {
+		if reobserved.Status != githubchecks.PullRequestWaitPassed {
 			result.Outcome = LandFindings
 			result.RefusalCode = LandRefusalChecksPending
-			if reobserved.Status == PullRequestWaitFailed {
+			if reobserved.Status == githubchecks.PullRequestWaitFailed {
 				result.RefusalCode = LandRefusalChecksFailed
 			}
 			result.Reason = "the rewritten branch's own checks are not green: " + reobserved.Reason
@@ -1003,11 +1005,11 @@ func (result PullRequestLandResult) baseDescription() string {
 // effects. It is shared by an ordinary successful merge call and recovery of
 // an exact pull request that a prior invocation merged before losing its
 // response, so the recovery cannot skip canonical sync or cleanup.
-func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, view PullRequestView, remoteHeadSHA, number string) (PullRequestLandResult, error) {
+func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, view githubchecks.PullRequestView, remoteHeadSHA, number string) (PullRequestLandResult, error) {
 	// Assert the observable effect rather than the exit status of the call that
 	// was supposed to produce it.
 	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Started, view.Base.Ref, 0, 0)
-	landed, err := ReadPullRequest(ctx, options.Repository, number)
+	landed, err := githubchecks.ReadPullRequest(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
@@ -1115,9 +1117,9 @@ func manualPullRequestMergeCommand(repository, number, method string) string {
 // 3, minor 8). So this only ever returns a gh invocation, built from a
 // GitHub Actions run/job URL when the first failing check's Link parses as
 // one, else the previous PR-page fallback.
-func checksFailedSanctionedCommand(details []CIFailureDetail, repository, number string) string {
+func checksFailedSanctionedCommand(details []githubchecks.CIFailureDetail, repository, number string) string {
 	if len(details) > 0 {
-		if runID, jobID, ok := githubActionsRunAndJob(details[0].JobURL); ok {
+		if runID, jobID, ok := githubchecks.ActionsRunAndJob(details[0].JobURL); ok {
 			return "gh run view " + runID + " --job " + jobID + " --repo " + repository + " --log-failed"
 		}
 	}
@@ -1166,7 +1168,7 @@ func pullRequestLandWaitSlice(remaining time.Duration) (time.Duration, error) {
 	if remaining <= 0 {
 		return 0, fmt.Errorf("pull request landing timeout must be positive")
 	}
-	return min(remaining, MaxForegroundCheckWaitSlice), nil
+	return min(remaining, githubchecks.MaxForegroundCheckWaitSlice), nil
 }
 
 // waitForPullRequestLandChecks keeps one CLI call alive for its requested
@@ -1174,31 +1176,31 @@ func pullRequestLandWaitSlice(remaining time.Duration) (time.Duration, error) {
 // the harness-safe ceiling. Each slice reuses the same repository, PR, target,
 // and exact head; any drift is therefore still refused by the underlying
 // observer.
-func waitForPullRequestLandChecks(ctx context.Context, options PullRequestWaitOptions) (PullRequestWaitResult, error) {
-	return waitForPullRequestLandChecksWith(ctx, options, WaitForPullRequestChecks)
+func waitForPullRequestLandChecks(ctx context.Context, options githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+	return waitForPullRequestLandChecksWith(ctx, options, githubchecks.WaitForPullRequestChecks)
 }
 
 func waitForPullRequestLandChecksWith(
 	ctx context.Context,
-	options PullRequestWaitOptions,
-	wait func(context.Context, PullRequestWaitOptions) (PullRequestWaitResult, error),
-) (PullRequestWaitResult, error) {
+	options githubchecks.PullRequestWaitOptions,
+	wait func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error),
+) (githubchecks.PullRequestWaitResult, error) {
 	if options.Slice <= 0 {
-		return PullRequestWaitResult{}, fmt.Errorf("pull request landing timeout must be positive")
+		return githubchecks.PullRequestWaitResult{}, fmt.Errorf("pull request landing timeout must be positive")
 	}
-	var waited PullRequestWaitResult
+	var waited githubchecks.PullRequestWaitResult
 	for remaining := options.Slice; remaining > 0; {
 		slice, err := pullRequestLandWaitSlice(remaining)
 		if err != nil {
-			return PullRequestWaitResult{}, err
+			return githubchecks.PullRequestWaitResult{}, err
 		}
 		current := options
 		current.Slice = slice
 		if current.CheckPollInterval >= slice {
-			return PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the total foreground timeout")
+			return githubchecks.PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the total foreground timeout")
 		}
 		waited, err = wait(ctx, current)
-		if err != nil || waited.Status != PullRequestWaitPending {
+		if err != nil || waited.Status != githubchecks.PullRequestWaitPending {
 			return waited, err
 		}
 		remaining -= slice
@@ -1234,7 +1236,7 @@ func mergeRefusal(result PullRequestLandResult, refusal landRefusal) PullRequest
 	return withSavings(result)
 }
 
-func landPreflightRefusal(view PullRequestView, repository, number string) *landRefusal {
+func landPreflightRefusal(view githubchecks.PullRequestView, repository, number string) *landRefusal {
 	switch {
 	case view.Merged:
 		return &landRefusal{
@@ -1379,7 +1381,7 @@ func commitIsOnBranch(ctx context.Context, repository, commit, branch string) (b
 // repository's to delete — and treats an already-absent ref as success,
 // because GitHub's own "automatically delete head branches" setting may have
 // removed it first.
-func deleteRemoteBranch(ctx context.Context, run runner.Runner, canonical, repository string, view, landed PullRequestView, expectedHeadSHA string) (bool, error) {
+func deleteRemoteBranch(ctx context.Context, run runner.Runner, canonical, repository string, view, landed githubchecks.PullRequestView, expectedHeadSHA string) (bool, error) {
 	if view.Head.Repo == nil || !strings.EqualFold(view.Head.Repo.FullName, repository) {
 		return false, nil
 	}
@@ -1609,7 +1611,7 @@ func pullRequestCommits(ctx context.Context, repository, number string) ([]Sourc
 // repository is authoritative for a same-repository pull request and is what a
 // reader needs to find it again; a fork's head names the fork, so the caller
 // supplies the base repository through the view it read.
-func repositoryOf(view PullRequestView) string {
+func repositoryOf(view githubchecks.PullRequestView) string {
 	if view.Base.Repo != nil && strings.TrimSpace(view.Base.Repo.FullName) != "" {
 		return view.Base.Repo.FullName
 	}
@@ -1619,7 +1621,7 @@ func repositoryOf(view PullRequestView) string {
 	return ""
 }
 
-func aggregatedCommitMessage(view PullRequestView, commits []SourceCommit, approvedBy, reason string) string {
+func aggregatedCommitMessage(view githubchecks.PullRequestView, commits []SourceCommit, approvedBy, reason string) string {
 	var builder strings.Builder
 	if summary := pullRequestBodySummary(view.Body); summary != "" {
 		builder.WriteString(summary)
@@ -1696,7 +1698,7 @@ func isCommitTrailer(line string) bool {
 // branch-protection and ruleset sources the waiter uses, so the answer is the
 // one the merge will actually be judged by.
 func targetHasRequiredChecks(ctx context.Context, repository, target string) bool {
-	checks, _, reason := targetBranchRequiredChecks(ctx, repository, target, false)
+	checks, _, reason := githubchecks.RequiredChecks(ctx, repository, target, false)
 	return reason == "" && len(checks) > 0
 }
 
@@ -1755,7 +1757,7 @@ func appendLandEvent(options PullRequestLandOptions, result PullRequestLandResul
 // linksOnly is set when the caller passed --keep: the dirty-worktree check is
 // about retiring a checkout and does not apply, while the live-link check is
 // about what is being landed and always does.
-func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view PullRequestView, number string, linksOnly bool) *landRefusal {
+func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, number string, linksOnly bool) *landRefusal {
 	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
 		ProjectsRoot: options.ProjectsRoot,
 		Base:         view.Base.Ref,

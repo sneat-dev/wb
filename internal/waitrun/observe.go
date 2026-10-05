@@ -5,11 +5,14 @@ package waitrun
 import (
 	"context"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/prsnapshot"
 )
 
 type Condition string
@@ -31,21 +34,21 @@ type Output struct {
 }
 
 type Target struct {
-	Selector   string                        `json:"selector"`
-	Repository string                        `json:"repository"`
-	Number     string                        `json:"number"`
-	Status     string                        `json:"status"`
-	State      string                        `json:"state,omitempty"`
-	Draft      bool                          `json:"draft,omitempty"`
-	Head       string                        `json:"head,omitempty"`
-	Base       string                        `json:"base,omitempty"`
-	Mergeable  string                        `json:"mergeable,omitempty"`
-	Checks     map[string]int                `json:"checks,omitempty"`
-	Failed     []string                      `json:"failed_checks,omitempty"`
-	Failures   []orchestrate.CIFailureDetail `json:"failures,omitempty"`
-	Blocked    []string                      `json:"unsatisfied_required_checks,omitempty"`
-	Reason     string                        `json:"reason,omitempty"`
-	URL        string                        `json:"url,omitempty"`
+	Selector   string                         `json:"selector"`
+	Repository string                         `json:"repository"`
+	Number     string                         `json:"number"`
+	Status     string                         `json:"status"`
+	State      string                         `json:"state,omitempty"`
+	Draft      bool                           `json:"draft,omitempty"`
+	Head       string                         `json:"head,omitempty"`
+	Base       string                         `json:"base,omitempty"`
+	Mergeable  string                         `json:"mergeable,omitempty"`
+	Checks     map[string]int                 `json:"checks,omitempty"`
+	Failed     []string                       `json:"failed_checks,omitempty"`
+	Failures   []githubchecks.CIFailureDetail `json:"failures,omitempty"`
+	Blocked    []string                       `json:"unsatisfied_required_checks,omitempty"`
+	Reason     string                         `json:"reason,omitempty"`
+	URL        string                         `json:"url,omitempty"`
 }
 
 // TargetStatus values. "settled" means the requested condition holds;
@@ -322,7 +325,7 @@ func ObservePullRequest(ctx context.Context, reference Reference) Target {
 func waitReadFailure(target Target, err error) Target {
 	target.Reason = err.Error()
 	target.Status = ReadError
-	if orchestrate.IsTransientReadFailure(err) {
+	if githubobserver.IsTransientReadFailure(err) {
 		target.Status = Pending
 	}
 	return target

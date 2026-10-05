@@ -33,8 +33,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -101,7 +102,7 @@ type Outcome struct {
 	// (or a count) without re-deriving it from GitHub.
 	Checks      map[string]int
 	Failed      []string
-	Failures    []orchestrate.CIFailureDetail
+	Failures    []githubchecks.CIFailureDetail
 	Blocked     []string
 	EvaluatedAt time.Time
 	// Snapshot is the observation this Outcome was classified from, whole, so

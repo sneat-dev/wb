@@ -6,17 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
-	"github.com/sneat-dev/wb/internal/graduation"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/graduation"
+	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 func receiptCommandForObserver(observer graduation.Observer) *cobra.Command {
@@ -171,7 +172,7 @@ func writeGraduationEvidence(t *testing.T) (graduationEvidencePaths, time.Time) 
 		Repository: "sneat-dev/wb", Path: "/projects/sneat-dev/wb", Revision: revision, WorkspaceClean: true, Status: quality.StatusPassed,
 		Results: []quality.VerificationEntry{{Check: quality.CheckLint, Status: quality.StatusPassed}, {Check: quality.CheckTest, Status: quality.StatusPassed}, {Check: quality.CheckBuild, Status: quality.StatusPassed}},
 	}}}
-	ciWait := graduation.CIWaitReceipt{SchemaVersion: graduation.SchemaVersion, ObservedAt: ciAt, PullRequestWaitResult: orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed, Repository: "sneat-dev/wb", Target: "main", Head: revision, ObservedHead: revision, ObservedTargetHead: revision, CandidateContainsTarget: true, Checks: []orchestrate.RemoteCheck{{Name: "test", Bucket: "pass"}}, RequiredChecksAuthority: "github-rulesets", StableObservations: 2}}
+	ciWait := graduation.CIWaitReceipt{SchemaVersion: graduation.SchemaVersion, ObservedAt: ciAt, PullRequestWaitResult: githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Repository: "sneat-dev/wb", Target: "main", Head: revision, ObservedHead: revision, ObservedTargetHead: revision, CandidateContainsTarget: true, Checks: []githubchecks.RemoteCheck{{Name: "test", Bucket: "pass"}}, RequiredChecksAuthority: "github-rulesets", StableObservations: 2}}
 	remoteOutput := revision + "\trefs/heads/main\n"
 	remoteTarget := graduation.RemoteTargetEvidence{SchemaVersion: graduation.SchemaVersion, Producer: graduation.RemoteTargetProducer, Repository: "sneat-dev/wb", Remote: "origin", RemoteURL: "git@github.com:sneat-dev/wb.git", TargetRef: "refs/heads/main", Revision: revision, ObservedAt: remoteAt, ObservedOutput: remoteOutput, ObservedOutputSHA256: graduation.Digest([]byte(remoteOutput))}
 	payload := `{"deployment":{"revision":"` + revision + `"}}`

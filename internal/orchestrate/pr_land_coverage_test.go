@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -21,22 +24,13 @@ import (
 // orchCovPullRequestView decodes a pull request view from the wire shape, which
 // is how these tests reach the anonymous head/base repository fields a
 // hand-written composite literal cannot spell.
-func orchCovPullRequestView(t *testing.T, raw string) PullRequestView {
+func orchCovPullRequestView(t *testing.T, raw string) githubchecks.PullRequestView {
 	t.Helper()
-	var view PullRequestView
+	var view githubchecks.PullRequestView
 	if err := json.Unmarshal([]byte(raw), &view); err != nil {
 		t.Fatal(err)
 	}
 	return view
-}
-
-// orchCovScriptState writes a gh script whose answers are read from files and
-// returns the state directory.
-func orchCovScriptState(t *testing.T, script string) orchCovGHState {
-	t.Helper()
-	state := orchCovInstallGH(t, script)
-	t.Setenv("ORCHCOV_GH_STATE", state.dir)
-	return state
 }
 
 // orchCovPutMergeScript answers the merge write. exit/stdout/stderr are files
@@ -53,10 +47,10 @@ exit 30
 `
 
 func TestOrchCovMergePullRequestReturnsTheLandedCommit(t *testing.T) {
-	state := orchCovScriptState(t, orchCovPutMergeScript)
-	state.answer(t, "exit", "0")
-	state.answer(t, "stdout", `{"sha":"0123456789abcdef0123456789abcdef01234567","merged":true}`)
-	state.answer(t, "stderr", "")
+	state := testfixture.ScriptState(t, orchCovPutMergeScript)
+	state.Answer(t, "exit", "0")
+	state.Answer(t, "stdout", `{"sha":"0123456789abcdef0123456789abcdef01234567","merged":true}`)
+	state.Answer(t, "stderr", "")
 
 	sha, refusal, err := mergePullRequest(context.Background(), "acme/app", "7", "candidate", "squash", "feat: the change", "body")
 	if err != nil || refusal != nil {
@@ -103,10 +97,10 @@ func TestOrchCovMergePullRequestClassifiesEveryRefusal(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			state := orchCovScriptState(t, orchCovPutMergeScript)
-			state.answer(t, "exit", test.exit)
-			state.answer(t, "stdout", test.stdout)
-			state.answer(t, "stderr", test.stderr)
+			state := testfixture.ScriptState(t, orchCovPutMergeScript)
+			state.Answer(t, "exit", test.exit)
+			state.Answer(t, "stdout", test.stdout)
+			state.Answer(t, "stderr", test.stderr)
 
 			sha, refusal, err := mergePullRequest(context.Background(), "acme/app", "7", "candidate", "squash", "subject", "body")
 			if err != nil {
@@ -125,10 +119,10 @@ func TestOrchCovMergePullRequestClassifiesEveryRefusal(t *testing.T) {
 func TestMergePullRequestLeavesTransientWriteOutcomeResumable(t *testing.T) {
 	for _, stderr := range []string{"gh: Internal Server Error (HTTP 500)", "gh: Bad Gateway (HTTP 502)"} {
 		t.Run(stderr, func(t *testing.T) {
-			state := orchCovScriptState(t, orchCovPutMergeScript)
-			state.answer(t, "exit", "1")
-			state.answer(t, "stdout", "")
-			state.answer(t, "stderr", stderr)
+			state := testfixture.ScriptState(t, orchCovPutMergeScript)
+			state.Answer(t, "exit", "1")
+			state.Answer(t, "stdout", "")
+			state.Answer(t, "stderr", stderr)
 
 			sha, refusal, err := mergePullRequest(context.Background(), "acme/app", "7", "candidate", "squash", "subject", "body")
 			if sha != "" || refusal != nil {
@@ -151,7 +145,7 @@ if [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = PUT ]; then
 fi
 exit 30
 `
-	orchCovInstallGH(t, script)
+	testfixture.InstallGH(t, script)
 	t.Setenv("ORCHCOV_MUTATION_MARKER", marker)
 	ctx := &mutationFixtureDeadline{Context: context.Background(), done: make(chan struct{})}
 	t.Cleanup(ctx.trigger)
@@ -188,12 +182,6 @@ exit 30
 	}
 }
 
-const orchCovOneEndpointScript = `#!/bin/sh
-S="$ORCHCOV_GH_STATE"
-cat "$S/body"
-exit "$(cat "$S/exit")"
-`
-
 func TestOrchCovCommitIsOnBranchReadsTheComparisonStatus(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -206,9 +194,9 @@ func TestOrchCovCommitIsOnBranchReadsTheComparisonStatus(t *testing.T) {
 		{name: "diverged", status: "diverged", want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			state := orchCovScriptState(t, orchCovOneEndpointScript)
-			state.answer(t, "body", `{"status":"`+test.status+`"}`)
-			state.answer(t, "exit", "0")
+			state := testfixture.ScriptState(t, testfixture.OneEndpointScript)
+			state.Answer(t, "body", `{"status":"`+test.status+`"}`)
+			state.Answer(t, "exit", "0")
 			onBase, err := commitIsOnBranch(context.Background(), "acme/app", "0123456789abcdef", "main")
 			if err != nil {
 				t.Fatal(err)
@@ -221,15 +209,15 @@ func TestOrchCovCommitIsOnBranchReadsTheComparisonStatus(t *testing.T) {
 }
 
 func TestOrchCovCommitIsOnBranchFailsClosedOnAnUnusableComparison(t *testing.T) {
-	state := orchCovScriptState(t, orchCovOneEndpointScript)
-	state.answer(t, "body", "not json")
-	state.answer(t, "exit", "0")
+	state := testfixture.ScriptState(t, testfixture.OneEndpointScript)
+	state.Answer(t, "body", "not json")
+	state.Answer(t, "exit", "0")
 	if _, err := commitIsOnBranch(context.Background(), "acme/app", "0123456789abcdef", "main"); err == nil ||
 		!strings.Contains(err.Error(), "decode comparison of 0123456789ab with main") {
 		t.Fatalf("undecodable comparison error = %v", err)
 	}
 
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	if _, err := commitIsOnBranch(context.Background(), "acme/app", "0123456789abcdef", "main"); err == nil ||
 		!strings.Contains(err.Error(), "compare 0123456789ab with main") {
 		t.Fatalf("unreadable comparison error = %v", err)
@@ -263,7 +251,7 @@ if [ -s "$S/git-stderr" ]; then cat "$S/git-stderr" >&2; fi
 exit "$(cat "$S/git-exit")"
 `
 
-func orchCovInstallDeleteGit(t *testing.T, state orchCovGHState) {
+func orchCovInstallDeleteGit(t *testing.T, state testfixture.State) {
 	t.Helper()
 	gh, err := exec.LookPath("gh")
 	if err != nil {
@@ -272,9 +260,9 @@ func orchCovInstallDeleteGit(t *testing.T, state orchCovGHState) {
 	if err := testenv.WriteExecutableFile(filepath.Join(filepath.Dir(gh), "git"), []byte(orchCovDeleteBranchGitScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	state.answer(t, "git-stdout", "")
-	state.answer(t, "git-stderr", "")
-	state.answer(t, "git-remote", "https://user:secret@example.test/acme/app.git")
+	state.Answer(t, "git-stdout", "")
+	state.Answer(t, "git-stderr", "")
+	state.Answer(t, "git-remote", "https://user:secret@example.test/acme/app.git")
 }
 
 func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
@@ -298,17 +286,17 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
 	t.Run("deleted and absent", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "0")
-		state.answer(t, "check-exit", "1")
-		state.answer(t, "check-stdout", "")
-		state.answer(t, "check-stderr", "Not Found")
+		state.Answer(t, "git-exit", "0")
+		state.Answer(t, "check-exit", "1")
+		state.Answer(t, "check-stdout", "")
+		state.Answer(t, "check-stderr", "Not Found")
 		deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA)
 		if err != nil || !deleted {
 			t.Fatalf("deleted=%t err=%v", deleted, err)
 		}
-		args, err := os.ReadFile(filepath.Join(state.dir, "git-args"))
+		args, err := os.ReadFile(filepath.Join(state.Dir, "git-args"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,7 +305,7 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 			!strings.HasSuffix(gotArgs, " :refs/heads/candidate") {
 			t.Fatalf("git args = %q, want an isolated wb-landing-* remote", gotArgs)
 		}
-		remoteArgs, err := os.ReadFile(filepath.Join(state.dir, "git-remote-args"))
+		remoteArgs, err := os.ReadFile(filepath.Join(state.Dir, "git-remote-args"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -326,51 +314,51 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		}
 	})
 	t.Run("verification read failed", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "0")
-		state.answer(t, "check-exit", "1")
-		state.answer(t, "check-stdout", "")
-		state.answer(t, "check-stderr", "gh: HTTP 502 Bad Gateway")
+		state.Answer(t, "git-exit", "0")
+		state.Answer(t, "check-exit", "1")
+		state.Answer(t, "check-stdout", "")
+		state.Answer(t, "check-stderr", "gh: HTTP 502 Bad Gateway")
 		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "verify branch candidate is absent") {
 			t.Fatalf("verification error = %v", err)
 		}
 	})
 	t.Run("already gone", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "1")
-		state.answer(t, "git-stderr", "stale info")
-		state.answer(t, "check-exit", "1")
-		state.answer(t, "check-stdout", "")
-		state.answer(t, "check-stderr", "Not Found")
+		state.Answer(t, "git-exit", "1")
+		state.Answer(t, "git-stderr", "stale info")
+		state.Answer(t, "check-exit", "1")
+		state.Answer(t, "check-stdout", "")
+		state.Answer(t, "check-stderr", "Not Found")
 		deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA)
 		if err != nil || !deleted {
 			t.Fatalf("deleted=%t err=%v", deleted, err)
 		}
 	})
 	t.Run("delete refused", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "1")
-		state.answer(t, "git-stderr", "remote rejected")
-		state.answer(t, "check-exit", "0")
-		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
-		state.answer(t, "check-stderr", "")
+		state.Answer(t, "git-exit", "1")
+		state.Answer(t, "git-stderr", "remote rejected")
+		state.Answer(t, "check-exit", "0")
+		state.Answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
+		state.Answer(t, "check-stderr", "")
 		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "delete branch candidate at merged head") {
 			t.Fatalf("refused deletion error = %v", err)
 		}
 	})
 	t.Run("delete failure redacts push URL credentials", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "1")
-		state.answer(t, "git-stderr", "fatal: unable to access https://user:secret@example.test/acme/app.git")
-		state.answer(t, "check-exit", "0")
-		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
-		state.answer(t, "check-stderr", "")
+		state.Answer(t, "git-exit", "1")
+		state.Answer(t, "git-stderr", "fatal: unable to access https://user:secret@example.test/acme/app.git")
+		state.Answer(t, "check-exit", "0")
+		state.Answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
+		state.Answer(t, "check-stderr", "")
 		_, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA)
 		if err == nil {
 			t.Fatal("credential-bearing push failure succeeded")
@@ -383,25 +371,25 @@ func TestOrchCovDeleteRemoteBranchVerifiesTheEffect(t *testing.T) {
 		}
 	})
 	t.Run("still present", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "0")
-		state.answer(t, "check-exit", "0")
-		state.answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
-		state.answer(t, "check-stderr", "")
+		state.Answer(t, "git-exit", "0")
+		state.Answer(t, "check-exit", "0")
+		state.Answer(t, "check-stdout", `{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
+		state.Answer(t, "check-stderr", "")
 		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "still exists on origin") {
 			t.Fatalf("unverified deletion error = %v", err)
 		}
 	})
 	t.Run("advanced after merge", func(t *testing.T) {
-		state := orchCovScriptState(t, orchCovDeleteBranchScript)
+		state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
 		orchCovInstallDeleteGit(t, state)
-		state.answer(t, "git-exit", "1")
-		state.answer(t, "git-stderr", "stale info")
-		state.answer(t, "check-exit", "0")
-		state.answer(t, "check-stdout", `{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`)
-		state.answer(t, "check-stderr", "")
+		state.Answer(t, "git-exit", "1")
+		state.Answer(t, "git-stderr", "stale info")
+		state.Answer(t, "check-exit", "0")
+		state.Answer(t, "check-stdout", `{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`)
+		state.Answer(t, "check-stderr", "")
 		if _, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err == nil ||
 			!strings.Contains(err.Error(), "stale info") {
 			t.Fatalf("advanced branch error = %v", err)
@@ -438,10 +426,10 @@ func TestDeleteRemoteBranchIgnoresAPreexistingLandingRemote(t *testing.T) {
 	runEngineGit(t, canonical, "remote", "add", "wb-landing", malicious)
 	runEngineGit(t, canonical, "remote", "set-url", "--add", "--push", "wb-landing", malicious)
 
-	state := orchCovScriptState(t, orchCovDeleteBranchScript)
-	state.answer(t, "check-exit", "1")
-	state.answer(t, "check-stdout", "")
-	state.answer(t, "check-stderr", "Not Found")
+	state := testfixture.ScriptState(t, orchCovDeleteBranchScript)
+	state.Answer(t, "check-exit", "1")
+	state.Answer(t, "check-stdout", "")
+	state.Answer(t, "check-stderr", "Not Found")
 	view := orchCovPullRequestView(t, fmt.Sprintf(`{"head":{"ref":"candidate","sha":%q,"repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`, head))
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
 	deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, canonical, "acme/app", view, landed, head)
@@ -474,14 +462,14 @@ func TestOrchCovLandPreflightRefusalNamesEachBlockedState(t *testing.T) {
 	notMergeable := false
 	for _, test := range []struct {
 		name string
-		view PullRequestView
+		view githubchecks.PullRequestView
 		want string
 	}{
-		{name: "already merged", view: PullRequestView{Merged: true, MergeCommitSHA: "0123456789abcdef"}, want: LandRefusalNotOpen},
-		{name: "closed", view: PullRequestView{State: "closed"}, want: LandRefusalNotOpen},
-		{name: "draft", view: PullRequestView{State: "open", Draft: true}, want: LandRefusalDraft},
-		{name: "locked", view: PullRequestView{State: "open", Locked: true}, want: LandRefusalLocked},
-		{name: "not mergeable", view: PullRequestView{State: "open", Mergeable: &notMergeable, MergeableState: "dirty"}, want: LandRefusalNotMergeable},
+		{name: "already merged", view: githubchecks.PullRequestView{Merged: true, MergeCommitSHA: "0123456789abcdef"}, want: LandRefusalNotOpen},
+		{name: "closed", view: githubchecks.PullRequestView{State: "closed"}, want: LandRefusalNotOpen},
+		{name: "draft", view: githubchecks.PullRequestView{State: "open", Draft: true}, want: LandRefusalDraft},
+		{name: "locked", view: githubchecks.PullRequestView{State: "open", Locked: true}, want: LandRefusalLocked},
+		{name: "not mergeable", view: githubchecks.PullRequestView{State: "open", Mergeable: &notMergeable, MergeableState: "dirty"}, want: LandRefusalNotMergeable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -497,7 +485,7 @@ func TestOrchCovLandPreflightRefusalNamesEachBlockedState(t *testing.T) {
 			}
 		})
 	}
-	if refusal := landPreflightRefusal(PullRequestView{State: "open"}, "acme/app", "7"); refusal != nil {
+	if refusal := landPreflightRefusal(githubchecks.PullRequestView{State: "open"}, "acme/app", "7"); refusal != nil {
 		t.Fatalf("landable pull request refused: %+v", refusal)
 	}
 }
@@ -617,14 +605,14 @@ func TestOrchCovLandPullRequestRejectsUnusableOptions(t *testing.T) {
 
 func TestOrchCovWaitForPullRequestLandChecksRejectsAnUnusableBudget(t *testing.T) {
 	t.Parallel()
-	noop := func(context.Context, PullRequestWaitOptions) (PullRequestWaitResult, error) {
-		return PullRequestWaitResult{}, nil
+	noop := func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+		return githubchecks.PullRequestWaitResult{}, nil
 	}
-	if _, err := waitForPullRequestLandChecksWith(context.Background(), PullRequestWaitOptions{}, noop); err == nil ||
+	if _, err := waitForPullRequestLandChecksWith(context.Background(), githubchecks.PullRequestWaitOptions{}, noop); err == nil ||
 		!strings.Contains(err.Error(), "timeout must be positive") {
 		t.Fatalf("empty budget error = %v", err)
 	}
-	options := PullRequestWaitOptions{Slice: time.Second, CheckPollInterval: time.Second}
+	options := githubchecks.PullRequestWaitOptions{Slice: time.Second, CheckPollInterval: time.Second}
 	if _, err := waitForPullRequestLandChecksWith(context.Background(), options, noop); err == nil ||
 		!strings.Contains(err.Error(), "poll interval must be shorter") {
 		t.Fatalf("poll interval error = %v", err)
@@ -633,12 +621,12 @@ func TestOrchCovWaitForPullRequestLandChecksRejectsAnUnusableBudget(t *testing.T
 
 func TestOrchCovWaitForPullRequestLandChecksDrainsEverySlice(t *testing.T) {
 	t.Parallel()
-	options := PullRequestWaitOptions{Slice: 20 * time.Minute, CheckPollInterval: time.Millisecond}
+	options := githubchecks.PullRequestWaitOptions{Slice: 20 * time.Minute, CheckPollInterval: time.Millisecond}
 	var observed []time.Duration
 	waited, err := waitForPullRequestLandChecksWith(context.Background(), options,
-		func(_ context.Context, current PullRequestWaitOptions) (PullRequestWaitResult, error) {
+		func(_ context.Context, current githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
 			observed = append(observed, current.Slice)
-			return PullRequestWaitResult{Status: PullRequestWaitPending, Reason: "still pending"}, nil
+			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPending, Reason: "still pending"}, nil
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -647,7 +635,7 @@ func TestOrchCovWaitForPullRequestLandChecksDrainsEverySlice(t *testing.T) {
 	if len(observed) != 3 || observed[0] != want[0] || observed[1] != want[1] || observed[2] != want[2] {
 		t.Fatalf("observed slices = %v, want %v", observed, want)
 	}
-	if waited.Status != PullRequestWaitPending || waited.Reason != "still pending" {
+	if waited.Status != githubchecks.PullRequestWaitPending || waited.Reason != "still pending" {
 		t.Fatalf("drained result = %+v", waited)
 	}
 }
@@ -655,10 +643,10 @@ func TestOrchCovWaitForPullRequestLandChecksDrainsEverySlice(t *testing.T) {
 func TestOrchCovWaitForPullRequestLandChecksStopsOnError(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("the read failed")
-	options := PullRequestWaitOptions{Slice: time.Minute, CheckPollInterval: time.Millisecond}
+	options := githubchecks.PullRequestWaitOptions{Slice: time.Minute, CheckPollInterval: time.Millisecond}
 	if _, err := waitForPullRequestLandChecksWith(context.Background(), options,
-		func(context.Context, PullRequestWaitOptions) (PullRequestWaitResult, error) {
-			return PullRequestWaitResult{}, failure
+		func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+			return githubchecks.PullRequestWaitResult{}, failure
 		}); !errors.Is(err, failure) {
 		t.Fatalf("error = %v", err)
 	}
@@ -688,7 +676,7 @@ func TestOrchCovWithSavingsNeverCountsARefusal(t *testing.T) {
 	}
 	polled := withSavings(PullRequestLandResult{
 		Outcome: LandSuccess, AbsorbedPolls: 4, ChangedFiles: []string{"go.mod", "go.sum"},
-		Checks: &PullRequestWaitResult{Checks: []RemoteCheck{{Name: "CI", Link: "https://example.test/ci", Bucket: "pass"}}},
+		Checks: &githubchecks.PullRequestWaitResult{Checks: []githubchecks.RemoteCheck{{Name: "CI", Link: "https://example.test/ci", Bucket: "pass"}}},
 	})
 	if polled.SavedToolCalls <= 0 || polled.SavedTokensEstimate <= 0 {
 		t.Fatalf("absorbed polls produced no savings: %+v", polled)
@@ -697,7 +685,7 @@ func TestOrchCovWithSavingsNeverCountsARefusal(t *testing.T) {
 
 func TestOrchCovAggregatedCommitMessageCarriesCommitBodiesAndProvenance(t *testing.T) {
 	t.Parallel()
-	view := PullRequestView{Number: 7, Title: "feat: the change", Body: "Summary line.\n\n## Details\nhidden\n"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change", Body: "Summary line.\n\n## Details\nhidden\n"}
 	commits := []SourceCommit{
 		{SHA: "0123456789abcdef0123456789abcdef01234567", Subject: "change one", Body: "why one changed\n\nCo-Authored-By: someone <x@example.test>\n"},
 	}
@@ -714,7 +702,7 @@ func TestOrchCovAggregatedCommitMessageCarriesCommitBodiesAndProvenance(t *testi
 	if strings.Contains(message, "Co-Authored-By") || strings.Contains(message, "## Details") {
 		t.Fatalf("aggregate leaked trailers or the review template:\n%s", message)
 	}
-	mechanical := aggregatedCommitMessage(PullRequestView{Number: 7}, nil, "", "")
+	mechanical := aggregatedCommitMessage(githubchecks.PullRequestView{Number: 7}, nil, "", "")
 	if !strings.Contains(mechanical, "mechanical dependency bump") {
 		t.Fatalf("mechanical aggregate = %q", mechanical)
 	}
@@ -730,7 +718,7 @@ func TestOrchCovRepositoryOfNamesTheBaseRepository(t *testing.T) {
 	if got := repositoryOf(head); got != "acme/app" {
 		t.Fatalf("repositoryOf = %q, want the head repository", got)
 	}
-	if got := repositoryOf(PullRequestView{}); got != "" {
+	if got := repositoryOf(githubchecks.PullRequestView{}); got != "" {
 		t.Fatalf("repositoryOf with no repository = %q", got)
 	}
 }
@@ -743,9 +731,9 @@ exit 30
 `
 
 func TestOrchCovPullRequestChangedFilesDropsEmptyAndDuplicateNames(t *testing.T) {
-	state := orchCovScriptState(t, orchCovPagesScript)
-	state.answer(t, "body", `[{"filename":"b.txt"},{"filename":""},{"filename":"b.txt"},{"filename":"a.txt"}]`)
-	state.answer(t, "exit", "0")
+	state := testfixture.ScriptState(t, orchCovPagesScript)
+	state.Answer(t, "body", `[{"filename":"b.txt"},{"filename":""},{"filename":"b.txt"},{"filename":"a.txt"}]`)
+	state.Answer(t, "exit", "0")
 	files, err := pullRequestChangedFiles(context.Background(), "acme/app", "7")
 	if err != nil {
 		t.Fatal(err)
@@ -756,14 +744,14 @@ func TestOrchCovPullRequestChangedFilesDropsEmptyAndDuplicateNames(t *testing.T)
 }
 
 func TestOrchCovPullRequestChangedFilesFailsClosed(t *testing.T) {
-	state := orchCovScriptState(t, orchCovPagesScript)
-	state.answer(t, "body", "not json")
-	state.answer(t, "exit", "0")
+	state := testfixture.ScriptState(t, orchCovPagesScript)
+	state.Answer(t, "body", "not json")
+	state.Answer(t, "exit", "0")
 	if _, err := pullRequestChangedFiles(context.Background(), "acme/app", "7"); err == nil ||
 		!strings.Contains(err.Error(), "decode changed files for acme/app#7") {
 		t.Fatalf("undecodable changed files error = %v", err)
 	}
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	if _, err := pullRequestChangedFiles(context.Background(), "acme/app", "7"); err == nil ||
 		!strings.Contains(err.Error(), "read changed files for acme/app#7") {
 		t.Fatalf("unreadable changed files error = %v", err)
@@ -771,9 +759,9 @@ func TestOrchCovPullRequestChangedFilesFailsClosed(t *testing.T) {
 }
 
 func TestOrchCovPullRequestCommitsSplitsSubjectFromBody(t *testing.T) {
-	state := orchCovScriptState(t, orchCovPagesScript)
-	state.answer(t, "body", `[{"sha":"aaa","commit":{"message":"the subject\n\nthe body\n"}},{"sha":"bbb","commit":{"message":"only a subject"}}]`)
-	state.answer(t, "exit", "0")
+	state := testfixture.ScriptState(t, orchCovPagesScript)
+	state.Answer(t, "body", `[{"sha":"aaa","commit":{"message":"the subject\n\nthe body\n"}},{"sha":"bbb","commit":{"message":"only a subject"}}]`)
+	state.Answer(t, "exit", "0")
 	commits, err := pullRequestCommits(context.Background(), "acme/app", "7")
 	if err != nil {
 		t.Fatal(err)
@@ -785,14 +773,14 @@ func TestOrchCovPullRequestCommitsSplitsSubjectFromBody(t *testing.T) {
 }
 
 func TestOrchCovPullRequestCommitsFailsClosed(t *testing.T) {
-	state := orchCovScriptState(t, orchCovPagesScript)
-	state.answer(t, "body", "not json")
-	state.answer(t, "exit", "0")
+	state := testfixture.ScriptState(t, orchCovPagesScript)
+	state.Answer(t, "body", "not json")
+	state.Answer(t, "exit", "0")
 	if _, err := pullRequestCommits(context.Background(), "acme/app", "7"); err == nil ||
 		!strings.Contains(err.Error(), "decode commits of acme/app#7") {
 		t.Fatalf("undecodable commits error = %v", err)
 	}
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	if _, err := pullRequestCommits(context.Background(), "acme/app", "7"); err == nil ||
 		!strings.Contains(err.Error(), "read commits of acme/app#7") {
 		t.Fatalf("unreadable commits error = %v", err)
@@ -864,7 +852,7 @@ func TestOrchCovPreflightLandingCleanupRefusesAnUnreadableInventory(t *testing.T
 
 func TestOrchCovChecksFailedSanctionedCommandBuildsAGHCommandFromAnActionsJobURL(t *testing.T) {
 	t.Parallel()
-	got := checksFailedSanctionedCommand([]CIFailureDetail{
+	got := checksFailedSanctionedCommand([]githubchecks.CIFailureDetail{
 		{Check: "CI", JobURL: "https://github.com/acme/app/actions/runs/123/job/456"},
 	}, "acme/app", "7")
 	want := "gh run view 123 --job 456 --repo acme/app --log-failed"
@@ -878,7 +866,7 @@ func TestOrchCovChecksFailedSanctionedCommandNeverEmitsAProviderURL(t *testing.T
 	// A commit status's Link is the provider-controlled TargetURL, which is
 	// not necessarily a GitHub Actions job URL (#584 round 3, minor 8). The
 	// sanctioned command must never be a bare URL.
-	got := checksFailedSanctionedCommand([]CIFailureDetail{
+	got := checksFailedSanctionedCommand([]githubchecks.CIFailureDetail{
 		{Check: "sonar", JobURL: "https://sonar.example.test/dashboard?id=acme_app"},
 	}, "acme/app", "7")
 	want := "gh pr view 7 --repo acme/app --web"

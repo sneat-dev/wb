@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -256,10 +257,10 @@ func validInputs() (Inputs, time.Time) {
 			{Check: quality.CheckBuild, Command: "go build ./...", Status: quality.StatusPassed},
 		},
 	}}}
-	ciWait := CIWaitReceipt{SchemaVersion: SchemaVersion, ObservedAt: ciAt, PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-		Status: orchestrate.PullRequestWaitPassed, Repository: repository, Target: "main", Head: revision, ObservedHead: revision,
+	ciWait := CIWaitReceipt{SchemaVersion: SchemaVersion, ObservedAt: ciAt, PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+		Status: githubchecks.PullRequestWaitPassed, Repository: repository, Target: "main", Head: revision, ObservedHead: revision,
 		ObservedTargetHead: revision, CandidateContainsTarget: true,
-		Checks:                  []orchestrate.RemoteCheck{{Name: "test", Bucket: "pass", Link: "https://github.test/runs/42"}},
+		Checks:                  []githubchecks.RemoteCheck{{Name: "test", Bucket: "pass", Link: "https://github.test/runs/42"}},
 		RequiredChecksAuthority: "github-rulesets", StableObservations: 2,
 	}}
 	remoteOutput := revision + "\trefs/heads/main\n"

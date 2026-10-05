@@ -4,11 +4,13 @@ package orchestrate
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestE2ELandedFailureOwnerExactNativeObservationRefusals(t *testing.T) {
@@ -102,7 +104,7 @@ func TestE2ELandedFailureOwnerPhysicalCandidateAndRemoteRefusals(t *testing.T) {
 func TestE2ELandedFailureOwnerCleanedNativeTerminalAndObservationRefusals(t *testing.T) {
 	f, _, r, claims := landedTerminalCleanupFixture(t)
 	r.Status = WorktreeMergePostTargetCIFailed
-	r.Checks.Status = PullRequestWaitFailed
+	r.Checks.Status = githubchecks.PullRequestWaitFailed
 	r.Checks.Head = r.LandingSHA
 	if err := persistWorktreeMergeReceipt(r); err != nil {
 		t.Fatal(err)

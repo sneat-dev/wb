@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 
 	"github.com/sneat-dev/wb/internal/testenv"
 )
@@ -84,7 +86,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 // endpoint, with the check-runs read itself succeeding empty. Found flaky at
 // 3 of 8 runs for the same reason as the sibling tests in this file.
 func TestCommitChecksReturnsHardFailureFromCommitStatuses(t *testing.T) {
-	installCommitChecksTestGH(t, withEmptyActionsRuns(`#!/bin/sh
+	installCommitChecksTestGH(t, testfixture.WithEmptyActionsRuns(`#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   echo '{"total_count":0,"check_runs":[]}'; exit 0
 fi

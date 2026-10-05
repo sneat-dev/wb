@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -197,14 +199,14 @@ esac
 			deferral := *receipt.ValidationDeferral
 			r.ValidationDeferral = &deferral
 			opts := WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, WaitSlice: 10 * time.Second, CheckPollInterval: 100 * time.Millisecond}
-			want, status := "", PullRequestWaitPassed
+			want, status := "", githubchecks.PullRequestWaitPassed
 			switch name {
 			case "invalid interval":
 				opts.CheckPollInterval = opts.WaitSlice
 				want, status = "must be shorter than wait slice", ""
 			case "malformed deferral":
 				r.ValidationDeferral.CandidateSHA = "wrong"
-				want, status = "direct CI deferral is not pinned", PullRequestWaitFailed
+				want, status = "direct CI deferral is not pinned", githubchecks.PullRequestWaitFailed
 			case "invalid identity":
 				r.Repository = ""
 				want, status = "repository, target, and exact head are required", ""
@@ -212,10 +214,10 @@ esac
 				r.ValidationDeferral = nil
 			case "direct final PR refusal":
 				t.Setenv("WB_TEST_S_DIRECT_PR", strings.Replace(pr, `"state":"open"`, `"state":"closed"`, 1))
-				want, status = "direct CI pull request identity changed", PullRequestWaitFailed
+				want, status = "direct CI pull request identity changed", githubchecks.PullRequestWaitFailed
 			case "direct skipped job":
 				t.Setenv("WB_TEST_S_CHECKS", strings.Replace(checks, `"conclusion":"success"`, `"conclusion":"skipped"`, 1))
-				want, status = "did not execute successfully", PullRequestWaitFailed
+				want, status = "did not execute successfully", githubchecks.PullRequestWaitFailed
 			}
 			var events []progress.Event
 			opts.Progress = func(e progress.Event) { events = append(events, e) }

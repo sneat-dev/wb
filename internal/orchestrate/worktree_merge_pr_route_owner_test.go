@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func TestPRRouteRecordedAdvanceKeepsOwnerSpecificMetadata(t *testing.T) {
@@ -57,16 +59,16 @@ func TestPRRouteHistoryWalksBothIdentitiesWithoutInventingHops(t *testing.T) {
 
 func TestPRRouteDeferredFindingsReplaceOnlyTheirOwnCode(t *testing.T) {
 	t.Parallel()
-	skipped := PullRequestWaitResult{RequiredChecks: []RequiredRemoteCheck{{Name: "CI"}}, Checks: []RemoteCheck{{Name: "CI", Conclusion: "skipped"}}}
+	skipped := githubchecks.PullRequestWaitResult{RequiredChecks: []githubchecks.RequiredRemoteCheck{{Name: "CI"}}, Checks: []githubchecks.RemoteCheck{{Name: "CI", Conclusion: "skipped"}}}
 	for _, row := range []struct {
 		name     string
 		deferred bool
 		findings []WorktreeMergeFinding
-		waited   PullRequestWaitResult
+		waited   githubchecks.PullRequestWaitResult
 		want     int
 	}{
 		{name: "local validation", waited: skipped},
-		{name: "executed", deferred: true, waited: PullRequestWaitResult{RequiredChecks: []RequiredRemoteCheck{{Name: "CI"}}, Checks: []RemoteCheck{{Name: "CI", Conclusion: "success"}}}},
+		{name: "executed", deferred: true, waited: githubchecks.PullRequestWaitResult{RequiredChecks: []githubchecks.RequiredRemoteCheck{{Name: "CI"}}, Checks: []githubchecks.RemoteCheck{{Name: "CI", Conclusion: "success"}}}},
 		{name: "append", deferred: true, findings: []WorktreeMergeFinding{{Code: "unrelated", Message: "preserved"}}, waited: skipped, want: 2},
 		{name: "replace", deferred: true, findings: []WorktreeMergeFinding{{Code: WorktreeMergeFindingDeferredValidationCheckSkipped, Message: "old"}}, waited: skipped, want: 1},
 	} {

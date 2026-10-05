@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/mechanicalchange"
 
 	"github.com/sneat-dev/wb/internal/console"
@@ -400,7 +402,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	}
 	result.URL = url
 	result.Adopted = adopted
-	if number, numberErr := PullRequestNumber(url); numberErr == nil {
+	if number, numberErr := githubchecks.PullRequestNumber(url); numberErr == nil {
 		if parsed, convErr := strconv.Atoi(number); convErr == nil {
 			result.PullRequest = parsed
 		}
@@ -487,7 +489,7 @@ func createPullRequestLand(ctx context.Context, options PullRequestCreateOptions
 // request GitHub itself would refuse to merge is not a lesser action than
 // landing it, and deserves the same authority.
 func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOptions, result PullRequestCreateResult, repository, number, pushedHead string) (PullRequestCreateResult, error) {
-	view, viewErr := ReadPullRequest(ctx, repository, number)
+	view, viewErr := githubchecks.ReadPullRequest(ctx, repository, number)
 	if viewErr != nil {
 		return result, fmt.Errorf("read pull request %s#%s: %w", repository, number, viewErr)
 	}
@@ -617,14 +619,14 @@ const pinPullRequestViewPollDelay = 200 * time.Millisecond
 // time.Sleep; a test passes a recorder. It is a function parameter, not a
 // package-level mutable var, so a test cannot leave shared package state
 // mutated for another test running in parallel.
-func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHead string, view PullRequestView, sleep func(time.Duration)) (PullRequestView, error) {
+func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHead string, view githubchecks.PullRequestView, sleep func(time.Duration)) (githubchecks.PullRequestView, error) {
 	if pushedHead == "" || view.Head.SHA == pushedHead {
 		return view, nil
 	}
 	const attempts = 5
 	for attempt := 1; attempt < attempts; attempt++ {
 		sleep(pinPullRequestViewPollDelay)
-		refreshed, err := ReadPullRequest(ctx, repository, number)
+		refreshed, err := githubchecks.ReadPullRequest(ctx, repository, number)
 		if err != nil {
 			return view, fmt.Errorf("re-read pull request %s#%s to confirm its pushed head: %w", repository, number, err)
 		}

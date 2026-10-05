@@ -5,6 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func TestPullRequestUpdateRecordsNoOpObservationFailures(t *testing.T) {
@@ -69,12 +73,12 @@ func TestPullRequestUpdateReportsEachPostAcceptanceReceiptFailure(t *testing.T) 
 			t.Parallel()
 			options, ops, saved := prUpdateFake(t)
 			reads := 0
-			ops.read = func(context.Context, string, string) (PullRequestView, error) {
+			ops.read = func(context.Context, string, string) (githubchecks.PullRequestView, error) {
 				reads++
 				if reads == 1 {
-					return prUpdateView(t, "old"), nil
+					return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 				}
-				return prUpdateView(t, "new"), nil
+				return testfixture.PullRequestView[githubchecks.PullRequestView](t, "new"), nil
 			}
 			writes := 0
 			ops.persist = func(receipt PullRequestUpdateResult) error {

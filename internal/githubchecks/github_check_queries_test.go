@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
@@ -6,12 +6,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
 
 func fakePullRequestCheckOps(t *testing.T) pullRequestCheckOps {
 	t.Helper()
 	return pullRequestCheckOps{
-		read: func(context.Context, string, string) (PullRequestView, error) { return prUpdateView(t, "head"), nil },
+		read: func(context.Context, string, string) (PullRequestView, error) {
+			return testfixture.PullRequestView[PullRequestView](t, "head"), nil
+		},
 		runs: func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
 			return []RemoteCheck{{Name: "check-run:build", Bucket: "fail"}}, false, ""
 		},
@@ -110,7 +114,7 @@ func TestObservePullRequestHeadNamesOnlyMissingOrFailedProducersFromTheSameReads
 		reads["required"]++
 		return []RequiredRemoteCheck{{Name: "missing"}, {Name: "lint"}, {Name: "build"}}, "", ""
 	}
-	view := prUpdateView(t, "head")
+	view := testfixture.PullRequestView[PullRequestView](t, "head")
 	observation, err := observePullRequestHeadWith(context.Background(), "acme/app", view, ops)
 	if err != nil || observation.Green || !reflect.DeepEqual(observation.Blocked, []string{"build", "missing"}) || len(observation.Checks) != 2 {
 		t.Fatalf("observation=%+v error=%v", observation, err)
@@ -130,8 +134,12 @@ func TestObservePullRequestHeadNamesOnlyMissingOrFailedProducersFromTheSameReads
 func headOps(t *testing.T, runs []RemoteCheck, required []RequiredRemoteCheck) pullRequestCheckOps {
 	t.Helper()
 	ops := fakePullRequestCheckOps(t)
-	ops.runs = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return runs, false, "" }
-	ops.statuses = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return nil, false, "" }
+	ops.runs = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return runs, false, ""
+	}
+	ops.statuses = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return nil, false, ""
+	}
 	ops.required = func(context.Context, string, string, bool) ([]RequiredRemoteCheck, string, string) {
 		return required, "", ""
 	}
@@ -145,7 +153,7 @@ func headOps(t *testing.T, runs []RemoteCheck, required []RequiredRemoteCheck) p
 // a check pinned to one GitHub App is satisfied only by that app.
 func TestObservePullRequestHeadWeighsRequiredChecksAgainstTheObservedOnes(t *testing.T) {
 	t.Parallel()
-	view := prUpdateView(t, "head")
+	view := testfixture.PullRequestView[PullRequestView](t, "head")
 	for name, test := range map[string]struct {
 		runs     []RemoteCheck
 		required []RequiredRemoteCheck
@@ -213,7 +221,7 @@ func TestObservePullRequestHeadRefusesIncompleteReads(t *testing.T) {
 			t.Parallel()
 			ops := fakePullRequestCheckOps(t)
 			tc.change(&ops)
-			_, err := observePullRequestHeadWith(context.Background(), "acme/app", prUpdateView(t, "head"), ops)
+			_, err := observePullRequestHeadWith(context.Background(), "acme/app", testfixture.PullRequestView[PullRequestView](t, "head"), ops)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error=%v, want %q", err, tc.want)
 			}

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
@@ -834,7 +836,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	if interval >= slice {
 		return fmt.Errorf("CI poll interval %s must be shorter than bounded merge slice %s", interval, slice)
 	}
-	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+	receipt, err := githubchecks.WaitForCommitChecks(ctx, githubchecks.PullRequestWaitOptions{
 		Repository:        result.Repository,
 		PullRequest:       result.PR,
 		Target:            result.Ref,
@@ -848,8 +850,8 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	}
 	result.Checks = receipt.Checks
 	switch receipt.Status {
-	case PullRequestWaitPassed:
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPending:
 		return fmt.Errorf("GitHub CI receipt is pending for %s at %s; resume the orchestrated merge or run wb ci wait with the same exact identity: %s", result.PR, result.Commit, receipt.Reason)
 	default:
 		return fmt.Errorf("GitHub CI receipt failed for %s at %s: %s", result.PR, result.Commit, receipt.Reason)
@@ -879,7 +881,7 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	if interval >= slice {
 		return fmt.Errorf("CI poll interval %s must be shorter than bounded PR-check slice %s", interval, slice)
 	}
-	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+	receipt, err := githubchecks.WaitForCommitChecks(ctx, githubchecks.PullRequestWaitOptions{
 		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
 		AllowUnfenced: true, Slice: slice, CheckPollInterval: interval,
 		Progress:          reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
@@ -890,11 +892,11 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	}
 	result.Checks = receipt.Checks
 	switch receipt.Status {
-	case PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPassed:
 		result.Status = "validated"
 		result.Reason = "exact PR-head GitHub checks passed; pull request is awaiting merge"
 		return nil
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPending:
 		result.Status = "awaiting_merge"
 		result.Reason = "exact PR-head GitHub checks remain pending; pull request is awaiting merge: " + receipt.Reason
 		return nil
@@ -907,7 +909,7 @@ func githubChecksPollInterval(options Options) time.Duration {
 	if options.CheckPollInterval > 0 {
 		return options.CheckPollInterval
 	}
-	return DefaultCheckPollInterval
+	return githubchecks.DefaultCheckPollInterval
 }
 
 func failResult[T any](result *Result[T], err error) error {

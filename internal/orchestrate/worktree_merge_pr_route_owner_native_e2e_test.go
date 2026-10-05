@@ -6,13 +6,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 func TestE2EPRRouteProofUsesSuppliedRunnerAndNativeDAG(t *testing.T) {
@@ -161,7 +163,7 @@ func TestE2EPRRouteHostedProofFallbackAndMergeMethodPolicies(t *testing.T) {
 					t.Fatalf("actual remote tree=%t %v", proved, err)
 				}
 			case "transient hosted tree":
-				if proved || err == nil || !IsTransientReadFailure(err) {
+				if proved || err == nil || !githubobserver.IsTransientReadFailure(err) {
 					t.Fatalf("transient tree=%t %v", proved, err)
 				}
 			default:
@@ -557,7 +559,7 @@ func TestE2EPRRouteSharedEnginePreservesFailureAndServerResultContracts(t *testi
 				}
 			}
 			if mode == "update proof transient" {
-				if !IsTransientReadFailure(e) || !strings.Contains(e.Error(), "read commit parents") || !got.AutoMergeArmed || got.Candidate.SHA != r.Candidate.SHA || len(got.TargetRefreshes) != len(r.TargetRefreshes) {
+				if !githubobserver.IsTransientReadFailure(e) || !strings.Contains(e.Error(), "read commit parents") || !got.AutoMergeArmed || got.Candidate.SHA != r.Candidate.SHA || len(got.TargetRefreshes) != len(r.TargetRefreshes) {
 					t.Fatalf("retryable proof checkpoint=%+v error=%v", got, e)
 				}
 				if _, err := os.Stat(filepath.Join(gh.state, "transient-parents-consumed")); err != nil {

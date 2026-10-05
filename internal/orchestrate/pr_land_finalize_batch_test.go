@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -49,7 +51,7 @@ func TestFinalizeLandedPullRequestVerifiesEvidenceBeforeRetirement(t *testing.T)
 			case "other":
 				options.ProjectsRoot = t.TempDir()
 			}
-			view, err := ReadPullRequest(context.Background(), options.Repository, "7")
+			view, err := githubchecks.ReadPullRequest(context.Background(), options.Repository, "7")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,7 +119,7 @@ func TestFinalizeLandedPullRequestReportsIncompleteWorktreeRetirement(t *testing
 	fixture.writeState(t, "pr-state", "closed")
 	options := landOptions(fixture)
 	options.Keep = false
-	view, err := ReadPullRequest(context.Background(), options.Repository, "7")
+	view, err := githubchecks.ReadPullRequest(context.Background(), options.Repository, "7")
 	if err != nil {
 		t.Fatal(err)
 	}

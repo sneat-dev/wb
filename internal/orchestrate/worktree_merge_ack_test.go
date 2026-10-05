@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -614,7 +616,7 @@ func TestAcknowledgeLandedPostTargetCIFailureLeavesReceiptForFreshForwardRepair(
 	receipt.Phase = WorktreeMergePhaseLand
 	receipt.Status = WorktreeMergePostTargetCIFailed
 	receipt.LandingSHA = receipt.Candidate.SHA
-	receipt.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: receipt.LandingSHA, Reason: "required target check failed"}
+	receipt.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Head: receipt.LandingSHA, Reason: "required target check failed"}
 	receipt.Failure = "post-target CI failed"
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
@@ -2522,7 +2524,7 @@ func TestAcknowledgeCleanedDirectPostTargetCIFailureUsesExactTerminalProofs(t *t
 		t.Fatalf("fixture route=%q landing=%s candidate=%s; want direct exact landing", receipt.Route.Route, receipt.LandingSHA, receipt.Candidate.SHA)
 	}
 	receipt.Status = WorktreeMergePostTargetCIFailed
-	receipt.Checks.Status = PullRequestWaitFailed
+	receipt.Checks.Status = githubchecks.PullRequestWaitFailed
 	receipt.Checks.Head = receipt.LandingSHA
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)

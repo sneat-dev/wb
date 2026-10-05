@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -44,7 +46,7 @@ type PullRequestUpdateResult struct {
 }
 
 type pullRequestUpdateOps struct {
-	read       func(context.Context, string, string) (PullRequestView, error)
+	read       func(context.Context, string, string) (githubchecks.PullRequestView, error)
 	target     func(context.Context, string, string) (string, string)
 	contains   func(context.Context, string, string, string) (bool, string)
 	update     func(context.Context, string, string, string) (string, string)
@@ -57,7 +59,7 @@ type pullRequestUpdateOps struct {
 
 func productionPullRequestUpdateOps() pullRequestUpdateOps {
 	return pullRequestUpdateOps{
-		read: ReadPullRequest, target: targetHead, contains: candidateContainsTarget,
+		read: githubchecks.ReadPullRequest, target: githubchecks.TargetHead, contains: githubchecks.ContainsTarget,
 		update: func(ctx context.Context, repo, number, head string) (string, string) {
 			return updatePullRequestBranch(ctx, repo, number, head, nil)
 		},
@@ -228,7 +230,7 @@ func validPullRequestUpdateRepositorySegment(value string) bool {
 	return true
 }
 
-func validatePullRequestUpdateView(view PullRequestView, repository, number, target, branch string) error {
+func validatePullRequestUpdateView(view githubchecks.PullRequestView, repository, number, target, branch string) error {
 	if view.State != "open" || view.Merged || view.Locked || fmt.Sprint(view.Number) != number {
 		return fmt.Errorf("pull request %s#%s is not the expected open, unlocked PR", repository, number)
 	}

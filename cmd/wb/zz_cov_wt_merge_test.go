@@ -6,16 +6,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 // cwWtMergeAckConstructor describes one recovery verb so the shared error-path
@@ -485,7 +487,7 @@ func TestCwWtMergeAcknowledgeMissingCleanupOutput(t *testing.T) {
 	landed.Cleanup = true
 	landed.LandingSHA = landed.Candidate.SHA
 	landed.CanonicalSync = "not_checked_out"
-	landed.Checks = orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed}
+	landed.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed}
 	cwWtMergeRewriteReceipt(t, fixture.receiptPath, landed)
 
 	// Land the exact candidate on the remote target so the landing proof holds.

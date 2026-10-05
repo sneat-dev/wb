@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
@@ -36,7 +38,7 @@ func TestSourcePROwnerOutcomeCheckpointsPreserveFailuresAndPartialState(t *testi
 				outcome = "already_closed"
 			}
 			receipt := WorktreeMergeReceipt{Repository: "acme/app", Target: "main", LandingSHA: "landing"}
-			remote := &fakeSourcePullRequestRemote{byHead: map[string][]PullRequestView{"source": {view}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
+			remote := &fakeSourcePullRequestRemote{byHead: map[string][]githubchecks.PullRequestView{"source": {view}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
 			sentinel := errors.New("selected outcome checkpoint")
 			writes := 0
 			before := time.Now().UTC()
@@ -93,7 +95,7 @@ func TestSourcePROwnerCommentDurabilityAndIdempotentMetadata(t *testing.T) {
 				state = "closed"
 			}
 			receipt := WorktreeMergeReceipt{Repository: "acme/app", Target: "main", LandingSHA: "landing", SourcePullRequests: []WorktreeMergeSourcePullRequestReconciliation{item}}
-			remote := &fakeSourcePullRequestRemote{byHead: map[string][]PullRequestView{"source": {sourcePullRequestView(7, state, "source", "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
+			remote := &fakeSourcePullRequestRemote{byHead: map[string][]githubchecks.PullRequestView{"source": {sourcePullRequestView(7, state, "source", "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
 			sentinel := errors.New("comment receipt failure")
 			writes := 0
 			err := reconcileAbsorbedSourcePullRequestsWithProgress(t.Context(), &receipt, []string{"source"}, remote, func(got WorktreeMergeReceipt) error {
@@ -200,7 +202,7 @@ func TestSourcePROwnerExactCommentBodyAndRemoteErrorIdentity(t *testing.T) {
 		t.Run(batch, func(t *testing.T) {
 			t.Parallel()
 			receipt := WorktreeMergeReceipt{Repository: "acme/app", Target: "main", LandingSHA: "landing", PullRequest: batch}
-			base := &fakeSourcePullRequestRemote{byHead: map[string][]PullRequestView{"source": {sourcePullRequestView(7, "open", "source", "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
+			base := &fakeSourcePullRequestRemote{byHead: map[string][]githubchecks.PullRequestView{"source": {sourcePullRequestView(7, "open", "source", "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
 			remote := &sourcePROwnerRecordingRemote{fakeSourcePullRequestRemote: base}
 			if err := reconcileAbsorbedSourcePullRequestsWithProgress(t.Context(), &receipt, []string{"source"}, remote, func(WorktreeMergeReceipt) error { return nil }, nil); err != nil {
 				t.Fatal(err)
@@ -219,7 +221,7 @@ func TestSourcePROwnerExactCommentBodyAndRemoteErrorIdentity(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
 			sentinel := errors.New("selected hosted contract")
-			remote := &fakeSourcePullRequestRemote{byHead: map[string][]PullRequestView{"source": {sourcePullRequestView(7, "open", "source", "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
+			remote := &fakeSourcePullRequestRemote{byHead: map[string][]githubchecks.PullRequestView{"source": {sourcePullRequestView(7, "open", "source", "main")}}, comments: map[int]bool{}, closed: map[int]int{}, posted: map[int]int{}}
 			prefix := ""
 			switch stage {
 			case "association":

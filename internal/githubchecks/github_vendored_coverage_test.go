@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
@@ -8,57 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/testenv"
 )
-
-// orchCovGHState is a scripted `gh` whose answers live in files, so a test can
-// change one fact without rebuilding the whole script. It is deliberately
-// independent of the other fixtures in this package: those install exactly the
-// endpoints one verb needs, and the vendored reads below are shared by several.
-type orchCovGHState struct {
-	dir string
-}
-
-// orchCovInstallGH writes a `gh` shell script onto PATH and returns the state
-// directory its answers are read from.
-func orchCovInstallGH(t *testing.T, script string) orchCovGHState {
-	t.Helper()
-	// Every caller of this fixture reaches a migrated runCommand call site
-	// (spec/plans/coverage-to-100 task-17) whose production runner is
-	// task-24's guarded runner.Real, even though the process it starts is
-	// this fixture's own fake `gh` on PATH, not a real one. One
-	// AllowRealProcess here covers every test that installs its script
-	// through this helper.
-	state := filepath.Join(t.TempDir(), "state")
-	if err := os.MkdirAll(state, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(t.TempDir(), "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return orchCovGHState{dir: state}
-}
-
-// answer records the body `gh` will print for one endpoint slot.
-func (state orchCovGHState) answer(t *testing.T, name, contents string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(state.dir, name), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// orchCovNotFound is the `gh api --include` shape of an authoritative 404: a
-// status line, headers, and a body, with a non-zero exit status.
-const orchCovNotFound = `#!/bin/sh
-printf 'HTTP/2.0 404 Not Found\nContent-Type: application/json\n\n{"message":"Not Found"}\n'
-exit 1
-`
 
 // orchCovVendoredGHScript routes every endpoint the vendored reads use.
 const orchCovVendoredGHScript = `#!/bin/sh
@@ -136,9 +89,9 @@ func TestOrchCovRepositoryFromPullRequestURLNamesTheRepository(t *testing.T) {
 }
 
 func TestOrchCovReadPullRequestReturnsTheIdentityItRead(t *testing.T) {
-	state := orchCovInstallGH(t, orchCovVendoredGHScript)
-	t.Setenv("ORCHCOV_GH_STATE", state.dir)
-	state.answer(t, "pull", `{"number":7,"state":"open","title":"feat: the change","html_url":"https://example.test/acme/app/pull/7",`+
+	state := testfixture.InstallGH(t, orchCovVendoredGHScript)
+	t.Setenv("ORCHCOV_GH_STATE", state.Dir)
+	state.Answer(t, "pull", `{"number":7,"state":"open","title":"feat: the change","html_url":"https://example.test/acme/app/pull/7",`+
 		`"head":{"ref":"candidate","sha":"1111111111111111111111111111111111111111"},`+
 		`"base":{"ref":"main","sha":"2222222222222222222222222222222222222222"},"mergeable":true}`)
 
@@ -152,16 +105,16 @@ func TestOrchCovReadPullRequestReturnsTheIdentityItRead(t *testing.T) {
 }
 
 func TestOrchCovReadPullRequestRefusesIdentityItCannotProve(t *testing.T) {
-	state := orchCovInstallGH(t, orchCovVendoredGHScript)
-	t.Setenv("ORCHCOV_GH_STATE", state.dir)
+	state := testfixture.InstallGH(t, orchCovVendoredGHScript)
+	t.Setenv("ORCHCOV_GH_STATE", state.Dir)
 
-	state.answer(t, "pull", `{"state":"open"}`)
+	state.Answer(t, "pull", `{"state":"open"}`)
 	if _, err := ReadPullRequest(context.Background(), "acme/app", "7"); err == nil ||
 		!strings.Contains(err.Error(), "no identity") {
 		t.Fatalf("identity-less pull request error = %v", err)
 	}
 
-	state.answer(t, "pull", `not json`)
+	state.Answer(t, "pull", `not json`)
 	if _, err := ReadPullRequest(context.Background(), "acme/app", "7"); err == nil ||
 		!strings.Contains(err.Error(), "decode pull request") {
 		t.Fatalf("malformed pull request error = %v", err)
@@ -180,7 +133,7 @@ func TestOrchCovReadPullRequestRefusesAnUnaddressableRequest(t *testing.T) {
 }
 
 func TestOrchCovReadPullRequestReportsAnAuthoritativeReadFailure(t *testing.T) {
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	_, err := ReadPullRequest(context.Background(), "acme/app", "7")
 	if err == nil || !strings.Contains(err.Error(), "read pull request acme/app#7") ||
 		!strings.Contains(err.Error(), "404") {
@@ -189,11 +142,11 @@ func TestOrchCovReadPullRequestReportsAnAuthoritativeReadFailure(t *testing.T) {
 }
 
 func TestOrchCovActiveBranchRulesReadsRulesAndToleratesAnUnruledBranch(t *testing.T) {
-	state := orchCovInstallGH(t, orchCovVendoredGHScript)
-	t.Setenv("ORCHCOV_GH_STATE", state.dir)
+	state := testfixture.InstallGH(t, orchCovVendoredGHScript)
+	t.Setenv("ORCHCOV_GH_STATE", state.Dir)
 
-	state.answer(t, "rules", `[{"type":"required_status_checks","ruleset_id":7,"parameters":{"required_status_checks":[{"context":"CI","integration_id":42}]}}]`)
-	pages, err := activeBranchRules(context.Background(), "acme/app", "main")
+	state.Answer(t, "rules", `[{"type":"required_status_checks","ruleset_id":7,"parameters":{"required_status_checks":[{"context":"CI","integration_id":42}]}}]`)
+	pages, err := ActiveRules(context.Background(), "acme/app", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,8 +156,8 @@ func TestOrchCovActiveBranchRulesReadsRulesAndToleratesAnUnruledBranch(t *testin
 
 	// An unruled branch answers with an empty array, and that must not read as
 	// a decode failure or as a missing receipt.
-	state.answer(t, "rules", `[]`)
-	pages, err = activeBranchRules(context.Background(), "acme/app", "main")
+	state.Answer(t, "rules", `[]`)
+	pages, err = ActiveRules(context.Background(), "acme/app", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +204,7 @@ exit 30
 		t.Fatal(err)
 	}
 
-	pages, err := activeBranchRules(context.Background(), "acme/app", "main")
+	pages, err := ActiveRules(context.Background(), "acme/app", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,10 +214,10 @@ exit 30
 }
 
 func TestOrchCovActiveBranchRulesFailsClosedOnAnUndecodablePage(t *testing.T) {
-	state := orchCovInstallGH(t, orchCovVendoredGHScript)
-	t.Setenv("ORCHCOV_GH_STATE", state.dir)
-	state.answer(t, "rules", `{"not":"an array"}`)
-	_, err := activeBranchRules(context.Background(), "acme/app", "main")
+	state := testfixture.InstallGH(t, orchCovVendoredGHScript)
+	t.Setenv("ORCHCOV_GH_STATE", state.Dir)
+	state.Answer(t, "rules", `{"not":"an array"}`)
+	_, err := ActiveRules(context.Background(), "acme/app", "main")
 	if err == nil || !strings.Contains(err.Error(), "decode active branch rules for main") {
 		t.Fatalf("undecodable rules error = %v", err)
 	}
@@ -290,23 +243,23 @@ echo "unexpected gh args: $*" >&2
 exit 30
 `
 
-func orchCovHeadChecksState(t *testing.T, branch, rules string) orchCovGHState {
+func orchCovHeadChecksState(t *testing.T, branch, rules string) testfixture.State {
 	t.Helper()
-	state := orchCovInstallGH(t, orchCovPullRequestHeadChecksScript)
-	t.Setenv("ORCHCOV_GH_STATE", state.dir)
-	state.answer(t, "pull", `{"number":7,"state":"open",`+
+	state := testfixture.InstallGH(t, orchCovPullRequestHeadChecksScript)
+	t.Setenv("ORCHCOV_GH_STATE", state.Dir)
+	state.Answer(t, "pull", `{"number":7,"state":"open",`+
 		`"head":{"ref":"candidate","sha":"1111111111111111111111111111111111111111"},`+
 		`"base":{"ref":"main","sha":"2222222222222222222222222222222222222222"}}`)
-	state.answer(t, "branch", branch)
-	state.answer(t, "rules", rules)
-	state.answer(t, "statuses", `{"total_count":0,"statuses":[]}`)
+	state.Answer(t, "branch", branch)
+	state.Answer(t, "rules", rules)
+	state.Answer(t, "statuses", `{"total_count":0,"statuses":[]}`)
 	return state
 }
 
 func TestOrchCovPullRequestHeadChecksReportsGreenOnlyWhenRequiredChecksPass(t *testing.T) {
 	state := orchCovHeadChecksState(t,
 		`{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}`, `[]`)
-	state.answer(t, "check-runs", `{"total_count":1,"check_runs":[`+
+	state.Answer(t, "check-runs", `{"total_count":1,"check_runs":[`+
 		`{"id":11,"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}`)
 
 	checks, green, err := PullRequestHeadChecks(context.Background(), "acme/app", "7")
@@ -326,7 +279,7 @@ func TestOrchCovPullRequestHeadChecksRefusesAnUnsatisfiedRequiredCheck(t *testin
 		`{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}`, `[]`)
 	// A green observation from a different producer does not satisfy a
 	// producer-pinned expectation.
-	state.answer(t, "check-runs", `{"total_count":1,"check_runs":[`+
+	state.Answer(t, "check-runs", `{"total_count":1,"check_runs":[`+
 		`{"id":11,"name":"CI","status":"completed","conclusion":"success","app":{"id":7}}]}`)
 
 	checks, green, err := PullRequestHeadChecks(context.Background(), "acme/app", "7")
@@ -345,7 +298,7 @@ func TestOrchCovPullRequestHeadChecksWeighsAnEmptyObservationAgainstTheRequiredS
 	t.Run("required check missing", func(t *testing.T) {
 		state := orchCovHeadChecksState(t,
 			`{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}`, `[]`)
-		state.answer(t, "check-runs", `{"total_count":0,"check_runs":[]}`)
+		state.Answer(t, "check-runs", `{"total_count":0,"check_runs":[]}`)
 
 		checks, green, err := PullRequestHeadChecks(context.Background(), "acme/app", "7")
 		if err != nil {
@@ -357,7 +310,7 @@ func TestOrchCovPullRequestHeadChecksWeighsAnEmptyObservationAgainstTheRequiredS
 	})
 	t.Run("nothing required", func(t *testing.T) {
 		state := orchCovHeadChecksState(t, `{"protected":true,"protection":{}}`, `[]`)
-		state.answer(t, "check-runs", `{"total_count":0,"check_runs":[]}`)
+		state.Answer(t, "check-runs", `{"total_count":0,"check_runs":[]}`)
 
 		checks, green, err := PullRequestHeadChecks(context.Background(), "acme/app", "7")
 		if err != nil {
@@ -371,7 +324,7 @@ func TestOrchCovPullRequestHeadChecksWeighsAnEmptyObservationAgainstTheRequiredS
 
 func TestOrchCovPullRequestHeadChecksReportsAFailedAndASkippedObservation(t *testing.T) {
 	state := orchCovHeadChecksState(t, `{"protected":true,"protection":{}}`, `[]`)
-	state.answer(t, "check-runs", `{"total_count":2,"check_runs":[`+
+	state.Answer(t, "check-runs", `{"total_count":2,"check_runs":[`+
 		`{"id":11,"name":"CI","status":"completed","conclusion":"failure","app":{"id":42}},`+
 		`{"id":12,"name":"Docs","status":"completed","conclusion":"skipped","app":{"id":42}}]}`)
 
@@ -394,15 +347,15 @@ func TestOrchCovPullRequestHeadChecksSurfacesAReadFailure(t *testing.T) {
 	if _, _, err := PullRequestHeadChecks(context.Background(), "acme/app", "not-a-number"); err == nil {
 		t.Fatal("unaddressable selector was accepted")
 	}
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	if _, _, err := PullRequestHeadChecks(context.Background(), "acme/app", "7"); err == nil {
 		t.Fatal("unreadable pull request was accepted")
 	}
 }
 
 func TestOrchCovActiveBranchRulesReportsAReadFailure(t *testing.T) {
-	orchCovInstallGH(t, orchCovNotFound)
-	if pages, err := activeBranchRules(context.Background(), "acme/app", "main"); err == nil {
+	testfixture.InstallGH(t, testfixture.NotFound)
+	if pages, err := ActiveRules(context.Background(), "acme/app", "main"); err == nil {
 		t.Fatalf("unreadable branch rules = %+v, want an error", pages)
 	}
 }
@@ -421,9 +374,9 @@ func TestOrchCovPullRequestHeadChecksReportsEveryUnreadableObservation(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			state := orchCovHeadChecksState(t, `{"protected":true,"protection":{}}`, `[]`)
 			if test.slot != "check-runs" {
-				state.answer(t, "check-runs", `{"total_count":0,"check_runs":[]}`)
+				state.Answer(t, "check-runs", `{"total_count":0,"check_runs":[]}`)
 			}
-			state.answer(t, test.slot, test.body)
+			state.Answer(t, test.slot, test.body)
 			_, green, err := PullRequestHeadChecks(context.Background(), "acme/app", "7")
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("unreadable %s error = %v, want %q", test.name, err, test.wantErr)

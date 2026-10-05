@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/runner"
@@ -18,7 +20,7 @@ import (
 const absorbedSourcePRCommentMarker = "<!-- wb:absorbed-source-pr -->"
 
 type sourcePullRequestRemote interface {
-	associated(context.Context, string, string) ([]PullRequestView, error)
+	associated(context.Context, string, string) ([]githubchecks.PullRequestView, error)
 	hasComment(context.Context, string, int, string) (bool, error)
 	comment(context.Context, string, int, string) error
 	close(context.Context, string, int) error
@@ -100,7 +102,7 @@ func reconcileAbsorbedSourcePullRequestsWithProgress(
 	persist func(WorktreeMergeReceipt) error,
 	reporter progress.Reporter,
 ) error {
-	integrationNumber, _ := PullRequestNumber(receipt.PullRequest)
+	integrationNumber, _ := githubchecks.PullRequestNumber(receipt.PullRequest)
 	seen := make(map[string]bool)
 	for headIndex, head := range heads {
 		reportWorktreeMergeProgress(reporter, "reconcile_source_prs", progress.Running,
@@ -199,7 +201,7 @@ func findSourcePullRequestReconciliation(receipt *WorktreeMergeReceipt, number i
 	return &receipt.SourcePullRequests[len(receipt.SourcePullRequests)-1]
 }
 
-func (remote githubSourcePullRequestRemote) associated(ctx context.Context, repository, head string) ([]PullRequestView, error) {
+func (remote githubSourcePullRequestRemote) associated(ctx context.Context, repository, head string) ([]githubchecks.PullRequestView, error) {
 	get := remote.get
 	if get == nil {
 		get = githubGet
@@ -208,7 +210,7 @@ func (remote githubSourcePullRequestRemote) associated(ctx context.Context, repo
 	if err != nil {
 		return nil, err
 	}
-	var views []PullRequestView
+	var views []githubchecks.PullRequestView
 	if err := json.Unmarshal(body, &views); err != nil {
 		return nil, err
 	}

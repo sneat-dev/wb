@@ -5,16 +5,18 @@ package orchestrate
 import (
 	"bytes"
 	"context"
-	"github.com/sneat-dev/wb/internal/progress"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestE2EResumeWorktreeMergeRecoversResolvedConflictWithEmptyCandidateSHA(t *testing.T) {
@@ -419,7 +421,7 @@ func TestE2EPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *test
 	first.PublishedCandidateSHA = first.Candidate.SHA
 	first.PreviousTargetSHA = first.TargetSHA
 	first.LandingSHA = landing
-	first.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Repository: "acme/app", Target: "main", Head: landing, Reason: "target test failed"}
+	first.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Repository: "acme/app", Target: "main", Head: landing, Reason: "target test failed"}
 	first.Failure = "required target check failed"
 	first.Cleanup = true
 	mismatchedLanding := first
@@ -1535,7 +1537,7 @@ func TestE2EResumeWorktreeMergeAcceptsPostLandingTargetDescendant(t *testing.T) 
 	runEngineGit(t, fixture.canonical, "push", "origin", "main")
 	descendant := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
 	landed.Status = WorktreeMergePostTargetCIFailed
-	landed.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: landed.LandingSHA}
+	landed.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Head: landed.LandingSHA}
 	landed.CanonicalSync = ""
 	if err := persistWorktreeMergeReceipt(landed); err != nil {
 		t.Fatal(err)
@@ -1569,7 +1571,7 @@ func TestE2ELandWorktreeMergeResumesAfterSquashPRMergedBeforeReceiptPersisted(t 
 	receipt.PullRequest = "https://example.test/acme/app/pull/17"
 	receipt.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
 	receipt.PreviousTargetSHA = receipt.TargetSHA
-	receipt.Checks = PullRequestWaitResult{Status: PullRequestWaitPassed, PullRequest: receipt.PullRequest, Head: receipt.Candidate.SHA}
+	receipt.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, PullRequest: receipt.PullRequest, Head: receipt.Candidate.SHA}
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -1586,7 +1588,7 @@ func TestE2ELandWorktreeMergeResumesAfterSquashPRMergedBeforeReceiptPersisted(t 
 	if landed.Status != WorktreeMergeLanded || landed.LandingSHA != serverLanding || landed.PreviousTargetSHA != receipt.TargetSHA {
 		t.Fatalf("resumed squash receipt = %+v", landed)
 	}
-	if landed.Checks.Status != PullRequestWaitPassed || landed.Checks.PullRequest != "" || landed.Checks.ObservedTargetHead != serverLanding {
+	if landed.Checks.Status != githubchecks.PullRequestWaitPassed || landed.Checks.PullRequest != "" || landed.Checks.ObservedTargetHead != serverLanding {
 		t.Fatalf("resumed squash receipt did not replace candidate checks with target checks: %+v", landed.Checks)
 	}
 	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != serverLanding {

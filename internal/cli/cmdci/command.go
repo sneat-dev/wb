@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
+	"time"
+
 	"github.com/sneat-dev/wb/internal/ciaudit"
 	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/console"
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/spf13/cobra"
-	"io"
-	"strings"
-	"time"
 )
 
 func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
@@ -26,7 +27,7 @@ func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 }
 
 type Dependencies struct {
-	WaitChecks     func(context.Context, orchestrate.PullRequestWaitOptions) (orchestrate.PullRequestWaitResult, error)
+	WaitChecks     func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error)
 	Audit          func(ciaudit.BatchOptions) ([]ciaudit.Report, error)
 	ValidateBranch func(string) error
 	Now            func() time.Time
@@ -43,7 +44,7 @@ func NewChecks(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 type WaitOutput struct {
 	SchemaVersion int       `json:"schema_version"`
 	ObservedAt    time.Time `json:"observed_at"`
-	orchestrate.PullRequestWaitResult
+	githubchecks.PullRequestWaitResult
 	ResumeArgs []string `json:"resume_args,omitempty"`
 }
 
@@ -93,7 +94,7 @@ it. This command never starts a detached watcher or background loop.`,
 			interactive := console.Interactive(command.ErrOrStderr(), runtime.Flags().NonInteractive)
 			progress := cliprogress.NewChecks(cliprogress.Output(command.ErrOrStderr(), interactive), true)
 			progress.Start(repository, pullRequest, target, head)
-			result, err := deps.WaitChecks(command.Context(), orchestrate.PullRequestWaitOptions{
+			result, err := deps.WaitChecks(command.Context(), githubchecks.PullRequestWaitOptions{
 				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
 				Slice: slice, CheckPollInterval: interval, Progress: progress.Report, OperationProgress: progress.OperationReporter("ci wait"),
 			})
@@ -103,7 +104,7 @@ it. This command never starts a detached watcher or background loop.`,
 			}
 			progress.Finish(result)
 			output := WaitOutput{SchemaVersion: 1, ObservedAt: deps.Now().UTC(), PullRequestWaitResult: result}
-			if result.Status == orchestrate.PullRequestWaitPending {
+			if result.Status == githubchecks.PullRequestWaitPending {
 				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, machineOutput)
 			}
 			if machineOutput {
@@ -115,7 +116,7 @@ it. This command never starts a detached watcher or background loop.`,
 			} else if err := printCIWait(command, output); err != nil {
 				return err
 			}
-			if result.Status != orchestrate.PullRequestWaitPassed {
+			if result.Status != githubchecks.PullRequestWaitPassed {
 				return runtime.ExitError(shared.ExitFindings, "CI wait "+string(result.Status)+": "+result.Reason)
 			}
 			return nil
@@ -126,7 +127,7 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().StringVar(&target, "target", "", "required target branch containing the exact direct-push head, or the PR base")
 	command.Flags().StringVar(&head, "head", "", "required exact 40- or 64-hex Git head SHA")
 	command.Flags().DurationVar(&slice, "slice", shared.DefaultCIWaitSlice, "maximum foreground observation slice (must be at most 9m)")
-	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
+	command.Flags().DurationVar(&interval, "interval", githubchecks.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
 	return command
@@ -146,8 +147,8 @@ func validateCIWaitInputs(repository, pullRequest, target, head string, slice, i
 	if !shared.ExactGitObjectID.MatchString(head) {
 		return fmt.Errorf("--head must be an exact 40- or 64-hex Git SHA")
 	}
-	if slice <= 0 || slice > orchestrate.MaxForegroundCheckWaitSlice {
-		return fmt.Errorf("--slice must be positive and at most %s", orchestrate.MaxForegroundCheckWaitSlice)
+	if slice <= 0 || slice > githubchecks.MaxForegroundCheckWaitSlice {
+		return fmt.Errorf("--slice must be positive and at most %s", githubchecks.MaxForegroundCheckWaitSlice)
 	}
 	if interval <= 0 {
 		return fmt.Errorf("--interval must be positive")

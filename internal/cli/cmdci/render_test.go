@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/ciaudit"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
 // TestValidateCIWaitInputsRejectsBadRepository drives validateCIWaitInputs'
@@ -45,8 +46,8 @@ func TestPrintCIWaitRendersResumeArgsAndPullRequestPrefix(t *testing.T) {
 	var out bytes.Buffer
 	command.SetOut(&out)
 	output := WaitOutput{
-		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-			Status: orchestrate.PullRequestWaitPending, Repository: "acme/app",
+		PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+			Status: githubchecks.PullRequestWaitPending, Repository: "acme/app",
 			PullRequest: "42", Target: "main", Head: strings.Repeat("a", 40), Reason: "not yet green",
 		},
 		ResumeArgs: []string{"wb", "ci", "wait", "--repo", "acme/app"},
@@ -73,14 +74,14 @@ func TestPrintCIWaitRendersFailureDetails(t *testing.T) {
 	var out bytes.Buffer
 	command.SetOut(&out)
 	output := WaitOutput{
-		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-			Status: orchestrate.PullRequestWaitFailed, Repository: "acme/app",
+		PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+			Status: githubchecks.PullRequestWaitFailed, Repository: "acme/app",
 			Target: "main", Head: strings.Repeat("a", 40), Reason: "checks failed",
-			FailureDetails: []orchestrate.CIFailureDetail{{
+			FailureDetails: []githubchecks.CIFailureDetail{{
 				Check:  "build",
 				RunURL: "https://github.com/acme/app/actions/runs/1",
 				JobURL: "https://github.com/acme/app/actions/runs/1/job/2",
-				Annotations: []orchestrate.CIFailureAnnotation{
+				Annotations: []githubchecks.CIFailureAnnotation{
 					{Path: "a.go", StartLine: 10, EndLine: 10, Message: "single line"},
 					{Path: "b.go", StartLine: 5, EndLine: 8, Message: "multi line"},
 				},
@@ -132,14 +133,14 @@ func (w *failAfterNWriter) Write(p []byte) (int, error) {
 func TestPrintCIWaitPropagatesEveryWriteFailure(t *testing.T) {
 	t.Parallel()
 	output := WaitOutput{
-		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-			Status: orchestrate.PullRequestWaitFailed, Repository: "acme/app",
+		PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+			Status: githubchecks.PullRequestWaitFailed, Repository: "acme/app",
 			Target: "main", Head: strings.Repeat("a", 40), Reason: "checks failed",
-			FailureDetails: []orchestrate.CIFailureDetail{{
+			FailureDetails: []githubchecks.CIFailureDetail{{
 				Check:  "build",
 				RunURL: "https://github.com/acme/app/actions/runs/1",
 				JobURL: "https://github.com/acme/app/actions/runs/1/job/2",
-				Annotations: []orchestrate.CIFailureAnnotation{
+				Annotations: []githubchecks.CIFailureAnnotation{
 					{Path: "a.go", StartLine: 1, EndLine: 1, Message: "m"},
 				},
 				Excerpt: "boom",
@@ -206,8 +207,8 @@ func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
 	var output bytes.Buffer
 	command.SetOut(&output)
 	if err := printCIWait(command, WaitOutput{
-		PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-			Status:     orchestrate.PullRequestWaitPending,
+		PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+			Status:     githubchecks.PullRequestWaitPending,
 			Repository: "acme/app",
 			Target:     "feature/$(touch-pwned)",
 			Head:       testHead,
@@ -230,16 +231,16 @@ func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
 	command := &cobra.Command{}
 	var output bytes.Buffer
 	command.SetOut(&output)
-	err := printCIWait(command, WaitOutput{PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-		Status:     orchestrate.PullRequestWaitFailed,
+	err := printCIWait(command, WaitOutput{PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+		Status:     githubchecks.PullRequestWaitFailed,
 		Repository: "acme/app",
 		Target:     "main",
 		Head:       testHead,
 		Reason:     "check failed",
-		FailureDetails: []orchestrate.CIFailureDetail{{
+		FailureDetails: []githubchecks.CIFailureDetail{{
 			Check: "check-run:test", RunURL: "https://github.com/acme/app/actions/runs/123",
 			JobURL:      "https://github.com/acme/app/actions/runs/123/job/456",
-			Annotations: []orchestrate.CIFailureAnnotation{{Path: "cmd/wb/ci.go", StartLine: 17, Message: "unchecked error"}},
+			Annotations: []githubchecks.CIFailureAnnotation{{Path: "cmd/wb/ci.go", StartLine: 17, Message: "unchecked error"}},
 			Excerpt:     "compile failed",
 		}},
 	}})

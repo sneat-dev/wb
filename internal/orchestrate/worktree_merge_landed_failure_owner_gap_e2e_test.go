@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func TestE2ELandedFailureOwnerNativeSiblingAndStatBoundaryRefusals(t *testing.T) {
@@ -34,7 +36,7 @@ func TestE2ELandedFailureOwnerNativeSiblingAndStatBoundaryRefusals(t *testing.T)
 				changed.Status = WorktreeMergePostTargetCIFailed
 				changed.Phase = WorktreeMergePhaseLand
 				changed.LandingSHA = sibling
-				changed.Checks.Status = PullRequestWaitFailed
+				changed.Checks.Status = githubchecks.PullRequestWaitFailed
 				changed.Checks.Head = sibling
 			}
 			switch stage {
@@ -96,7 +98,7 @@ func TestE2ELandedFailureOwnerNativeSiblingAndStatBoundaryRefusals(t *testing.T)
 func TestE2ELandedFailureCleanedBoundaryRefusalsPreserveTerminalEvidence(t *testing.T) {
 	f, _, r, _ := landedTerminalCleanupFixture(t)
 	r.Status = WorktreeMergePostTargetCIFailed
-	r.Checks.Status = PullRequestWaitFailed
+	r.Checks.Status = githubchecks.PullRequestWaitFailed
 	r.Checks.Head = r.LandingSHA
 	if e := persistWorktreeMergeReceipt(r); e != nil {
 		t.Fatal(e)

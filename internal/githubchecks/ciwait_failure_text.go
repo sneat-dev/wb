@@ -1,4 +1,4 @@
-package orchestrate
+package githubchecks
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ func compactFailureAnnotation(value string, limit int) string {
 	return truncateCIFailureText(strings.Join(strings.Fields(value), " "), limit)
 }
 
-func githubActionsRunAndJob(rawURL string) (runID, jobID string, ok bool) {
+func ActionsRunAndJob(rawURL string) (runID, jobID string, ok bool) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Host != "github.com" {
 		return "", "", false
@@ -113,7 +113,7 @@ const (
 // itself. An empty details slice - a refusal that observed no FailureDetails,
 // e.g. because the failure was a policy gap rather than a red check - yields
 // an empty string, leaving the caller's existing reason untouched.
-func summarizeCheckFailures(details []CIFailureDetail) string {
+func SummarizeFailures(details []CIFailureDetail) string {
 	if len(details) == 0 {
 		return ""
 	}

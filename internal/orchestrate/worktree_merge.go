@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitops"
@@ -207,13 +209,13 @@ type WorktreeMergeValidationTimeouts struct {
 // candidate and receipt instead of abandoning either or pretending the prior
 // remote landing never happened.
 type WorktreeMergeForwardRepairReceipt struct {
-	Status       WorktreeMergeStatus   `json:"status"`
-	TargetSHA    string                `json:"target_sha"`
-	CandidateSHA string                `json:"candidate_sha"`
-	LandingSHA   string                `json:"landing_sha"`
-	PullRequest  string                `json:"pull_request,omitempty"`
-	Checks       PullRequestWaitResult `json:"checks"`
-	Failure      string                `json:"failure"`
+	Status       WorktreeMergeStatus                `json:"status"`
+	TargetSHA    string                             `json:"target_sha"`
+	CandidateSHA string                             `json:"candidate_sha"`
+	LandingSHA   string                             `json:"landing_sha"`
+	PullRequest  string                             `json:"pull_request,omitempty"`
+	Checks       githubchecks.PullRequestWaitResult `json:"checks"`
+	Failure      string                             `json:"failure"`
 }
 
 // WorktreeMergeHostLoadAdmission records one host-load admission check that
@@ -267,7 +269,7 @@ type WorktreeMergeReceipt struct {
 	// never cause a refusal and never lengthen a wait. See
 	// WorktreeMergeFinding and recordDeferredValidationCheckSkippedFinding.
 	Findings       []WorktreeMergeFinding              `json:"findings,omitempty"`
-	Checks         PullRequestWaitResult               `json:"checks,omitempty"`
+	Checks         githubchecks.PullRequestWaitResult  `json:"checks,omitempty"`
 	PushGate       *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
 	ForwardRepairs []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
 	Cleanup        bool                                `json:"cleanup_requested"`
@@ -1509,7 +1511,7 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 			// never have been fetched locally at all, so a local
 			// `git merge-base --is-ancestor` would fail on a missing
 			// object even when the descent genuinely holds.
-			descendsFromCandidate, descentReason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID)
+			descendsFromCandidate, descentReason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID)
 			if !descendsFromCandidate {
 				descentErr := fmt.Errorf("pull-request head %s does not match exact candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
 				if descentReason != "" {
@@ -1765,7 +1767,7 @@ func prepareWorktreeMergeRevertInjected(ctx context.Context, projectsRoot, input
 	receipt.PreviousTargetSHA = ""
 	receipt.LandingSHA = ""
 	receipt.CanonicalSync = ""
-	receipt.Checks = PullRequestWaitResult{}
+	receipt.Checks = githubchecks.PullRequestWaitResult{}
 	receipt.Cleanup = false
 	receipt.CleanupReports = nil
 	receipt.CleanedTasks = nil
@@ -2327,7 +2329,7 @@ func extractWorktreeMergeArchiveInjected(archivePath, destination string, inj *f
 	}
 }
 
-func activeRuleCount(pages [][]githubActiveBranchRule) int {
+func activeRuleCount(pages [][]githubchecks.ActiveBranchRule) int {
 	count := 0
 	for _, page := range pages {
 		count += len(page)

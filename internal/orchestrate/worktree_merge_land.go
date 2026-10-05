@@ -7,6 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
+
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -315,7 +319,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, options.resolveGit(), options.resolveRunner(), &receipt)
 		if advanceErr != nil {
-			if IsTransientGitHubFailure(advanceErr) {
+			if githubobserver.IsTransientGitHubFailure(advanceErr) {
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeChecksPending,
 					fmt.Errorf("%w; resume with wb worktree merge resume %s", advanceErr, receipt.ReceiptPath), save)
 			}
@@ -332,7 +336,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
 		if observeErr != nil {
-			if IsTransientGitHubFailure(observeErr) {
+			if githubobserver.IsTransientGitHubFailure(observeErr) {
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeChecksPending,
 					fmt.Errorf("%w; resume with wb worktree merge resume %s", observeErr, receipt.ReceiptPath), save)
 			}
@@ -353,7 +357,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 			receipt.LandingSHA = remoteTarget
 			// Candidate PR checks prove the pre-merge head only. Force the
 			// recursive landed pass to obtain fresh target-check evidence.
-			receipt.Checks = PullRequestWaitResult{}
+			receipt.Checks = githubchecks.PullRequestWaitResult{}
 			receipt.Status = WorktreeMergeLanded
 			receipt.UpdatedAt = time.Now().UTC()
 			if persistErr := save(receipt); persistErr != nil {
@@ -367,13 +371,13 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		}
 	}
 	if receipt.LandingSHA != "" {
-		if receipt.Checks.Status != PullRequestWaitPassed || receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect {
+		if receipt.Checks.Status != githubchecks.PullRequestWaitPassed || receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect {
 			reportWorktreeMergeProgress(options.Progress, "target_checks", progress.Waiting, shortMergeRevision(receipt.LandingSHA))
 			postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", receipt.LandingSHA, true)
 			receipt.Checks = postChecks
 			if postErr != nil {
 				status := WorktreeMergePostTargetCIFailed
-				if postChecks.Status == PullRequestWaitPending {
+				if postChecks.Status == githubchecks.PullRequestWaitPending {
 					status = WorktreeMergeChecksPending
 				}
 				return failWorktreeMergeReceiptWithSave(receipt, status, postErr, save)
@@ -830,7 +834,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	receipt.Checks = postChecks
 	if postErr != nil {
 		status := WorktreeMergePostTargetCIFailed
-		if postChecks.Status == PullRequestWaitPending {
+		if postChecks.Status == githubchecks.PullRequestWaitPending {
 			status = WorktreeMergeChecksPending
 		}
 		failed, failure := failWorktreeMergeReceiptWithSave(receipt, status, postErr, save)

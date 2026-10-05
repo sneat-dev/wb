@@ -1,18 +1,20 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
 
 // orchCovAnswer runs one read against a fake gh that prints the named body.
 func orchCovAnswer(t *testing.T, body, exit string) {
 	t.Helper()
-	state := orchCovScriptState(t, orchCovOneEndpointScript)
-	state.answer(t, "body", body)
-	state.answer(t, "exit", exit)
+	state := testfixture.ScriptState(t, testfixture.OneEndpointScript)
+	state.Answer(t, "body", body)
+	state.Answer(t, "exit", exit)
 }
 
 func TestOrchCovWaitForPullRequestChecksRequiresAPullRequest(t *testing.T) {
@@ -67,7 +69,7 @@ func TestOrchCovCommitStatusesNamesEveryObservedState(t *testing.T) {
 	if _, _, reason := commitStatuses(context.Background(), PullRequestWaitOptions{Repository: "acme/app", Head: "aaaa"}); !strings.Contains(reason, "decode GitHub commit statuses") {
 		t.Fatalf("undecodable statuses reason = %q", reason)
 	}
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	if _, _, reason := commitStatuses(context.Background(), PullRequestWaitOptions{Repository: "acme/app", Head: "aaaa"}); reason == "" {
 		t.Fatal("an unreadable statuses endpoint reported no reason")
 	}
@@ -95,7 +97,7 @@ func TestOrchCovCandidateContainsTargetNamesEveryComparisonOutcome(t *testing.T)
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			orchCovAnswer(t, test.body, "0")
-			contains, reason := candidateContainsTarget(context.Background(), "acme/app", target, candidate)
+			contains, reason := ContainsTarget(context.Background(), "acme/app", target, candidate)
 			if contains != test.want {
 				t.Fatalf("contains = %t, want %t (reason %q)", contains, test.want, reason)
 			}
@@ -112,8 +114,8 @@ func TestOrchCovCandidateContainsTargetNamesEveryComparisonOutcome(t *testing.T)
 			}
 		})
 	}
-	orchCovInstallGH(t, orchCovNotFound)
-	if _, reason := candidateContainsTarget(context.Background(), "acme/app", target, candidate); !strings.Contains(reason, "prove candidate ancestry") {
+	testfixture.InstallGH(t, testfixture.NotFound)
+	if _, reason := ContainsTarget(context.Background(), "acme/app", target, candidate); !strings.Contains(reason, "prove candidate ancestry") {
 		t.Fatalf("unreadable comparison reason = %q", reason)
 	}
 }
@@ -202,7 +204,7 @@ func TestOrchCovSortRemoteAndRequiredChecksAreDeterministic(t *testing.T) {
 
 func TestOrchCovLatestActionsRunMatchesTheExactIdentity(t *testing.T) {
 	t.Parallel()
-	runs := []githubActionsRun{
+	runs := []ActionsRun{
 		{ID: 1, WorkflowID: 10, Event: "pull_request", CheckSuiteID: 100, CreatedAt: time.Now()},
 		{ID: 2, WorkflowID: 20, Event: "push", CheckSuiteID: 200, CreatedAt: time.Now()},
 	}
@@ -217,36 +219,36 @@ func TestOrchCovLatestActionsRunMatchesTheExactIdentity(t *testing.T) {
 
 func TestOrchCovPullRequestIdentityRequiresAnExactHeadAndTarget(t *testing.T) {
 	orchCovAnswer(t, `{"number":7,"state":"open","head":{"sha":"aaaa"},"base":{"ref":"main"}}`, "0")
-	head, base, reason := pullRequestIdentity(context.Background(), "acme/app", "7")
+	head, base, reason := PullRequestIdentity(context.Background(), "acme/app", "7")
 	if reason != "" || head != "aaaa" || base != "main" {
 		t.Fatalf("identity = %q/%q reason=%q", head, base, reason)
 	}
 	orchCovAnswer(t, `{"number":7,"state":"open","head":{"sha":"aaaa"},"base":{"ref":""}}`, "0")
-	if _, _, reason := pullRequestIdentity(context.Background(), "acme/app", "7"); !strings.Contains(reason, "no exact head or target") {
+	if _, _, reason := PullRequestIdentity(context.Background(), "acme/app", "7"); !strings.Contains(reason, "no exact head or target") {
 		t.Fatalf("incomplete identity reason = %q", reason)
 	}
-	orchCovInstallGH(t, orchCovNotFound)
-	if _, _, reason := pullRequestIdentity(context.Background(), "acme/app", "7"); reason == "" {
+	testfixture.InstallGH(t, testfixture.NotFound)
+	if _, _, reason := PullRequestIdentity(context.Background(), "acme/app", "7"); reason == "" {
 		t.Fatal("an unreadable pull request reported no reason")
 	}
 }
 
 func TestOrchCovTargetHeadReadsTheExactRef(t *testing.T) {
 	orchCovAnswer(t, `{"object":{"sha":"0123456789abcdef"}}`, "0")
-	head, reason := targetHead(context.Background(), "acme/app", "main")
+	head, reason := TargetHead(context.Background(), "acme/app", "main")
 	if reason != "" || head != "0123456789abcdef" {
 		t.Fatalf("target head = %q reason=%q", head, reason)
 	}
 	orchCovAnswer(t, `{"object":{"sha":""}}`, "0")
-	if _, reason := targetHead(context.Background(), "acme/app", "main"); !strings.Contains(reason, "returned no SHA") {
+	if _, reason := TargetHead(context.Background(), "acme/app", "main"); !strings.Contains(reason, "returned no SHA") {
 		t.Fatalf("missing SHA reason = %q", reason)
 	}
 	orchCovAnswer(t, "not json", "0")
-	if _, reason := targetHead(context.Background(), "acme/app", "main"); !strings.Contains(reason, "decode target ref") {
+	if _, reason := TargetHead(context.Background(), "acme/app", "main"); !strings.Contains(reason, "decode target ref") {
 		t.Fatalf("undecodable ref reason = %q", reason)
 	}
-	orchCovInstallGH(t, orchCovNotFound)
-	if _, reason := targetHead(context.Background(), "acme/app", "main"); reason == "" {
+	testfixture.InstallGH(t, testfixture.NotFound)
+	if _, reason := TargetHead(context.Background(), "acme/app", "main"); reason == "" {
 		t.Fatal("an unreadable target ref reported no reason")
 	}
 }
@@ -275,9 +277,9 @@ func TestOrchCovGitHubActionsRunsForHeadFailsClosedOnMalformedIdentity(t *testin
 	options := PullRequestWaitOptions{Repository: "acme/app", Head: "aaaa"}
 	answer := func(body string) {
 		t.Helper()
-		state := orchCovScriptState(t, orchCovActionsScript)
-		state.answer(t, "body", body)
-		state.answer(t, "exit", "0")
+		state := testfixture.ScriptState(t, orchCovActionsScript)
+		state.Answer(t, "body", body)
+		state.Answer(t, "exit", "0")
 	}
 	for _, test := range []struct {
 		name   string
@@ -310,7 +312,7 @@ func TestOrchCovGitHubActionsRunsForHeadFailsClosedOnMalformedIdentity(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			answer(test.body)
-			_, _, reason := githubActionsRunsForHead(context.Background(), options)
+			_, _, reason := ActionsRunsForHead(context.Background(), options)
 			if test.wantIn == "" {
 				if reason != "" {
 					t.Fatalf("valid receipt reason = %q", reason)
@@ -323,11 +325,11 @@ func TestOrchCovGitHubActionsRunsForHeadFailsClosedOnMalformedIdentity(t *testin
 		})
 	}
 
-	state := orchCovScriptState(t, orchCovActionsScript)
-	state.answer(t, "body", `{"total_count":0,"workflow_runs":[]}`)
-	state.answer(t, "exit", "0")
-	state.answer(t, "not-found", "1")
-	if _, _, reason := githubActionsRunsForHead(context.Background(), options); reason == "" {
+	state := testfixture.ScriptState(t, orchCovActionsScript)
+	state.Answer(t, "body", `{"total_count":0,"workflow_runs":[]}`)
+	state.Answer(t, "exit", "0")
+	state.Answer(t, "not-found", "1")
+	if _, _, reason := ActionsRunsForHead(context.Background(), options); reason == "" {
 		t.Fatal("an unreadable Actions endpoint reported no reason")
 	}
 }

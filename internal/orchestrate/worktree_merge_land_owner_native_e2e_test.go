@@ -5,10 +5,6 @@ package orchestrate
 import (
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/landinglane"
-	"github.com/sneat-dev/wb/internal/progress"
-	"github.com/sneat-dev/wb/internal/session"
-	"github.com/sneat-dev/wb/internal/wbhome"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +12,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/landinglane"
+	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestE2ELandOwnerRunnerRefusalsPreserveNativeStateAndReleaseLock(t *testing.T) {
@@ -418,7 +420,7 @@ func TestE2ELandOwnerResumedTargetChecksKeepPendingAndHardFailureReceipts(t *tes
 			}
 			gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
 			gh.writeState(t, "check-conclusion", tt.conclusion)
-			landed.Checks = PullRequestWaitResult{}
+			landed.Checks = githubchecks.PullRequestWaitResult{}
 			if err := persistWorktreeMergeReceipt(landed); err != nil {
 				t.Fatal(err)
 			}

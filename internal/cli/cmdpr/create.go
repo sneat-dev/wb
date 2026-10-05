@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -182,7 +184,7 @@ wb pr create --format json`,
 					MergeMethod:       mergeMethod,
 					AllowUnfenced:     allowUnfenced,
 					Slice:             timeout,
-					CheckPollInterval: orchestrate.DefaultCheckPollInterval,
+					CheckPollInterval: githubchecks.DefaultCheckPollInterval,
 					Progress:          progress.Report,
 					OperationProgress: progress.OperationReporter("pr create --land"),
 					Lane:              deps.Lane(runtime.Flags().ProjectsRoot, "wb pr create --land", "", false),

@@ -1,6 +1,6 @@
 //go:build unix
 
-package orchestrate
+package githubchecks
 
 import (
 	"context"

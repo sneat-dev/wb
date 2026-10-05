@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, requested WorktreeMergeRoute) (WorktreeMergeRouteDecision, error) {
@@ -30,7 +32,7 @@ func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, r
 	if err := json.Unmarshal(branchOutput, &branch); err != nil || branch.Protected == nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("authoritative target branch policy for %s is incomplete", target))
 	}
-	pages, err := activeBranchRules(ctx, repository, target)
+	pages, err := githubchecks.ActiveRules(ctx, repository, target)
 	if err != nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("active target rules are unavailable: %v", err))
 	}
@@ -165,7 +167,7 @@ func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target 
 // unreadable policy, zero required checks, or an unfenced policy keeps
 // validation local.
 func worktreeMergeValidationDeferralEligible(ctx context.Context, repository, target string) (bool, string) {
-	checks, freshness, reason := targetBranchRequiredChecks(ctx, repository, target, true)
+	checks, freshness, reason := githubchecks.RequiredChecks(ctx, repository, target, true)
 	if reason != "" {
 		return false, fmt.Sprintf("required-check policy for %s is unreadable, so validation stays local: %s", target, reason)
 	}

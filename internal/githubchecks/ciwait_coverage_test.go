@@ -1,10 +1,12 @@
-package orchestrate
+package githubchecks
 
 import (
 	"context"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
 
 // orchCovCIScript answers the two reads a failed-check report makes: the
@@ -24,14 +26,14 @@ echo "unexpected gh args: $*" >&2
 exit 30
 `
 
-func orchCovCIState(t *testing.T) orchCovGHState {
+func orchCovCIState(t *testing.T) testfixture.State {
 	t.Helper()
-	state := orchCovScriptState(t, orchCovCIScript)
-	state.answer(t, "annotations", "[]")
-	state.answer(t, "annotations-exit", "0")
-	state.answer(t, "log", "")
-	state.answer(t, "log-stderr", "")
-	state.answer(t, "log-exit", "0")
+	state := testfixture.ScriptState(t, orchCovCIScript)
+	state.Answer(t, "annotations", "[]")
+	state.Answer(t, "annotations-exit", "0")
+	state.Answer(t, "log", "")
+	state.Answer(t, "log-stderr", "")
+	state.Answer(t, "log-exit", "0")
 	return state
 }
 
@@ -48,7 +50,7 @@ func TestOrchCovFailedCheckDetailsSkipsChecksThatDidNotFail(t *testing.T) {
 
 func TestOrchCovFailedCheckDetailsPrefersAnnotations(t *testing.T) {
 	state := orchCovCIState(t)
-	state.answer(t, "annotations", `[`+
+	state.Answer(t, "annotations", `[`+
 		`{"path":"internal/app.go","start_line":3,"end_line":4,"message":"the build failed"},`+
 		`{"path":"","start_line":5,"message":"no path"},`+
 		`{"path":"a.go","start_line":0,"message":"no line"},`+
@@ -80,7 +82,7 @@ func TestOrchCovFailedCheckDetailsStopsAtTheAnnotationCeiling(t *testing.T) {
 		entries = append(entries, fmt.Sprintf(`{"path":"file%d.go","start_line":%d,"end_line":%d,"message":"failure %d"}`,
 			index, index+1, index+1, index))
 	}
-	state.answer(t, "annotations", "["+strings.Join(entries, ",")+"]")
+	state.Answer(t, "annotations", "["+strings.Join(entries, ",")+"]")
 
 	details := failedCheckDetails(context.Background(), "acme/app", []RemoteCheck{{
 		Name: "check-run:CI", Bucket: "cancel", CheckRunID: 99,
@@ -93,7 +95,7 @@ func TestOrchCovFailedCheckDetailsStopsAtTheAnnotationCeiling(t *testing.T) {
 
 func TestOrchCovFailedCheckDetailsReportsAThirdPartyCheckHonestly(t *testing.T) {
 	state := orchCovCIState(t)
-	state.answer(t, "annotations", "not json")
+	state.Answer(t, "annotations", "not json")
 
 	details := failedCheckDetails(context.Background(), "acme/app", []RemoteCheck{{
 		Name: "check-run:sonar", Bucket: "fail", CheckRunID: 99, Link: "https://sonar.example.test/report",
@@ -112,7 +114,7 @@ func TestOrchCovFailedCheckDetailsReportsAThirdPartyCheckHonestly(t *testing.T) 
 
 func TestOrchCovFailedCheckDetailsRetrievesTheFailedJobLogTail(t *testing.T) {
 	state := orchCovCIState(t)
-	state.answer(t, "log", "step one\nfailing step\ntoken ghp_secretValue\n")
+	state.Answer(t, "log", "step one\nfailing step\ntoken ghp_secretValue\n")
 
 	details := failedCheckDetails(context.Background(), "acme/app", []RemoteCheck{{
 		Name: "check-run:CI", Bucket: "fail", CheckRunID: 99,
@@ -137,9 +139,9 @@ func TestOrchCovFailedCheckDetailsRetrievesTheFailedJobLogTail(t *testing.T) {
 
 func TestOrchCovFailedCheckDetailsReportsAnUnretrievableLog(t *testing.T) {
 	state := orchCovCIState(t)
-	state.answer(t, "annotations", "not json")
-	state.answer(t, "log-exit", "1")
-	state.answer(t, "log-stderr", "no logs were found for this job")
+	state.Answer(t, "annotations", "not json")
+	state.Answer(t, "log-exit", "1")
+	state.Answer(t, "log-stderr", "no logs were found for this job")
 
 	details := failedCheckDetails(context.Background(), "acme/app", []RemoteCheck{{
 		Name: "check-run:CI", Bucket: "fail", CheckRunID: 99,
@@ -171,12 +173,12 @@ func TestOrchCovFailedCheckAnnotationsRefusesWithoutAnIdentityOrADecodableBody(t
 	if err != nil || annotations != nil {
 		t.Fatalf("anonymous check run = %+v, err %v", annotations, err)
 	}
-	state.answer(t, "annotations", "not json")
+	state.Answer(t, "annotations", "not json")
 	if _, err := failedCheckAnnotations(context.Background(), "acme/app", 99, map[string]bool{}); err == nil ||
 		!strings.Contains(err.Error(), "decode check-run annotations") {
 		t.Fatalf("undecodable annotations error = %v", err)
 	}
-	orchCovInstallGH(t, orchCovNotFound)
+	testfixture.InstallGH(t, testfixture.NotFound)
 	if _, err := failedCheckAnnotations(context.Background(), "acme/app", 99, map[string]bool{}); err == nil {
 		t.Fatal("unreadable annotations were accepted")
 	}
@@ -213,7 +215,7 @@ func TestOrchCovGitHubActionsRunAndJobAcceptsOnlyActionsJobLinks(t *testing.T) {
 		{input: "https://github.com/acme/app/actions/runs/abc/job/2"},
 		{input: "://missing-protocol"},
 	} {
-		runID, jobID, ok := githubActionsRunAndJob(test.input)
+		runID, jobID, ok := ActionsRunAndJob(test.input)
 		if ok != test.wantMatched || runID != test.wantRun || jobID != test.wantJob {
 			t.Fatalf("githubActionsRunAndJob(%q) = %q/%q/%t", test.input, runID, jobID, ok)
 		}

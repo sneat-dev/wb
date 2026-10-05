@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func Parse(selector string) (repository, number string, err error) {
@@ -12,11 +12,11 @@ func Parse(selector string) (repository, number string, err error) {
 	repository, rest, found := strings.Cut(value, "#")
 	if !found {
 		if url := strings.TrimSpace(value); strings.Contains(url, "/pull/") {
-			repository, urlErr := orchestrate.RepositoryFromPullRequestURL(url)
+			repository, urlErr := githubchecks.RepositoryFromPullRequestURL(url)
 			if urlErr != nil {
 				return "", "", urlErr
 			}
-			number, numberErr := orchestrate.PullRequestNumber(url)
+			number, numberErr := githubchecks.PullRequestNumber(url)
 			return repository, number, numberErr
 		}
 		return "", "", fmt.Errorf("selector %q must be owner/repository#number or a pull request URL", selector)
@@ -25,6 +25,6 @@ func Parse(selector string) (repository, number string, err error) {
 	if strings.Count(repository, "/") != 1 || strings.HasPrefix(repository, "/") || strings.HasSuffix(repository, "/") {
 		return "", "", fmt.Errorf("selector %q must name owner/repository before the #", selector)
 	}
-	number, err = orchestrate.PullRequestNumber(rest)
+	number, err = githubchecks.PullRequestNumber(rest)
 	return repository, number, err
 }

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/prselector"
@@ -258,7 +260,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().BoolVar(&noUpdateBranch, "no-update-branch", false, "refuse a candidate that is behind the target instead of bringing it up to date")
 	command.Flags().BoolVar(&noAutoMerge, "no-auto-merge", false, "do not arm GitHub auto-merge; a wait that runs out of budget leaves the pull request for someone to land later")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
-	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
+	command.Flags().DurationVar(&pollInterval, "poll-interval", githubchecks.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", shared.DefaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")

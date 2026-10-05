@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
@@ -232,7 +234,7 @@ func recoverAlreadyMergedPublishedWorktreeMerge(ctx context.Context, receipt *Wo
 	// Any stored checks describe the published candidate, not the target after
 	// GitHub merged it. The recursive landed pass must obtain a fresh target
 	// receipt before synchronization or cleanup.
-	receipt.Checks = PullRequestWaitResult{}
+	receipt.Checks = githubchecks.PullRequestWaitResult{}
 	receipt.Status = WorktreeMergeLanded
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
@@ -282,7 +284,7 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 	}
 	observedPullRequestHead := ""
 	if view.HeadRefOID != receipt.Candidate.SHA {
-		if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID); !contains {
+		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID); !contains {
 			if reason == "" {
 				reason = fmt.Sprintf("pull request %s head %s does not contain exact receipted candidate %s", receipt.PullRequest, view.HeadRefOID, receipt.Candidate.SHA)
 			}
@@ -296,18 +298,18 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 	if view.MergedAt == "" || view.MergeCommit.OID == "" {
 		return "", "", "", "", "", fmt.Errorf("pull request %s reports MERGED without a merge time or server merge commit", receipt.PullRequest)
 	}
-	currentTarget, headReason := targetHead(ctx, receipt.Repository, receipt.Target)
+	currentTarget, headReason := githubchecks.TargetHead(ctx, receipt.Repository, receipt.Target)
 	if currentTarget == "" {
 		return "", "", "", "", "", fmt.Errorf("read current remote target %s: %s", receipt.Target, headReason)
 	}
-	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, view.MergeCommit.OID, currentTarget); !contains {
+	if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, view.MergeCommit.OID, currentTarget); !contains {
 		if reason == "" {
 			reason = fmt.Sprintf("current remote target %s does not contain proved merge commit %s", currentTarget, view.MergeCommit.OID)
 		}
 		return "", "", "", "", "", errors.New(reason)
 	}
 	if observedPullRequestHead != "" {
-		if contains, reason := candidateContainsTarget(ctx, receipt.Repository, observedPullRequestHead, currentTarget); !contains {
+		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, observedPullRequestHead, currentTarget); !contains {
 			if reason == "" {
 				reason = fmt.Sprintf("current remote target %s does not contain observed pull request head %s", currentTarget, observedPullRequestHead)
 			}
@@ -324,7 +326,7 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 	// trees from GitHub's own remote state.
 	proofKind := "ancestor"
 	var landingTreeSHA string
-	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, currentTarget); !contains {
+	if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, currentTarget); !contains {
 		identical, treeSHA, treeErr := candidateTreeIdenticalToMergeCommit(ctx, receipt.Repository, view.MergeCommit.OID, receipt.Candidate.SHA)
 		if treeErr != nil {
 			return "", "", "", "", "", treeErr
@@ -338,7 +340,7 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 		proofKind = "tree-identical"
 		landingTreeSHA = treeSHA
 	}
-	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.TargetSHA, receipt.Candidate.SHA); !contains {
+	if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.TargetSHA, receipt.Candidate.SHA); !contains {
 		if reason == "" {
 			reason = fmt.Sprintf("receipted candidate %s no longer contains its own recorded pre-merge target %s", receipt.Candidate.SHA, receipt.TargetSHA)
 		}

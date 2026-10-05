@@ -22,7 +22,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 // Snapshot is one observation of a pull request's current state: GitHub's
@@ -50,7 +50,7 @@ type Snapshot struct {
 	// a closed pull request's head checks are no longer read at all.
 	Checks   map[string]int
 	Failed   []string
-	Failures []orchestrate.CIFailureDetail
+	Failures []githubchecks.CIFailureDetail
 	// Blocked names a required check with no passing observation on this
 	// head (orchestrate.HeadObservation.Blocked) — the renamed-workflow
 	// trap. It is fetched only when nothing is pending or failed and Green
@@ -103,7 +103,7 @@ func ObserveLean(ctx context.Context, repository, selector string) Snapshot {
 
 func observe(ctx context.Context, repository, selector string, lean bool) Snapshot {
 	snapshot := Snapshot{Repository: repository, Number: selector}
-	view, err := orchestrate.ReadPullRequest(ctx, repository, selector)
+	view, err := githubchecks.ReadPullRequest(ctx, repository, selector)
 	if err != nil {
 		snapshot.Err = err
 		return snapshot
@@ -124,7 +124,7 @@ func observe(ctx context.Context, repository, selector string, lean bool) Snapsh
 		snapshot.Checks = map[string]int{}
 		return snapshot
 	}
-	observation, err := orchestrate.ObservePullRequestHead(ctx, repository, view)
+	observation, err := githubchecks.ObservePullRequestHead(ctx, repository, view)
 	if err != nil {
 		// A closed pull request no longer needs its checks read; reporting
 		// the closure is more useful than failing on a head that may be gone.
@@ -156,7 +156,7 @@ func observe(ctx context.Context, repository, selector string, lean bool) Snapsh
 	// something actually failed. Annotations cost extra reads, and a check
 	// that is still running has nothing to explain yet.
 	if !lean && len(snapshot.Failed) > 0 && snapshot.Checks["pending"] == 0 {
-		if failures, failErr := orchestrate.PullRequestFailureDetails(ctx, repository, selector); failErr == nil {
+		if failures, failErr := githubchecks.PullRequestFailureDetails(ctx, repository, selector); failErr == nil {
 			snapshot.Failures = failures
 		}
 	}

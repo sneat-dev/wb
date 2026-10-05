@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -38,11 +40,11 @@ var updateBranchSettlePoll = 3 * time.Second
 // every other read in this package uses, so a transient failure stays
 // resumable instead of ending the landing.
 func candidateIsBehindTarget(ctx context.Context, repository, target, head string) (bool, string) {
-	targetSHA, reason := targetHead(ctx, repository, target)
+	targetSHA, reason := githubchecks.TargetHead(ctx, repository, target)
 	if reason != "" {
 		return false, reason
 	}
-	contains, reason := candidateContainsTarget(ctx, repository, targetSHA, head)
+	contains, reason := githubchecks.ContainsTarget(ctx, repository, targetSHA, head)
 	if reason != "" {
 		return false, reason
 	}
@@ -79,7 +81,7 @@ func updatePullRequestBranch(ctx context.Context, repository, number, expectedHe
 func waitForUpdatedHead(ctx context.Context, repository, number, previousHead string, reporter progress.Reporter) (string, string) {
 	deadline := time.Now().Add(updateBranchSettleTimeout)
 	for {
-		view, err := ReadPullRequest(ctx, repository, number)
+		view, err := githubchecks.ReadPullRequest(ctx, repository, number)
 		if err == nil && !strings.EqualFold(view.Head.SHA, previousHead) && strings.TrimSpace(view.Head.SHA) != "" {
 			return view.Head.SHA, ""
 		}
@@ -114,7 +116,7 @@ func updateBranchConflict(reason string) bool {
 func waitDeadline(options PullRequestLandOptions) time.Time {
 	budget := options.Slice
 	if budget <= 0 {
-		budget = MaxForegroundCheckWaitSlice
+		budget = githubchecks.MaxForegroundCheckWaitSlice
 	}
 	return landOptionsNow(options)().Add(budget)
 }

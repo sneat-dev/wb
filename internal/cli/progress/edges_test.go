@@ -3,10 +3,11 @@ package progress
 import (
 	"bytes"
 	"errors"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 type refusedWriter struct{}
@@ -61,7 +62,7 @@ func TestCheckProgressIdentityAndFailureBuckets(t *testing.T) {
 		var out bytes.Buffer
 		p := NewChecksWithHeartbeat(&out, true, 0)
 		p.Start("acme/app", test.pr, test.target, test.head)
-		p.Report(orchestrate.PullRequestWaitProgress{Observation: 1, Result: orchestrate.PullRequestWaitResult{Checks: []orchestrate.RemoteCheck{{Name: "skip", Bucket: "skipping"}, {Name: "cancel", Bucket: "cancel"}, {Name: "fail", Bucket: "fail"}}}})
+		p.Report(githubchecks.PullRequestWaitProgress{Observation: 1, Result: githubchecks.PullRequestWaitResult{Checks: []githubchecks.RemoteCheck{{Name: "skip", Bucket: "skipping"}, {Name: "cancel", Bucket: "cancel"}, {Name: "fail", Bucket: "fail"}}}})
 		p.Fail(nil)
 		if !strings.Contains(out.String(), test.want) || !strings.Contains(out.String(), "2 failed") {
 			t.Fatal(out.String())
