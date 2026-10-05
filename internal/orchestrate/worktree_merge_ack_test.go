@@ -1200,8 +1200,10 @@ func TestSupersedeValidationFailedWorktreeMergeBindsCleanCandidateDescendant(t *
 }
 
 func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("dirty original candidate", func(t *testing.T) {
-		fixture, receipt, replacement := supersessionFixture(t)
+		t.Parallel()
+		fixture, receipt, replacement := supersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		receipt.Status = WorktreeMergeConflict
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			t.Fatal(err)
@@ -1215,7 +1217,8 @@ func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
 	})
 
 	t.Run("published conflict", func(t *testing.T) {
-		fixture, receipt, replacement := supersessionFixture(t)
+		t.Parallel()
+		fixture, receipt, replacement := supersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		receipt.Status = WorktreeMergeConflict
 		receipt.PullRequest = "https://example.test/pull/1"
 		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
@@ -1230,7 +1233,8 @@ func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
 	})
 
 	t.Run("replacement misses advanced target", func(t *testing.T) {
-		fixture, receipt, replacement := supersessionFixture(t)
+		t.Parallel()
+		fixture, receipt, replacement := supersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		receipt.Status = WorktreeMergeConflict
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			t.Fatal(err)
@@ -1247,7 +1251,8 @@ func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
 	})
 
 	t.Run("replacement misses observed candidate descendant", func(t *testing.T) {
-		fixture, receipt, replacement := supersessionFixture(t)
+		t.Parallel()
+		fixture, receipt, replacement := supersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		receipt.Status = WorktreeMergeConflict
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			t.Fatal(err)
@@ -1264,7 +1269,8 @@ func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
 	})
 
 	t.Run("receipted candidate is not an ancestor of observed head", func(t *testing.T) {
-		fixture, receipt, replacement := supersessionFixture(t)
+		t.Parallel()
+		fixture, receipt, replacement := supersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		unrelated := createMergeSource(t, fixture, "unrelated-candidate", "feature/unrelated-candidate", "unrelated.txt", "unrelated\n")
 		receipt.Status = WorktreeMergeConflict
 		receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, unrelated.WorktreeDir, "rev-parse", "HEAD"))
@@ -1437,6 +1443,7 @@ func assertMergeSupersessionImmutableBytes(t *testing.T, fixture engineFixture, 
 }
 
 func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt, replacement worktrees.CreateResult)
@@ -1553,7 +1560,8 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture, receipt, replacement := supersessionFixture(t)
+			t.Parallel()
+			fixture, receipt, replacement := supersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 			test.mutate(t, fixture, &receipt, replacement)
 			_, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "unsafe evidence"})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
