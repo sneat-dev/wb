@@ -28,6 +28,7 @@ func successfulSelfUpdate(binary string) selfupdate.AfterUpdate {
 }
 
 func TestSyncSkillsAfterSelfUpdateUsesProviderExecutableAndReportsVerifiedTarget(t *testing.T) {
+	t.Parallel()
 	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
 	cmd := &Output{Out: io.Discard, Err: io.Discard}
 	var stdout, stderr bytes.Buffer
@@ -48,6 +49,7 @@ func TestSyncSkillsAfterSelfUpdateUsesProviderExecutableAndReportsVerifiedTarget
 }
 
 func TestSyncSkillsAfterSelfUpdateSkipsAlreadyCurrentAndUnverifiedManagerOutcome(t *testing.T) {
+	t.Parallel()
 	binary := fakeSelfUpdateBinary(t, `echo "unexpected invocation"`)
 	cmd := &Output{Out: io.Discard, Err: io.Discard}
 
@@ -66,6 +68,7 @@ func TestSyncSkillsAfterSelfUpdateSkipsAlreadyCurrentAndUnverifiedManagerOutcome
 }
 
 func TestSyncSkillsAfterSelfUpdateReturnsActionableFailure(t *testing.T) {
+	t.Parallel()
 	binary := fakeSelfUpdateBinary(t, `echo "boom" 1>&2; exit 1`)
 	cmd := &Output{Out: io.Discard, Err: io.Discard}
 	err := testService().SyncSkills(*cmd, context.Background(), successfulSelfUpdate(binary))
@@ -80,6 +83,7 @@ func TestSyncSkillsAfterSelfUpdateReturnsActionableFailure(t *testing.T) {
 }
 
 func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
+	t.Parallel()
 	binary := fakeSelfUpdateBinary(t, `echo "skills-sync-output"`)
 	cmd := &Output{Out: io.Discard, Err: io.Discard}
 	cmd.JSON = true
@@ -106,6 +110,7 @@ func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
 // binary to in the first case, and the second is already reporting its own
 // distinct warning.
 func TestRestartDaemonAfterSelfUpdateSkipsWhenAlreadyCurrentOrPostSwapWarned(t *testing.T) {
+	t.Parallel()
 	command := &Output{Out: io.Discard, Err: io.Discard}
 	var stderr bytes.Buffer
 	command.Err = &stderr

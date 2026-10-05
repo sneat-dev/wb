@@ -64,6 +64,7 @@ func TestPropagationArgumentsErrorsAndOutputCustody(t *testing.T) {
 		{name: "findings", args: []string{"library", "--to", "consumer"}, result: locallink.Result{Consumers: []locallink.ConsumerResult{{Consumer: "consumer", Errors: []string{"broken"}}}}, want: "local propagation reported findings"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			calls := 0
 			command := propagationChild(t, testRuntime(), PropagationDependencies{Run: func(context.Context, depsrun.PropagationRequest) (locallink.Result, error) {
 				calls++

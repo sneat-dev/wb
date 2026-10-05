@@ -18,6 +18,8 @@ func nativeAdmission(ctx context.Context, root string, args []string, self runqu
 	result, err := defaultAdmissionOperations().run(ctx, root, args, self, observe, 5*time.Millisecond)
 	return result.Lease, result.Units, result.Waited, err
 }
+
+//nolint:paralleltest // This contract changes the process-wide runqueue CPU-count override; admission and restore must remain serial.
 func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.T) {
 	// Force the small-machine (N<8) legacy budget-sum pool so this test's
 	// manually-held lease deterministically blocks the admission under
@@ -88,6 +90,7 @@ func TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted(t *testing.
 }
 
 func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var out eventRecorder
 	progress := out.report
@@ -97,7 +100,7 @@ func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Release()
+	t.Cleanup(lease.Release)
 	if waited >= AdmissionGrace {
 		t.Fatalf("waited = %s, want an immediate admission on an empty queue", waited)
 	}
@@ -106,6 +109,7 @@ func TestAcquireWithQueueVisibilityAdmitsImmediatelyOnAnEmptyQueue(t *testing.T)
 	}
 }
 
+//nolint:paralleltest // This contract changes the process-wide runqueue CPU-count override; admission and restore must remain serial.
 func TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool(t *testing.T) {
 	defer runqueue.SetNumCPUForTest(18)()
 	root := t.TempDir()
@@ -140,6 +144,7 @@ func TestAdmitWithQueueVisibilityOnALargeMachineUsesTheAdaptiveHeavyPool(t *test
 }
 
 func TestQueueStateHasAdmittedSelfRequiresTheExactSelfHolderAfterTicketRemoval(t *testing.T) {
+	t.Parallel()
 	self := runqueue.Participant{PID: 7, Summary: "go test", Worktree: "/worktree"}
 	if !queueStateHasAdmittedSelf(runqueue.State{Holders: []runqueue.Holder{{Participant: self}}}, self) {
 		t.Fatal("own holder after ticket removal must prove admission")
@@ -152,6 +157,7 @@ func TestQueueStateHasAdmittedSelfRequiresTheExactSelfHolderAfterTicketRemoval(t
 		"no visibility":  {},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if queueStateHasAdmittedSelf(state, self) {
 				t.Fatalf("queueStateHasAdmittedSelf(%+v) = true", state)
 			}
@@ -160,6 +166,7 @@ func TestQueueStateHasAdmittedSelfRequiresTheExactSelfHolderAfterTicketRemoval(t
 }
 
 func TestAcquireWithQueueVisibilitySkipsEverythingForKindNone(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var out eventRecorder
 	progress := out.report
@@ -167,7 +174,7 @@ func TestAcquireWithQueueVisibilitySkipsEverythingForKindNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Release()
+	t.Cleanup(lease.Release)
 	if units != 0 {
 		t.Fatalf("units = %d, want 0 for an ungoverned command", units)
 	}

@@ -7,6 +7,7 @@ import (
 )
 
 func TestCwCovDaemonOperationTerminalAndState(t *testing.T) {
+	t.Parallel()
 	for state, want := range map[daemonv1.OperationState]bool{
 		daemonv1.OperationState_OPERATION_STATE_SUCCEEDED:         true,
 		daemonv1.OperationState_OPERATION_STATE_FAILED:            true,

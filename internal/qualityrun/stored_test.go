@@ -44,6 +44,7 @@ func storeOps(store hub.RepositoryCoverageStore) storeOperations {
 	return storeOperations{Open: func(context.Context) (hub.RepositoryCoverageStore, io.Closer, error) { return store, nil, nil }, OriginURL: func(string) (string, error) { return "", errors.New("no origin") }}
 }
 func TestStoredCoverageFiltersAndAggregatesImmutableRecords(t *testing.T) {
+	t.Parallel()
 	// Parent-owned records are immutable: reads copy the list and assembly creates
 	// fresh report/module slices. Each subtest owns its operations/result state.
 	records := []hub.StoredRepositoryCoverage{{Repository: "sneat-dev/wb", Status: quality.StatusPassed, SHA: strings.Repeat("1", 40), Ref: "refs/heads/main", ReportedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Statements: 1000, Covered: 850, Percentage: 85, Modules: []quality.ModuleCoverageSummary{{Path: ".", Statements: 1000, Covered: 850, Percentage: 85}}}, {Repository: "sneat-co/app", Status: quality.StatusPassed, Statements: 500, Covered: 450, Percentage: 90}}
@@ -154,6 +155,7 @@ func TestStoredCoverageFallbackStopsAtFirstCaseInsensitiveMatch(t *testing.T) {
 	}
 }
 func TestStoredCoverageReadsParentOwnedMemoryStore(t *testing.T) {
+	t.Parallel()
 	db, closer, err := hubstore.Open(t.Context(), hubconfig.Store{Engine: hubconfig.EngineMemory})
 	if err != nil {
 		t.Fatal(err)

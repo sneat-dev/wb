@@ -50,6 +50,7 @@ func cwDepsSSHTarget() sessionmove.TargetConfig {
 // TestCwDepsSessionMoveResumeRefusalBranches walks the pre-delivery guards of
 // runSessionMoveResume one at a time.
 func TestCwDepsSessionMoveResumeRefusalBranches(t *testing.T) {
+	t.Parallel()
 	base := func(store sessionmove.Store, source session.Record, ok bool) MoveDependencies {
 		return MoveDependencies{
 			DefaultConfigPath: func() string { return "/tmp/cw-deps-wb.yaml" },
@@ -98,6 +99,7 @@ func TestCwDepsSessionMoveResumeRefusalBranches(t *testing.T) {
 // TestCwDepsSessionMoveResumeRepairsARouteOrRefuses covers the branch where an
 // accepted request has no durable route yet.
 func TestCwDepsSessionMoveResumeRepairsARouteOrRefuses(t *testing.T) {
+	t.Parallel()
 	store := sessionmove.NewStore(t.TempDir())
 	source, request, _, _ := cwDepsMoveFixture(t, store)
 	deps := MoveDependencies{
@@ -157,6 +159,7 @@ func TestCwDepsSessionMoveResumeRepairsARouteOrRefuses(t *testing.T) {
 // TestCwDepsSessionMoveResumeDeliveryFailures covers the two post-checkpoint
 // failure shapes: an ambiguous delivery and a custody acknowledgement failure.
 func TestCwDepsSessionMoveResumeDeliveryFailures(t *testing.T) {
+	t.Parallel()
 	store := sessionmove.NewStore(t.TempDir())
 	source, request, _, digest := cwDepsMoveFixture(t, store)
 	route := sessionmove.Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -202,6 +205,7 @@ func TestCwDepsSessionMoveResumeDeliveryFailures(t *testing.T) {
 }
 
 func TestCwDepsSessionMoveResumeReportsDeliveryWithoutANewDeliverer(t *testing.T) {
+	t.Parallel()
 	store := sessionmove.NewStore(t.TempDir())
 	source, request, _, digest := cwDepsMoveFixture(t, store)
 	route := sessionmove.Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
@@ -223,6 +227,7 @@ func TestCwDepsSessionMoveResumeReportsDeliveryWithoutANewDeliverer(t *testing.T
 }
 
 func TestCwDepsSessionMoveSynchestraOptionsLoadsAPersistedDispatch(t *testing.T) {
+	t.Parallel()
 	store := sessionmove.NewStore(t.TempDir())
 	_, request, _, digest := cwDepsMoveFixture(t, store)
 	options, err := moveSynchestraOptions(store, request.HandoffID, sessionmove.CourierSSH)
@@ -253,6 +258,7 @@ func TestCwDepsSessionMoveSynchestraOptionsLoadsAPersistedDispatch(t *testing.T)
 }
 
 func TestCwDepsSelectSessionMoveCourierBranches(t *testing.T) {
+	t.Parallel()
 	if _, err := selectMoveCourier(sessionmove.TargetConfig{Machine: "m", DefaultCourier: sessionmove.CourierSSH}, ""); err == nil ||
 		!strings.Contains(err.Error(), "no ssh courier configured") {
 		t.Fatalf("ssh without config = %v", err)
@@ -281,6 +287,7 @@ func TestCwDepsSelectSessionMoveCourierBranches(t *testing.T) {
 }
 
 func TestCwDepsSessionMoveRouteCarriesOnlyTheSelectedCourier(t *testing.T) {
+	t.Parallel()
 	request := sessionmove.Request{HandoffID: "h", TargetMachine: "m"}
 	digest := sessionmove.Digest("digest")
 	ssh := sessionmove.SSHConfig{Host: "m"}
@@ -300,6 +307,7 @@ func TestCwDepsSessionMoveRouteCarriesOnlyTheSelectedCourier(t *testing.T) {
 }
 
 func TestCwDepsAcknowledgeSessionMoveRefusalBranches(t *testing.T) {
+	t.Parallel()
 	store := sessionmove.NewStore(t.TempDir())
 	source, request, raw, digest := cwDepsMoveFixture(t, store)
 	ctx := context.Background()
@@ -345,6 +353,7 @@ func TestCwDepsAcknowledgeSessionMoveRefusalBranches(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestCwDepsDefaultSessionMoveDependencies; these rows share their parent environment and remain sequential.
 func TestCwDepsDefaultSessionMoveDependencies(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)

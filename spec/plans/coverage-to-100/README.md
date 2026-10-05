@@ -700,6 +700,38 @@ speed claim. Production is unchanged, so no coverage credit is added. Scoped
 platform compilation, vet, lint and specification lint pass. The reviewed change
 is accumulated as a local commit; remote publication remains deferred.
 
+### Validation, commit and check observation checkpoint
+
+Validation regression comparison, PR staging/commit decisions and merge-check
+observation now have cohesive domain owners. Shared identity membership,
+staged-path and secret-path helpers replace repeated decisions. Native Git,
+exact-head/provider verification, heartbeat lifecycle and custody checks retain
+their original authorities and witness tests.
+
+A fresh passing race run covers 487/487 statements across 38 whole declarations:
+34 in orchestrate, three in quality and one in worktrees. All 60 selected test
+groups pass. Native Go AST body hashes and full line/column profile attribution
+include closures and zero-statement blocks; independent review confirms every
+attributed block executed. Failed intermediate profiles are excluded. These are
+scoped results, not a refreshed repository percentage or net coverage gain.
+
+Coverage-profile merging now folds scanned rows directly into unique locations
+instead of retaining every repeated input row. Mode, statement identity, count
+overflow, error precedence and atomic output contracts remain tested. Memory or
+end-to-end timing improvement has not yet been benchmarked.
+
+A native held-directory regression proves that helper stderr must stay separate
+from successful path stdout. Only the single path operation separates streams;
+failure diagnostics and other operations retain their existing contracts.
+The regression fails before the fix, all 16 helper statements execute after it,
+and the formerly failing instrumented migration journey also passes. The test
+forwards covered subprocess counters and checks actual inherited-descriptor
+authority; it does not substitute a successful path observation.
+
+Structural fixture and scheduling repairs are being verified before the next
+full nightly-equivalent measurement. Publication remains deferred to the
+coordinated final boundary.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

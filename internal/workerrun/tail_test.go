@@ -6,6 +6,7 @@ import (
 )
 
 func TestCwCovWorkerTailBufferKeepsTheTailBounded(t *testing.T) {
+	t.Parallel()
 	var buffer workerTailBuffer
 	chunk := bytes.Repeat([]byte("a"), 40<<10)
 	if n, err := buffer.Write(chunk); err != nil || n != len(chunk) {

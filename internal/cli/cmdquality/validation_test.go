@@ -36,6 +36,7 @@ func TestCoverageShardingFlagsFailClosedOnAmbiguousScope(t *testing.T) {
 		{name: "baseline-file without changed", options: qualityOptions{testShards: 1, baselineFile: "baseline.json"}, want: "--baseline-file requires --changed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateCoverageExecutionOptions(testRuntime(), test.options)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want containing %q", err, test.want)
@@ -55,6 +56,7 @@ func TestCoverageOptionsForCommandRecordsExplicitSharding(t *testing.T) {
 		{name: "shard package flag", args: []string{"--shard-package", "./internal/worktrees"}, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			command := NewCoverage(testRuntime(), testDependencies(t))
 			if usage := command.Flags().Lookup("shard-package").Usage; !strings.Contains(usage, "within the --package scope") || !strings.Contains(usage, "selected packages not named here run once") {
 				t.Fatalf("shard-package help = %q", usage)
@@ -89,6 +91,7 @@ func TestCoverageCmdRejectsPackageFilterInUnsupportedModes(t *testing.T) {
 		{name: "resume", args: []string{"--resume", "--package", "./internal/worktrees"}, want: "--package cannot be combined with --resume"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if _, _, err := executeTest(t, NewCoverage(testRuntime(), testDependencies(t)), tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("coverage %v = %v, want %q", tc.args, err, tc.want)
 			}
@@ -99,6 +102,7 @@ func TestCoverageCmdRejectsFlagShapedPackagePatterns(t *testing.T) {
 	t.Parallel()
 	for _, pattern := range []string{"-run=^$", "-coverpkg=./...", "-deps"} {
 		t.Run(pattern, func(t *testing.T) {
+			t.Parallel()
 			if _, _, err := executeTest(t, NewCoverage(testRuntime(), testDependencies(t)), "--package="+pattern); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
 				t.Fatalf("ordinary coverage package %q = %v, want flag-shaped package rejection", pattern, err)
 			}
@@ -118,6 +122,7 @@ func TestCoverageCmdRejectsExplicitShardingInCIAndChangedModes(t *testing.T) {
 		{name: "changed shard package", args: []string{"--changed", "--target", "main", "--shard-package", "./internal/worktrees"}, want: "--changed cannot be combined with --test-shards or --shard-package"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if _, _, err := executeTest(t, NewCoverage(testRuntime(), testDependencies(t)), tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("coverage %v = %v, want %q", tc.args, err, tc.want)
 			}

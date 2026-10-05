@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -31,16 +32,41 @@ func TestLifecycleBackfillStartsDetachedWorkerProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := buildWB(t)
-	command := exec.Command(binary, "--projects-root", projects, "hooks", "lifecycle", "backfill", "--apply", "--format", "json")
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	receiptPath := filepath.Join(stateHome, "wb", "lifecycle-hook-events.jsonl")
+	dispatcher := lifecyclehooks.DefaultDispatcher()
+	dispatcher.ConfigPath = config
+	dispatcher.StateDir = filepath.Join(stateHome, "wb", "lifecycle-hooks")
+	dispatcher.ReceiptPath = receiptPath
+	terminal := false
+	waitTerminal := func() bool {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			status, err := dispatcher.Status(1)
+			if err == nil && status.Worker == "idle" && len(status.Pending) == 0 && len(status.Running) == 0 && status.WorkerHealth != nil && status.WorkerHealth.FinishedAt.After(time.Time{}) {
+				terminal = true
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}
+	// Receipt assertion failure must still join the actual detached worker's
+	// durable terminal state before TempDir removes its private state.
+	t.Cleanup(func() {
+		if !terminal && !waitTerminal() {
+			t.Error("detached lifecycle worker did not publish terminal state during cleanup")
+		}
+	})
+	command := exec.CommandContext(ctx, binary, "--projects-root", projects, "hooks", "lifecycle", "backfill", "--apply", "--format", "json")
 	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+configHome, "XDG_STATE_HOME="+stateHome)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("backfill: %v\n%s", err, output)
 	}
-	receiptPath := filepath.Join(stateHome, "wb", "lifecycle-hook-events.jsonl")
-	deadline := time.Now().Add(5 * time.Second)
 	var receipt lifecyclehooks.Receipt
-	terminalDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(terminalDeadline) {
+	receiptDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(receiptDeadline) {
 		raw, err := os.ReadFile(receiptPath)
 		if err == nil {
 			line := strings.Split(strings.TrimSpace(string(raw)), "\n")[0]
@@ -59,16 +85,8 @@ func TestLifecycleBackfillStartsDetachedWorkerProcess(t *testing.T) {
 	// The receipt is written before the worker removes its running record and
 	// publishes terminal health. Wait for that durable terminal state so the
 	// test does not race TempDir cleanup with the detached process.
-	dispatcher := lifecyclehooks.DefaultDispatcher()
-	dispatcher.ConfigPath = config
-	dispatcher.StateDir = filepath.Join(stateHome, "wb", "lifecycle-hooks")
-	dispatcher.ReceiptPath = receiptPath
-	for time.Now().Before(deadline) {
-		status, err := dispatcher.Status(1)
-		if err == nil && status.Worker == "idle" && len(status.Pending) == 0 && len(status.Running) == 0 && status.WorkerHealth != nil && status.WorkerHealth.FinishedAt.After(time.Time{}) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if waitTerminal() {
+		return
 	}
 	t.Fatal("detached lifecycle worker did not publish terminal state")
 }

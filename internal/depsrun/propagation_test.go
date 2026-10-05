@@ -27,6 +27,7 @@ func TestPropagationSetupFailuresPreserveOrderAndIdentity(t *testing.T) {
 	boom := errors.New("setup refused")
 	for _, stage := range []string{"store", "home", "hash"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			var order []string
 			d := DefaultPropagationDependencies()
 			d.OpenStore = func(root string) (*streams.Store, error) {

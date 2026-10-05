@@ -180,6 +180,7 @@ func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateWorktreeMergeFlags(tt.flags)
 			if tt.wantErr == "" {
 				if err != nil {
@@ -352,6 +353,7 @@ func TestCwWtMergeValidateWorktreeMergeFlagsBranches(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateWorktreeMergeFlags(testCase.flags)
 			if err == nil {
 				t.Fatalf("validateWorktreeMergeFlags(%+v) = nil, want error containing %q", testCase.flags, testCase.wantErr)
@@ -363,6 +365,7 @@ func TestCwWtMergeValidateWorktreeMergeFlagsBranches(t *testing.T) {
 	}
 
 	t.Run("valid combinations", func(t *testing.T) {
+		t.Parallel()
 		valid := []worktreeMergeFlags{
 			{format: "text", route: "", timeout: time.Minute},
 			{format: "json", route: "auto", timeout: time.Minute},
@@ -445,6 +448,7 @@ func TestCwWtMergeFinishWorktreeMergeProgressBranches(t *testing.T) {
 		{name: "whitespace-only failure status reports failed", receipt: orchestrate.WorktreeMergeReceipt{Status: "   "}, err: errors.New("boom")},
 	}
 	for _, testCase := range cases {
+		//nolint:paralleltest // Rows share the Cobra command and its output buffers while campaigns finish; keep campaign writes sequential.
 		t.Run(testCase.name, func(t *testing.T) {
 			campaign := newWorktreeMergeProgress(mergeTestInvocation(shared.Flags{}), command, worktreeMergeFlags{})
 			finishWorktreeMergeProgress(campaign, testCase.receipt, testCase.err)
@@ -462,6 +466,7 @@ func TestCwWtMergeWriteWorktreeMergeReceiptBranches(t *testing.T) {
 	}
 
 	t.Run("json encodes the receipt", func(t *testing.T) {
+		t.Parallel()
 		var out bytes.Buffer
 		if err := writeWorktreeMergeReceipt(&out, "json", receipt); err != nil {
 			t.Fatalf("writeWorktreeMergeReceipt json = %v, want nil", err)
@@ -476,12 +481,14 @@ func TestCwWtMergeWriteWorktreeMergeReceiptBranches(t *testing.T) {
 	})
 
 	t.Run("json reports an encode failure", func(t *testing.T) {
+		t.Parallel()
 		if err := writeWorktreeMergeReceipt(&mergeOriginalFailWriter{}, "json", receipt); !errors.Is(err, errMergeOriginalWrite) {
 			t.Fatalf("writeWorktreeMergeReceipt json with a failing writer = %v, want the injected failure", err)
 		}
 	})
 
 	t.Run("text names the resume command", func(t *testing.T) {
+		t.Parallel()
 		var out bytes.Buffer
 		if err := writeWorktreeMergeReceipt(&out, "text", receipt); err != nil {
 			t.Fatalf("writeWorktreeMergeReceipt text = %v, want nil", err)
@@ -494,12 +501,14 @@ func TestCwWtMergeWriteWorktreeMergeReceiptBranches(t *testing.T) {
 	})
 
 	t.Run("text reports a write failure", func(t *testing.T) {
+		t.Parallel()
 		if err := writeWorktreeMergeReceipt(&mergeOriginalFailWriter{}, "text", receipt); !errors.Is(err, errMergeOriginalWrite) {
 			t.Fatalf("writeWorktreeMergeReceipt text with a failing writer = %v, want the injected failure", err)
 		}
 	})
 
 	t.Run("text records a host load admission", func(t *testing.T) {
+		t.Parallel()
 		withAdmission := receipt
 		withAdmission.HostLoadAdmission = &orchestrate.WorktreeMergeHostLoadAdmission{
 			Load: 9.5, Floor: 8, Overridden: true, CheckedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
@@ -515,6 +524,7 @@ func TestCwWtMergeWriteWorktreeMergeReceiptBranches(t *testing.T) {
 	})
 
 	t.Run("text reports an admission write failure", func(t *testing.T) {
+		t.Parallel()
 		withAdmission := receipt
 		withAdmission.HostLoadAdmission = &orchestrate.WorktreeMergeHostLoadAdmission{Load: 1, Floor: 0, CheckedAt: time.Now().UTC()}
 		writer := &mergeOriginalFailWriter{Allow: 1}
@@ -585,6 +595,7 @@ func TestCwWtMergeHostLoadCheckSkippableBranches(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if got := hostLoadCheckSkippable(testCase.receipt, false, false, ""); got != testCase.want {
 				t.Fatalf("hostLoadCheckSkippable(%+v) = %t, want %t", testCase.receipt, got, testCase.want)
 			}
@@ -598,6 +609,7 @@ func TestCwWtMergeRecoveryCommandsRejectBadFormat(t *testing.T) {
 	receipt := filepath.Join(projects, "receipt.json")
 	for _, constructor := range cwWtMergeAckConstructors(projects) {
 		t.Run(constructor.name, func(t *testing.T) {
+			t.Parallel()
 			args := append(constructor.args(receipt), "--format", "yaml")
 			stdout, _, err := mergeExecuteOriginal(t, projects, constructor.build, args...)
 			if err == nil {
@@ -616,6 +628,7 @@ func TestCwWtMergeRecoveryCommandsFailOnMissingReceipt(t *testing.T) {
 	receipt := filepath.Join(projects, "absent-receipt.json")
 	for _, constructor := range cwWtMergeAckConstructors(projects) {
 		t.Run(constructor.name, func(t *testing.T) {
+			t.Parallel()
 			stdout, _, err := mergeExecuteOriginal(t, projects, constructor.build, constructor.args(receipt)...)
 			if err == nil {
 				t.Fatalf("%s with a missing receipt = nil error (stdout %q), want a refusal", constructor.name, stdout)
@@ -631,6 +644,7 @@ func TestCwWtMergeRecoveryCommandsFailOnMissingReceipt(t *testing.T) {
 func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 	projects := t.TempDir()
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("bad format is refused before any work", func(t *testing.T) {
 		_, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergeCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}))
@@ -640,6 +654,7 @@ func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("saturated host refuses the run", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
 		source := filepath.Join(projects, "nope")
@@ -651,6 +666,7 @@ func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("unusable source fails the merge and writes no receipt", func(t *testing.T) {
 		source := filepath.Join(projects, "definitely-absent")
 		stdout, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
@@ -669,6 +685,7 @@ func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
 func TestCwWtMergePrepareCommandErrorPaths(t *testing.T) {
 	projects := t.TempDir()
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("bad format is refused", func(t *testing.T) {
 		_, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergePrepareCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}))
@@ -678,6 +695,7 @@ func TestCwWtMergePrepareCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("saturated host refuses the prepare", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
 		_, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
@@ -688,6 +706,7 @@ func TestCwWtMergePrepareCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("absent source is refused", func(t *testing.T) {
 		stdout, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergePrepareCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}))
@@ -703,6 +722,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 	projects := t.TempDir()
 	absent := filepath.Join(projects, "absent-receipt.json")
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("land rejects a bad format", func(t *testing.T) {
 		_, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergeLandCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}), "land")
@@ -712,6 +732,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("land on a saturated host refuses", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
 		// A readable receipt that names no worktrees gets past the live-link
@@ -728,6 +749,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("land fails on a missing receipt", func(t *testing.T) {
 		stdout, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergeLandCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}), "land")
@@ -737,6 +759,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("revert rejects a bad format", func(t *testing.T) {
 		_, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergeRevertCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}))
@@ -746,6 +769,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("revert on a saturated host refuses", func(t *testing.T) {
 		cwWtMergeSaturateHost(t)
 		_, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
@@ -756,6 +780,7 @@ func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in cwWtMergeSaturateHost; these rows share their parent environment and remain sequential.
 	t.Run("revert fails on a missing receipt", func(t *testing.T) {
 		stdout, _, err := mergeExecuteOriginal(t, projects, func() *cobra.Command {
 			return newWorktreeMergeRevertCmd(mergeTestInvocation(shared.Flags{ProjectsRoot: projects}))

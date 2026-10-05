@@ -18,6 +18,7 @@ func TestOwnerTokenTransportPreservesExactTokenAndClonesRequest(t *testing.T) {
 	t.Parallel()
 	for _, token := range []string{"", "owner-token", "exact raw '☃' token"} {
 		t.Run(token, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.WithValue(context.Background(), ownerContextKey{}, token)
 			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://wb.local/owner", strings.NewReader("payload"))
 			if err != nil {

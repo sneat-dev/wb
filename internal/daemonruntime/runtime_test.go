@@ -18,6 +18,7 @@ import (
 )
 
 func TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.Alive = func(pid int) bool { return pid == 900 }
@@ -72,6 +73,7 @@ func TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock(t *testing.T) {
 }
 
 func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -135,6 +137,7 @@ func TestDaemonRecoverRefusesActiveAndNonTerminalTransitions(t *testing.T) {
 }
 
 func TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -175,6 +178,7 @@ func TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode(t *testing.T) {
 }
 
 func TestDaemonRecoverReportsIdleLockAsNoStaleOwner(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -193,6 +197,7 @@ func TestDaemonRecoverReportsIdleLockAsNoStaleOwner(t *testing.T) {
 }
 
 func TestDaemonLifecycleOwnerRefusesPartialAtomicRecord(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -219,6 +224,7 @@ func TestDaemonLifecycleOwnerRefusesPartialAtomicRecord(t *testing.T) {
 }
 
 func TestDaemonRecoverHandlesInterruptedInitializationBeforeState(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -247,6 +253,7 @@ func TestDaemonRecoverHandlesInterruptedInitializationBeforeState(t *testing.T) 
 }
 
 func TestDaemonRecoverySerializesWithStartingChildState(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.Alive = func(pid int) bool { return pid == os.Getpid() }
@@ -297,6 +304,7 @@ func TestDaemonRecoverySerializesWithStartingChildState(t *testing.T) {
 }
 
 func TestDaemonRecoveryRefusesUnverifiedLiveStartingProcess(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.Alive = func(pid int) bool { return pid == os.Getpid() }
@@ -338,6 +346,7 @@ func TestDaemonRecoveryRefusesUnverifiedLiveStartingProcess(t *testing.T) {
 }
 
 func TestDaemonOwnedHealthyRequiresExactPIDAndGeneration(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(writer, `{"status":"ready","daemon_pid":123,"scheduler_generation":45}`)
@@ -356,6 +365,7 @@ func TestDaemonOwnedHealthyRequiresExactPIDAndGeneration(t *testing.T) {
 }
 
 func TestDaemonLaunchDoesNotPromoteChildThatExitsAfterHealthCheck(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	now := deps.Now()
@@ -395,6 +405,7 @@ func TestDaemonLaunchDoesNotPromoteChildThatExitsAfterHealthCheck(t *testing.T) 
 }
 
 func TestDaemonStatusMarksDeadReadyStateStopped(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
@@ -416,6 +427,7 @@ func TestDaemonStatusMarksDeadReadyStateStopped(t *testing.T) {
 }
 
 func TestDaemonStatusReportsDirectTransportWithoutBridgeProbe(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
@@ -440,6 +452,7 @@ func TestDaemonStatusReportsDirectTransportWithoutBridgeProbe(t *testing.T) {
 }
 
 func TestDaemonStatusDoesNotBridgeDisallowedDirectFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
@@ -464,6 +477,7 @@ func TestDaemonStatusDoesNotBridgeDisallowedDirectFailure(t *testing.T) {
 }
 
 func TestDaemonStartDoesNotRestartManagedProcessAfterFailedAPIProbe(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -492,6 +506,7 @@ func TestDaemonStartDoesNotRestartManagedProcessAfterFailedAPIProbe(t *testing.T
 }
 
 func TestDaemonStartKeepsOwnerTokenOutOfProcessArguments(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	originalStart := deps.Start
@@ -512,6 +527,7 @@ func TestDaemonStartKeepsOwnerTokenOutOfProcessArguments(t *testing.T) {
 }
 
 func TestDaemonStopAndExplicitRestartPreserveQueueHandoff(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -536,6 +552,7 @@ func TestDaemonStopAndExplicitRestartPreserveQueueHandoff(t *testing.T) {
 }
 
 func TestDaemonRestartProgressIsPhaseAwareAndBounded(t *testing.T) {
+	t.Parallel()
 	if daemonRestartProgressInterval >= 10*time.Second {
 		t.Fatalf("restart progress interval = %s", daemonRestartProgressInterval)
 	}
@@ -571,6 +588,7 @@ func TestDaemonRestartProgressIsPhaseAwareAndBounded(t *testing.T) {
 }
 
 func TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -607,6 +625,7 @@ func TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary(t *testing.T) 
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
@@ -616,6 +635,7 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCreateFailure(t *testing
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
@@ -625,6 +645,7 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedChmodFailure(t *testing.
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
@@ -634,6 +655,7 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedWriteFailure(t *testing.
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
@@ -643,6 +665,7 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedSyncFailure(t *testing.T
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
@@ -653,6 +676,7 @@ func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedCloseFailure(t *testing.
 }
 
 func TestWriteLifecycleOwnerPIDInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}

@@ -132,6 +132,7 @@ func TestPersistChangedCarriesToleranceAndOmitsUnusedTolerance(t *testing.T) {
 }
 
 func TestQualityMarkdownIncludesTotalsAndCommands(t *testing.T) {
+	t.Parallel()
 	coverage := quality.NewCoverageReport([]quality.RepositoryCoverage{{Repository: "acme/repo", Status: quality.StatusPassed, Statements: 4, Covered: 3, Percentage: 75}})
 	if markdown := CoverageMarkdown(coverage); !strings.Contains(markdown, "Fleet total:** 75.00%") {
 		t.Fatalf("coverage markdown = %s", markdown)

@@ -15,13 +15,14 @@ import (
 )
 
 func TestWebhookModeVerifiesDeliveriesWithTheOperatorsSecret(t *testing.T) {
+	t.Parallel()
 	var console bytes.Buffer
 	configPath := appHubConfig(t, webhookSecret)
 	mount, err := mountHub(context.Background(), configPath, "127.0.0.1:8801", narrate.Writer{Out: &console}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 
 	handler := mount.handlers()[hub.APIPrefix+"/"]
 	if handler == nil {
@@ -60,6 +61,7 @@ func TestWebhookModeVerifiesDeliveriesWithTheOperatorsSecret(t *testing.T) {
 }
 
 func TestWithoutAnAppEverythingWebhookIsOff(t *testing.T) {
+	t.Parallel()
 	var absent *webhookMode
 	if absent.WebhookSecret() != nil || absent.Installations() != nil {
 		t.Fatal("a hub with no App must offer no webhook wiring")
@@ -72,7 +74,7 @@ func TestWithoutAnAppEverythingWebhookIsOff(t *testing.T) {
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 	if mount.Webhook != nil {
 		t.Fatal("a hub with no hub.github.app must not be in webhook mode")
 	}
@@ -90,6 +92,7 @@ func TestWithoutAnAppEverythingWebhookIsOff(t *testing.T) {
 }
 
 func TestWebhookModeRefusesUnusableSecretFiles(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
 		mutate  func(t *testing.T, state string)
@@ -117,6 +120,7 @@ func TestWebhookModeRefusesUnusableSecretFiles(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			configPath := appHubConfig(t, webhookSecret)
 			state := stateDirectoryOf(t, configPath)
 			testCase.mutate(t, state)
@@ -132,6 +136,7 @@ func TestWebhookModeRefusesUnusableSecretFiles(t *testing.T) {
 }
 
 func TestLocalEntitlementsBelongToTheOneLocalIdentity(t *testing.T) {
+	t.Parallel()
 	entitlements := localRepositoryEntitlements{identityID: localIdentityID}
 	allowed, err := entitlements.IdentityHasRepositoryEntitlement(context.Background(), localIdentityID, 123, 987)
 	if err != nil || !allowed {
@@ -143,6 +148,7 @@ func TestLocalEntitlementsBelongToTheOneLocalIdentity(t *testing.T) {
 }
 
 func TestInstallationStateSecretIsDerivedNotReused(t *testing.T) {
+	t.Parallel()
 	pepper := bytes.Repeat([]byte{7}, hubPepperBytes)
 	secret := installationStateSecret(pepper)
 	if len(secret) < 32 {
@@ -157,12 +163,13 @@ func TestInstallationStateSecretIsDerivedNotReused(t *testing.T) {
 }
 
 func TestConnectRoutesAnswer503WithoutAnOAuthVerifier(t *testing.T) {
+	t.Parallel()
 	configPath := appHubConfig(t, webhookSecret)
 	mount, err := mountHub(context.Background(), configPath, "127.0.0.1:8804", narrate.Writer{}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 	if mount.Webhook.Installations() == nil {
 		t.Fatal("webhook mode must wire the installation service")
 	}
@@ -178,12 +185,13 @@ func TestConnectRoutesAnswer503WithoutAnOAuthVerifier(t *testing.T) {
 }
 
 func TestPollIntervalPrefersTheTestOverride(t *testing.T) {
+	t.Parallel()
 	configPath := memoryHubConfig(t)
 	mount, err := mountHub(context.Background(), configPath, "127.0.0.1:8805", narrate.Writer{}, &Tuning{PollInterval: 5 * time.Millisecond})
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 	if mount.Interval != 5*time.Millisecond {
 		t.Fatalf("interval = %s", mount.Interval)
 	}

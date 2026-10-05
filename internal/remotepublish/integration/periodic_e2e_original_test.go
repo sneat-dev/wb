@@ -26,6 +26,8 @@ import (
 // publisher against the git provider and a temporary bare repository (no
 // network, no real store): an idle machine adds no commit at each interval,
 // a changed one adds exactly one, and the keepalive adds one after six hours.
+//
+//nolint:paralleltest // Process-wide environment changes in newRemoteFixture, setGitIdentity; these rows share their parent environment and remain sequential.
 func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	clock := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
@@ -100,6 +102,8 @@ func TestE2EPeriodicPublishToAGitStoreCommitsOnlyWhatChanged(t *testing.T) {
 // attempt on a fixture of 400 real repositories, with and without the
 // snapshotter's change-token gate, and requires the gated attempt to scan
 // nothing. The numbers are logged (go test -v) for the report.
+//
+//nolint:paralleltest // Process-wide environment changes in setGitIdentity; these rows share their parent environment and remain sequential.
 func TestE2EPeriodicPublishPreGateOnA400RepositoryFleet(t *testing.T) {
 	setGitIdentity(t)
 	root := t.TempDir()

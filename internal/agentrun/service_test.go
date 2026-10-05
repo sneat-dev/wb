@@ -94,6 +94,7 @@ func TestDispatchUsesActualDependencyBuilderAndPreservesRequests(t *testing.T) {
 	}
 }
 func TestReadOperationsUseAnImmutableTerminalCorpus(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	home := filepath.Join(root, ".wb")
 	store := agents.NewStore(home)

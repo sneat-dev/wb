@@ -21,9 +21,11 @@ import (
 )
 
 func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, sourcePath := range []string{"/", "/docs"} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run("migrates "+sourcePath, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -44,6 +46,7 @@ func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.
 		"foreign source": {"legacy", "release"},
 		"unknown path":   {"legacy", "master"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run("refuses "+name, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -61,12 +64,14 @@ func TestDefaultBranchPagesMigrationAcceptsOnlyVerifiedLegacySources(t *testing.
 }
 
 func TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismatch(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, test := range map[string]struct{ changedBeforeWrite, postWriteMismatch bool }{
 		"changed source":      {changedBeforeWrite: true},
 		"post-write mismatch": {postWriteMismatch: true},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -82,6 +87,7 @@ func TestDefaultBranchPagesMigrationFailsClosedAfterPlanChangesOrPostWriteMismat
 }
 
 func TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -137,6 +143,7 @@ func TestDefaultBranchPagesRecognizesVerifiedAutomaticTransition(t *testing.T) {
 }
 
 func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead := service.deps.Read
@@ -179,6 +186,7 @@ func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *
 			c.Desired, c.ObservedDefault = "trunk", "trunk"
 		},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			copyPrevious := previous
 			copyPrevious.Actions = append([]string(nil), previous.Actions...)
@@ -205,6 +213,7 @@ func TestDefaultBranchPagesAutomaticResumeRequiresExactReceiptAndRemoteProof(t *
 }
 
 func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead := service.deps.Read
@@ -228,6 +237,7 @@ func TestDefaultBranchPagesMigrationReportsUnfinishedWhenDefaultAlreadyMatches(t
 }
 
 func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig := service.deps.Read, service.deps.Execute, service.deps.ConfigPath
@@ -280,6 +290,7 @@ func TestRunDefaultBranchRepairsUnfinishedPagesWithoutRenamingDefault(t *testing
 // operator can inspect exactly what apply would do before running it for
 // real; it must never invoke a mutation.
 func TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig := service.deps.Read, service.deps.Execute, service.deps.ConfigPath
@@ -333,6 +344,7 @@ func TestRunDefaultBranchDryRunStillPersistsReportUnderReportDir(t *testing.T) {
 }
 
 func TestUnfinishedPagesRepairBlocksWhenDefaultChanges(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -358,6 +370,7 @@ func TestUnfinishedPagesRepairBlocksWhenDefaultChanges(t *testing.T) {
 }
 
 func TestUnfinishedPagesRepairBlocksWhenDefaultHeadChanges(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -385,6 +398,7 @@ func TestUnfinishedPagesRepairBlocksWhenDefaultHeadChanges(t *testing.T) {
 }
 
 func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, test := range map[string]struct{ buildType, sourcePath, sourceBranch string }{
@@ -392,6 +406,7 @@ func TestRunDefaultBranchBlocksUnsupportedUnfinishedPagesRepair(t *testing.T) {
 		"unsupported path": {"legacy", "/site", "master"},
 		"foreign source":   {"legacy", "/", "release"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalRead, originalExecute, originalConfig := service.deps.Read, service.deps.Execute, service.deps.ConfigPath
 			t.Cleanup(func() {
@@ -474,6 +489,7 @@ func defaultBranchPagesFixture(service *Service, t *testing.T, sourcePath, build
 }
 
 func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -505,6 +521,7 @@ func TestInspectDefaultBranchRefusesArchivedAndDifferentTarget(t *testing.T) {
 }
 
 func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig := service.deps.Read, service.deps.Execute, service.deps.ConfigPath
@@ -580,6 +597,7 @@ func TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof(t *testing.T) 
 }
 
 func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -629,6 +647,7 @@ func TestApplyDefaultBranchRenamesAndProvesResult(t *testing.T) {
 }
 
 func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalWait := service.deps.Read, service.deps.Execute, service.deps.RenameWait
@@ -683,6 +702,7 @@ func TestApplyDefaultBranchWaitsForDelayedRenameVisibilityWithoutRetrying(t *tes
 }
 
 func TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalNow, originalWait, originalRead := service.deps.RenameNow, service.deps.RenameWait, service.deps.Read
@@ -718,9 +738,11 @@ func TestDefaultBranchRenameVisibilityTimeoutDoesNotSleepThroughItsDeadline(t *t
 }
 
 func TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, failAfterResponse := range map[string]bool{"before response": false, "after response": true} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -769,6 +791,7 @@ func TestApplyDefaultBranchCheckpointsProtectBothMutationBoundaries(t *testing.T
 }
 
 func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPending(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -788,6 +811,7 @@ func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPend
 		"metadata malformed":       {metadata: `{}`, want: "error"},
 		"target read unavailable":  {metadata: `{"default_branch":"master"}`, targetErr: errors.New("HTTP 500"), want: "error"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			service.deps.Read = func(_ context.Context, endpoint string) ([]byte, error) {
 				switch endpoint {
@@ -816,6 +840,7 @@ func TestReadDefaultBranchRenameVisibilityTreatsOnlyTransientTargetAbsenceAsPend
 }
 
 func TestApplyDefaultBranchRefusesFreshPlanDrift(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -852,6 +877,7 @@ func TestApplyDefaultBranchRefusesFreshPlanDrift(t *testing.T) {
 }
 
 func TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, configure := range map[string]func(string) ([]byte, error){
@@ -881,6 +907,7 @@ func TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures(t *testing.T)
 			}
 		},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			original := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = original })
@@ -894,6 +921,7 @@ func TestDefaultBranchSafetyFailsClosedForWorkflowAndRulesFailures(t *testing.T)
 }
 
 func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for mode, want := range map[string]string{
@@ -902,6 +930,7 @@ func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
 		"classic protection": "pages, classic protection",
 		"effective rules":    "pages, classic protection",
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(mode, func(t *testing.T) {
 			original := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = original })
@@ -945,6 +974,7 @@ func TestDefaultBranchSafetyBlocksActiveBranchDependencies(t *testing.T) {
 }
 
 func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, test := range map[string]struct {
@@ -971,6 +1001,7 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 			want: "fork parent metadata is missing",
 		},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			original := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = original })
@@ -1001,6 +1032,7 @@ func TestInspectDefaultBranchPreservesTargetAndForkSafetyBoundaries(t *testing.T
 }
 
 func TestReconcileDefaultBranchCanonicalRefusesStaleRemoteHead(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Git
@@ -1033,6 +1065,7 @@ func TestReconcileDefaultBranchCanonicalRefusesStaleRemoteHead(t *testing.T) {
 }
 
 func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	tests := []struct {
@@ -1047,6 +1080,7 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 		{name: "local source diverged", values: map[string]string{"rev-parse master": "different"}, want: "not contained in origin/main"},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			originalGit, originalAncestor := service.deps.Git, service.deps.IsAncestor
 			t.Cleanup(func() { service.deps.Git, service.deps.IsAncestor = originalGit, originalAncestor })
@@ -1087,9 +1121,11 @@ func TestReconcileDefaultBranchCanonicalPreservesUnsafeLocalStates(t *testing.T)
 }
 
 func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, upstreamError := range map[string]bool{"rename and track": false, "tracking failure": true} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalGit, originalRename, originalAttach := service.deps.Git, service.deps.AtomicRenameRefs, service.deps.AttachHead
 			t.Cleanup(func() {
@@ -1136,6 +1172,7 @@ func TestReconcileDefaultBranchCanonicalRecordsRenameAndTrackingOutcomes(t *test
 }
 
 func TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalGit, originalAncestor, originalRename, originalAttach := service.deps.Git, service.deps.IsAncestor, service.deps.AtomicRenameRefs, service.deps.AttachHead
@@ -1199,12 +1236,14 @@ func TestReconcileDefaultBranchCanonicalFastForwardsOnlyContainedSource(t *testi
 }
 
 func TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDivergence(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, unpublished := range map[string]string{
 		"unpublished":      "local-only",
 		"known divergence": "",
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalGit, originalAncestor := service.deps.Git, service.deps.IsAncestor
 			t.Cleanup(func() { service.deps.Git, service.deps.IsAncestor = originalGit, originalAncestor })
@@ -1246,12 +1285,14 @@ func TestReconcileDefaultBranchCanonicalSeparatesUnpublishedAndKnownRemoteDiverg
 }
 
 func TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, test := range map[string]struct{ ancestryErr, logErr, want string }{
 		"ancestry":          {ancestryErr: "merge-base unavailable", want: "classify local master"},
 		"unpublished query": {logErr: "log unavailable", want: "inspect local master unpublished"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalGit, originalAncestor := service.deps.Git, service.deps.IsAncestor
 			t.Cleanup(func() { service.deps.Git, service.deps.IsAncestor = originalGit, originalAncestor })
@@ -1291,6 +1332,7 @@ func TestReconcileDefaultBranchCanonicalReportsSourceClassificationFailures(t *t
 }
 
 func TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalGit, originalAncestor, originalRename, originalAttach := service.deps.Git, service.deps.IsAncestor, service.deps.AtomicRenameRefs, service.deps.AttachHead
@@ -1337,6 +1379,7 @@ func TestReconcileDefaultBranchCanonicalRefusesRefMovementBeforeRename(t *testin
 }
 
 func TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalGit, originalRename, originalAttach, originalExists := service.deps.Git, service.deps.AtomicRenameRefs, service.deps.AttachHead, service.deps.RefExists
@@ -1388,9 +1431,11 @@ func TestReconcileDefaultBranchCanonicalRecoversDetachedAtomicRename(t *testing.
 }
 
 func TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, sourceHead := range map[string]string{"restore": "same", "moved source refuses": "moved"} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalGit, originalAttach, originalExists := service.deps.Git, service.deps.AttachHead, service.deps.RefExists
 			t.Cleanup(func() {
@@ -1435,6 +1480,7 @@ func TestReconcileDefaultBranchCanonicalRestoresDetachedFailedAtomicRename(t *te
 }
 
 func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Git
@@ -1460,9 +1506,11 @@ func TestVerifyDefaultBranchAttachmentRefusesMovementDuringAttach(t *testing.T) 
 }
 
 func TestVerifyDefaultBranchAttachmentReportsReadFailures(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, failed := range []string{"rev-parse HEAD", "rev-parse main", "rev-parse origin/main", "status --porcelain"} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(failed, func(t *testing.T) {
 			original := service.deps.Git
 			t.Cleanup(func() { service.deps.Git = original })
@@ -1481,6 +1529,7 @@ func TestVerifyDefaultBranchAttachmentReportsReadFailures(t *testing.T) {
 }
 
 func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	dir := t.TempDir()
@@ -1541,6 +1590,7 @@ func TestDefaultBranchAtomicRenameRefsUsesConditionalTransaction(t *testing.T) {
 }
 
 func TestDefaultBranchGitHelpersReportExecutionFailures(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	missing := filepath.Join(t.TempDir(), "missing")
@@ -1566,6 +1616,7 @@ func TestDefaultBranchGitHelpersReportExecutionFailures(t *testing.T) {
 // canonical clone starts on master at an ancestor of origin/main, exactly the
 // state left by a previously renamed remote default branch.
 func TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	root := t.TempDir()
@@ -1640,6 +1691,7 @@ func TestReconcileDefaultBranchCanonicalRealGitFastForwardsAndRenames(t *testing
 }
 
 func TestDefaultBranchGitRunsAndReportsFailures(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	dir := t.TempDir()
@@ -1657,6 +1709,7 @@ func TestDefaultBranchGitRunsAndReportsFailures(t *testing.T) {
 }
 
 func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalGit, originalRename, originalAttach := service.deps.Git, service.deps.AtomicRenameRefs, service.deps.AttachHead
@@ -1700,6 +1753,7 @@ func TestReconcileDefaultBranchCanonicalBlocksMovementDuringNormalAttach(t *test
 }
 
 func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	tests := []struct {
@@ -1720,6 +1774,7 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 		{name: "atomic receipt", failCheckpoint: 2, want: "persist atomic local rename receipt"},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			originalGit, originalRename, originalAttach := service.deps.Git, service.deps.AtomicRenameRefs, service.deps.AttachHead
 			t.Cleanup(func() {
@@ -1765,6 +1820,7 @@ func TestReconcileDefaultBranchCanonicalFailsClosedOnGitAndReceiptErrors(t *test
 }
 
 func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	if result := service.applyDefaultBranchWithCheckpoint(context.Background(), Repository{Repository: "not-a-slug"}, nil); result.Disposition != "error" || !strings.Contains(result.Error, "invalid repository") {
@@ -1777,6 +1833,7 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 		"mutation rejected":  {want: "mutation rejected"},
 		"post proof differs": {mutate: func(observed *string) { *observed = "main" }, want: "branch head changed while waiting"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -1820,6 +1877,7 @@ func TestApplyDefaultBranchFailsClosedForInvalidAndUnprovenOutcomes(t *testing.T
 }
 
 func TestDefaultBranchReportPathAndValidationGuardrails(t *testing.T) {
+	t.Parallel()
 	ProjectsRoot := t.TempDir()
 	path, err := defaultBranchReportPath(Scope{ProjectsRoot: ProjectsRoot}, "")
 	if err != nil || !strings.Contains(path, "reports/default-branch/default-branch-") {
@@ -1839,6 +1897,7 @@ func TestDefaultBranchReportPathAndValidationGuardrails(t *testing.T) {
 }
 
 func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	tests := []struct {
@@ -1867,6 +1926,7 @@ func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
 		}},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			original := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = original })
@@ -1889,6 +1949,7 @@ func TestInspectDefaultBranchFailsClosedOnUntrustedObservations(t *testing.T) {
 // the injector.
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1900,6 +1961,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedChmodFailure(t *test
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1911,6 +1973,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedWriteFailure(t *test
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1922,6 +1985,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedSyncFailure(t *testi
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1934,6 +1998,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedCloseFailure(t *test
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1962,6 +2027,7 @@ func assertNoLeftoverDefaultBranchReportTempFile(t *testing.T, dir string) {
 }
 
 func TestPersistDefaultBranchReportInjectedHonoursAnInjectedDirSyncFailure(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1976,6 +2042,7 @@ func TestPersistDefaultBranchReportInjectedHonoursAnInjectedDirSyncFailure(t *te
 }
 
 func TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences(t *testing.T) {
+	t.Parallel()
 	for name, contents := range map[string]string{
 		"inline second branch":    "on:\n  push:\n    branches: [dev, master]\n",
 		"multiline second branch": "on:\n  push:\n    branches:\n      - dev\n      - 'master'\n",
@@ -1984,6 +2051,7 @@ func TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences(t *te
 		"action ref":              "uses: acme/action@master\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if !workflowReferencesDefaultBranch(contents, "master") {
 				t.Fatalf("reference was missed: %q", contents)
 			}
@@ -2001,6 +2069,7 @@ func TestWorkflowReferencesDefaultBranchCoversQuotedAndMultilineReferences(t *te
 }
 
 func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
+	t.Parallel()
 	before := "# keep this comment\non:\n  push:\n    branches:\n      - master\n      - release\n  pull_request:\n    branches:\n      - master\nname: unchanged\n"
 	after, changed := rewriteWorkflowBranchTriggers(before, "master", "main")
 	want := "# keep this comment\non:\n  push:\n    branches:\n      - main\n      - release\n  pull_request:\n    branches:\n      - main\nname: unchanged\n"
@@ -2043,6 +2112,7 @@ func TestRewriteWorkflowBranchTriggersIsNarrowAndBytePreserving(t *testing.T) {
 }
 
 func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2098,6 +2168,7 @@ func TestApplyDefaultBranchWorkflowTriggersUsesOneCASCommitAndPostRead(t *testin
 }
 
 func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead := service.deps.Read
@@ -2119,6 +2190,7 @@ func TestRewriteWorkflowTriggersIsNoopWhenDefaultAlreadyMatches(t *testing.T) {
 }
 
 func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig, originalWait := service.deps.Read, service.deps.Execute, service.deps.ConfigPath, service.deps.RenameWait
@@ -2190,6 +2262,7 @@ func TestRunDefaultBranchRewritesWorkflowThenRenames(t *testing.T) {
 }
 
 func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.ListRemote
@@ -2217,6 +2290,7 @@ func TestDiscoverDefaultBranchFleetKeepsOwnerFailureAndDeduplicates(t *testing.T
 }
 
 func TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.ListRemote
@@ -2241,6 +2315,7 @@ func TestDiscoverDefaultBranchFleetRefusesPotentiallyPartialOwnerListing(t *test
 }
 
 func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -2290,12 +2365,14 @@ func TestInspectDefaultBranchHandlesEmptyAndForkParentSafely(t *testing.T) {
 }
 
 func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, blockedEndpoint := range []string{
 		"repos/fork/app/pulls?state=open&head=fork%3Amaster",
 		"repos/upstream/app/pulls?state=open&head=fork%3Amaster",
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(blockedEndpoint, func(t *testing.T) {
 			original := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = original })
@@ -2325,6 +2402,7 @@ func TestInspectDefaultBranchRefusesForkPRInEitherRepository(t *testing.T) {
 }
 
 func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Git
@@ -2367,6 +2445,7 @@ func TestReconcileDefaultBranchCanonicalResumesAlreadyMainTracking(t *testing.T)
 }
 
 func TestDefaultBranchResumeSourceRefusesMissingOrStaleBindings(t *testing.T) {
+	t.Parallel()
 	current := Repository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "current"}
 	prior := &Report{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []Repository{{
 		Repository: "acme/app", Disposition: "compliant", ObservedDefault: "master", Desired: "main", VerifiedDefault: "main", OldHead: "old", NewHead: "old",
@@ -2381,6 +2460,7 @@ func TestDefaultBranchResumeSourceRefusesMissingOrStaleBindings(t *testing.T) {
 }
 
 func TestReadDefaultBranchReportRequiresExactCallerDigestBeforeParsing(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "receipt.json")
 	raw := []byte(`{"schema_version":1,"mode":"apply","repositories":[]}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
@@ -2398,6 +2478,7 @@ func TestReadDefaultBranchReportRequiresExactCallerDigestBeforeParsing(t *testin
 }
 
 func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	prior := Report{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []Repository{{
@@ -2462,6 +2543,7 @@ func TestDefaultBranchArchiveRestoreIsDigestAndIdentityBound(t *testing.T) {
 }
 
 func TestApplyArchivedDefaultBranchRefreshesIdentityBeforeUnarchive(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2489,6 +2571,7 @@ func TestApplyArchivedDefaultBranchRefreshesIdentityBeforeUnarchive(t *testing.T
 }
 
 func TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2539,6 +2622,7 @@ func TestApplyArchivedDefaultBranchRestoresAfterMigrationFailure(t *testing.T) {
 }
 
 func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2622,6 +2706,7 @@ func TestApplyArchivedDefaultBranchRewritesWorkflowAndRestores(t *testing.T) {
 }
 
 func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2669,6 +2754,7 @@ func TestApplyArchivedDefaultBranchSwitchesSameHeadAndRestores(t *testing.T) {
 }
 
 func TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2703,6 +2789,7 @@ func TestApplyArchivedDefaultBranchRestoresAfterUnarchiveFailure(t *testing.T) {
 }
 
 func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead := service.deps.Read
@@ -2718,6 +2805,7 @@ func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
 		"default": {RepoMetadata{ID: 77, Archived: true, DefaultBranch: "trunk"}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "default branch"},
 		"head":    {RepoMetadata{ID: 77, Archived: true, DefaultBranch: "master"}, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "default head"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			service.deps.Read = func(_ context.Context, endpoint string) ([]byte, error) {
 				if endpoint != "repos/acme/app/branches/master" {
@@ -2739,6 +2827,7 @@ func TestValidatePlannedArchivedDefaultBranchFailsClosed(t *testing.T) {
 }
 
 func TestApplyArchivedDefaultBranchGuardsAndPreMutationCheckpoint(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	base := Repository{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "prepared"}}
@@ -2772,6 +2861,7 @@ func TestApplyArchivedDefaultBranchGuardsAndPreMutationCheckpoint(t *testing.T) 
 }
 
 func TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2793,6 +2883,7 @@ func TestRestoreArchivedDefaultBranchPersistsPreMutationReadFailure(t *testing.T
 }
 
 func TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2833,6 +2924,7 @@ func TestApplyArchivedDefaultBranchRestoresAfterAcceptedUnarchiveCheckpointFailu
 }
 
 func TestApplyArchivedDefaultBranchRefusesPostUnarchiveIdentityChange(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2869,6 +2961,7 @@ func TestApplyArchivedDefaultBranchRefusesPostUnarchiveIdentityChange(t *testing
 }
 
 func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -2903,6 +2996,7 @@ func TestRestoreArchivedDefaultBranchRecordsActionAndFinalCheckpointFailure(t *t
 }
 
 func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig := service.deps.Read, service.deps.Execute, service.deps.ConfigPath
@@ -2965,6 +3059,7 @@ func TestRunDefaultBranchTemporarilyUnarchivesAndRestoresBeforeLocalReconcile(t 
 }
 
 func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	if _, err := service.Run(context.Background(), Request{Scope: Scope{}, Options: Options{RestoreArchiveFrom: "missing.json", RestoreArchiveSHA256: "bad"}}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "restore-archive-sha256") {
@@ -2992,6 +3087,7 @@ func TestRunDefaultBranchArchiveRestoreRejectsReceiptBeforeMutation(t *testing.T
 }
 
 func TestArchiveRestoreReceiptFailureEdges(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	missing := filepath.Join(t.TempDir(), "missing.json")
@@ -3020,6 +3116,7 @@ func TestArchiveRestoreReceiptFailureEdges(t *testing.T) {
 }
 
 func TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -3064,6 +3161,7 @@ func TestRestoreArchivedDefaultBranchAttemptsRestoreAfterCheckpointFailure(t *te
 }
 
 func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for name, read := range map[string]func(int, string) ([]byte, error){
@@ -3087,6 +3185,7 @@ func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *
 			}
 		},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -3118,6 +3217,7 @@ func TestRestoreArchivedDefaultBranchPersistsPostMutationVerificationFailure(t *
 }
 
 func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	transition := &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FinalHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
@@ -3163,6 +3263,7 @@ func TestDefaultBranchArchiveRestorePairsDefaultAndHeadAndPersistsRefusal(t *tes
 }
 
 func TestDefaultBranchArchiveRestoreReceiptValidation(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "receipt.json")
 	if _, err := readDefaultBranchArchiveRestoreReport(path, "bad"); err == nil {
 		t.Fatal("short digest was accepted")
@@ -3204,6 +3305,7 @@ func TestDefaultBranchArchiveRestoreReceiptValidation(t *testing.T) {
 }
 
 func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	prior := Report{SchemaVersion: defaultBranchSchemaVersion, Mode: "apply", Repositories: []Repository{{Repository: "acme/app", RepositoryID: 77, Desired: "main", Archive: &Archive{RepositoryID: 77, OriginalArchived: true, InitialDefault: "master", DesiredDefault: "main", InitialHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Phase: "failed"}}}}
@@ -3218,6 +3320,7 @@ func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
 	t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
 	for name, archived := range map[string]bool{"already archived": true, "mutation failure": false} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			mutations := 0
 			service.deps.Read = func(_ context.Context, endpoint string) ([]byte, error) {
@@ -3249,6 +3352,7 @@ func TestRunDefaultBranchArchiveRestoreVerifiesAlreadyArchivedAndMutationFailure
 }
 
 func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
+	t.Parallel()
 	current := Repository{Repository: "acme/app", ObservedDefault: "main", Desired: "main", OldHead: "same"}
 	verified := Repository{
 		Repository: "acme/app", Disposition: "compliant", ObservedDefault: "master", VerifiedDefault: "main", Desired: "main",
@@ -3265,6 +3369,7 @@ func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
 		"same source":        func(v *Repository) { v.ObservedDefault = "main" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := verified
 			mutate(&candidate)
 			if source, head, reason := defaultBranchResumeSource(&Report{Repositories: []Repository{candidate}}, current); source != "" || head != "" || !strings.Contains(reason, "verified successful") {
@@ -3275,6 +3380,7 @@ func TestDefaultBranchResumeSourceRequiresVerifiedMigrationProof(t *testing.T) {
 }
 
 func TestDefaultBranchResumeSourceRequiresTerminalPagesProof(t *testing.T) {
+	t.Parallel()
 	sha := "2d2c113d93c2309584499baf511bfa26db66dbee"
 	before := &PagesSource{BuildType: "legacy", Branch: "master", Path: "/"}
 	after := &PagesSource{BuildType: "legacy", Branch: "main", Path: "/"}
@@ -3295,6 +3401,7 @@ func TestDefaultBranchResumeSourceRequiresTerminalPagesProof(t *testing.T) {
 			p.Actions = []string{"renamed master to main", "verified default branch and head"}
 		},
 	} {
+		//nolint:paralleltest // Rows observe the parent receipt before its subsequent positive Pages proof mutation.
 		t.Run(name, func(t *testing.T) {
 			priorCopy, currentCopy := verified, current
 			mutate(&priorCopy, &currentCopy)
@@ -3311,6 +3418,7 @@ func TestDefaultBranchResumeSourceRequiresTerminalPagesProof(t *testing.T) {
 }
 
 func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *testing.T) {
+	t.Parallel()
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	current := Repository{Repository: "acme/app", RepositoryID: 77, ObservedDefault: "main", Desired: "main", OldHead: sha, NewHead: sha, Archived: true, Fork: true}
 	verified := Repository{
@@ -3354,6 +3462,7 @@ func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *te
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate, refreshed := verified, current
 			archive := *verified.Archive
 			candidate.Archive = &archive
@@ -3367,6 +3476,7 @@ func TestDefaultBranchResumeSourceRequiresTerminalArchivedMigrationReceipt(t *te
 }
 
 func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach := service.deps.Read, service.deps.Execute, service.deps.ConfigPath, service.deps.Git, service.deps.AtomicRenameRefs, service.deps.AttachHead
@@ -3450,6 +3560,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 		"fork changed":          func(_ *Repository) { metadataFork = false },
 		"default SHA changed":   func(_ *Repository) { remoteHead = strings.Repeat("a", 40) },
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			metadataID, metadataArchived, metadataFork, remoteHead = 77, true, true, sha
 			mutate(&prior.Repositories[0])
@@ -3474,6 +3585,7 @@ func TestRunDefaultBranchResumesTerminalArchivedMacReceiptOnVMClone(t *testing.T
 }
 
 func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -3516,6 +3628,7 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 			r.Repositories[0].Disposition, r.Repositories[0].Error = "drift", "default-branch mutation pending"
 		},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			candidateReport := *prior
 			candidateReport.Repositories = append([]Repository(nil), prior.Repositories...)
@@ -3554,6 +3667,7 @@ func TestDefaultBranchLegacyRenameResumeRequiresExactV1PostProofRecord(t *testin
 }
 
 func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig := service.deps.Read, service.deps.Execute, service.deps.ConfigPath
@@ -3596,6 +3710,7 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 		"stale receipt":                   {repository: "acme/app", oldHead: strings.Repeat("a", 40)},
 		"missing receipt repository":      {repository: "other/app", oldHead: sha},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(name, func(t *testing.T) {
 			prior := Report{SchemaVersion: 1, Mode: "apply", Repositories: []Repository{{
 				Repository: "acme/app", Disposition: "pending", Error: defaultBranchRenameResponsePendingError, RenameAccepted: true,
@@ -3623,6 +3738,7 @@ func TestRunDefaultBranchReconcileNeverResendsNamedRemoteMutation(t *testing.T) 
 }
 
 func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalConfig, originalGit, originalRename, originalAttach := service.deps.Read, service.deps.Execute, service.deps.ConfigPath, service.deps.Git, service.deps.AtomicRenameRefs, service.deps.AttachHead
@@ -3748,6 +3864,7 @@ func TestRunDefaultBranchResumesMacReceiptOnVMClone(t *testing.T) {
 }
 
 func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalGit := service.deps.Git
@@ -3796,6 +3913,7 @@ func TestDefaultBranchLocalClonesExcludesCrossForgeAndMismatchedOrigins(t *testi
 }
 
 func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedOrigin(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalGit := service.deps.Git
@@ -3828,6 +3946,7 @@ func TestDefaultBranchLocalClonesFailsClosedForUnavailableDiscoveryAndMalformedO
 }
 
 func TestDefaultBranchConfigAndExactScopeRejectMalformedInputs(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	path := filepath.Join(t.TempDir(), "wb.yaml")
@@ -3843,6 +3962,7 @@ func TestDefaultBranchConfigAndExactScopeRejectMalformedInputs(t *testing.T) {
 }
 
 func TestDefaultBranchSafetyAcceptsWhitespaceEmptyRulesArray(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read

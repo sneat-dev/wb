@@ -380,7 +380,10 @@ func TestRunReportPathFailuresPreserveInspectedReport(t *testing.T) {
 		}
 	}
 }
+
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestReportPathHomeAndReservationRemovalFailures(t *testing.T) {
+	//nolint:paralleltest // This row or a sibling exercises process-wide environment selected by the native fixture.
 	t.Run("home", func(t *testing.T) {
 		t.Setenv(wbhome.EnvOverride, "")
 		t.Setenv("HOME", "")
@@ -388,6 +391,7 @@ func TestReportPathHomeAndReservationRemovalFailures(t *testing.T) {
 			t.Fatal("missing home accepted")
 		}
 	})
+	//nolint:paralleltest // This row or a sibling exercises process-wide environment selected by the native fixture.
 	t.Run("reservation removal", func(t *testing.T) {
 		dir := t.TempDir()
 		inj := &filewrite.Injector{Step: filewrite.StepClose, Hook: func() {

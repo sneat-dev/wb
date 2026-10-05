@@ -16,6 +16,7 @@ import (
 )
 
 func TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing(t *testing.T) {
+	t.Parallel()
 	// A checkout that is not a repository has no identity; the hook dispatch
 	// must warn and return rather than fail the caller's update. The
 	// dispatch func is a fake: lifecycleCheckoutUpdated must never reach the
@@ -85,6 +86,7 @@ func TestCwCovLifecycleCheckoutUpdatedWarnsInsteadOfFailing(t *testing.T) {
 }
 
 func TestLifecycleCheckoutUpdatedDefaultsToRealDispatch(t *testing.T) {
+	t.Parallel()
 	if handler := CheckoutUpdated(io.Discard, lifecyclehooks.Dispatch); handler == nil {
 		t.Fatal("lifecycleCheckoutUpdated returned a nil handler")
 	}

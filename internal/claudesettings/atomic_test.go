@@ -9,6 +9,7 @@ import (
 )
 
 func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForSettings}
 	if err := WriteAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForSettings) {
@@ -16,6 +17,7 @@ func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCreateFailure(t *testin
 	}
 }
 func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForSettings}
 	if err := WriteAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForSettings) {
@@ -23,6 +25,7 @@ func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedWriteFailure(t *testing
 	}
 }
 func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForSettings}
@@ -33,6 +36,7 @@ func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedCloseFailure(t *testing
 }
 
 func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForSettings}
 	if err := WriteAtomicallyInjected(path, []byte("{}"), inj); !errors.Is(err, errBoomForSettings) {
@@ -41,6 +45,7 @@ func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedChmodFailure(t *testing
 }
 
 func TestWriteSettingsAtomicallyInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForSettings}

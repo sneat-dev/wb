@@ -11,6 +11,7 @@ import (
 // audit-only guard in applySharedRuleset's injected implementation: a
 // non-Repository source type is refused before any GitHub read.
 func TestApplySharedRulesetSourceTypeMustBeRepository(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, nil)
@@ -24,6 +25,7 @@ func TestApplySharedRulesetSourceTypeMustBeRepository(t *testing.T) {
 // "rules" field type assertion failure branch: a ruleset body with no rules
 // array is refused rather than silently doing nothing.
 func TestApplySharedRulesetRejectsRulesetWithoutRulesField(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, func(_ int, endpoint string) []byte {
@@ -43,6 +45,7 @@ func TestApplySharedRulesetRejectsRulesetWithoutRulesField(t *testing.T) {
 // passed through unchanged rather than rejected, while a sibling
 // required_linear_history rule still drives the ruleset to a real change.
 func TestApplySharedRulesetSkipsNonObjectRuleEntries(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, func(_ int, endpoint string) []byte {
@@ -61,6 +64,7 @@ func TestApplySharedRulesetSkipsNonObjectRuleEntries(t *testing.T) {
 // with no parameters object still gets one created and allowed_merge_methods
 // set on it.
 func TestApplySharedRulesetInitializesMissingPullRequestParameters(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, func(_ int, endpoint string) []byte {
@@ -78,6 +82,7 @@ func TestApplySharedRulesetInitializesMissingPullRequestParameters(t *testing.T)
 // !changed guard: a ruleset with neither a required_linear_history nor a
 // pull_request rule has nothing for this seam to change.
 func TestApplySharedRulesetRefusesWhenNothingToChange(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, func(_ int, endpoint string) []byte {
@@ -96,6 +101,7 @@ func TestApplySharedRulesetRefusesWhenNothingToChange(t *testing.T) {
 // `repo.Disposition != "drift"` continue branch in applyMergePolicy's
 // pre-mutation lease recheck: a compliant repository is left untouched.
 func TestApplyMergePolicySkipsNonDriftRepositoriesInLeaseRecheck(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, nil)
@@ -115,6 +121,7 @@ func TestApplyMergePolicySkipsNonDriftRepositoriesInLeaseRecheck(t *testing.T) {
 // `parallel < 1` normalization branch runs (and does not panic or deadlock)
 // when a caller passes a non-positive worker count directly.
 func TestApplyMergePolicyNormalizesNonPositiveParallelism(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	cwDepsStubMergePolicyGitHub(service, t, nil)

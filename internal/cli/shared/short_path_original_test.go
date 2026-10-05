@@ -3,6 +3,7 @@ package shared
 import "testing"
 
 func TestCwWtShortPathTrimsToOwnerSlashRepository(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"/tmp/projects/acme/app":        "acme/app",
 		"/tmp/projects/acme/app/":       "acme/app",

@@ -25,6 +25,7 @@ func TestMissingCleanupOwnerEntryStagesRetainNativeReceipt(t *testing.T) {
 		{"lane", 0, "has no lane identity", false},
 		{"audit", 0, "--actor and --reason", true},
 	} {
+		//nolint:paralleltest // Rows reuse one actual receipt and operation lane, including held-lock second reads and the final unchanged-byte check.
 		t.Run(row.name, func(t *testing.T) {
 			count := 0
 			sentinel := errors.New(row.want)
@@ -79,6 +80,7 @@ func TestMissingCleanupNativeInputPoliciesRefuseBeforeEffects(t *testing.T) {
 		{"source", "exact source identity", func(r *WorktreeMergeReceipt) { r.Sources[0].Branch = "" }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			changed := r
 			changed.Sources = append([]WorktreeMergeSource(nil), r.Sources...)
 			changed.Status = WorktreeMergeLanded

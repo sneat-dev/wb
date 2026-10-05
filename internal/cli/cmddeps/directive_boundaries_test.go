@@ -34,6 +34,7 @@ func TestDirectiveCheckKeepsArgsDefaultsAndBestEffortOutput(t *testing.T) {
 	runtime := directiveRecordingRuntime(func() shared.Flags { return shared.Flags{} })
 	for _, stage := range []string{"path", "empty", "findings", "clean"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			command := newDirectiveCheck(runtime, DirectiveDependencies{Check: func(got context.Context, request depsrun.DirectiveCheckRequest, emit func(depsrun.DirectiveCheckRow)) (depsrun.DirectiveCheckResult, error) {
 				if got != ctx || request.Directory != "." || request.Policy.GoVersion != defaultDirectiveGoVersion || request.Policy.Toolchain != defaultDirectiveToolchain || request.Options.Timeout != 2*time.Minute || request.Options.Retry != 1 || !request.Apply || request.CodeQLCeiling != defaultCodeQLCeiling {
 					t.Fatalf("request=%+v ctx=%v", request, got)

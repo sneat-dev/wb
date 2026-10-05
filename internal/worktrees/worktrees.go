@@ -4,6 +4,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -3011,6 +3012,18 @@ func runSecureStageHelperWithExecutable(ctx context.Context, stageDirectory *os.
 	command := exec.CommandContext(ctx, executable, append([]string{SecureStageGitHelperArgument}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{stageDirectory}
+	if len(args) == 1 && args[0] == secureStagePathArgument {
+		var diagnostic bytes.Buffer
+		command.Stderr = &diagnostic
+		output, err := command.Output()
+		if err != nil {
+			return append(output, diagnostic.Bytes()...), err
+		}
+		if diagnostic.Len() != 0 {
+			_, _ = os.Stderr.Write(diagnostic.Bytes())
+		}
+		return output, nil
+	}
 	return command.CombinedOutput()
 }
 

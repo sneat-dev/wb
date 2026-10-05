@@ -8,6 +8,7 @@ import (
 )
 
 func TestClassifyServeResultNormalizesEveryCleanShutdownOutcome(t *testing.T) {
+	t.Parallel()
 	realErr := errors.New("listener accept failed")
 	cases := map[string]struct {
 		in   error
@@ -20,6 +21,7 @@ func TestClassifyServeResultNormalizesEveryCleanShutdownOutcome(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			got := classifyServeResult(testCase.in)
 			if !errors.Is(got, testCase.want) || (testCase.want == realErr && got != realErr) {
 				t.Fatalf("classifyServeResult(%v) = %v, want %v", testCase.in, got, testCase.want)
@@ -29,6 +31,7 @@ func TestClassifyServeResultNormalizesEveryCleanShutdownOutcome(t *testing.T) {
 }
 
 func TestAwaitDaemonServeResultReducesTheClassifiedResult(t *testing.T) {
+	t.Parallel()
 	if err := awaitDaemonServeResult(classifyServeResult(nil)); err != nil {
 		t.Fatalf("clean shutdown (nil) = %v, want nil", err)
 	}

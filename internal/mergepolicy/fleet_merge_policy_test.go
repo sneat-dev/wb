@@ -20,6 +20,7 @@ import (
 )
 
 func TestDiscoverRemoteMergePolicyFleetMarksGitHubInventoryRemote(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalUser, originalOrgs, originalList := service.deps.AuthUser, service.deps.MemberOrgs, service.deps.ListRemote
@@ -39,6 +40,7 @@ func TestDiscoverRemoteMergePolicyFleetMarksGitHubInventoryRemote(t *testing.T) 
 }
 
 func TestApplyExplicitOrganizationNeverInspectsMemberOrganizations(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalUser, originalOrgs, originalList := service.deps.AuthUser, service.deps.MemberOrgs, service.deps.ListRemote
@@ -87,6 +89,7 @@ func TestApplyExplicitOrganizationNeverInspectsMemberOrganizations(t *testing.T)
 }
 
 func TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -110,6 +113,7 @@ func TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts(t *testi
 }
 
 func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalDiscover, originalRead, originalExecute := service.deps.Discover, service.deps.Read, service.deps.Execute
@@ -166,6 +170,7 @@ func TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift(t *testing.T) {
 // A dry run (no --apply) still persists its plan under --report-dir, so an
 // operator can inspect exactly what apply would change before running it.
 func TestRunMergePolicyDryRunStillPersistsReportUnderReportDir(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalDiscover, originalRead, originalExecute := service.deps.Discover, service.deps.Read, service.deps.Execute
@@ -214,6 +219,7 @@ func TestRunMergePolicyDryRunStillPersistsReportUnderReportDir(t *testing.T) {
 }
 
 func TestRunMergePolicyApplyIgnoresUnrelatedRepositoryResponseChanges(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalDiscover, originalRead, originalExecute := service.deps.Discover, service.deps.Read, service.deps.Execute
@@ -257,6 +263,7 @@ func TestRunMergePolicyApplyIgnoresUnrelatedRepositoryResponseChanges(t *testing
 }
 
 func TestApplyRepositoryRulesetPreservesUnrelatedProtections(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -292,6 +299,7 @@ func TestApplyRepositoryRulesetPreservesUnrelatedProtections(t *testing.T) {
 }
 
 func TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -322,6 +330,7 @@ func TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift(t *testing.T) {
 }
 
 func TestInspectClassicProtectionTreats404AsNoneAndReportsLinearHistory(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -341,6 +350,7 @@ func TestInspectClassicProtectionTreats404AsNoneAndReportsLinearHistory(t *testi
 }
 
 func TestInspectMergePolicyCorroboratesExactPrivatePlanGate(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -364,6 +374,7 @@ func TestInspectMergePolicyCorroboratesExactPrivatePlanGate(t *testing.T) {
 }
 
 func TestInspectMergePolicyPlanGateFailsClosedUnlessExactAndCorroborated(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read
@@ -380,6 +391,7 @@ func TestInspectMergePolicyPlanGateFailsClosedUnlessExactAndCorroborated(t *test
 		{name: "only effective rules are gated", protection: errors.New("gh: Not Found (HTTP 404)"), rules: exact},
 	}
 	for _, test := range cases {
+		//nolint:paralleltest // Rows replace the same parent service.deps.Read callback; preserve sequential assign/inspect/assert order.
 		t.Run(test.name, func(t *testing.T) {
 			service.deps.Read = func(_ context.Context, endpoint string) ([]byte, error) {
 				switch {
@@ -408,6 +420,7 @@ func TestInspectMergePolicyPlanGateFailsClosedUnlessExactAndCorroborated(t *test
 }
 
 func TestApplyMergePolicyRechecksPlanGateBeforePatch(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -449,6 +462,7 @@ func TestApplyMergePolicyRechecksPlanGateBeforePatch(t *testing.T) {
 }
 
 func TestApplyMergePolicyAllowsStableCorroboratedPlanGate(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -486,6 +500,7 @@ func TestApplyMergePolicyAllowsStableCorroboratedPlanGate(t *testing.T) {
 }
 
 func TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -569,6 +584,7 @@ func TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResul
 }
 
 func TestClassicProtectionUpdatePayloadUsesContextsOnlyWithoutChecks(t *testing.T) {
+	t.Parallel()
 	payload, err := classicProtectionUpdatePayload([]byte(`{"required_status_checks":{"strict":true,"contexts":["Legacy CI"]},"required_linear_history":{"enabled":true}}`))
 	if err != nil {
 		t.Fatal(err)
@@ -590,6 +606,7 @@ func TestClassicProtectionUpdatePayloadUsesContextsOnlyWithoutChecks(t *testing.
 }
 
 func TestRunMergePolicyResumeCarriesPartialActions(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalDiscover, originalRead, originalExecute := service.deps.Discover, service.deps.Read, service.deps.Execute
@@ -630,6 +647,7 @@ func TestRunMergePolicyResumeCarriesPartialActions(t *testing.T) {
 }
 
 func TestOrganizationRulesetIsAuditOnlyAndBlocksRepositoryFallback(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -655,6 +673,7 @@ func TestOrganizationRulesetIsAuditOnlyAndBlocksRepositoryFallback(t *testing.T)
 }
 
 func TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute := service.deps.Read, service.deps.Execute
@@ -727,6 +746,7 @@ func TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints(t *testing.T) {
 }
 
 func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	originalRead, originalExecute, originalPersist := service.deps.Read, service.deps.Execute, service.deps.Persist
@@ -812,6 +832,7 @@ func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
 }
 
 func TestEnterpriseRuleThatAllowsMergeLeavesOnlyRepositorySettingsDrift(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	original := service.deps.Read

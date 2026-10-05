@@ -8,6 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestCwDepsLandingEventLogFindsTheOwningStream; these rows share their parent environment and remain sequential.
 func TestCwDepsLandingEventLogFindsTheOwningStream(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(wbhome.EnvOverride, home)

@@ -54,6 +54,7 @@ func TestSyncedSkillsWBVersionReportsNotInstalledWhenTheCLIVersionIsEmpty(t *tes
 }
 
 func TestSkillsDriftMessageNamesTheDirAndBothVersionsOrTheMissingInstall(t *testing.T) {
+	t.Parallel()
 	never := DriftMessage("/home/user/.claude/skills", skillsync.Status{}, "1.2.3")
 	for _, want := range []string{"/home/user/.claude/skills", "wb skills sync"} {
 		if !strings.Contains(never, want) {

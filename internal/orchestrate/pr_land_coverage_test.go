@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,16 +147,39 @@ func TestMergePullRequestTreatsCallerDeadlineAfterDispatchAsUnknown(t *testing.T
 	script := `#!/bin/sh
 if [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = PUT ]; then
   printf dispatched >"$ORCHCOV_MUTATION_MARKER"
-  sleep 5
+  exec sleep 60
 fi
 exit 30
 `
 	orchCovInstallGH(t, script)
 	t.Setenv("ORCHCOV_MUTATION_MARKER", marker)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
+	ctx := &mutationFixtureDeadline{Context: context.Background(), done: make(chan struct{})}
+	t.Cleanup(ctx.trigger)
+	dispatched := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			contents, err := os.ReadFile(marker)
+			if err == nil && string(contents) == "dispatched" {
+				ctx.trigger()
+				dispatched <- nil
+				return
+			}
+			if time.Now().After(deadline) {
+				ctx.trigger()
+				dispatched <- fmt.Errorf("native mutation dispatch readiness: contents=%q err=%v", contents, err)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 	sha, refusal, err := mergePullRequest(ctx, "acme/app", "7", "candidate", "squash", "subject", "body")
+	if dispatchErr := <-dispatched; dispatchErr != nil {
+		t.Fatal(dispatchErr)
+	}
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatal("native dispatch did not trigger caller deadline")
+	}
 	if sha != "" || refusal != nil || err == nil || !errors.Is(err, githubobserver.ErrTransientMutationOutcomeUnknown) {
 		t.Fatalf("deadline after merge dispatch = sha %q refusal=%+v err=%v", sha, refusal, err)
 	}
@@ -886,3 +910,22 @@ func TestOrchCovChecksFailedSanctionedCommandFallsBackWhenThereAreNoDetails(t *t
 		t.Fatalf("checksFailedSanctionedCommand = %q, want %q", got, want)
 	}
 }
+
+// mutationFixtureDeadline controls only the negative caller-deadline observation;
+// the dispatched GH child and native command cancellation stay unchanged.
+type mutationFixtureDeadline struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *mutationFixtureDeadline) Done() <-chan struct{} { return c.done }
+func (c *mutationFixtureDeadline) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *mutationFixtureDeadline) trigger() { c.once.Do(func() { close(c.done) }) }

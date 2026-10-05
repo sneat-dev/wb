@@ -59,6 +59,7 @@ func TestMergeRoutePreservesAuthoritativeAndConservativePolicy(t *testing.T) {
 		{name: "unavailable policy conservatively selects PR", missingGH: true, want: WorktreeMergeRoutePullRequest, reason: "target branch policy is unavailable"},
 		{name: "unavailable direct policy refuses", missingGH: true, requested: WorktreeMergeRouteDirect, want: WorktreeMergeRoutePullRequest, failure: "direct route is not authoritatively permitted:"},
 	} {
+		//nolint:paralleltest // Process-wide environment changes in TestMergeRoutePreservesAuthoritativeAndConservativePolicy, installWorktreeMergeDeferralGH; these rows share their parent environment and remain sequential.
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.missingGH {
 				t.Setenv("PATH", t.TempDir())
@@ -100,6 +101,7 @@ func TestMergeValidationPlanDirectCIInputsAndPartialRefusals(t *testing.T) {
 		{name: "force local", requested: WorktreeMergeRouteDirect, local: true},
 		{name: "allow unfenced", requested: WorktreeMergeRouteDirect, unfenced: true},
 	} {
+		//nolint:paralleltest // Process-wide environment changes in installDirectCITestGH; these rows share their parent environment and remain sequential.
 		t.Run(tt.name, func(t *testing.T) {
 			installDirectCITestGH(t)
 			plan, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "integration", tt.requested, tt.local, tt.unfenced, "17")
@@ -112,6 +114,7 @@ func TestMergeValidationPlanDirectCIInputsAndPartialRefusals(t *testing.T) {
 			}
 		})
 	}
+	//nolint:paralleltest // Process-wide environment changes in installDirectCITestGH; these rows share their parent environment and remain sequential.
 	t.Run("only first optional argument is considered", func(t *testing.T) {
 		installDirectCITestGH(t)
 		plan, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "integration", WorktreeMergeRouteDirect, false, false, "  ", "17")
@@ -123,6 +126,7 @@ func TestMergeValidationPlanDirectCIInputsAndPartialRefusals(t *testing.T) {
 			t.Fatalf("nonblank first argument = %#v, %v", plan, err)
 		}
 	})
+	//nolint:paralleltest // Process-wide environment changes in installDirectCITestGH; these rows share their parent environment and remain sequential.
 	t.Run("contract error retains resolved route", func(t *testing.T) {
 		installDirectCITestGH(t)
 		plan, err := resolveWorktreeMergeValidationPlan(context.Background(), "acme/app", "integration", WorktreeMergeRouteDirect, false, false, "not-a-PR")

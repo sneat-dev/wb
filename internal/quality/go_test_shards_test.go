@@ -251,7 +251,7 @@ func TestRunShardedCoverageRetriesOnlyFailedShardsAndMergesFinalProfiles(t *test
 
 	var progress []Progress
 	profile := filepath.Join(module, "merged.cov")
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, profile, []string{"./serial"}, 8, "", "", 0, 5*time.Second, 1, func(event Progress) {
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, profile, []string{"./serial"}, 8, "", "", 0, 30*time.Second, 1, func(event Progress) {
 		progress = append(progress, event)
 	}, nil, false)
 	if err != nil {

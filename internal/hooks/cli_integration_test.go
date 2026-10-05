@@ -131,6 +131,7 @@ func checkHooksFleet(inv *testInvocation, cmd *cobra.Command, config string, jso
 }
 
 func TestLocalHookReposFiltersAndSorts(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, relative := range []string{
 		"z-org/beta/.git",
@@ -158,6 +159,8 @@ func TestLocalHookReposFiltersAndSorts(t *testing.T) {
 		t.Fatalf("hooks.LocalRepos() = %#v, want sorted repositories", repos)
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestApplyAndCheckHooksFleet; these rows share their parent environment and remain sequential.
 func TestApplyAndCheckHooksFleet(t *testing.T) {
 	root := t.TempDir()
 	for _, relative := range []string{"acme/alpha", "acme/beta"} {
@@ -237,6 +240,7 @@ func TestCheckHooksFleetCountsAndReportsProblems(t *testing.T) {
 	}
 }
 func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	app := initTestRepository(t, filepath.Join(root, "acme", "app"))
 	initTestRepository(t, filepath.Join(root, "acme", "other"))
@@ -334,6 +338,7 @@ func TestCwDepsHooksInstallAndCheckInProcess(t *testing.T) {
 	}
 }
 func TestCwDepsHooksMetricsAndMeasureCommandsInProcess(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	app := initTestRepository(t, filepath.Join(root, "acme", "app"))
 	metricsFile := filepath.Join(t.TempDir(), "metrics.jsonl")
@@ -409,6 +414,8 @@ func writeHookEvents(t *testing.T, path string, events []hooks.Event) {
 		t.Fatal(err)
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestHooksMeasureShowsTheStreamProfileDelta; these rows share their parent environment and remain sequential.
 func TestHooksMeasureShowsTheStreamProfileDelta(t *testing.T) {
 	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
 	now := time.Now().UTC()
@@ -463,6 +470,7 @@ func TestHooksMeasureShowsTheStreamProfileDelta(t *testing.T) {
 	}
 }
 func TestHooksPushTierExitsSkipForAStreamBranch(t *testing.T) {
+	t.Parallel()
 	classification := hooks.ClassifyPushTier([]hooks.RefUpdate{{
 		LocalRef: "refs/heads/stream/x", LocalSHA: "a",
 		RemoteRef: "refs/heads/stream/x", RemoteSHA: "b",
@@ -475,6 +483,7 @@ func TestHooksPushTierExitsSkipForAStreamBranch(t *testing.T) {
 // TestPushTierDecisionReportsTheTierForAPublicationPush covers the branch whose
 // exit code is the answer a Git hook acts on.
 func TestPushTierDecisionReportsTheTierForAPublicationPush(t *testing.T) {
+	t.Parallel()
 	stdin := strings.NewReader(
 		"refs/tags/v1.0.0 1111111111111111111111111111111111111111 refs/tags/v1.0.0 2222222222222222222222222222222222222222\n")
 	code, message := classifyDecision(stdin)
@@ -491,6 +500,7 @@ func TestPushTierDecisionReportsTheTierForAPublicationPush(t *testing.T) {
 // that must never block a push: an unparseable ref list degrades to tier 1
 // instead of failing closed.
 func TestPushTierDecisionDefaultsToTheFastLaneOnMalformedInput(t *testing.T) {
+	t.Parallel()
 	code, message := classifyDecision(strings.NewReader("not-a-ref-update\n"))
 	if code != int(hooks.TierLint) {
 		t.Fatalf("code = %d, want %d", code, int(hooks.TierLint))

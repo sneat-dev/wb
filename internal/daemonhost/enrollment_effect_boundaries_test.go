@@ -97,6 +97,7 @@ func TestHubMountReturnsActualPepperAndStoreOpenRefusals(t *testing.T) {
 		t.Fatalf("pepper mount=%v,error=%v", mount, err)
 	}
 	t.Run("schema directory mode", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 			t.Skip("this platform/user does not enforce the Unix schema-directory write refusal")
 		}

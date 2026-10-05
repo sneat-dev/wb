@@ -123,6 +123,7 @@ func (model *defaultBranchReconcileModel) install(service *Service, t *testing.T
 }
 
 func TestReconcileDefaultBranchCanonicalFailureMatrix(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct{ name, mode, failure, want string }{
@@ -160,6 +161,7 @@ func TestReconcileDefaultBranchCanonicalFailureMatrix(t *testing.T) {
 		{"tracking after rename", "rename", "git:branch --set-upstream-to=origin/main main#1", "set local tracking branch"},
 		{"final reconciliation receipt", "rename", "checkpoint#3", "persist local-reconciliation receipt"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			model := &defaultBranchReconcileModel{t: t, mode: test.mode, failure: test.failure, calls: make(map[string]int), current: "master", localHead: "same"}
 			if test.mode == "attached" {
@@ -186,6 +188,7 @@ func TestReconcileDefaultBranchCanonicalFailureMatrix(t *testing.T) {
 }
 
 func TestReconcileDefaultBranchCanonicalPersistsBlockedRecoveryFailures(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct{ name, mode, first, second, want string }{
@@ -195,6 +198,7 @@ func TestReconcileDefaultBranchCanonicalPersistsBlockedRecoveryFailures(t *testi
 		{"post-rename verification", "rename", "git:rev-parse HEAD#1", "checkpoint#3", "persist blocked local rename receipt"},
 		{"post-rename tracking", "rename", "git:branch --set-upstream-to=origin/main main#1", "checkpoint#3", "persist partial local reconciliation receipt"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			model := &defaultBranchReconcileModel{t: t, mode: test.mode, failure: test.first, failureAlso: test.second, calls: make(map[string]int), current: "master", localHead: "same"}
 			if strings.HasPrefix(test.mode, "detached") {
@@ -215,6 +219,7 @@ func TestReconcileDefaultBranchCanonicalPersistsBlockedRecoveryFailures(t *testi
 }
 
 func TestReconcileDefaultBranchCanonicalRejectsMovedRefsAndAcceptsAlreadyTrackedHead(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct{ name, mode, override, value, want string }{
@@ -224,6 +229,7 @@ func TestReconcileDefaultBranchCanonicalRejectsMovedRefsAndAcceptsAlreadyTracked
 		{"fast-forward remote moved", "fast-forward", "git:rev-parse origin/main#2", "moved", "after fast-forward checkpoint"},
 		{"pre-rename local moved", "rename", "git:rev-parse master#2", "moved", "before rename checkpoint"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			model := &defaultBranchReconcileModel{t: t, mode: test.mode, override: test.override, value: test.value, calls: make(map[string]int), current: "master", localHead: "same"}
 			if test.mode == "attached" {

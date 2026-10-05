@@ -12,6 +12,7 @@ import (
 )
 
 func TestBatchVerifierMapsChecksAndFailureEvidence(t *testing.T) {
+	t.Parallel()
 	called := false
 	verifier := batchVerifier{timeout: 3 * time.Second, verify: func(_ context.Context, repository, path string, checks []quality.Check, options quality.RunOptions) quality.VerificationReport {
 		called = true
@@ -28,6 +29,7 @@ func TestBatchVerifierMapsChecksAndFailureEvidence(t *testing.T) {
 	}
 }
 func TestBatchVerifierTreatsNonfailedReportAsPassed(t *testing.T) {
+	t.Parallel()
 	verifier := batchVerifier{verify: func(context.Context, string, string, []quality.Check, quality.RunOptions) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusSkipped, Results: []quality.VerificationEntry{{Status: quality.StatusSkipped, Command: "unused"}}}
 	}}

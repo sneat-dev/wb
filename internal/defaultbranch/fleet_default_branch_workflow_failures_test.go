@@ -11,6 +11,7 @@ import (
 )
 
 func TestDefaultBranchWorkflowCommitFailureMatrix(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -27,6 +28,7 @@ func TestDefaultBranchWorkflowCommitFailureMatrix(t *testing.T) {
 		{"commit parent differs", "parent mismatch", "did not prove the expected parent"},
 		{"verified receipt unavailable", "final receipt", "persist verified workflow commit"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead, oldExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = oldRead, oldExecute })

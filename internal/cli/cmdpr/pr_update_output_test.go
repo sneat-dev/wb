@@ -25,6 +25,7 @@ func TestPRUpdateReportsExactReceiptInTextAndJSON(t *testing.T) {
 		return result, nil
 	}
 	for _, format := range []string{"text", "json"} {
+		//nolint:paralleltest // Rows replace or observe the parent deps.Update/requested value; preserve sequential callback/execute/assert order.
 		t.Run(format, func(t *testing.T) {
 			command := NewUpdate(testRuntime(), deps)
 			var stdout bytes.Buffer
@@ -56,6 +57,7 @@ func TestPRUpdateReturnsFindingsAfterPublishingPartialReceipt(t *testing.T) {
 	deps := testDependencies()
 	_ = deps
 	for _, status := range []string{"updated_partial", "unverified"} {
+		//nolint:paralleltest // Rows replace or observe the parent deps.Update/requested value; preserve sequential callback/execute/assert order.
 		t.Run(status, func(t *testing.T) {
 			deps.Update = func(context.Context, orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
 				return orchestrate.PullRequestUpdateResult{Repository: "acme/app", PullRequest: "42", Status: status, ReceiptPath: "/receipts/42.json"}, nil
@@ -83,6 +85,7 @@ func TestPRUpdateKeepsReceiptVisibleWhenUpdateFails(t *testing.T) {
 	_ = deps
 	want := errors.New("target moved during verification")
 	for _, receipt := range []string{"", "/receipts/42.json"} {
+		//nolint:paralleltest // Rows replace or observe the parent deps.Update/requested value; preserve sequential callback/execute/assert order.
 		t.Run(receipt, func(t *testing.T) {
 			deps.Update = func(context.Context, orchestrate.PullRequestUpdateOptions) (orchestrate.PullRequestUpdateResult, error) {
 				return orchestrate.PullRequestUpdateResult{Repository: "acme/app", PullRequest: "42", Status: "unverified", ReceiptPath: receipt}, want

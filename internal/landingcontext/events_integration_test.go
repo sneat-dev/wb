@@ -12,6 +12,8 @@ import (
 // what they typed, what a report printed, or what they copied from a browser.
 // Every one of them addresses the same pull request, and making the caller
 // normalize it is how a URL ends up inside an API path.
+//
+//nolint:paralleltest // Process-wide environment changes in TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed; these rows share their parent environment and remain sequential.
 func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", root)

@@ -27,6 +27,7 @@ func TestMergeSkillsHookSettingsReportsANonNotExistReadError(t *testing.T) {
 // -- including an unrelated SessionStart entry someone else already
 // registered.
 func TestMergeSkillsHookSettingsIsIdempotent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	existing := `{
 	  "model": "opus",

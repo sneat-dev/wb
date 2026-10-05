@@ -14,6 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestCwDepsMergePolicyApplyWithStubbedGitHub(t *testing.T) {
 	service := New()
 
@@ -68,6 +69,8 @@ func TestCwDepsMergePolicyApplyWithStubbedGitHub(t *testing.T) {
 		t.Error("the GitHub read seam was never exercised")
 	}
 }
+
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestCwDepsMergePolicyApplyBlocksARepositoryThatChanged(t *testing.T) {
 	service := New()
 
@@ -100,6 +103,8 @@ func TestCwDepsMergePolicyApplyBlocksARepositoryThatChanged(t *testing.T) {
 		t.Fatalf("report = %+v", report.Summary)
 	}
 }
+
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestCwDepsMergePolicyApplyReportsAMutationFailure(t *testing.T) {
 	service := New()
 

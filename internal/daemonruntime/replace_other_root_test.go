@@ -7,6 +7,7 @@ import (
 )
 
 func TestDaemonLaunchStopsBeforeStateAndProcessWhenTheCheckRefuses(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	starts := 0

@@ -297,6 +297,8 @@ func testNewSkillsSyncCmdJSONFormatReportsEveryField(t *testing.T, cfg skillsync
 // Each child owns its Home/Getenv callbacks, command, reports and mutation target.
 // The cursor journey retains the real environment binding and runs serially;
 // the other children run in parallel after its environment cleanup completes.
+//
+//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 	start := time.Now()
 	cfg, err := wbskills.Config(ai.SkillsFS, buildinfo.Snapshot())
@@ -304,47 +306,55 @@ func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("immutable source setup: %s", time.Since(start))
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdDryRunWritesNothing", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdDryRunWritesNothing(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdReportsConflictsAsFindings", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdReportsConflictsAsFindings(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdHarnessFlagInstallsIntoCursor", func(t *testing.T) {
 		start := time.Now()
 		testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdJSONReportsMultipleHarnessTargets", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdJSONReportsMultipleHarnessTargets(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
 		testNewSkillsSyncCmdDefaultSyncsEveryPresentHarness(t, cfg)
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
+	//nolint:paralleltest // Process-wide environment changes in testNewSkillsSyncCmdHarnessFlagInstallsIntoCursor; these rows share their parent environment and remain sequential.
 	t.Run("TestNewSkillsSyncCmdJSONFormatReportsEveryField", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()

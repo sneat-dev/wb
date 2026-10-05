@@ -10,6 +10,7 @@ import (
 )
 
 func TestCwCovWriteDaemonOperationTextAndJSON(t *testing.T) {
+	t.Parallel()
 	operation := &daemonv1.Operation{
 		OperationId: "wbo-1", IdempotencyKey: "key-1",
 		State: daemonv1.OperationState_OPERATION_STATE_SUCCEEDED, Cursor: "c-1",

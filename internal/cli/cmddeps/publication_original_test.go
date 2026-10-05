@@ -30,6 +30,7 @@ func TestNpmPublishOutputOmitsTokenLookingValueUnderSafeInputKey(t *testing.T) {
 	}
 	for _, format := range []string{"json", "yaml", "markdown"} {
 		t.Run(format, func(t *testing.T) {
+			t.Parallel()
 			var output bytes.Buffer
 			command := cwDepsNewOutCommand(&output)
 			command.SetOut(&output)

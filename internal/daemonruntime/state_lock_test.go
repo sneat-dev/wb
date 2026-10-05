@@ -11,6 +11,7 @@ import (
 )
 
 func TestDaemonStateLockWaitsForContendedLockThenAcquires(t *testing.T) {
+	t.Parallel()
 	root, holder, _ := cwWtLockFixture(t)
 
 	holderRelease, err := holder.AcquireStateLock()
@@ -42,6 +43,7 @@ func TestDaemonStateLockWaitsForContendedLockThenAcquires(t *testing.T) {
 }
 
 func TestDaemonStateLockReportsHolderAfterDeadline(t *testing.T) {
+	t.Parallel()
 	root, holder, _ := cwWtLockFixture(t)
 
 	holderRelease, err := holder.AcquireStateLock()
@@ -63,6 +65,7 @@ func TestDaemonStateLockReportsHolderAfterDeadline(t *testing.T) {
 }
 
 func TestDaemonStateLockDefaultClockIsMonotonic(t *testing.T) {
+	t.Parallel()
 	now := DefaultDependencies(func(message string) error { return fmt.Errorf("%s", message) }).LockNow()
 	if !strings.Contains(now.String(), "m=") {
 		t.Fatalf("default lockNow() = %s, want a monotonic reading (\"m=...\")", now)

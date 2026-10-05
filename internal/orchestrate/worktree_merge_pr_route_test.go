@@ -910,7 +910,9 @@ func TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses(t *testing.T) 
 		Repository: "acme/app", PullRequest: "41", ProjectsRoot: fixture.githubDir,
 		MergeMethod: "merge", MergeMethodExplicit: true,
 		NoAutoMerge: true, NoUpdateBranch: true,
-		Slice: 3 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		// Instrumented native Git/hosted reads must still complete the mandatory
+		// unchanged foreground reread; the production policy is unchanged.
+		Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
 	}
 	_, waited, _, _, refusal, err := awaitLandablePullRequest(context.Background(), options, view, "41", "x2 subject", "x2 body", map[string]string{})
 	if err != nil {

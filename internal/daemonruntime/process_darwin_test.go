@@ -17,6 +17,7 @@ import (
 )
 
 func TestLaunchdPlistUsesLaunchdDictionaryAndEscapesArguments(t *testing.T) {
+	t.Parallel()
 	data := launchdPlistBytes("/tmp/wb&candidate", []string{"--projects-root", "/tmp/a<b"}, "/tmp/wb.log")
 	text := string(data)
 	if !strings.Contains(text, "<dict>") || !strings.Contains(text, "<key>ProgramArguments</key><array>") || strings.Contains(text, "<Dictionary>") {
@@ -34,6 +35,7 @@ func TestLaunchdPlistUsesLaunchdDictionaryAndEscapesArguments(t *testing.T) {
 }
 
 func TestLaunchdPIDFromAuthoritativeJobState(t *testing.T) {
+	t.Parallel()
 	output := "gui/501/dev.sneat.wb.daemon = {\n\tstate = running\n\tpid = 65918\n}"
 	if pid, ok := launchdPIDFromOutput(output); !ok || pid != 65918 {
 		t.Fatalf("launchd pid = %d, %t", pid, ok)
@@ -43,6 +45,7 @@ func TestLaunchdPIDFromAuthoritativeJobState(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestLaunchdPlistPinsProjectsRootAndNoResolvedRuntimePath(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, "/tmp/wb-root-fixture")
 	data := launchdPlistBytes("/tmp/wb", []string{"--projects-root", "/tmp/projects", "daemon", "serve", "--listen", DefaultListen, "--managed-start"}, "/Users/someone/Library/Logs/wb/daemon.log")
@@ -65,6 +68,7 @@ func TestLaunchdPlistPinsProjectsRootAndNoResolvedRuntimePath(t *testing.T) {
 }
 
 func TestStopDaemonProcessBootsOutWBsOwnJob(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -79,6 +83,7 @@ func TestStopDaemonProcessBootsOutWBsOwnJob(t *testing.T) {
 }
 
 func TestStopDaemonProcessBootsOutWhenUnsupervised(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -93,6 +98,7 @@ func TestStopDaemonProcessBootsOutWhenUnsupervised(t *testing.T) {
 }
 
 func TestStopDaemonProcessKickstartsAForeignLaunchdJob(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -109,6 +115,7 @@ func TestStopDaemonProcessKickstartsAForeignLaunchdJob(t *testing.T) {
 }
 
 func TestStartDaemonProcessRefusesATestBinaryBeforeTouchingLaunchd(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -123,6 +130,7 @@ func TestStartDaemonProcessRefusesATestBinaryBeforeTouchingLaunchd(t *testing.T)
 }
 
 func TestStopDaemonProcessReportsAFailedForeignKickstart(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -135,6 +143,7 @@ func TestStopDaemonProcessReportsAFailedForeignKickstart(t *testing.T) {
 }
 
 func TestRunLaunchctlDefaultGuardsAgainstATestBinaryGenerally(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -147,6 +156,7 @@ func TestRunLaunchctlDefaultGuardsAgainstATestBinaryGenerally(t *testing.T) {
 }
 
 func TestStopDaemonProcessGuardsAgainstATestBinaryWithoutFakingRunLaunchctl(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -159,6 +169,7 @@ func TestStopDaemonProcessGuardsAgainstATestBinaryWithoutFakingRunLaunchctl(t *t
 }
 
 func TestRunLaunchctlTimeoutStaysAboveDaemonStopTimeout(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -169,6 +180,7 @@ func TestRunLaunchctlTimeoutStaysAboveDaemonStopTimeout(t *testing.T) {
 }
 
 func TestAwaitLaunchdReadyReturnsTheReportedPID(t *testing.T) {
+	t.Parallel()
 	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var slept []time.Duration
 	now := func() time.Time { return virtual }
@@ -201,6 +213,7 @@ func TestAwaitLaunchdReadyReturnsTheReportedPID(t *testing.T) {
 }
 
 func TestAwaitLaunchdReadyReturnsFalseWhenDeadlinePasses(t *testing.T) {
+	t.Parallel()
 	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	deadline := virtual.Add(120 * time.Millisecond)
 	var slept []time.Duration
@@ -227,6 +240,7 @@ func TestAwaitLaunchdReadyReturnsFalseWhenDeadlinePasses(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartRefusesWhenTheLaunchAgentServesAnotherProjectsRoot(t *testing.T) {
 	other := t.TempDir()
 	fixture := newLaunchGuardFixture(t, func(string) []byte { return launchdPlistFixtureFor(other, "127.0.0.1:18766") })
@@ -244,6 +258,7 @@ func TestDaemonStartRefusesWhenTheLaunchAgentServesAnotherProjectsRoot(t *testin
 	fixture.assertNothingChanged(t)
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartWithReplaceOtherRootProceedsPastAnotherProjectsRoot(t *testing.T) {
 	other := t.TempDir()
 	fixture := newLaunchGuardFixture(t, func(string) []byte { return launchdPlistFixtureFor(other, "127.0.0.1:18766") })
@@ -258,6 +273,7 @@ func TestDaemonStartWithReplaceOtherRootProceedsPastAnotherProjectsRoot(t *testi
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartProceedsWhenTheLaunchAgentServesTheSameProjectsRoot(t *testing.T) {
 	fixture := newLaunchGuardFixture(t, func(root string) []byte { return launchdPlistFixtureFor(root, DefaultListen) })
 
@@ -269,6 +285,7 @@ func TestDaemonStartProceedsWhenTheLaunchAgentServesTheSameProjectsRoot(t *testi
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartProceedsWhenNoLaunchAgentIsRegistered(t *testing.T) {
 	fixture := newLaunchGuardFixture(t, nil)
 
@@ -280,6 +297,7 @@ func TestDaemonStartProceedsWhenNoLaunchAgentIsRegistered(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartRefusesAnUnreadableLaunchAgentFileAndNamesIt(t *testing.T) {
 	fixture := newLaunchGuardFixture(t, func(string) []byte { return []byte("this is not a property list") })
 
@@ -291,6 +309,7 @@ func TestDaemonStartRefusesAnUnreadableLaunchAgentFileAndNamesIt(t *testing.T) {
 	fixture.assertNothingChanged(t)
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartWithReplaceOtherRootProceedsPastAnUnreadableLaunchAgentFile(t *testing.T) {
 	fixture := newLaunchGuardFixture(t, func(string) []byte { return []byte("not a plist") })
 
@@ -299,6 +318,7 @@ func TestDaemonStartWithReplaceOtherRootProceedsPastAnUnreadableLaunchAgentFile(
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartTreatsASymlinkedSpellingOfTheSameRootAsTheSameRoot(t *testing.T) {
 	link := filepath.Join(t.TempDir(), "projects-link")
 	fixture := newLaunchGuardFixture(t, func(root string) []byte {
@@ -314,6 +334,7 @@ func TestDaemonStartTreatsASymlinkedSpellingOfTheSameRootAsTheSameRoot(t *testin
 }
 
 func TestCheckLaunchdRootOwnershipReportsAnUnreadablePlistPath(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	// A directory where the file should be: present, but not readable as one.
 	err := checkLaunchdRootOwnership(directory, "/tmp/root", false, "/home/x")
@@ -323,6 +344,7 @@ func TestCheckLaunchdRootOwnershipReportsAnUnreadablePlistPath(t *testing.T) {
 }
 
 func TestParseLaunchdServiceRootReadsBothArgumentSpellingsAndTheDefaultRoot(t *testing.T) {
+	t.Parallel()
 	const prologue = xml.Header + `<plist version="1.0"><dict>`
 	cases := []struct {
 		name, body, wantRoot, wantListen string
@@ -341,6 +363,7 @@ func TestParseLaunchdServiceRootReadsBothArgumentSpellingsAndTheDefaultRoot(t *t
 }
 
 func TestParseLaunchdServiceRootRejectsPlistsItCannotUnderstand(t *testing.T) {
+	t.Parallel()
 	const open = xml.Header + `<plist version="1.0">`
 	for name, document := range map[string]string{
 		"not xml":                  "garbage",
@@ -360,6 +383,7 @@ func TestParseLaunchdServiceRootRejectsPlistsItCannotUnderstand(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonCheckOtherRootReadsTheFixtureHomePlist(t *testing.T) {
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
@@ -376,6 +400,7 @@ func TestDaemonCheckOtherRootReadsTheFixtureHomePlist(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonCheckOtherRootReportsAnUnresolvableHome(t *testing.T) {
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
@@ -387,6 +412,7 @@ func TestDaemonCheckOtherRootReportsAnUnresolvableHome(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestCheckLaunchdRootOwnershipComparesAMissingRootByItsCleanedSpelling(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-created")
 	plistPath := installLaunchdPlistFixture(t, launchdPlistFixtureFor(missing+"/sub/..", DefaultListen))

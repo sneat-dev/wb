@@ -32,6 +32,7 @@ func TestDefaultBranchCLIReportsRemoteFailureAndWriterFailure(t *testing.T) {
 		{name: "text", out: new(bytes.Buffer), want: "default-branch findings remain"},
 		{name: "json", args: []string{"--json"}, out: new(bytes.Buffer), want: "default-branch findings remain"},
 	} {
+		//nolint:paralleltest // Rows reuse the parent shared.Flags pointer and dependency callbacks/counters; preserve sequential parse/execute/assert order.
 		t.Run(test.name, func(t *testing.T) {
 			command := fakeRoot(&flags, deps)
 			command.SetOut(test.out)
@@ -47,6 +48,7 @@ func TestDefaultBranchCLIReportsRemoteFailureAndWriterFailure(t *testing.T) {
 		t.Fatalf("remote metadata reads=%d, want one per command", reads)
 	}
 	for _, format := range []string{"text", "json"} {
+		//nolint:paralleltest // Rows reuse the parent shared.Flags pointer and dependency callbacks/counters; preserve sequential parse/execute/assert order.
 		t.Run("writer failure "+format, func(t *testing.T) {
 			command := fakeRoot(&flags, deps)
 			writer := &defaultBranchFailWriter{failAt: 1}

@@ -17,6 +17,7 @@ import (
 )
 
 func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	withToken := memoryHubConfig(t)
@@ -24,7 +25,7 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 	if mount.Poller == nil {
 		t.Fatal("a hub with a token file must poll")
 	}
@@ -37,7 +38,7 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 	if err != nil || silent == nil {
 		t.Fatalf("mountHub = %v, %v", silent, err)
 	}
-	defer func() { _ = silent.Close() }()
+	t.Cleanup(func() { _ = silent.Close() })
 	if silent.Poller != nil {
 		t.Fatal("a hub with no token file has nothing to ask GitHub with")
 	}
@@ -49,7 +50,7 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 	if err != nil || webhook == nil {
 		t.Fatalf("mountHub = %v, %v", webhook, err)
 	}
-	defer func() { _ = webhook.Close() }()
+	t.Cleanup(func() { _ = webhook.Close() })
 	if webhook.Poller != nil {
 		t.Fatal("a hub in webhook mode must not poll GitHub")
 	}
@@ -66,6 +67,7 @@ func TestHubMountStartsThePollerOnlyWithATokenFile(t *testing.T) {
 }
 
 func TestHubGitHubTokenIsReadPerTickAndNeverNarrated(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "github.token")
 	read := hubGitHubToken(path)
 
@@ -88,13 +90,14 @@ func TestHubGitHubTokenIsReadPerTickAndNeverNarrated(t *testing.T) {
 }
 
 func TestHubHealthReportsPollingAndDeliveryMarkers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	configPath := memoryHubConfig(t)
 	mount, err := mountHub(ctx, configPath, "127.0.0.1:8793", narrate.Writer{}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 
 	health := mount.health(ctx)
 	if !health.Mounted || !health.Polling || health.PollIntervalSeconds != 1200 {
@@ -116,6 +119,7 @@ func TestHubHealthReportsPollingAndDeliveryMarkers(t *testing.T) {
 }
 
 func TestHubDeliveryMarkerIsOptional(t *testing.T) {
+	t.Parallel()
 	if hubDeliveryMarker(nil) != nil {
 		t.Fatal("an absent marker must stay absent")
 	}
@@ -127,15 +131,17 @@ func TestHubDeliveryMarkerIsOptional(t *testing.T) {
 }
 
 func TestServeQuietSilencesTheConsoleWithoutChangingTheHub(t *testing.T) {
+	t.Parallel()
 	for _, quiet := range []bool{false, true} {
 		t.Run(fmt.Sprintf("quiet=%t", quiet), func(t *testing.T) {
+			t.Parallel()
 			var out bytes.Buffer
 			writer := narrate.Writer{Out: &out, Quiet: quiet}
 			store, closer, err := hubstore.Open(context.Background(), hubconfig.Store{Engine: hubconfig.EngineMemory})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = closer.Close() }()
+			t.Cleanup(func() { _ = closer.Close() })
 			events, _ := hub.NewRepositoryEventStore(store)
 			service := hub.RepositoryEventService{
 				Snapshots: emptySnapshots{}, Entitlements: noEntitlements{}, Store: events, Narrate: writer.Write,

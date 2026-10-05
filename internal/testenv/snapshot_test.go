@@ -32,6 +32,7 @@ func TestSnapshotTreesReportsNativeReadAndWalkFailures(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"read", "walk"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			if kind == "read" {
 				if err := os.Symlink(filepath.Join(root, "absent"), filepath.Join(root, "broken")); err != nil {
@@ -45,7 +46,7 @@ func TestSnapshotTreesReportsNativeReadAndWalkFailures(t *testing.T) {
 			go func() { defer close(done); SnapshotTrees(recorder, root) }()
 			<-done
 			recorder.mu.Lock()
-			defer recorder.mu.Unlock()
+			t.Cleanup(recorder.mu.Unlock)
 			if !recorder.fataled || !strings.Contains(recorder.fatalMsg, "snapshot trees") {
 				t.Fatalf("fatal=%v message=%q", recorder.fataled, recorder.fatalMsg)
 			}

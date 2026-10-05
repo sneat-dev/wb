@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestRuntimeDefaultsBindIndependentClocksAndSafeNativeObservers(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("typed usage refusal")
 	deps := DefaultDependencies(func(string) error { return sentinel })
 	if got := deps.Bounds(); got != (LifecycleBounds{5 * time.Second, 5 * time.Second, 30 * time.Second, 200 * time.Millisecond}) {
@@ -89,10 +91,10 @@ func TestLifecycleBoundsRemainPerControllerAndLazy(t *testing.T) {
 func TestBoundedNativeCommandCapturesPrivateChildOutput(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "private-runtime-child")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf private-output"), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\nprintf private-output"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	got, err := runBoundedNativeCommand(path, time.Second)
+	got, err := runBoundedNativeCommand(path, 30*time.Second)
 	if err != nil || string(got) != "private-output" {
 		t.Fatalf("native child = %q,%v", got, err)
 	}

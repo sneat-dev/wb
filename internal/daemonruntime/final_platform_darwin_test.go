@@ -5,21 +5,28 @@ package daemonruntime
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestNativeLaunchdObserversPreserveFailureAndBoundedPresence(t *testing.T) {
 	native := defaultNativeOperations()
+	// This private shell fixture is subject to instrumented process startup.
+	// Preserve all native default bounds except this instance's presence probe.
+	bounds := defaultNativeCommandBounds()
+	bounds.Systemctl = 30 * time.Second
+	native.commandBounds = func() nativeCommandBounds { return bounds }
 	native.runLaunchctl = func(...string) ([]byte, error) { return nil, errors.New("private launchd observer refused") }
 	if pid, ok := native.launchdPID("private"); ok || pid != 0 {
 		t.Fatalf("pid=%d ok=%v", pid, ok)
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -28,6 +35,7 @@ func TestNativeLaunchdObserversPreserveFailureAndBoundedPresence(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestNativeLogResolutionFailurePrecedesChildLaunch(t *testing.T) {
 	root := cwWtDaemonRoot(t)
 	deps := daemonTestDependencies(t, root)

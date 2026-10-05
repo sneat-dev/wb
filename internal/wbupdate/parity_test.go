@@ -20,6 +20,7 @@ import (
 )
 
 func TestUpgradeCmd_HostConfigConstructorIsDeterministic(t *testing.T) {
+	t.Parallel()
 	first := Config(buildinfo.Version())
 	second := Config(buildinfo.Version())
 	if !reflect.DeepEqual(first, second) {
@@ -36,6 +37,7 @@ func TestUpgradeCmd_HostConfigConstructorIsDeterministic(t *testing.T) {
 // dependency: CheckUpgrades' own Current/Latest/Verdict come from calling
 // Config.Check regardless of how the host's own binary classifies).
 func TestSelfUpdateAndUpgradeSelf_ReachSameCheckVerdict(t *testing.T) {
+	t.Parallel()
 	client := &http.Client{Transport: releaseTransport(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[{"tag_name":"v9.9.9","prerelease":false,"draft":false}]`))}, nil
 	})}

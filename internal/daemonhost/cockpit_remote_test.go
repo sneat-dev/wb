@@ -35,6 +35,7 @@ func TestATargetAtThisDaemonsOwnAddressKeepsOnlyItsSSHRoute(t *testing.T) {
 }
 
 func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const address = "127.0.0.1:8798"
 	mount, get, owner, tokenFile := exportTestMount(t, address)
@@ -124,7 +125,7 @@ func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing
 
 	// The fleet's HTTP client reads the route end to end, on a loopback listener.
 	listener := httptest.NewServer(api)
-	defer listener.Close()
+	t.Cleanup(listener.Close)
 	exporter := cockpitfleet.NewHTTPExporter(func() time.Time { return exportTestNow })
 	read, err := exporter.Export(ctx, cockpitfleet.RemoteTarget{Machine: "vm", HTTP: &cockpitfleet.HTTPRoute{URL: listener.URL, TokenFile: tokenFile}}, false)
 	if err != nil || read.Machine != "hub-host" || read.Fleet == nil {
@@ -136,10 +137,11 @@ func TestMachineExportRouteServesThisMachineToItsOwnersCredentialOnly(t *testing
 }
 
 func TestMachineExportRouteSaysWhyThereIsNoEnvelope(t *testing.T) {
+	t.Parallel()
 	const address = "127.0.0.1:8797"
 	mount, get, owner, tokenFile := exportTestMount(t, address)
 	listener := httptest.NewServer(mount.handlers()[hub.APIPrefix+"/"])
-	defer listener.Close()
+	t.Cleanup(listener.Close)
 	exporter := cockpitfleet.NewHTTPExporter(func() time.Time { return exportTestNow })
 	read := func(metricsOnly bool) error {
 		_, err := exporter.Export(context.Background(), cockpitfleet.RemoteTarget{Machine: "vm", HTTP: &cockpitfleet.HTTPRoute{URL: listener.URL, TokenFile: tokenFile}}, metricsOnly)

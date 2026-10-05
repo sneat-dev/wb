@@ -10,6 +10,7 @@ import (
 )
 
 func TestStreamEventSinkAppendsToTheStreamLog(t *testing.T) {
+	t.Parallel()
 	store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 	sink := streamEventSink{log: store.EventLog("cw-cov")}
 	if err := sink.Append(streamsync.Event{Stream: "cw-cov", Verb: "sync", Phase: "rebase", Repository: "acme/app", Outcome: "ok", Detail: "rebased", Evidence: map[string]string{"head": "sha"}}); err != nil {
@@ -29,6 +30,7 @@ func TestStreamEventSinkAppendsToTheStreamLog(t *testing.T) {
 }
 
 func TestWorkflowMechanismsReadsPullRequestWorkflows(t *testing.T) {
+	t.Parallel()
 	empty := t.TempDir()
 	present, opaque, err := workflowMechanisms{}.Present(empty)
 	if err != nil {

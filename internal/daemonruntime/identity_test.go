@@ -181,6 +181,7 @@ func TestDaemonStatusRefusesARecordThatNamesAnotherStatePath(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartRefusesWhileADaemonServesTheLegacyRuntimeDirectory(t *testing.T) {
 	root := daemonTestRoot(t)
 	// The current home is <root>/.wb now, so the leftover daemon is the one

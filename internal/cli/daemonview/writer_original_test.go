@@ -17,6 +17,7 @@ func (w *originalFailWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func TestCwWtDaemonOperationProgressFailurePropagation(t *testing.T) {
+	t.Parallel()
 	operation := &daemonv1.Operation{
 		OperationId: "wbo-cwWt", State: daemonv1.OperationState_OPERATION_STATE_SUCCEEDED,
 		Cursor: "c", CpuUnits: 1, FinishedUnixMilli: 1,

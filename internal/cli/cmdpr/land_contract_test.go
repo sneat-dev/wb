@@ -71,6 +71,7 @@ func TestPRLandKeepCommitsRequiresExplicitSquashBeforePreflight(t *testing.T) {
 			name = "default"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			command := NewLand(testRuntime(), deps)
 			if err := command.Flags().Set("keep-commits", "abc123"); err != nil {
 				t.Fatal(err)

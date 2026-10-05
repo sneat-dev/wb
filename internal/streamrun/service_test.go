@@ -189,6 +189,8 @@ func TestLeaseIdentityFallbackKeepsMachineAndDoesNotResolveLoginWithoutConfig(t 
 		})
 	}
 }
+
+//nolint:paralleltest // This contract replaces the process-wide registered-session resolver; preserve sequential install/query/restore.
 func TestSessionIdentityUsesOnlyRegisteredSession(t *testing.T) {
 	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
 	worktrees.SetSessionResolver(nil)

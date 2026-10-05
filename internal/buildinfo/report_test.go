@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+//nolint:paralleltest // This contract changes the process-wide buildinfo version via Set; preserve serialized Set/Snapshot/restore.
 func TestSnapshotPreservesBuildAndFleetMetadata(t *testing.T) {
 	t.Cleanup(func() { Set("") })
 	for _, version := range []string{Unknown, "1.2.3"} {

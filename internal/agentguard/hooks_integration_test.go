@@ -101,6 +101,7 @@ func agentGuardPayload(t *testing.T, tool, cwd string, input map[string]any) str
 	return string(encoded)
 }
 func TestAgentHookNeverExitsNonZero(t *testing.T) {
+	t.Parallel()
 	projectsRoot, canonical, _ := agentGuardFixture(t)
 	payloads := []struct {
 		name    string
@@ -117,6 +118,7 @@ func TestAgentHookNeverExitsNonZero(t *testing.T) {
 	}
 	for _, testCase := range payloads {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			code, _, _ := runAgentHook(t, projectsRoot, testCase.payload)
 			if code != exitOK {
 				t.Fatalf("exit code %d for %s; a PreToolUse guard must always exit 0", code, testCase.name)
@@ -125,6 +127,7 @@ func TestAgentHookNeverExitsNonZero(t *testing.T) {
 	}
 }
 func TestAgentHookIsSilentForEveryAllow(t *testing.T) {
+	t.Parallel()
 	projectsRoot, canonical, worktree := agentGuardFixture(t)
 	allowed := []struct {
 		name    string
@@ -141,6 +144,7 @@ func TestAgentHookIsSilentForEveryAllow(t *testing.T) {
 	}
 	for _, testCase := range allowed {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			_, stdout, _ := runAgentHook(t, projectsRoot, testCase.payload)
 			if stdout != "" {
 				t.Fatalf("an allow wrote to stdout: %q", stdout)
@@ -149,6 +153,7 @@ func TestAgentHookIsSilentForEveryAllow(t *testing.T) {
 	}
 }
 func TestAgentHookWritesTheDenyDocument(t *testing.T) {
+	t.Parallel()
 	projectsRoot, canonical, _ := agentGuardFixture(t)
 	payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": "git checkout origin/main -- ."})
 	code, stdout, _ := runAgentHook(t, projectsRoot, payload)
@@ -181,9 +186,12 @@ func TestAgentHookWritesTheDenyDocument(t *testing.T) {
 		}
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall; these rows share their parent environment and remain sequential.
 func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
 	projectsRoot, canonical, _ := agentGuardFixture(t)
 
+	//nolint:paralleltest // Process-wide environment changes in TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall; these rows share their parent environment and remain sequential.
 	t.Run("no override at all still refuses through the real entry point", func(t *testing.T) {
 		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": "gh pr merge 1041"})
 		code, stdout, _ := runAgentHook(t, projectsRoot, payload)
@@ -195,6 +203,7 @@ func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall; these rows share their parent environment and remain sequential.
 	t.Run("an ambient WB_AGENTGUARD_ALLOW_GH_PR_MERGE is never honoured", func(t *testing.T) {
 		t.Setenv("WB_AGENTGUARD_ALLOW_GH_PR_MERGE", "set ahead of time in the process env, not on the call")
 		payload := agentGuardPayload(t, "Bash", canonical, map[string]any{"command": "gh pr merge 1041"})
@@ -207,6 +216,7 @@ func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall; these rows share their parent environment and remain sequential.
 	t.Run("an override inline on the exact call is honoured and recorded", func(t *testing.T) {
 		home := filepath.Join(projectsRoot, ".wb")
 		command := `WB_AGENTGUARD_ALLOW_GH_PR_MERGE="wb worktree land refuses this exact receipt, sneat-dev/wb#999" gh pr merge 1041 --admin`
@@ -229,6 +239,7 @@ func TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall(t *testing.T) {
 		}
 	})
 
+	//nolint:paralleltest // Process-wide environment changes in TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall; these rows share their parent environment and remain sequential.
 	t.Run("an override via env is honoured the same way", func(t *testing.T) {
 		home := filepath.Join(projectsRoot, ".wb")
 		command := `env WB_AGENTGUARD_ALLOW_GH_PR_MERGE="reason via env, sneat-dev/wb#999" gh pr merge 1041`

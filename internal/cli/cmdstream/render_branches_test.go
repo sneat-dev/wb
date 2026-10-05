@@ -372,6 +372,7 @@ func TestStreamCommandRefusalsInProcess(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			stdout, _, err := cwCovExec(t, root, test.build, test.args...)
 			if err == nil {
 				t.Fatalf("%v was accepted:\n%s", test.args, stdout)

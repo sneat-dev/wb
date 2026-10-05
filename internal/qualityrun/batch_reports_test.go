@@ -12,6 +12,7 @@ import (
 )
 
 func TestCoverageRunOptionsUseRepositoryQualityPolicy(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	policyPath := filepath.Join(repository, ".wb", "quality.yaml")
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
@@ -32,6 +33,7 @@ func TestCoverageRunOptionsUseRepositoryQualityPolicy(t *testing.T) {
 	}
 }
 func TestRunCoverageTargetsReportsPolicyFailure(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	policyPath := filepath.Join(repository, ".wb", "quality.yaml")
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
@@ -56,6 +58,7 @@ func TestRunCoverageTargetsReportsPolicyFailure(t *testing.T) {
 	}
 }
 func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	policyPath := filepath.Join(repository, ".wb", "quality.yaml")
 	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
@@ -70,6 +73,7 @@ func TestVerificationUsesRepositoryQualityPolicy(t *testing.T) {
 	}
 }
 func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	git := func(arguments ...string) string {
 		t.Helper()
@@ -104,6 +108,7 @@ func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
 	}
 }
 func TestResumeTargetsSelectsOnlyPriorFailures(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "verify.yaml"), []byte("schema_version: 1\nrepositories:\n  - repository: acme/failing\n    status: failed\n  - repository: acme/passing\n    status: passed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -123,6 +128,7 @@ func TestResumeTargetsSelectsOnlyPriorFailures(t *testing.T) {
 
 }
 func TestCwCovVerificationGitSnapshot(t *testing.T) {
+	t.Parallel()
 	repository := scratchRepo(t)
 	if state := verificationGitSnapshot(repository); state.Err == nil {
 		t.Fatal("a repository with no commit has no HEAD to bind")
@@ -150,6 +156,7 @@ func TestCwCovVerificationGitSnapshot(t *testing.T) {
 	}
 }
 func TestCwCovQualityRunOptionsForTargetAndProgress(t *testing.T) {
+	t.Parallel()
 	var seen []quality.Progress
 	options := qualityRunOptionsForTarget(quality.RunOptions{
 		Retry:    2,
@@ -178,6 +185,7 @@ func TestCwCovQualityRunOptionsForTargetAndProgress(t *testing.T) {
 	}
 }
 func TestCwCovRunCoverageTargetsSkipsAModulelessRepository(t *testing.T) {
+	t.Parallel()
 	empty := t.TempDir()
 	// A repository with no Go module is skipped, not failed, and the completion
 	// callback still fires for it.
@@ -200,6 +208,7 @@ func TestCwCovRunCoverageTargetsSkipsAModulelessRepository(t *testing.T) {
 	}
 }
 func TestCwCovRunVerificationTargetsReportsAnUnrunnableTarget(t *testing.T) {
+	t.Parallel()
 	// A directory that cannot hold a run is reported as a failed row, and the
 	// error is surfaced rather than swallowed.
 	missing := filepath.Join(t.TempDir(), "absent")
@@ -216,6 +225,7 @@ func TestCwCovRunVerificationTargetsReportsAnUnrunnableTarget(t *testing.T) {
 	}
 }
 func TestCwCovResumeTargetsAndMergeCoverageReports(t *testing.T) {
+	t.Parallel()
 	targets := []reposelection.Target{{Repository: "acme/clean", Path: "/clean"}, {Repository: "acme/failed", Path: "/failed"}}
 	if _, _, err := resumeCoverageTargets(targets, ""); err == nil || !strings.Contains(err.Error(), "--report-dir") {
 		t.Fatalf("resume without report dir = %v", err)

@@ -154,8 +154,9 @@ func fixtureDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t *testing.T) {
 }
 
 // Each queued shard receives its own attempt budget. Seven jobs run through
-// at least four waves with at most two workers, so their total exceeds Timeout
-// even though every individual command finishes comfortably inside it.
+// at least four waves with at most two workers, so their total exceeds the
+// shard-attempt budget even though every individual command finishes inside it.
+// Discovery and the logical check have separate allowances for instrumented runs.
 func TestQueuedGoCoverageShardsReceiveFullAttemptBudget(t *testing.T) {
 	if qualityFixtureChild(t) {
 		fixtureQueuedGoCoverageShardsReceiveFullAttemptBudget(t)
@@ -179,7 +180,8 @@ func fixtureQueuedGoCoverageShardsReceiveFullAttemptBudget(t *testing.T) {
 	profile := filepath.Join(module, "merged.cov")
 	started := time.Now()
 	_, attempts, err := runCoverageWithOptions(context.Background(), RunOptions{
-		Timeout: 3 * time.Second, GoTestShards: 2, GoShardPackages: []string{"./serial1", "./serial2", "./serial3"},
+		Timeout: 60 * time.Second, CheckTimeout: 2 * time.Minute, ShardAttemptTimeout: 3 * time.Second,
+		GoTestShards: 2, GoShardPackages: []string{"./serial1", "./serial2", "./serial3"},
 	}, module, profile)
 	if err != nil {
 		t.Fatalf("queued coverage failed despite per-attempt budget: %v", err)

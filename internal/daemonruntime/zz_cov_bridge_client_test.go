@@ -20,6 +20,7 @@ import (
 )
 
 func TestCwWtDaemonFileBridgeHTTPClientRejectsBadConfiguration(t *testing.T) {
+	t.Parallel()
 	fileRoot := filepath.Join(t.TempDir(), "cwWt-root-file")
 	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -50,7 +51,9 @@ func TestCwWtDaemonFileBridgeHTTPClientRejectsBadConfiguration(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeRoundTripRejectsBadRequests(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable body", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 2*time.Second)
 		request := httptest.NewRequest(http.MethodPost, daemonv1connect.DaemonServiceGetDaemonInfoProcedure, cwWtBridgeErrorReader{})
 		if _, err := transport.RoundTrip(request); err == nil || !strings.Contains(err.Error(), "read daemon RPC for file bridge") {
@@ -59,6 +62,7 @@ func TestCwWtDaemonFileBridgeRoundTripRejectsBadRequests(t *testing.T) {
 	})
 
 	t.Run("oversized body", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 2*time.Second)
 		request := httptest.NewRequest(http.MethodPost, daemonv1connect.DaemonServiceGetDaemonInfoProcedure, bytes.NewReader(make([]byte, daemonFileBridgeMaxBytes+64)))
 		if _, err := transport.RoundTrip(request); err == nil || !strings.Contains(err.Error(), "exceeds") {
@@ -67,6 +71,7 @@ func TestCwWtDaemonFileBridgeRoundTripRejectsBadRequests(t *testing.T) {
 	})
 
 	t.Run("unreadable request directory", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 2*time.Second)
 		body, err := proto.Marshal(&daemonv1.SubmitOperationRequest{WorkingDirectory: "/tmp", Argv: []string{"go", "version"}, TargetWorkerId: "cwWt-worker"})
 		if err != nil {
@@ -80,6 +85,7 @@ func TestCwWtDaemonFileBridgeRoundTripRejectsBadRequests(t *testing.T) {
 	})
 
 	t.Run("unknown procedure", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 2*time.Second)
 		request := httptest.NewRequest(http.MethodPost, "/cwWt.unknown.Service/DoThing", bytes.NewReader(nil))
 		if _, err := transport.RoundTrip(request); err == nil || !strings.Contains(err.Error(), "refused an unknown RPC procedure") {
@@ -88,6 +94,7 @@ func TestCwWtDaemonFileBridgeRoundTripRejectsBadRequests(t *testing.T) {
 	})
 
 	t.Run("unwritable request directory", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 2*time.Second)
 		blocked := filepath.Join(t.TempDir(), "cwWt-requests-file")
 		if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
@@ -102,7 +109,9 @@ func TestCwWtDaemonFileBridgeRoundTripRejectsBadRequests(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeRoundTripValidatesResponses(t *testing.T) {
+	t.Parallel()
 	t.Run("authentication", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 6*time.Second)
 		request := httptest.NewRequest(http.MethodPost, daemonv1connect.DaemonServiceGetDaemonInfoProcedure, bytes.NewReader(nil))
 		done := cwWtBridgeRoundTripAsync(transport, request)
@@ -119,6 +128,7 @@ func TestCwWtDaemonFileBridgeRoundTripValidatesResponses(t *testing.T) {
 	})
 
 	t.Run("worker fence", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 6*time.Second)
 		request := httptest.NewRequest(http.MethodPost, daemonv1connect.DaemonServiceGetDaemonInfoProcedure, bytes.NewReader(nil))
 		done := cwWtBridgeRoundTripAsync(transport, request)
@@ -132,6 +142,7 @@ func TestCwWtDaemonFileBridgeRoundTripValidatesResponses(t *testing.T) {
 	})
 
 	t.Run("scheduler generation", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 6*time.Second)
 		request := httptest.NewRequest(http.MethodPost, daemonv1connect.DaemonServiceGetDaemonInfoProcedure, bytes.NewReader(nil))
 		done := cwWtBridgeRoundTripAsync(transport, request)
@@ -145,6 +156,7 @@ func TestCwWtDaemonFileBridgeRoundTripValidatesResponses(t *testing.T) {
 	})
 
 	t.Run("unreadable response", func(t *testing.T) {
+		t.Parallel()
 		transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 6*time.Second)
 		request := httptest.NewRequest(http.MethodPost, daemonv1connect.DaemonServiceGetDaemonInfoProcedure, bytes.NewReader(nil))
 		done := cwWtBridgeRoundTripAsync(transport, request)
@@ -159,6 +171,7 @@ func TestCwWtDaemonFileBridgeRoundTripValidatesResponses(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeRoundTripHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	transport := cwWtBridgeTransport(t, cwWtBridgeClientRoot(t), 6*time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -170,6 +183,7 @@ func TestCwWtDaemonFileBridgeRoundTripHonoursCancellation(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgePendingSubmitSkipsUnrelatedEnvelopes(t *testing.T) {
+	t.Parallel()
 	root := cwWtBridgeClientRoot(t)
 	transport := cwWtBridgeTransport(t, root, 2*time.Second)
 	key, err := daemonFileBridgeKey(root, false)

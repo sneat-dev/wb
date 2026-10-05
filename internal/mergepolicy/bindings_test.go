@@ -8,6 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestDefaultBindingsUseActualObserverAndPrivateExecutable(t *testing.T) {
 	bin := t.TempDir()
 	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '{}\\n'\n"), 0o755); err != nil {

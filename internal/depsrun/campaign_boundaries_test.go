@@ -30,6 +30,7 @@ func TestBumpEarlyErrorsJoinTheActualOwnedCampaign(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"home", "missing", "corrupt", "parallel"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			directory := filepath.Join(root, "report")
 			request := BumpRequest{ProjectsRoot: root, ReportDir: directory, Resume: true, Options: deps.BumpOptions{Ecosystem: deps.EcosystemGo}}

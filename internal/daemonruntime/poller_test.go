@@ -11,6 +11,7 @@ import (
 )
 
 func TestDaemonStatusReportsPollingFromTheRunningDaemon(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	configPath := memoryHubConfig(t)
@@ -54,6 +55,7 @@ func TestDaemonStatusReportsPollingFromTheRunningDaemon(t *testing.T) {
 }
 
 func TestDaemonHubHealthReadsTheServingDaemon(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, testCase := range []struct {
 		name    string
@@ -89,6 +91,7 @@ func TestDaemonHubHealthReadsTheServingDaemon(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			server := httptest.NewServer(testCase.handler)
 			defer server.Close()
 			status, err := daemonHubHealth(ctx, strings.TrimPrefix(server.URL, "http://"))

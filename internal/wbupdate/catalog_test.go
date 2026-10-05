@@ -11,6 +11,7 @@ import (
 
 // TestCatalogWBEntryMatchesGoReleaserConfig checks compiled catalog and release packaging agree.
 func TestCatalogWBEntryMatchesGoReleaserConfig(t *testing.T) {
+	t.Parallel()
 	entry, ok := cliinstall.ByID(CatalogID)
 	if !ok {
 		t.Fatalf("no catalog entry for %q", CatalogID)

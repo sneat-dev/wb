@@ -13,6 +13,7 @@ import (
 var errBoomForCmdWB = errors.New("injected write failure")
 
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
 	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
@@ -20,6 +21,7 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCreateFailure(t *testing.
 	}
 }
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
 	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
@@ -27,6 +29,7 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedChmodFailure(t *testing.T
 	}
 }
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
 	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
@@ -34,6 +37,7 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedWriteFailure(t *testing.T
 	}
 }
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
 	if err := savePeerUpstreamStateInjected(path, peerUpstreamState{Blocked: true}, inj); !errors.Is(err, errBoomForCmdWB) {
@@ -41,6 +45,7 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedSyncFailure(t *testing.T)
 	}
 }
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
@@ -50,6 +55,7 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedCloseFailure(t *testing.T
 	assertNoLeftoverPeerUpstreamTempFile(t, dir)
 }
 func TestSavePeerUpstreamStateInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "peer-upstream.json")
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
@@ -59,6 +65,7 @@ func TestSavePeerUpstreamStateInjectedHonoursAnInjectedRenameFailure(t *testing.
 	assertNoLeftoverPeerUpstreamTempFile(t, dir)
 }
 func TestWriteOneTimeTokenInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "token")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
 	if err := writeOneTimeTokenInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -69,6 +76,7 @@ func TestWriteOneTimeTokenInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
 	}
 }
 func TestWriteOneTimeTokenInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "token")
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
 	if err := writeOneTimeTokenInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {

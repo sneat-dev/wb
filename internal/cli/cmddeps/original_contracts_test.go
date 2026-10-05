@@ -101,6 +101,7 @@ func TestCwDepsWritersRenderEveryFormatAndRefuseUnknown(t *testing.T) {
 	}
 	for _, w := range writers {
 		t.Run(w.name, func(t *testing.T) {
+			t.Parallel()
 			for _, format := range []string{"markdown", "yaml", "json"} {
 				var out bytes.Buffer
 				if err := w.write(cwDepsNewOutCommand(&out), format); err != nil {
@@ -159,6 +160,7 @@ func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			command := newBump(testRuntime(), testOperations())
 			for name, value := range test.flags {
 				if err := command.Flags().Set(name, value); err != nil {

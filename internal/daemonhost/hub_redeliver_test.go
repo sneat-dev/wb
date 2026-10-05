@@ -11,6 +11,7 @@ import (
 )
 
 func TestMountHubWiresAndRunsTheRedeliverySweep(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	server := fakeAppDeliveriesServer(t, now.Add(-1*time.Hour))
 	configPath := appHubConfigWithKey(t, webhookSecret, realTestAppPrivateKeyPEM)
@@ -20,7 +21,7 @@ func TestMountHubWiresAndRunsTheRedeliverySweep(t *testing.T) {
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 
 	sweeper := mount.Webhook.Sweeper()
 	if sweeper == nil {
@@ -42,11 +43,12 @@ func TestMountHubWiresAndRunsTheRedeliverySweep(t *testing.T) {
 }
 
 func TestNoRedeliverySweepWithoutAnApp(t *testing.T) {
+	t.Parallel()
 	mount, err := mountHub(context.Background(), memoryHubConfig(t), "127.0.0.1:8807", narrate.Writer{}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
 	}
-	defer func() { _ = mount.Close() }()
+	t.Cleanup(func() { _ = mount.Close() })
 
 	if mount.Webhook != nil {
 		t.Fatal("a hub with no hub.github.app must not be in webhook mode")

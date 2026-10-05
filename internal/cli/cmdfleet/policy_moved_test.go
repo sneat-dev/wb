@@ -50,6 +50,7 @@ func TestFleetDefaultBranchRejectsUnsafeFlagCombinations(t *testing.T) {
 		"digest without receipt":       {"default-branch", "--reconcile-sha256", strings.Repeat("a", 64)},
 		"receipt without valid digest": {"default-branch", "--apply", "--repo", "acme/app", "--reconcile-from", "receipt.json"},
 	} {
+		//nolint:paralleltest // Rows reuse the parent shared.Flags pointer and dependency callbacks/counters; preserve sequential parse/execute/assert order.
 		t.Run(name, func(t *testing.T) {
 			command := quietCommand(New(runtime, deps))
 			command.SetOut(&bytes.Buffer{})
@@ -124,6 +125,7 @@ func TestDefaultBranchCLIRejectsUnsafeArchiveAndPagesFlagCombinations(t *testing
 		{"restore excludes migration flags", "requires exactly one --repo", []string{"--apply", "--repo", "acme/app", "--restore-archive-from", "receipt.json", "--restore-archive-sha256", digest, "--branch", "main"}},
 		{"Pages migration excludes archived transition", "--migrate-pages-source does not support archived", []string{"--repo", "acme/app", "--migrate-pages-source", "--temporarily-unarchive"}},
 	} {
+		//nolint:paralleltest // Rows reuse the parent shared.Flags pointer and dependency callbacks/counters; preserve sequential parse/execute/assert order.
 		t.Run(test.name, func(t *testing.T) {
 			command := quietCommand(New(runtime, deps))
 			var stdout, stderr bytes.Buffer
@@ -278,6 +280,7 @@ func TestCwDepsMergePolicyCommandUsageRefusals(t *testing.T) {
 		return mergepolicy.Report{}, nil
 	}
 	for name, test := range tests {
+		//nolint:paralleltest // Rows reuse the parent shared.Flags pointer and dependency callbacks/counters; preserve sequential parse/execute/assert order.
 		t.Run(name, func(t *testing.T) {
 			stdout, _, err := execute(t, NewMergePolicy(runtime, deps), test.args...)
 			if err == nil || !strings.Contains(err.Error(), test.want) {

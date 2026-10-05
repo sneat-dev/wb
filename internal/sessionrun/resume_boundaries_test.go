@@ -21,6 +21,7 @@ func TestLocalResumePreservesInspectionAndPersistenceFailureOrder(t *testing.T) 
 	t.Parallel()
 	for _, stage := range []string{"remote-route", "encode", "context-read", "authority", "inspect", "prepared-empty", "prepared-error", "prepared-success", "prepared-retry", "retryable", "retryable-typed", "prepare", "context-write", "fresh-authority", "root", "attach", "after", "resume-write", "inspected-attach", "no-final"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			f := newParkedResumeRefusalFixture(t)
 			state := f.state
 			want := errors.New("resume stage " + stage)
@@ -191,6 +192,7 @@ func TestRemoteResumeRejectsTamperedDurableAdmissionBeforeTransport(t *testing.T
 	t.Parallel()
 	for _, stage := range []string{"prepare", "receipt", "no-final"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			f := newParkedResumeRefusalFixture(t)
 			calls := 0
 			aggregate := filepath.Join(f.store.Root, f.state.Bundle.ParkedSessionID)
@@ -233,6 +235,7 @@ func TestResumeRepairsLifecycleOnlyAfterExactLocalWinner(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"missing", "failure", "load"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			f := zeroMemberResumeFixture(t)
 			if _, _, err := f.store.PrepareLocalUnderLock(f.lock, time.Unix(20, 0)); err != nil {
 				t.Fatal(err)
@@ -306,6 +309,7 @@ func TestRemoteLifecycleAndReceiptPersistenceFailuresRemainAfterDelivery(t *test
 	t.Parallel()
 	for _, stage := range []string{"projection-missing", "projection-failure", "receipt-write", "finalize"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			f := newParkedResumeRefusalFixture(t)
 			want := errors.New("projection failed")
 			// The public operation must acquire its own native retained lock.
@@ -386,6 +390,7 @@ func TestLocalInspectionRejectsPrivateNeutralRootAndAuthorityTampering(t *testin
 	t.Parallel()
 	for _, stage := range []string{"neutral-root", "authority"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			f := zeroMemberResumeFixture(t)
 			if _, _, err := f.store.PrepareLocalUnderLock(f.lock, time.Unix(20, 0)); err != nil {
 				t.Fatal(err)

@@ -49,6 +49,7 @@ func TestConfiguredShardsRespectActualSelectedPackageScope(t *testing.T) {
 		{"selected pattern resolves canonically", []string{"./selected", "./excluded"}, []string{"./selected/..."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			module, log, options := configuredShardScopeFixture(t, tc.shards)
 			options.GoTestPackages = tc.selected
 			profile := filepath.Join(module, "selected.cov")
@@ -101,6 +102,7 @@ func TestConfiguredShardsValidateExcludedCanonicalRequests(t *testing.T) {
 		{"missing package", []string{"./absent"}, "absent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			module, log, options := configuredShardScopeFixture(t, tc.shards)
 			_, _, err := runCoverageWithOptions(context.Background(), options, module, filepath.Join(module, "invalid.cov"))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -131,6 +133,7 @@ func TestConfiguredShardsRetainActualPolicyLoadRefusals(t *testing.T) {
 		{"empty configured package", "version: 1\ngo_test:\n  shards: 2\n  packages: ['  ']\n", "contains an empty go_test package"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			if err := os.Mkdir(filepath.Join(root, ".wb"), 0700); err != nil {
 				t.Fatal(err)

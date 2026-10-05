@@ -9,6 +9,7 @@ import (
 // Every one of them addresses the same pull request, and making the caller
 // normalize it is how a URL ends up inside an API path.
 func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		selector   string
 		repository string

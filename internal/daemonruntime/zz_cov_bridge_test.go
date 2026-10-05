@@ -20,6 +20,7 @@ import (
 )
 
 func TestCwWtDaemonFileBridgeKeyRejectsUnsafeFiles(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(root); err != nil {
 		t.Fatal(err)
@@ -84,6 +85,7 @@ func TestCwWtDaemonFileBridgeKeyRejectsUnsafeFiles(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeKeyRejectsSymlinkedRuntime(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, ".wb"), 0o700); err != nil {
 		t.Fatal(err)
@@ -101,6 +103,7 @@ func TestCwWtDaemonFileBridgeKeyRejectsSymlinkedRuntime(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeSecureRuntimeRejectsBadRoots(t *testing.T) {
+	t.Parallel()
 	if err := secureDaemonRuntime(filepath.Join("relative", "cwWt-root")); err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("relative root error = %v", err)
 	}
@@ -132,6 +135,7 @@ func TestCwWtDaemonFileBridgeSecureRuntimeRejectsBadRoots(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgePrepareAndServerRejectBadFixtures(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	if _, _, err := prepareDaemonFileBridge(root); err != nil {
 		t.Fatal(err)
@@ -196,6 +200,7 @@ func TestCwWtDaemonFileBridgePrepareAndServerRejectBadFixtures(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeServeReportsScanAndInternalErrors(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	injected := errors.New("cwWt: injected bridge failure")
 	server.report(injected)
@@ -214,6 +219,7 @@ func TestCwWtDaemonFileBridgeServeReportsScanAndInternalErrors(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeScanQuarantinesUnauthenticatedResponse(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	server.lastCleanup = time.Now()
 	_, quarantine := cwWtBridgeDirs(server)
@@ -246,6 +252,7 @@ func TestCwWtDaemonFileBridgeScanQuarantinesUnauthenticatedResponse(t *testing.T
 }
 
 func TestCwWtDaemonFileBridgeScanQuarantinesUnreadableResponse(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	server.lastCleanup = time.Now()
 	_, quarantine := cwWtBridgeDirs(server)
@@ -272,6 +279,7 @@ func TestCwWtDaemonFileBridgeScanQuarantinesUnreadableResponse(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeScanSkipsActiveAndSaturatedWork(t *testing.T) {
+	t.Parallel()
 	active, _ := cwWtBridgeServer(t, nil)
 	active.lastCleanup = time.Now()
 	const activeID = "cwWt-active"
@@ -318,6 +326,7 @@ func TestCwWtDaemonFileBridgeScanSkipsActiveAndSaturatedWork(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeScanRejectsBacklogAndUnreadableRequests(t *testing.T) {
+	t.Parallel()
 	backlog, _ := cwWtBridgeServer(t, nil)
 	if err := backlog.scan(); err != nil {
 		t.Fatal(err)
@@ -348,6 +357,7 @@ func TestCwWtDaemonFileBridgeScanRejectsBacklogAndUnreadableRequests(t *testing.
 }
 
 func TestCwWtDaemonFileBridgeScanReportsQuarantineFailure(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	server.lastCleanup = time.Now()
 	_, quarantine := cwWtBridgeDirs(server)
@@ -376,6 +386,7 @@ func TestCwWtDaemonFileBridgeScanReportsQuarantineFailure(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeCleanupCompletedReportsRemovalFailures(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	stale := now.Add(-daemonFileBridgeCompletedAge - time.Hour)
 
@@ -437,6 +448,7 @@ func TestCwWtDaemonFileBridgeCleanupCompletedReportsRemovalFailures(t *testing.T
 }
 
 func TestCwWtDaemonFileBridgeCleanupStaleErrorPaths(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 
 	missingResponses, _ := cwWtBridgeServer(t, nil)
@@ -498,6 +510,7 @@ func TestCwWtDaemonFileBridgeCleanupStaleErrorPaths(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeCleanupStaleExpiresRequests(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	expired := now.Add(-daemonFileBridgeRequestAge - time.Hour)
 
@@ -554,6 +567,7 @@ func TestCwWtDaemonFileBridgeCleanupStaleExpiresRequests(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeCleanupStaleReportsQuarantineAndRemovalFailures(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	expired := now.Add(-daemonFileBridgeRequestAge - time.Hour)
 
@@ -602,6 +616,7 @@ func TestCwWtDaemonFileBridgeCleanupStaleReportsQuarantineAndRemovalFailures(t *
 }
 
 func TestCwWtDaemonFileBridgeProcessRejectsUnreadableAndMismatchedRequests(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 
 	server.process("cwWt-missing")
@@ -626,6 +641,7 @@ func TestCwWtDaemonFileBridgeProcessRejectsUnreadableAndMismatchedRequests(t *te
 }
 
 func TestCwWtDaemonFileBridgeProcessRefusesUnauthenticatedRequest(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	_, quarantine := cwWtBridgeDirs(server)
 	const id = "cwWt-forged-request"
@@ -652,6 +668,7 @@ func TestCwWtDaemonFileBridgeProcessRefusesUnauthenticatedRequest(t *testing.T) 
 }
 
 func TestCwWtDaemonFileBridgeProcessRejectsBadDispatch(t *testing.T) {
+	t.Parallel()
 	unknown, _ := cwWtBridgeServer(t, nil)
 	const unknownID = "cwWt-unknown-procedure"
 	cwWtBridgePut(t, unknown, unknown.requests, daemonFileEnvelope{
@@ -680,6 +697,7 @@ func TestCwWtDaemonFileBridgeProcessRejectsBadDispatch(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeProcessRejectsUnreadableOrUnwritableMarker(t *testing.T) {
+	t.Parallel()
 	unreadable, _ := cwWtBridgeServer(t, nil)
 	const unreadableID = "cwWt-marker-unreadable"
 	cwWtBridgePut(t, unreadable, unreadable.requests, daemonFileEnvelope{
@@ -708,6 +726,7 @@ func TestCwWtDaemonFileBridgeProcessRejectsUnreadableOrUnwritableMarker(t *testi
 }
 
 func TestCwWtDaemonFileBridgeProcessBoundsResponseSize(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(make([]byte, daemonFileBridgeMaxBytes+64))
@@ -724,6 +743,7 @@ func TestCwWtDaemonFileBridgeProcessBoundsResponseSize(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeQuarantineReportsBadPaths(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	_, quarantine := cwWtBridgeDirs(server)
 
@@ -755,6 +775,7 @@ func TestCwWtDaemonFileBridgeQuarantineReportsBadPaths(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeQuarantineReportsRenameFailure(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	base, quarantine := cwWtBridgeDirs(server)
 	if err := secureBridgeDirectory(quarantine); err != nil {
@@ -775,6 +796,7 @@ func TestCwWtDaemonFileBridgeQuarantineReportsRenameFailure(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeQuarantineCleanupBoundsAndOrders(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "cwWt-missing-quarantine")
 	if err := cleanupDaemonFileQuarantine(missing, time.Now()); err == nil || !strings.Contains(err.Error(), "inspect daemon file bridge quarantine") {
 		t.Fatalf("missing quarantine error = %v", err)
@@ -822,6 +844,7 @@ func TestCwWtDaemonFileBridgeQuarantineCleanupBoundsAndOrders(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeWriteErrorReportsPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	if err := os.Rename(server.responses, server.responses+"-saved"); err != nil {
 		t.Fatal(err)
@@ -837,6 +860,7 @@ func TestCwWtDaemonFileBridgeWriteErrorReportsPersistenceFailure(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeWriteEnvelopeRejectsOversizedAndUnpublishablePayloads(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	oversized := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "cwWt-oversized", Body: make([]byte, daemonFileBridgeMaxBytes+1)}
 	if err := writeDaemonFileEnvelope(directory, oversized.ID, oversized); err == nil || !strings.Contains(err.Error(), "envelope exceeds") {
@@ -865,6 +889,7 @@ func TestCwWtDaemonFileBridgeWriteEnvelopeRejectsOversizedAndUnpublishablePayloa
 }
 
 func TestCwWtDaemonFileBridgeReadEnvelopeRejectsUnsafeFiles(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 
 	asDirectory := filepath.Join(directory, "cwWt-directory.json")
@@ -913,6 +938,7 @@ func TestCwWtDaemonFileBridgeReadEnvelopeRejectsUnsafeFiles(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeVerifyEnvelopeRejectsForgedHeaders(t *testing.T) {
+	t.Parallel()
 	if err := verifyDaemonFileEnvelope(daemonFileEnvelope{Schema: 99, ID: "cwWt-id"}, "cwWt-key"); err == nil || !strings.Contains(err.Error(), "unsupported schema") {
 		t.Fatalf("schema error = %v", err)
 	}
@@ -942,6 +968,7 @@ func TestCwWtDaemonFileBridgeVerifyEnvelopeRejectsForgedHeaders(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgePrepareRequestRejectsUnknownAndMalformedPayloads(t *testing.T) {
+	t.Parallel()
 	if _, _, err := daemonFilePrepareRequest("/cwWt.unknown.Service/DoThing", nil, "cwWt-id"); err == nil || !strings.Contains(err.Error(), "refused an unknown RPC procedure") {
 		t.Fatalf("unknown procedure error = %v", err)
 	}
@@ -986,6 +1013,7 @@ func TestCwWtDaemonFileBridgePrepareRequestRejectsUnknownAndMalformedPayloads(t 
 }
 
 func TestCwWtDaemonFileBridgeCleanupStaleReportsUnremovableResponse(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	stale := time.Now().Add(-daemonFileBridgeCompletedAge - time.Hour)
 	stalePath := filepath.Join(server.responses, "cwWt-unremovable.json")
@@ -1012,6 +1040,7 @@ func TestCwWtDaemonFileBridgeCleanupStaleReportsUnremovableResponse(t *testing.T
 }
 
 func TestCwWtDaemonFileBridgeQuarantineCleanupReportsUnremovableEntry(t *testing.T) {
+	t.Parallel()
 	directory := filepath.Join(t.TempDir(), "cwWt-quarantine")
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
@@ -1039,6 +1068,7 @@ func TestCwWtDaemonFileBridgeQuarantineCleanupReportsUnremovableEntry(t *testing
 }
 
 func TestCwWtDaemonFileBridgeScanReportsQuarantineFailureForUnreadableResponse(t *testing.T) {
+	t.Parallel()
 	server, _ := cwWtBridgeServer(t, nil)
 	server.lastCleanup = time.Now()
 	_, quarantine := cwWtBridgeDirs(server)
@@ -1064,6 +1094,7 @@ func TestCwWtDaemonFileBridgeScanReportsQuarantineFailureForUnreadableResponse(t
 }
 
 func TestCwWtDaemonFileBridgeParentDirectoryReportsCreationFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dangling := filepath.Join(dir, "cwWt-dangling")
 	if err := os.Symlink(filepath.Join(dir, "cwWt-missing"), dangling); err != nil {
@@ -1076,6 +1107,7 @@ func TestCwWtDaemonFileBridgeParentDirectoryReportsCreationFailure(t *testing.T)
 }
 
 func TestCwWtDaemonFileBridgeSecureDirectoryRejectsBadPaths(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	regular := filepath.Join(dir, "cwWt-regular")
 	if err := os.WriteFile(regular, []byte("not a directory"), 0o600); err != nil {
@@ -1119,6 +1151,7 @@ func TestCwWtDaemonFileBridgeSecureDirectoryRejectsBadPaths(t *testing.T) {
 }
 
 func TestCwWtDaemonFileBridgeRemoveBridgeFileToleratesMissingOnly(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "cwWt-missing.json")
 	if err := removeBridgeFile(missing); err != nil {
 		t.Fatalf("missing file removal error = %v", err)

@@ -9,8 +9,10 @@ import (
 )
 
 func TestPeerAdminRoutesRejectMalformedJSONBeforeChangingTrust(t *testing.T) {
+	t.Parallel()
 	mount, handler := peerAdminTestMount(t)
 	for _, path := range []string{"invite", "block", "unblock", "disconnect", "enroll"} {
+		//nolint:paralleltest // Rows share one mounted trust store; the final peer-list assertion must follow every request.
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, peersRPCPrefix+path, strings.NewReader("{"))
 			request.Header.Set("Authorization", "Bearer owner-token")
@@ -27,8 +29,10 @@ func TestPeerAdminRoutesRejectMalformedJSONBeforeChangingTrust(t *testing.T) {
 }
 
 func TestPeerAdminRoutesRejectUnknownPeersWithoutChangingTrust(t *testing.T) {
+	t.Parallel()
 	mount, handler := peerAdminTestMount(t)
 	for _, path := range []string{"unblock", "disconnect"} {
+		//nolint:paralleltest // Rows share one mounted trust store; the final peer-list assertion must follow every request.
 		t.Run(path, func(t *testing.T) {
 			response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+path, peerNameOrIDRequest{Peer: "no-such-peer"})
 			if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "peer record not found") {

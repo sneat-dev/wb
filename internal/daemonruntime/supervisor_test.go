@@ -14,6 +14,7 @@ import (
 )
 
 func TestDaemonSystemdUnitNameNormalizesAMissingServiceSuffix(t *testing.T) {
+	t.Parallel()
 	unsuffixed := func(name string) string {
 		if name == "WB_DAEMON_SYSTEMD_UNIT" {
 			return "my-custom-wb"
@@ -35,6 +36,7 @@ func TestDaemonSystemdUnitNameNormalizesAMissingServiceSuffix(t *testing.T) {
 }
 
 func TestDaemonStatusPrefersTheDaemonsOwnRecordedSystemdUnitOverTheInvokersConfig(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.Now())
@@ -63,6 +65,7 @@ func TestDaemonStatusPrefersTheDaemonsOwnRecordedSystemdUnitOverTheInvokersConfi
 }
 
 func TestRestartOfASupervisedDaemonWaitsForTheSupervisorInsteadOfLaunching(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	now := deps.Now()
@@ -135,6 +138,7 @@ func TestRestartOfASupervisedDaemonWaitsForTheSupervisorInsteadOfLaunching(t *te
 }
 
 func TestStopAndReplaceTreatsALegacyRecordAsSupervisedWhenCgroupConfirmsSystemd(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	now := deps.Now()
@@ -200,6 +204,7 @@ func TestStopAndReplaceTreatsALegacyRecordAsSupervisedWhenCgroupConfirmsSystemd(
 }
 
 func TestDaemonStartHandoffTreatsALegacyRecordAsSupervisedWhenCgroupConfirmsSystemd(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	now := deps.Now()
@@ -260,6 +265,7 @@ func TestDaemonStartHandoffTreatsALegacyRecordAsSupervisedWhenCgroupConfirmsSyst
 }
 
 func TestStopAndReplaceLeavesAGenuinelyUnsupervisedRecordUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		observed func(int) (daemon.Supervisor, bool)
@@ -268,6 +274,7 @@ func TestStopAndReplaceLeavesAGenuinelyUnsupervisedRecordUnchanged(t *testing.T)
 		{"no independent observation available", func(int) (daemon.Supervisor, bool) { return "", false }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := daemonTestRoot(t)
 			deps := daemonTestDependencies(t, root)
 			controller := NewController(deps, root)
@@ -310,6 +317,7 @@ func TestStopAndReplaceLeavesAGenuinelyUnsupervisedRecordUnchanged(t *testing.T)
 }
 
 func TestRestartOfASupervisedDaemonTimesOutWithoutLaunchingADetachedReplacement(t *testing.T) {
+	t.Parallel()
 	lifecycleBounds := DefaultLifecycleBounds()
 
 	root := daemonTestRoot(t)
@@ -351,6 +359,7 @@ func TestRestartOfASupervisedDaemonTimesOutWithoutLaunchingADetachedReplacement(
 }
 
 func TestWaitForSupervisorReplacementFailsFastOnADifferentBinary(t *testing.T) {
+	t.Parallel()
 	lifecycleBounds := DefaultLifecycleBounds()
 
 	root := daemonTestRoot(t)
@@ -419,6 +428,7 @@ func TestWaitForSupervisorReplacementFailsFastOnADifferentBinary(t *testing.T) {
 }
 
 func TestWaitForSupervisorReplacementWatchesContext(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -431,6 +441,7 @@ func TestWaitForSupervisorReplacementWatchesContext(t *testing.T) {
 }
 
 func TestDaemonStartRefusesADetachedStartUnderASupervisor(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -457,6 +468,7 @@ func TestDaemonStartRefusesADetachedStartUnderASupervisor(t *testing.T) {
 }
 
 func TestDaemonStartForceDetachedOverridesTheRefusal(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -477,6 +489,7 @@ func TestDaemonStartForceDetachedOverridesTheRefusal(t *testing.T) {
 }
 
 func TestDaemonStartAllowsADetachedStartWhenTheRecordedSupervisorIsStale(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -498,6 +511,7 @@ func TestDaemonStartAllowsADetachedStartWhenTheRecordedSupervisorIsStale(t *test
 }
 
 func TestDaemonStartRefusesWhenTheRecordedSupervisorIsConfirmedPresent(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -526,6 +540,7 @@ func TestDaemonStartRefusesWhenTheRecordedSupervisorIsConfirmedPresent(t *testin
 }
 
 func TestDaemonStartDoesNotRefuseUnderWBsOwnLaunchdJob(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -551,6 +566,7 @@ func TestDaemonStartDoesNotRefuseUnderWBsOwnLaunchdJob(t *testing.T) {
 }
 
 func TestDaemonStartRefusesUnderLaunchdAndNamesTheRemedy(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -573,6 +589,7 @@ func TestDaemonStartRefusesUnderLaunchdAndNamesTheRemedy(t *testing.T) {
 }
 
 func TestDaemonStartRefusalOnADifferentListenDoesNotSayNotRunning(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -603,6 +620,7 @@ func TestDaemonStartRefusalOnADifferentListenDoesNotSayNotRunning(t *testing.T) 
 }
 
 func TestDaemonRestartIfRunningRefusesUnderASupervisorWhenNothingIsAlive(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -637,6 +655,7 @@ func TestDaemonRestartIfRunningRefusesUnderASupervisorWhenNothingIsAlive(t *test
 }
 
 func TestDaemonStatusFlagsASupervisorMismatchInTheOtherDirection(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.Now())
@@ -661,11 +680,13 @@ func TestDaemonStatusFlagsASupervisorMismatchInTheOtherDirection(t *testing.T) {
 }
 
 func TestDaemonStatusDoesNotFlagAgreementOrUnknownObservation(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	for name, observe := range map[string]func(int) (daemon.Supervisor, bool){
 		"agrees (both none)": func(int) (daemon.Supervisor, bool) { return daemon.SupervisorNone, true },
 		"unknown":            func(int) (daemon.Supervisor, bool) { return "", false },
 	} {
+		//nolint:paralleltest // Rows overwrite the same parent-owned private daemon state path.
 		t.Run(name, func(t *testing.T) {
 			deps := daemonTestDependencies(t, root)
 			state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.Now())
@@ -688,6 +709,7 @@ func TestDaemonStatusDoesNotFlagAgreementOrUnknownObservation(t *testing.T) {
 }
 
 func TestDaemonStatusSkipsSupervisorMismatchWhenTheSeamIsNil(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.ObservedSupervisor = nil
@@ -708,6 +730,7 @@ func TestDaemonStatusSkipsSupervisorMismatchWhenTheSeamIsNil(t *testing.T) {
 }
 
 func TestDaemonStatusFlagsAFailedSystemdUnitEvenWithoutACgroupMismatch(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.Now())
@@ -740,12 +763,14 @@ func TestDaemonStatusFlagsAFailedSystemdUnitEvenWithoutACgroupMismatch(t *testin
 }
 
 func TestDaemonStatusDoesNotFlagAHealthySystemdUnit(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	for name, unitState := range map[string]daemon.SystemdUnitState{
 		"active":                   {ActiveState: "active"},
 		"activating, no restarts":  {ActiveState: "activating", NRestarts: 0},
 		"inactive (never started)": {ActiveState: "inactive"},
 	} {
+		//nolint:paralleltest // Rows overwrite the same parent-owned private daemon state path.
 		t.Run(name, func(t *testing.T) {
 			deps := daemonTestDependencies(t, root)
 			state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.Now())
@@ -770,6 +795,7 @@ func TestDaemonStatusDoesNotFlagAHealthySystemdUnit(t *testing.T) {
 }
 
 func TestDaemonStatusSystemdUnitDetectorOnlyAppliesWhenRecordedIsNone(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	state := daemonTestState(t, root, DefaultListen, daemon.Provenance{Executable: "wb", SHA256: "hash", Version: "test"}, "owner", deps.Now())
@@ -800,6 +826,7 @@ func TestDaemonStatusSystemdUnitDetectorOnlyAppliesWhenRecordedIsNone(t *testing
 }
 
 func TestDaemonStatusFallsBackToCgroupWhenSystemdUnitSeamsAreNil(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.SystemdUnitState = nil
@@ -822,6 +849,7 @@ func TestDaemonStatusFallsBackToCgroupWhenSystemdUnitSeamsAreNil(t *testing.T) {
 }
 
 func TestDaemonObservedSystemdUnitStateParsesFakeOutput(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -846,6 +874,7 @@ func TestDaemonObservedSystemdUnitStateParsesFakeOutput(t *testing.T) {
 }
 
 func TestDaemonObservedSystemdUnitStateWhenSystemctlIsAbsent(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -861,6 +890,7 @@ func TestDaemonObservedSystemdUnitStateWhenSystemctlIsAbsent(t *testing.T) {
 }
 
 func TestDaemonObservedSystemdUnitStateRejectsAnEmptyUnitName(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -871,6 +901,7 @@ func TestDaemonObservedSystemdUnitStateRejectsAnEmptyUnitName(t *testing.T) {
 }
 
 func TestDaemonSystemdUnitNameDefaultsAndReadsAConfiguredOverride(t *testing.T) {
+	t.Parallel()
 	if got := DaemonSystemdUnitName(func(string) string { return "" }); got != daemonDefaultSystemdUnit {
 		t.Fatalf("default unit name = %q, want %q", got, daemonDefaultSystemdUnit)
 	}
@@ -888,6 +919,7 @@ func TestDaemonSystemdUnitNameDefaultsAndReadsAConfiguredOverride(t *testing.T) 
 }
 
 func TestDaemonSupervisorPresentSystemdOnlyMatchesKnownIsSystemRunningStates(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -910,6 +942,7 @@ func TestDaemonSupervisorPresentSystemdOnlyMatchesKnownIsSystemRunningStates(t *
 		{"an unrecognized state", "some-unrecognized-state\n", false},
 	}
 	for _, tc := range cases {
+		//nolint:paralleltest // Rows replace the same parent-owned native runSystemctl callback.
 		t.Run(tc.name, func(t *testing.T) {
 			native.runSystemctl = func(args ...string) ([]byte, error) { return []byte(tc.output), nil }
 			present, _ := native.daemonSupervisorPresent(daemon.SupervisorSystemd, "")
@@ -921,6 +954,7 @@ func TestDaemonSupervisorPresentSystemdOnlyMatchesKnownIsSystemRunningStates(t *
 }
 
 func TestDaemonSupervisorPresentSystemdWhenSystemctlIsAbsent(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -936,6 +970,7 @@ func TestDaemonSupervisorPresentSystemdWhenSystemctlIsAbsent(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
@@ -962,6 +997,7 @@ func TestRunSystemctlDefaultTimesOutRatherThanHangingForever(t *testing.T) {
 }
 
 func TestStartAndRestartHandoffUnderWBsOwnLaunchdJobTakeTheLaunchPathNotTheSupervisorWait(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name string
 		run  func(controller Controller) (Result, error)
@@ -974,6 +1010,7 @@ func TestStartAndRestartHandoffUnderWBsOwnLaunchdJobTakeTheLaunchPathNotTheSuper
 		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
 			root := daemonTestRoot(t)
 			deps := daemonTestDependencies(t, root)
 
@@ -1028,6 +1065,7 @@ func TestStartAndRestartHandoffUnderWBsOwnLaunchdJobTakeTheLaunchPathNotTheSuper
 }
 
 func TestDaemonStartHandsOffAVersionMismatchToASupervisorInsteadOfLaunching(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	now := deps.Now()
@@ -1087,6 +1125,7 @@ func TestDaemonStartHandsOffAVersionMismatchToASupervisorInsteadOfLaunching(t *t
 }
 
 func TestDaemonStartDoesNotTouchASupervisedDaemonForAnUnrelatedBinary(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -1151,6 +1190,7 @@ func TestDaemonStartDoesNotTouchASupervisedDaemonForAnUnrelatedBinary(t *testing
 }
 
 func TestRefuseDetachedStartUnderSupervisorMessages(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -1177,6 +1217,7 @@ func TestRefuseDetachedStartUnderSupervisorMessages(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonChildEnvironmentStripsSupervisorEvidence(t *testing.T) {
 	t.Setenv("INVOCATION_ID", "should-not-be-inherited")
 	t.Setenv("SYSTEMD_EXEC_PID", "1")
@@ -1204,6 +1245,7 @@ func TestDaemonChildEnvironmentStripsSupervisorEvidence(t *testing.T) {
 }
 
 func TestDaemonRefuseTestBinaryGuard(t *testing.T) {
+	t.Parallel()
 	if err := daemonRefuseTestBinary(os.Args[0]); err == nil {
 		t.Fatal("the running go test binary itself must be refused")
 	}
@@ -1216,6 +1258,7 @@ func TestDaemonRefuseTestBinaryGuard(t *testing.T) {
 }
 
 func TestMarkStoppedIfUnchangedDoesNotOverwriteAConcurrentReplacement(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -1248,6 +1291,7 @@ func TestMarkStoppedIfUnchangedDoesNotOverwriteAConcurrentReplacement(t *testing
 }
 
 func TestMarkStoppedIfUnchangedWritesWhenNothingRaced(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)
@@ -1272,6 +1316,7 @@ func TestMarkStoppedIfUnchangedWritesWhenNothingRaced(t *testing.T) {
 }
 
 func TestMarkStoppedIfUnchangedWhenTheRecordIsGone(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	controller := NewController(deps, root)

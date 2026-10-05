@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 )
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestCwWtDefaultDaemonDependenciesClosures(t *testing.T) {
 	root := cwWtDaemonRoot(t)
 	t.Setenv("WB_HOME", filepath.Join(root, "wb-home"))
@@ -70,6 +71,7 @@ func TestCwWtDefaultDaemonDependenciesClosures(t *testing.T) {
 }
 
 func TestCwWtDaemonHealthyAndOwnedHealthy(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/api/v1/health":
@@ -79,7 +81,7 @@ func TestCwWtDaemonHealthyAndOwnedHealthy(t *testing.T) {
 			http.NotFound(response, request)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	listen := strings.TrimPrefix(server.URL, "http://")
 
 	if err := daemonHealthy(context.Background(), listen); err != nil {
@@ -99,7 +101,7 @@ func TestCwWtDaemonHealthyAndOwnedHealthy(t *testing.T) {
 	bad := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		http.Error(response, "nope", http.StatusInternalServerError)
 	}))
-	defer bad.Close()
+	t.Cleanup(bad.Close)
 	badListen := strings.TrimPrefix(bad.URL, "http://")
 	if err := daemonHealthy(context.Background(), badListen); err == nil || !strings.Contains(err.Error(), "health endpoint returned") {
 		t.Fatalf("non-200 health = %v", err)
@@ -112,7 +114,7 @@ func TestCwWtDaemonHealthyAndOwnedHealthy(t *testing.T) {
 	broken := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write([]byte("not json"))
 	}))
-	defer broken.Close()
+	t.Cleanup(broken.Close)
 	if err := daemonOwnedHealthy(context.Background(), strings.TrimPrefix(broken.URL, "http://"), 1, 1); err == nil {
 		t.Fatal("an undecodable health body must fail")
 	}
@@ -128,6 +130,7 @@ func TestCwWtDaemonHealthyAndOwnedHealthy(t *testing.T) {
 }
 
 func TestCwWtDaemonRuntimeGuardStopsOnCancellation(t *testing.T) {
+	t.Parallel()
 	guardInterval := 10 * time.Second
 	guardTicker := func(time.Duration) (<-chan time.Time, func()) {
 		ticker := time.NewTicker(guardInterval)

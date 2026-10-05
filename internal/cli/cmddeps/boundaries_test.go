@@ -84,6 +84,7 @@ func TestSetPropagateGuardsFinishTheActualCampaignOnceAfterSelection(t *testing.
 		{"npm", []string{"npm", "@acme/core@1.0.0", "--fleet", "--propagate"}, "--propagate is supported only for the go ecosystem; it delegates to deps bump"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			var out guardedBuffer
 			ops := boundaryOps()
 			var campaign *cliprogress.Campaign
@@ -207,6 +208,7 @@ func TestCommandsKeepFailureAndWriterOrdering(t *testing.T) {
 		{"bump-format", "bump", []string{"go", "--fleet", "--format", "bogus"}, func(o *Dependencies) {}, "unknown"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			ops := boundaryOps()
 			test.configure(&ops)
 			cmd := commandFor(t, test.verb, testRuntime(), ops)
@@ -222,6 +224,7 @@ func TestCommandsKeepFailureAndWriterOrdering(t *testing.T) {
 	}
 	for _, verb := range []string{"graph", "drift", "peers", "set", "bump"} {
 		t.Run(verb+"-writer", func(t *testing.T) {
+			t.Parallel()
 			ops := boundaryOps()
 			cmd := commandFor(t, verb, testRuntime(), ops)
 			args := []string{}
@@ -240,6 +243,7 @@ func TestCommandsKeepFailureAndWriterOrdering(t *testing.T) {
 		})
 	}
 	t.Run("graph-open-after-output", func(t *testing.T) {
+		t.Parallel()
 		ops := boundaryOps()
 		var out bytes.Buffer
 		ops.OpenBrowser = func(path string) error {
@@ -321,6 +325,7 @@ func TestArgumentsAndFindingsKeepTheirExactBoundary(t *testing.T) {
 		{"set", []string{"go", "acme@v1", "--validation", "fast", "--dry-run", "--checks", "test"}, "cannot be used together"},
 	} {
 		t.Run(strings.Join(test.args, "/"), func(t *testing.T) {
+			t.Parallel()
 			cmd := commandFor(t, test.verb, testRuntime(), boundaryOps())
 			if err := executeArgs(cmd, test.args...); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("args=%v err=%v", test.args, err)
@@ -329,6 +334,7 @@ func TestArgumentsAndFindingsKeepTheirExactBoundary(t *testing.T) {
 	}
 	for _, verb := range []string{"drift", "peers"} {
 		t.Run(verb+"-findings", func(t *testing.T) {
+			t.Parallel()
 			sentinel := errors.New("typed findings")
 			runtime := testRuntime()
 			runtime.ExitError = func(code int, message string) error {
@@ -360,6 +366,7 @@ func TestArgumentsAndFindingsKeepTheirExactBoundary(t *testing.T) {
 		})
 	}
 	t.Run("set-run-error-after-report", func(t *testing.T) {
+		t.Parallel()
 		sentinel := errors.New("run refused")
 		ops := boundaryOps()
 		ops.Set = func(_ context.Context, r depsrun.SetRequest) (depsrun.SetResult, error) {
@@ -397,6 +404,7 @@ func TestConcreteReportsKeepYAMLDerivedDatesAndEveryWriteError(t *testing.T) {
 	}
 	for _, w := range writers {
 		t.Run(w.name, func(t *testing.T) {
+			t.Parallel()
 			var out bytes.Buffer
 			cmd := cwDepsNewOutCommand(&out)
 			if err := w.write(cmd, "json"); err != nil || out.Len() == 0 {
@@ -439,12 +447,14 @@ func TestRemainingCommandPathsPreserveRequestsAndFinishAuthority(t *testing.T) {
 		{"set", []string{"go", "not-a-target"}},
 	} {
 		t.Run(test.verb+"-refusal", func(t *testing.T) {
+			t.Parallel()
 			if err := executeArgs(commandFor(t, test.verb, testRuntime(), boundaryOps()), test.args...); err == nil {
 				t.Fatal("invalid input accepted")
 			}
 		})
 	}
 	t.Run("propagate", func(t *testing.T) {
+		t.Parallel()
 		ops := boundaryOps()
 		called := false
 		ops.Bump = func(_ context.Context, r depsrun.BumpRequest) (depsrun.BumpResult, error) {
@@ -461,6 +471,7 @@ func TestRemainingCommandPathsPreserveRequestsAndFinishAuthority(t *testing.T) {
 	})
 	for _, verb := range []string{"drift", "peers", "bump"} {
 		t.Run(verb+"-success", func(t *testing.T) {
+			t.Parallel()
 			cmd := commandFor(t, verb, testRuntime(), boundaryOps())
 			args := []string{}
 			switch verb {
@@ -485,6 +496,7 @@ func TestBumpRequestsRetainExplicitAndOmittedParallelFlagAuthority(t *testing.T)
 	t.Parallel()
 	for _, explicit := range []bool{true, false} {
 		t.Run(fmt.Sprint(explicit), func(t *testing.T) {
+			t.Parallel()
 			ops := boundaryOps()
 			calls := 0
 			ops.Bump = func(_ context.Context, r depsrun.BumpRequest) (depsrun.BumpResult, error) {

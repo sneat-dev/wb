@@ -9,6 +9,7 @@ import (
 )
 
 func TestDefaultBranchWorkflowInspectionRefusesUnverifiedBlobs(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -23,6 +24,7 @@ func TestDefaultBranchWorkflowInspectionRefusesUnverifiedBlobs(t *testing.T) {
 		{name: "malformed blob", blob: "{", want: "decode workflow"},
 		{name: "invalid encoded bytes", blob: `{"encoding":"base64","content":"%%%"}`, want: "decode workflow .github/workflows/ci.yml content"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = oldRead })
@@ -61,6 +63,7 @@ func TestDefaultBranchWorkflowInspectionRefusesUnverifiedBlobs(t *testing.T) {
 }
 
 func TestDefaultBranchWorkflowPostReadRequiresExactReplacement(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -75,6 +78,7 @@ func TestDefaultBranchWorkflowPostReadRequiresExactReplacement(t *testing.T) {
 		{name: "invalid encoded bytes", blob: `{"encoding":"base64","content":"%%%"}`, want: "decode workflow .github/workflows/ci.yml bytes after commit"},
 		{name: "old branch still referenced", contents: "with:\n  ref: \"master\"\n", want: "still references"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = oldRead })
@@ -111,6 +115,7 @@ func TestDefaultBranchWorkflowPostReadRequiresExactReplacement(t *testing.T) {
 }
 
 func TestDefaultBranchSafetyReportsUnverifiedPullsWorkflowsAndRules(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -125,6 +130,7 @@ func TestDefaultBranchSafetyReportsUnverifiedPullsWorkflowsAndRules(t *testing.T
 		{name: "effective rules absent", endpoint: "rules", readErr: errors.New("HTTP 404")},
 		{name: "effective rules malformed", endpoint: "rules", body: "{", want: "decode effective branch rules"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = oldRead })

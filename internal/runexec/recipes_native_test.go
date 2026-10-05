@@ -107,6 +107,7 @@ func TestRecipesGatedAndInvalidPredicates(t *testing.T) {
 	config := recipeConfig(t)
 	for _, name := range []string{"gated", "broken"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			result, err := fixtureRecipes(repos).Run(context.Background(), RecipeRequest{ProjectsRoot: root, ConfigPath: config, Name: name, Observe: func(RecipeEvent) error { return nil }})
 			if err != nil {
 				t.Fatal(err)

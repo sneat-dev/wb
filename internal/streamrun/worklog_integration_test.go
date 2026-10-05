@@ -16,6 +16,7 @@ import (
 
 // Genuine command-to-domain provenance guarantees retain private archival effects.
 func TestStreamWorkLogRefusals(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	execute := func(flags ...string) (worktrees.WorkLogOptions, error) {
 		var prepared worktrees.WorkLogOptions

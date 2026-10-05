@@ -12,6 +12,7 @@ import (
 )
 
 func TestNewSelfUpdateConfigIdentity(t *testing.T) {
+	t.Parallel()
 	cfg := Config(buildinfo.Version())
 	if cfg.BinaryName != "wb" {
 		t.Errorf("BinaryName = %q, want %q", cfg.BinaryName, "wb")
@@ -47,6 +48,7 @@ func TestNewSelfUpdateConfigIdentity(t *testing.T) {
 // one manager, Homebrew, with the non-interactive --yes --cask upgrade command wb's cask (not a
 // formula) requires. No Scoop or WinGet — wb publishes no Windows build.
 func TestNewSelfUpdateConfigHomebrewOnly(t *testing.T) {
+	t.Parallel()
 	cfg := Config(buildinfo.Version())
 
 	if len(cfg.Managers) != 1 {
@@ -77,6 +79,7 @@ func TestNewSelfUpdateConfigHomebrewOnly(t *testing.T) {
 // post-swap probe must use wb's machine-readable spelling, not the library's
 // "--version" default.
 func TestNewSelfUpdateConfigVersionProbeArgs(t *testing.T) {
+	t.Parallel()
 	cfg := Config(buildinfo.Version())
 	want := []string{"version", "--json"}
 	if len(cfg.VersionProbeArgs) != len(want) {
@@ -94,6 +97,7 @@ func TestNewSelfUpdateConfigVersionProbeArgs(t *testing.T) {
 // no more, no less, so an unpublished platform is refused by the library
 // rather than attempting a swap wb has no asset for.
 func TestNewSelfUpdateConfigSupportedPlatforms(t *testing.T) {
+	t.Parallel()
 	cfg := Config(buildinfo.Version())
 	want := map[selfupdate.Platform]bool{
 		{GOOS: "darwin", GOARCH: "amd64"}: true,
@@ -123,6 +127,7 @@ func TestNewSelfUpdateConfigSupportedPlatforms(t *testing.T) {
 // fields), so an override here would be a silent divergence from the
 // GoReleaser config that publishes the real assets.
 func TestNewSelfUpdateConfigDefaultAssetNaming(t *testing.T) {
+	t.Parallel()
 	cfg := Config(buildinfo.Version())
 	if cfg.AssetName != nil {
 		t.Error("AssetName is overridden; wb's naming must match the library's GoReleaser-shaped default")

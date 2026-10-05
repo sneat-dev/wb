@@ -82,13 +82,11 @@ var ClockSeamSites = []ClockSeamSite{
 	{File: "internal/orchestrate/worktree_merge_ack.go", Func: "closeSupersededWorktreeMergePullRequest"},
 	{File: "internal/orchestrate/worktree_merge_ack.go", Func: "ensurePreparedWorktreeMergeRebatch"},
 	{File: "internal/worktrees/repository_registration_lock.go", Func: "acquireRepositoryRegistrationLock"},
-	{File: "cmd/wb/daemon_process_darwin.go", Func: "startDaemonProcessInjected"},
-	{File: "cmd/wb/daemon_process_darwin.go", Func: "awaitLaunchdReady"},
-	// cmd/wb/daemon.go's own retry/timeout loops (daemonController.stateLock
-	// and others) already went through daemonDependencies' now/lockNow/sleep
-	// seam before task-10 (see that struct's doc comment); stateLock is
-	// listed here so this guard, not just code review, keeps it that way.
-	{File: "cmd/wb/daemon.go", Func: "stateLock"},
+	{File: "internal/daemonruntime/process_darwin.go", Func: "startDaemonProcessInjected"},
+	{File: "internal/daemonruntime/process_darwin.go", Func: "awaitLaunchdReady"},
+	// Controller.AcquireStateLock retains the original dedicated monotonic
+	// LockNow/Sleep dependency seam for state-lock retry deadlines.
+	{File: "internal/daemonruntime/runtime.go", Func: "AcquireStateLock"},
 }
 
 // ClockSeamMatch is one direct, banned time-package call found inside one

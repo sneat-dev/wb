@@ -308,6 +308,7 @@ func TestCwCovSweepGovernsAndReportsUngovernedModules(t *testing.T) {
 	}
 }
 func TestFetchPolicyInjectedHonoursInjectedFailures(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte(testPolicyDocument))
 	}))

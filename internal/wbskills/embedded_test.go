@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewSkillsSyncConfigBindsTheEmbeddedWBPluginToThisBuild(t *testing.T) {
+	t.Parallel()
 	cfg, err := Config(ai.SkillsFS, buildinfo.Snapshot())
 	if err != nil {
 		t.Fatal(err)

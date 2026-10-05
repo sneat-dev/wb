@@ -84,6 +84,7 @@ func cwDepsGit(t *testing.T, dir string, args ...string) {
 }
 
 func TestCwDepsRepositoryIdentityReadsOriginAndLayout(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	withOrigin := initTestRepository(t, filepath.Join(root, "acme", "app"))
 	cwDepsGit(t, withOrigin, "remote", "add", "origin", "git@github.com:acme/app.git")
@@ -119,6 +120,7 @@ func TestCwDepsRepositoryIdentityReadsOriginAndLayout(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in cwCovFakeGH; these rows share their parent environment and remain sequential.
 func TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet(t *testing.T) {
 	root := t.TempDir()
 	service := New(DefaultDependencies(io.Discard))
@@ -190,6 +192,7 @@ func TestCwDepsDependencyRepositoriesSelectsLocallyAndOverFleet(t *testing.T) {
 }
 
 func TestExecuteDepsBumpWithRegistryPolicyNoEventsReturnsEmptyReport(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	result, err := New(DefaultDependencies(io.Discard)).Bump(context.Background(), BumpRequest{ProjectsRoot: root, Options: deps.BumpOptions{Ecosystem: deps.EcosystemGo, Options: deps.Options{GitHubDir: root}}})
 	report, reportDirectory := result.Report, result.ReportDir
@@ -205,6 +208,7 @@ func TestExecuteDepsBumpWithRegistryPolicyNoEventsReturnsEmptyReport(t *testing.
 }
 
 func TestCwDepsExecuteDepsBumpWithoutCampaign(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	service := New(DefaultDependencies(io.Discard))
 	reportDir := filepath.Join(home, "reports", "cw-deps-bump")
@@ -232,6 +236,7 @@ func TestCwDepsExecuteDepsBumpWithoutCampaign(t *testing.T) {
 }
 
 func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service := New(DefaultDependencies(io.Discard))
 	reportDir := filepath.Join(root, "report")
@@ -281,6 +286,7 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 	}
 }
 func TestRunDepsBumpEnsureRootFailureFinishesCampaignAsFailedPersistence(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(root, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
@@ -292,6 +298,7 @@ func TestRunDepsBumpEnsureRootFailureFinishesCampaignAsFailedPersistence(t *test
 }
 
 func TestCwDepsBumpSeedEventsParsesExplicitAndDerivesFromRegistry(t *testing.T) {
+	t.Parallel()
 	service := New(DefaultDependencies(io.Discard))
 
 	// No --latest: the explicit list is parsed, and an empty list is refused
@@ -321,6 +328,7 @@ func seedEvents(service *Service, changed []string) ([]deps.ReleaseEvent, error)
 	return result.Events, err
 }
 
+//nolint:paralleltest // Process-wide environment changes in cwCovFakeGH; these rows share their parent environment and remain sequential.
 func TestDefaultFleetDiscoveryKeepsTheActualBlockedLayoutFailure(t *testing.T) {
 	// Native OS observation, not a fabricated discovery result. Auth commands are
 	// local private executables; no provider request or user configuration is used.

@@ -12,6 +12,7 @@ import (
 )
 
 func TestDaemonStatusTreatsARecycledPIDAsAnotherProcess(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	// The PID is this test's own, so it is definitely alive; the recorded start
@@ -61,6 +62,7 @@ func TestDaemonStatusTreatsARecycledPIDAsAnotherProcess(t *testing.T) {
 }
 
 func TestDaemonStopDoesNotSignalARecycledPID(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	signalled := false

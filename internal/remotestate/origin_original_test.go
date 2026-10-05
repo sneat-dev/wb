@@ -3,6 +3,7 @@ package remotestate
 import "testing"
 
 func TestSameOriginNormalizesSchemeHostPortAndTrailingDot(t *testing.T) {
+	t.Parallel()
 	for _, pair := range [][2]string{
 		{"https://VM1.sneat.dev", "https://vm1.sneat.dev"},
 		{"https://vm1.sneat.dev.", "https://vm1.sneat.dev"},

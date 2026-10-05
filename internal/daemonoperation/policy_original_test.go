@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestCwWtRequireDaemonRawExecutionPolicy; these rows share their parent environment and remain sequential.
 func TestCwWtRequireDaemonRawExecutionPolicy(t *testing.T) {
 	root := t.TempDir()
 	if err := (Service{

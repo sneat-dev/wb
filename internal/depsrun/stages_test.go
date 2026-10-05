@@ -25,6 +25,7 @@ func TestSelectionKeepsFiltersMetadataAndNativeIdentityPriority(t *testing.T) {
 		{"pool", Selection{}, "parallelism"}, {"retry", Selection{Parallel: 1, Retry: -1}, "retry"}, {"timeout", Selection{Parallel: 1, Timeout: -1}, "timeout"}, {"regex", Selection{Parallel: 1, Regex: "["}, "invalid --regex"}, {"glob", Selection{Parallel: 1, Match: "["}, "invalid --match"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := New(Dependencies{}).Select(ctx, test.request)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validation=%v", err)
@@ -33,6 +34,7 @@ func TestSelectionKeepsFiltersMetadataAndNativeIdentityPriority(t *testing.T) {
 	}
 	for _, stage := range []string{"abs", "identity", "fleet", "glob", "regex", "filter", "empty"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			request := Selection{ProjectsRoot: "/private/fixture", RepositoryPath: "checkout", Parallel: 1, Fleet: stage == "fleet" || stage == "empty"}
 			if stage == "glob" {
 				request.Match = "other/*"
@@ -109,6 +111,7 @@ func TestInspectionStagesFinishBeforePersistenceAndRetainErrors(t *testing.T) {
 	for _, verb := range []string{"graph", "drift"} {
 		for _, stage := range []string{"engine", "home", "write", "success", "explicit", "findings"} {
 			t.Run(verb+"/"+stage, func(t *testing.T) {
+				t.Parallel()
 				var order []string
 				finish := func(s string) { order = append(order, "finish:"+s) }
 				d := Dependencies{EnsureRoot: func(root string) (string, error) {
@@ -208,6 +211,7 @@ func TestMutationCustodySeparatesRunPersistenceAndResumeAuthority(t *testing.T) 
 	persist := errors.New("persistence refused")
 	for _, stage := range []string{"run", "home", "write", "explicit", "empty"} {
 		t.Run("set/"+stage, func(t *testing.T) {
+			t.Parallel()
 			var order []string
 			d := Dependencies{RunSet: func(context.Context, deps.Target, []deps.Repository, deps.Options) (deps.Report, error) {
 				order = append(order, "run")
@@ -257,6 +261,7 @@ func TestMutationCustodySeparatesRunPersistenceAndResumeAuthority(t *testing.T) 
 	}
 	for _, stage := range []string{"home", "load-missing", "load-other", "parallel-invalid", "parallel-explicit", "parallel-retained", "run", "checkpoint", "final-write", "empty", "success"} {
 		t.Run("bump/"+stage, func(t *testing.T) {
+			t.Parallel()
 			var writes int
 			var finishStates []string
 			d := Dependencies{EnsureRoot: func(string) (string, error) {
@@ -356,6 +361,7 @@ func TestSeedKeepsRegistryAndExplicitProvenance(t *testing.T) {
 		{"empty", false, nil, false}, {"invalid", false, []string{"bad"}, false}, {"explicit", false, []string{"github.com/acme/lib@v1.2.3"}, false}, {"latest-invalid", true, []string{"bad"}, false}, {"latest", true, nil, false}, {"combined", true, []string{"github.com/acme/lib@v1.2.3"}, false}, {"registry", true, nil, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			calls := 0
 			d := Dependencies{DeriveLatest: func(context.Context, []deps.Repository, []string, deps.BumpOptions) ([]deps.ReleaseEvent, []deps.LatestScopeResolution, error) {
 				calls++

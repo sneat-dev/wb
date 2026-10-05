@@ -126,6 +126,7 @@ func initOriginRepository(t *testing.T, path, slug string) string {
 	return path
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry; these rows share their parent environment and remain sequential.
 func TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry(t *testing.T) {
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
@@ -167,6 +168,7 @@ func TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry(t *testing.T) {
 	}
 }
 func TestLifecycleCheckCommandReportsTrustedExecutor(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	executable := lifecycleTestExecutable(t, root)
 	config := lifecycleTestConfig(t, root, executable)
@@ -184,6 +186,8 @@ func TestLifecycleCheckCommandReportsTrustedExecutor(t *testing.T) {
 		}
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestLifecycleResumeAndGCAreSafeOnEmptyState; these rows share their parent environment and remain sequential.
 func TestLifecycleResumeAndGCAreSafeOnEmptyState(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
@@ -214,6 +218,7 @@ func TestLifecycleResumeAndGCAreSafeOnEmptyState(t *testing.T) {
 	}
 }
 func TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	matching := filepath.Join(root, "acme", "app")
 	nonMatching := filepath.Join(root, "other", "tool")
@@ -284,6 +289,7 @@ func lifecycleConfigContents(executable string) string {
 `
 }
 func TestLifecycleCheckTextDistinguishesMissingAndTrustedConfiguration(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing.yaml")
 	for _, test := range []struct {
@@ -293,6 +299,7 @@ func TestLifecycleCheckTextDistinguishesMissingAndTrustedConfiguration(t *testin
 		{"trusted", lifecycleTestConfig(t, root, lifecycleTestExecutable(t, root)), "code-index"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := newHooksLifecycleCheckCmd()
 			var output bytes.Buffer
 			cmd.SetOut(&output)
@@ -306,6 +313,8 @@ func TestLifecycleCheckTextDistinguishesMissingAndTrustedConfiguration(t *testin
 		})
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestLifecycleBackfillTextNamesPlannedExecutionAndPreviewAction; these rows share their parent environment and remain sequential.
 func TestLifecycleBackfillTextNamesPlannedExecutionAndPreviewAction(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
@@ -332,6 +341,8 @@ func TestLifecycleBackfillTextNamesPlannedExecutionAndPreviewAction(t *testing.T
 		}
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestLifecycleGCTextReportsEmptyPreview; these rows share their parent environment and remain sequential.
 func TestLifecycleGCTextReportsEmptyPreview(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))

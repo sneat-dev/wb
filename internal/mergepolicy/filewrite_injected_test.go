@@ -13,10 +13,12 @@ import (
 
 var errBoomPR9 = errors.New("pr9 boom")
 
+//nolint:paralleltest // This contract inventories the shared process temporary scratch namespace; concurrent policy writers could appear in the glob.
 func TestApplyClassicProtectionWithoutLinearHistoryInjectedHonoursInjectedFailures(t *testing.T) {
 	service := New()
 	for _, step := range []filewrite.Step{filewrite.StepOpenOrCreate, filewrite.StepChmod, filewrite.StepWrite, filewrite.StepClose} {
 		step := step
+		//nolint:paralleltest // These rows inventory the shared process temporary wb-merge-policy-protection namespace after each failure; concurrent scratch writers would contaminate that cleanup assertion.
 		t.Run(string(step), func(t *testing.T) {
 			inj := &filewrite.Injector{Step: step, Err: errBoomPR9}
 			err := service.applyClassicProtectionWithoutLinearHistoryInjected(context.Background(), "repos/acme/app/branches/main/protection", []byte("{}"), inj)
@@ -33,6 +35,8 @@ func TestApplyClassicProtectionWithoutLinearHistoryInjectedHonoursInjectedFailur
 		})
 	}
 }
+
+//nolint:paralleltest // This contract inventories the shared process temporary scratch namespace; concurrent policy writers could appear in the glob.
 func TestApplySharedRulesetInjectedHonoursInjectedFailures(t *testing.T) {
 	service := New()
 	service.deps.Read = func(context.Context, string) ([]byte, error) {

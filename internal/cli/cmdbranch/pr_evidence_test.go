@@ -35,6 +35,7 @@ func TestPrintBranchListExplainsRemotePullRequestEvidence(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			entry := test.entry
 			entry.Repository, entry.Branch, entry.Scope = "acme/app", "feature/pr-evidence", worktrees.BranchScopeRemote
 			entry.Disposition, entry.Evidence = worktrees.BranchContained, "ancestor of main"

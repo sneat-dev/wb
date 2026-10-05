@@ -56,6 +56,7 @@ func TestListDetachesAttributionAndPreservesWarningsAndLiveFiltering(t *testing.
 	}
 	for _, stage := range []string{"directory", "records", "home", "waits"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			deps := base()
 			warned := []string{}
 			switch stage {
@@ -114,6 +115,7 @@ func TestReceiveOperationsBindContextAndPropagateIdentityAndStoreErrors(t *testi
 	ctx := context.WithValue(context.Background(), operationContextKey{}, "private")
 	for _, stage := range []string{"identity", "store", "success"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			identity := func() (string, error) {
 				if stage == "identity" {
 					return "", want
@@ -176,6 +178,7 @@ func TestParkRefusalsAndEffectsPreserveOrderWithoutLaterWrites(t *testing.T) {
 	want := errors.New("park effect")
 	for _, stage := range []string{"empty", "oversize", "override", "scanner", "directory", "source", "list", "home", "store", "id", "capture", "create-conflict", "success"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			events := []string{}
 			hit := func(s string) error {

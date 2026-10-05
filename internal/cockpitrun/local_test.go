@@ -6,6 +6,7 @@ import (
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ func mustDaemonPath(t *testing.T, f func(string) (string, error), root string) s
 func daemonTestDependencies(t *testing.T, root string) daemonruntime.Dependencies {
 	t.Helper()
 	executable := filepath.Join(root, "wb")
-	if err := os.WriteFile(executable, []byte("fixture"), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(executable, []byte("fixture"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	alive := map[int]bool{}
@@ -34,6 +35,7 @@ func daemonTestDependencies(t *testing.T, root string) daemonruntime.Dependencie
 	return daemonruntime.Dependencies{Now: func() time.Time { return time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC) }, LockNow: time.Now, Executable: func() (string, error) { return executable, nil }, Start: func(string, []string, string) (int, error) { pid++; alive[pid] = true; return pid, nil }, Alive: func(p int) bool { return alive[p] }, Stop: func(p int, _ daemon.Supervisor, _ string) error { alive[p] = false; return nil }, Sleep: func(time.Duration) {}, Version: func() buildinfo.Report { return buildinfo.Report{Version: "test", Revision: "test-revision"} }, Token: func() (string, error) { return strings.Repeat("a", 32), nil }, Health: func(context.Context, string) error { return nil }, ProcessStartTime: func(int) (time.Time, bool) { return time.Time{}, false }, SupervisorPresent: func(daemon.Supervisor, string) (bool, string) { return true, "" }}
 }
 func TestCockpitLocalFromDaemonStartsWithoutMintingForJSON(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.LocalClient = func(string, string) (*http.Client, error) { return nil, errors.New("must not connect") }
@@ -44,6 +46,7 @@ func TestCockpitLocalFromDaemonStartsWithoutMintingForJSON(t *testing.T) {
 }
 
 func TestCockpitOwnerClientUsesTheDefaultLocalClient(t *testing.T) {
+	t.Parallel()
 	deps := daemonTestDependencies(t, daemonTestRoot(t))
 	deps.LocalClient = nil
 	ready := func() (daemon.State, bool, error) { return daemon.State{Status: daemon.StatusReady}, true, nil }
@@ -53,6 +56,7 @@ func TestCockpitOwnerClientUsesTheDefaultLocalClient(t *testing.T) {
 }
 
 func TestCockpitOwnerClientRefusesAnUnreadyDaemon(t *testing.T) {
+	t.Parallel()
 	deps := daemonTestDependencies(t, daemonTestRoot(t))
 	load := func(state daemon.State, found bool, err error) func() (daemon.State, bool, error) {
 		return func() (daemon.State, bool, error) { return state, found, err }
@@ -73,6 +77,7 @@ func TestCockpitOwnerClientRefusesAnUnreadyDaemon(t *testing.T) {
 }
 
 func TestCockpitLocalFromDaemonReportsStartFailures(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	deps.Executable = func() (string, error) { return "", errors.New("no executable") }
@@ -82,6 +87,7 @@ func TestCockpitLocalFromDaemonReportsStartFailures(t *testing.T) {
 }
 
 func TestCockpitLocalFromDaemonStartsOnTheRequestedListen(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	session, err := NewLocalService(deps, nil).Local(context.Background(), LocalRequest{Root: root, Listen: "127.0.0.1:43999", Mint: false})
@@ -107,6 +113,7 @@ func startedDaemon(t *testing.T, listen string) (daemonruntime.Dependencies, str
 }
 
 func TestCockpitNeverReplacesARunningDaemonOnAnotherAddress(t *testing.T) {
+	t.Parallel()
 	deps, root, starts := startedDaemon(t, "127.0.0.1:43001")
 	_, err := NewLocalService(deps, nil).Local(context.Background(), LocalRequest{Root: root, Listen: "127.0.0.1:43002", Mint: false})
 	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:43001") || !strings.Contains(err.Error(), "--listen 127.0.0.1:43001") || *starts != 0 {
@@ -118,6 +125,7 @@ func TestCockpitNeverReplacesARunningDaemonOnAnotherAddress(t *testing.T) {
 }
 
 func TestCockpitReusesARunningDaemonWhereverItListens(t *testing.T) {
+	t.Parallel()
 	deps, root, starts := startedDaemon(t, "127.0.0.1:43001")
 	session, err := NewLocalService(deps, nil).Local(context.Background(), LocalRequest{Root: root, Listen: "", Mint: false})
 	if err != nil || session.Listen != "127.0.0.1:43001" || *starts != 0 {
@@ -130,6 +138,7 @@ func TestCockpitReusesARunningDaemonWhereverItListens(t *testing.T) {
 }
 
 func TestCockpitStartsOnTheRequestedOrDefaultAddressWhenNothingRuns(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	session, err := NewLocalService(deps, nil).Local(context.Background(), LocalRequest{Root: root, Listen: "", Mint: false})
@@ -151,6 +160,7 @@ func TestCockpitStartsOnTheRequestedOrDefaultAddressWhenNothingRuns(t *testing.T
 }
 
 func TestCockpitReportsAnUnreadableDaemonRecord(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	deps := daemonTestDependencies(t, root)
 	path := mustDaemonPath(t, daemonruntime.StatePath, root)

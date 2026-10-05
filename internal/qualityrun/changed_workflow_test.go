@@ -42,6 +42,7 @@ func changedRequest(t *testing.T) ChangedRequest {
 	return ChangedRequest{Path: "input", Target: "main", Minimum: -1, Diagnostics: io.Discard, Run: quality.RunOptions{CoverageProfile: filepath.Join(t.TempDir(), "profile.cov")}}
 }
 func TestChangedWorkflowEffectErrorsAndPreflightOrder(t *testing.T) {
+	t.Parallel()
 	root := changedFixture(t)
 	boom := errors.New("effect sentinel")
 	for _, stage := range []string{"abs", "module", "policy-tolerance", "merge-base", "diff", "touched", "scope", "offsets", "profile", "run-policy", "baseline", "profile-parse"} {
@@ -113,6 +114,7 @@ func TestChangedWorkflowEffectErrorsAndPreflightOrder(t *testing.T) {
 	}
 }
 func TestChangedWorkflowScopeEmptyProfileAndPersistence(t *testing.T) {
+	t.Parallel()
 	root := changedFixture(t)
 	for _, mode := range []string{"empty", "write-error", "persist-error", "selection-read-error", "affected"} {
 		t.Run(mode, func(t *testing.T) {
@@ -190,6 +192,7 @@ func TestChangedWorkflowMeasurementFailureAndDiagnostics(t *testing.T) {
 	}
 }
 func TestChangedWorkflowCallbackBeforeWriteAndSelectedOptions(t *testing.T) {
+	t.Parallel()
 	root := changedFixture(t)
 	for _, mode := range []string{"success", "persistence-error", "temporary-profile", "minimum", "ratchet"} {
 		t.Run(mode, func(t *testing.T) {

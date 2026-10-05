@@ -29,6 +29,7 @@ func settingsHookCommand() *cobra.Command {
 	return command
 }
 func TestNewSkillsHookInstallCmdWritesThenReportsAlreadyRegistered(t *testing.T) {
+	t.Parallel()
 	settings := filepath.Join(t.TempDir(), "settings.json")
 
 	first := settingsHookCommand()
@@ -62,6 +63,7 @@ func TestNewSkillsHookInstallCmdWritesThenReportsAlreadyRegistered(t *testing.T)
 }
 
 func TestNewSkillsHookInstallCmdDryRunNeverWrites(t *testing.T) {
+	t.Parallel()
 	settings := filepath.Join(t.TempDir(), "settings.json")
 
 	command := settingsHookCommand()

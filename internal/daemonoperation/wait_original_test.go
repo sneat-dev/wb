@@ -8,6 +8,7 @@ import (
 )
 
 func TestCwCovWaitForDaemonOperationStopsOnTerminalState(t *testing.T) {
+	t.Parallel()
 	// A terminal operation is returned unchanged without any client call.
 	operation := &daemonv1.Operation{OperationId: "wbo-3", State: daemonv1.OperationState_OPERATION_STATE_SUCCEEDED}
 	var progress bytes.Buffer

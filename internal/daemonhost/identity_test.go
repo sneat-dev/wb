@@ -7,6 +7,7 @@ import (
 )
 
 func TestReportPinnedLifecycleStateIsNeverSilent(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	reportPinnedLifecycleState(&out, "", "/home/a/.wb/runtime/daemon-state.json")
 	if out.String() != "" {

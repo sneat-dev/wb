@@ -156,6 +156,7 @@ func TestDaemonFileBridgeIdenticalSubmitReusesUnresolvedEnvelope(t *testing.T) {
 }
 
 func TestDaemonFileBridgeRequestSurvivesBridgeProcessRestart(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	if _, err := daemonFileBridgeKey(root, true); err != nil {
 		t.Fatal(err)
@@ -188,6 +189,7 @@ func TestDaemonFileBridgeRequestSurvivesBridgeProcessRestart(t *testing.T) {
 }
 
 func TestDaemonFileBridgeRejectsTamperedDigestAndRawOrEnvironmentRequests(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	requests, responses, err := prepareDaemonFileBridge(root)
 	if err != nil {
@@ -231,6 +233,7 @@ func TestDaemonFileBridgeRejectsTamperedDigestAndRawOrEnvironmentRequests(t *tes
 }
 
 func TestDaemonFileBridgeRefusesAmbiguousWorkerRPCReplay(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	requests, responses, err := prepareDaemonFileBridge(root)
 	if err != nil {
@@ -292,6 +295,7 @@ func TestDaemonFileBridgeRefusesAmbiguousWorkerRPCReplay(t *testing.T) {
 }
 
 func TestDaemonFileBridgeRejectsSymlinkedRuntimeParent(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	escape := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".wb"), 0o700); err != nil {
@@ -309,6 +313,7 @@ func TestDaemonFileBridgeRejectsSymlinkedRuntimeParent(t *testing.T) {
 }
 
 func TestDaemonFileBridgeQuarantineIsBounded(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	requests, _, err := prepareDaemonFileBridge(root)
 	if err != nil {
@@ -337,6 +342,7 @@ func TestDaemonFileBridgeQuarantineIsBounded(t *testing.T) {
 }
 
 func TestDaemonFileBridgeCleansStaleValidAndOrphanedEnvelopes(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	server, err := NewFileBridgeServer(root, "owner-token", "50", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	if err != nil {
@@ -389,6 +395,7 @@ func TestDaemonFileBridgeCleansStaleValidAndOrphanedEnvelopes(t *testing.T) {
 }
 
 func TestDaemonFileBridgeStaleRequestSweepLeavesNonRequestEntries(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	server, err := NewFileBridgeServer(root, "owner-token", "50", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	if err != nil {
@@ -423,6 +430,7 @@ func TestDaemonFileBridgeStaleRequestSweepLeavesNonRequestEntries(t *testing.T) 
 }
 
 func TestDaemonFileBridgeScanIgnoresNonRequestEntriesButProcessesValidRequest(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	called := 0
 	server, err := NewFileBridgeServer(root, "owner-token", "52", http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -471,6 +479,7 @@ func TestDaemonFileBridgeScanIgnoresNonRequestEntriesButProcessesValidRequest(t 
 }
 
 func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	called := 0
 	server, err := NewFileBridgeServer(root, "owner-token", "51", http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -511,6 +520,7 @@ func TestDaemonFileBridgeReportsResponsePersistenceFailure(t *testing.T) {
 }
 
 func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	service, err := daemonTestService(t, root, "test-build", "1", func() error { return errors.New("raw disabled") })
 	if err != nil {
@@ -526,7 +536,7 @@ func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	bridgeDone := make(chan error, 1)
 	go func() { bridgeDone <- bridge.Serve(ctx) }()
-	defer func() { cancel(); <-bridgeDone }()
+	t.Cleanup(func() { cancel(); <-bridgeDone })
 
 	deps := daemonTestDependencies(t, root)
 	Provenance, err := NewController(deps, root).Provenance()
@@ -560,6 +570,7 @@ func TestDaemonOperationClientFallsBackOnlyForUnreachableSocket(t *testing.T) {
 }
 
 func TestDaemonFileBridgeHealthVerifiesSchedulerGeneration(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	_, stop := startTestDaemonFileBridge(t, root, "health-token", "61")
 	t.Cleanup(stop)
@@ -572,6 +583,7 @@ func TestDaemonFileBridgeHealthVerifiesSchedulerGeneration(t *testing.T) {
 }
 
 func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	path, err := daemonFileBridgeKeyPath(root)
 	if err != nil {
@@ -587,6 +599,7 @@ func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCreateFailure(t *testing.T)
 }
 
 func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	path, err := daemonFileBridgeKeyPath(root)
 	if err != nil {
@@ -602,6 +615,7 @@ func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedWriteFailure(t *testing.T) 
 }
 
 func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	path, err := daemonFileBridgeKeyPath(root)
 	if err != nil {
@@ -617,6 +631,7 @@ func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
 }
 
 func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	path, err := daemonFileBridgeKeyPath(root)
 	if err != nil {
@@ -632,6 +647,7 @@ func TestDaemonFileBridgeKeyInjectedHonoursAnInjectedCloseFailure(t *testing.T) 
 }
 
 func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-write", PayloadSHA256: "x"}
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
@@ -648,6 +664,7 @@ func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedWriteFailure(t *testing
 }
 
 func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-sync", PayloadSHA256: "x"}
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
@@ -664,6 +681,7 @@ func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedSyncFailure(t *testing.
 }
 
 func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-close", PayloadSHA256: "x"}
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
@@ -680,6 +698,7 @@ func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedCloseFailure(t *testing
 }
 
 func TestWriteDaemonFileEnvelopeInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	envelope := daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "inj-rename", PayloadSHA256: "x"}
 	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}

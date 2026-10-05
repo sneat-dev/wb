@@ -13,6 +13,7 @@ import (
 )
 
 func TestWindowsDaemonLifecycleLocksUseRealPaths(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	controller := NewController(daemonTestDependencies(t, root), root)
 
@@ -46,6 +47,7 @@ func TestWindowsDaemonLifecycleLocksUseRealPaths(t *testing.T) {
 }
 
 func TestWindowsDaemonFileBridgeRejectsUntrustedAncestorMutation(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
@@ -59,6 +61,7 @@ func TestWindowsDaemonFileBridgeRejectsUntrustedAncestorMutation(t *testing.T) {
 }
 
 func TestWindowsDaemonFileBridgeAcceptsInheritedAncestorsAndProtectsRuntime(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
@@ -109,6 +112,7 @@ func TestWindowsDaemonFileBridgeAcceptsInheritedAncestorsAndProtectsRuntime(t *t
 }
 
 func TestDaemonCheckOtherRootNeverRefusesOffMacOS(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }

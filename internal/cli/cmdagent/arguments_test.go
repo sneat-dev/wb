@@ -34,6 +34,7 @@ func TestAgentDispatchRefusesAmbiguousOrIncompleteInvocations(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			code, _, stderr := runFake(t, deps, testCase.arguments...)
 			if code != exitUsage {
 				t.Fatalf("exit code = %d, want %d (usage); stderr: %s", code, exitUsage, stderr)
@@ -110,6 +111,7 @@ func TestAgentFlagsAreDocumentedInHelp(t *testing.T) {
 	}
 	for path, flags := range cases {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			root := fakeCommandRoot(fakeDependencies())
 			found, _, err := root.Find(strings.Fields(strings.TrimPrefix(path, "wb ")))
 			if err != nil {
@@ -194,6 +196,7 @@ func TestAgentHelpDocumentsTheRemoteFlags(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"dispatch", "status", "await", "list", "logs", "stop"} {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			root := fakeCommandRoot(fakeDependencies())
 			found, _, err := root.Find([]string{"agent", path})
 			if err != nil {

@@ -416,6 +416,8 @@ func TestClassicProtectionFailureAndWorkerCheckpointOrdering(t *testing.T) {
 		})
 	}
 }
+
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestReportPathHomeFailureIsPropagated(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, "")
 	t.Setenv("HOME", "")

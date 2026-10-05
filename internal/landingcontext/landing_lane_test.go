@@ -15,6 +15,7 @@ import (
 // receipt from a registered session owner must actually clear that owner's
 // held lane, not merely no-op the way an unregistered process's call does.
 func TestReleaseWorktreeMergeLaneReleasesARegisteredOwnersLane(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	projectsRoot := root
 
@@ -58,6 +59,7 @@ func TestReleaseWorktreeMergeLaneReleasesARegisteredOwnersLane(t *testing.T) {
 // TestReleaseWorktreeMergeLaneIsANoOpWithoutAnOwner proves an unregistered
 // process's call is a deliberate no-op, exactly as landingLaneOwner documents.
 func TestReleaseWorktreeMergeLaneIsANoOpWithoutAnOwner(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	ReleaseWorktreeLane(projectsRoot, orchestrate.WorktreeMergeReceipt{
 		Repository: "acme/app", Target: "main", Status: orchestrate.WorktreeMergeLanded,

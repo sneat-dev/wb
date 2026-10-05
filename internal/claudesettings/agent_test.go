@@ -11,6 +11,7 @@ import (
 )
 
 func TestMergeAgentHookSettingsIsIdempotent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	existing := `{
 	  "model": "opus",
@@ -71,6 +72,7 @@ func TestMergeAgentHookSettingsIsIdempotent(t *testing.T) {
 	}
 }
 func TestMergeAgentHookSettingsWidensAStaleMatcher(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	shellCommand := "/usr/local/bin/wb hooks agent pre-tool-use 2>/dev/null; exit 0"
 	staleMatcher := `{
@@ -121,6 +123,7 @@ func TestMergeAgentHookSettingsWidensAStaleMatcher(t *testing.T) {
 	}
 }
 func TestMergeAgentHookSettingsCreatesAMissingFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nested", "settings.json")
 	document, changed, err := MergeAgentHook(path, "wb hooks agent pre-tool-use 2>/dev/null; exit 0")
 	if err != nil || !changed {
@@ -138,6 +141,7 @@ func TestMergeAgentHookSettingsCreatesAMissingFile(t *testing.T) {
 	}
 }
 func TestMergeAgentHookSettingsRefusesAnUnparseableFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "settings.json")
 	if err := os.WriteFile(path, []byte("{ not json"), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)

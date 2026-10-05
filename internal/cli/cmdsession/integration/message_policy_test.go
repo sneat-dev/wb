@@ -228,6 +228,7 @@ func TestCwWtSessionRecallCmd(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestCwWtDefaultSessionMessageDependencies; these rows share their parent environment and remain sequential.
 func TestCwWtDefaultSessionMessageDependencies(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
 	// No live session is registered for this process, so the resolver says so.
@@ -328,6 +329,7 @@ func TestCwWtSessionReceiveMessageBranches(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestCwWtDefaultSessionReceiveMessageDependencies; these rows share their parent environment and remain sequential.
 func TestCwWtDefaultSessionReceiveMessageDependencies(t *testing.T) {
 	// Without a configured remote the local machine identity cannot be loaded.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -345,6 +347,8 @@ func TestCwWtDefaultSessionReceiveMessageDependencies(t *testing.T) {
 // invoked: the sibling test above stops at the earlier local-machine check,
 // so the sessionDir closure - and the real deps.receive call beyond it -
 // were never exercised with the real default dependencies.
+//
+//nolint:paralleltest // Process-wide environment changes in TestCwWtDefaultSessionReceiveMessageDependenciesReachesSessionDir; these rows share their parent environment and remain sequential.
 func TestCwWtDefaultSessionReceiveMessageDependenciesReachesSessionDir(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

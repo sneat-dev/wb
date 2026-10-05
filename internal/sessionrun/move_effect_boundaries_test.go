@@ -15,6 +15,7 @@ import (
 )
 
 func TestDefaultLocalMachineRejectsMalformedPrivateConfiguration(t *testing.T) {
+	t.Parallel()
 	path := wbconfig.DefaultPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -38,6 +39,7 @@ func TestMoveCourierAndDurabilityCallbacksKeepExactRefusals(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"local-via", "invalid-courier", "early-dispatch", "save-route", "save-dispatch", "response-codec", "expected-codec"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			store := sessionmove.NewStore(t.TempDir())
 			source, request, _, digest := cwDepsMoveFixture(t, store)
 			want := errors.New("callback sentinel")

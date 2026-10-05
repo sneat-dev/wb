@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestLifecycleLockRefusalsPrecedeEveryDurableOperation(t *testing.T) {
@@ -255,7 +256,7 @@ func TestLifecycleSecondaryFailuresRetainActualPriorState(t *testing.T) {
 			case "supervised-refusal":
 				state.Supervisor = daemon.SupervisorSystemd
 				state.Provenance.Executable = filepath.Join(root, "other")
-				if writeErr := os.WriteFile(state.Provenance.Executable, []byte("another binary"), 0700); writeErr != nil {
+				if writeErr := testenv.WriteExecutableFile(state.Provenance.Executable, []byte("another binary"), 0700); writeErr != nil {
 					t.Fatal(writeErr)
 				}
 				_, err = controller.stopAndReplace(context.Background(), state, DefaultListen, provenance, "restart", nil)

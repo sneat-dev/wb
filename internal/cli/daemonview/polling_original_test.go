@@ -10,6 +10,7 @@ import (
 )
 
 func TestDaemonStatusRendersThePollingColumns(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 9, 11, 14, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
 	err := Result(&out, "text", daemonruntime.Result{Action: "status", Hub: daemonruntime.HubStatus{

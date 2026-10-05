@@ -10,6 +10,7 @@ import (
 )
 
 func TestDaemonHostedHubWritesNeedTheOwnersCredential(t *testing.T) {
+	t.Parallel()
 	mount, get, bearer, _ := exportTestMount(t, "127.0.0.1:8809")
 	api := mount.handlers()[hub.APIPrefix+"/"]
 	post := func(target, body string, headers ...string) *httptest.ResponseRecorder {

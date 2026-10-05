@@ -20,6 +20,7 @@ func TestFreshMoveRefusalsAndActualEffectsStopBeforeCheckpoint(t *testing.T) {
 	want := errors.New("move effect")
 	for _, stage := range []string{"machine", "no-machine", "load", "target", "courier", "deliverer", "source", "read", "override", "checkpoint", "store", "nil-loopback"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			checkpointCalls := 0
 			source := session.Record{PID: 41, WBSessionID: "source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
 			deps := MoveDependencies{
@@ -95,6 +96,7 @@ func TestMoveResumeRefusesInvalidDurableRouteAndDispatchWithoutMutating(t *testi
 	t.Parallel()
 	for _, stage := range []string{"route-read", "route-target", "route-courier", "route-write", "state-read", "dispatch-read"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			store := sessionmove.NewStore(t.TempDir())
 			source, request, _, digest := cwDepsMoveFixture(t, store)
 			deps := MoveDependencies{ResolveSource: func(string) (session.Record, bool, error) { return source, true, nil }, Store: func(string) (sessionmove.Store, error) { return store, nil }, DefaultConfigPath: func() string { return "private" }, LoadConfig: func(string) (sessionmove.Config, error) { return cwDepsMoveConfig(cwDepsSSHTarget()), nil }}

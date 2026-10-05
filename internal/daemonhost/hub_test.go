@@ -16,6 +16,7 @@ import (
 )
 
 func TestMountHubEnrolsTheLocalMachineExactlyOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	configPath := memoryHubConfig(t)
 	address := "127.0.0.1:8799"
@@ -24,7 +25,7 @@ func TestMountHubEnrolsTheLocalMachineExactlyOnce(t *testing.T) {
 	if err != nil || first == nil {
 		t.Fatalf("mountHub = %v, %v", first, err)
 	}
-	defer func() { _ = first.Close() }()
+	t.Cleanup(func() { _ = first.Close() })
 
 	cfg, err := remotestate.LoadConfig(configPath)
 	if err != nil {
@@ -63,7 +64,7 @@ func TestMountHubEnrolsTheLocalMachineExactlyOnce(t *testing.T) {
 	if err != nil || second == nil {
 		t.Fatalf("second mountHub = %v, %v", second, err)
 	}
-	defer func() { _ = second.Close() }()
+	t.Cleanup(func() { _ = second.Close() })
 	if second.Machine != first.Machine {
 		t.Fatalf("machine name changed across restarts: %q then %q", first.Machine, second.Machine)
 	}
@@ -81,6 +82,7 @@ func TestMountHubEnrolsTheLocalMachineExactlyOnce(t *testing.T) {
 }
 
 func TestEnsureLocalEnrollmentSkipsAnAlreadyResolvableCredential(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	configPath := memoryHubConfig(t)
 	address := "127.0.0.1:8798"
@@ -90,7 +92,7 @@ func TestEnsureLocalEnrollmentSkipsAnAlreadyResolvableCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = closer.Close() }()
+	t.Cleanup(func() { _ = closer.Close() })
 	credentials, resolver, _ := hub.NewMachineStores(backend)
 	enrollment := &hub.MachineEnrollmentService{Store: credentials, Pepper: pepper}
 	viewer := hub.Viewer{Authenticated: true, IdentityID: localIdentityID, DisplayName: "laptop"}
@@ -133,6 +135,7 @@ func TestEnsureLocalEnrollmentSkipsAnAlreadyResolvableCredential(t *testing.T) {
 }
 
 func TestMountHubDoesNothingWithoutAHubSection(t *testing.T) {
+	t.Parallel()
 	mount, err := mountHub(context.Background(), filepath.Join(t.TempDir(), "absent.yaml"), "127.0.0.1:8797", narrate.Writer{}, nil)
 	if err != nil || mount != nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
@@ -143,6 +146,7 @@ func TestMountHubDoesNothingWithoutAHubSection(t *testing.T) {
 }
 
 func TestMountHubSurfacesAnInvalidSection(t *testing.T) {
+	t.Parallel()
 	if _, err := mountHub(context.Background(), hubTestConfig(t, "hub:\n  store:\n    engine: postgres\n"), "127.0.0.1:8796", narrate.Writer{}, nil); err == nil {
 		t.Fatal("an invalid hub section was mounted")
 	}
@@ -157,6 +161,7 @@ func TestMountHubSurfacesAnInvalidSection(t *testing.T) {
 }
 
 func TestHubPepperRefusesATruncatedFile(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "pepper"), []byte("short"), 0o600); err != nil {
 		t.Fatal(err)
@@ -179,6 +184,7 @@ func TestHubPepperRefusesATruncatedFile(t *testing.T) {
 }
 
 func TestLocalMachineNamePrefersTheConfiguredName(t *testing.T) {
+	t.Parallel()
 	configured := hubTestConfig(t, "remote:\n  provider: git\n  repo: sneat-dev/wb\n  machine: workhorse\n")
 	if name, err := localMachineName(configured, os.Hostname); err != nil || name != "workhorse" {
 		t.Fatalf("localMachineName = %q, %v", name, err)
@@ -194,12 +200,14 @@ func TestLocalMachineNamePrefersTheConfiguredName(t *testing.T) {
 }
 
 func TestHubStateDirectoryFollowsTheConfiguredPath(t *testing.T) {
+	t.Parallel()
 	if got := hubStateDirectory(hubConfigWithPath("/var/bench")); got != "/var/bench" {
 		t.Fatalf("hubStateDirectory = %q", got)
 	}
 }
 
 func TestFixedViewerResolverAlwaysReturnsTheLocalIdentity(t *testing.T) {
+	t.Parallel()
 	resolver := fixedViewerResolver{viewer: hub.Viewer{Authenticated: true, IdentityID: localIdentityID, DisplayName: "laptop"}}
 	viewer, err := resolver.Viewer(nil)
 	if err != nil || !viewer.Authenticated || viewer.IdentityID != localIdentityID {
@@ -208,6 +216,7 @@ func TestFixedViewerResolverAlwaysReturnsTheLocalIdentity(t *testing.T) {
 }
 
 func TestEnsureLocalEnrollmentSurfacesAnEnrolmentFailure(t *testing.T) {
+	t.Parallel()
 	// A service without a pepper cannot mint a credential, and the failure
 	// must name the machine rather than leaving remote: half written.
 	err := ensureLocalEnrollment(context.Background(), &hub.MachineEnrollmentService{}, unresolvableCredentials{},

@@ -1214,68 +1214,68 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitWaitsForStableRereadAfterLateSuiteRegistration",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitWaitsForStableRereadAfterLateSuiteRegistration",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitDirectTargetHonorsPinnedRequiredCheckIntegration",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitPullRequestHonorsPinnedRequiredCheckIntegration",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitPullRequestHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitFreshPullRequestDoesNotWaitForRedTargetCI",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitFreshPullRequestDoesNotWaitForRedTargetCI",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsStalePullRequestBeforeChecks",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsStalePullRequestBeforeChecks",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsPullRequestWithoutServerFreshnessFence",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsPullRequestWithoutServerFreshnessFence",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsEmptyStrictFreshnessPolicy",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsEmptyStrictFreshnessPolicy",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsTargetAdvanceAfterStablePullRequestChecks",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsTargetAdvanceAfterStablePullRequestChecks",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness",
               "kind": "integration"
             },
             {
@@ -1289,28 +1289,28 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitCannotPassWithoutAuthoritativeBranchRules",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitCannotPassWithoutAuthoritativeBranchRules",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitCannotClaimAuthorityForRequiredWorkflowRule",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitCannotClaimAuthorityForRequiredWorkflowRule",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsIncompleteDirectCheckPagination",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsIncompleteDirectCheckPagination",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsIncompleteDirectStatusPagination",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsIncompleteDirectStatusPagination",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_observer_integration_test.go",
-              "name": "TestCIWaitRejectsDirectTargetHeadDrift",
+              "path": "internal/orchestrate/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
             },
             {
@@ -6228,8 +6228,8 @@
               "kind": "unit"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ESyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges",
               "kind": "integration"
             }
           ],
@@ -16985,13 +16985,13 @@
           "status": "Full",
           "references": [
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2EPrepareWorktreeMergeCreatesIsolatedConsumableCandidate",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2EPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure",
               "kind": "integration"
             }
           ],
@@ -17302,8 +17302,8 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ELandWorktreeMergeResumeValidationStillFailingStaysBlocked",
               "kind": "integration"
             },
             {
@@ -17317,13 +17317,13 @@
               "kind": "unit"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestLandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ELandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ELandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes",
               "kind": "integration"
             }
           ],

@@ -139,6 +139,7 @@ func TestAgentRemoteEntryPointRefusesAMalformedRequest(t *testing.T) {
 		"missing fields":    `{"schema_version":1,"operation":"dispatch"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var stdout, stderr bytes.Buffer
 			code := agentrun.Serve(t.Context(), f.service.Operations(), f.root, strings.NewReader(payload), &stdout, &stderr)
 			if code != 0 {

@@ -7,6 +7,7 @@ import (
 )
 
 func TestRecordRemoteHeadReportsUnknownMemberAndMatchesCanonicalCase(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "cw-cov", Members: []Member{{Repository: "acme/app", Role: RoleConsumer, Branch: "stream/cw-cov"}}}); err != nil {
 		t.Fatal(err)

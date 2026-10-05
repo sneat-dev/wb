@@ -54,6 +54,7 @@ func TestRepositoryReceiverReturnsActualQueueAndConfigurationErrors(t *testing.T
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestRepositoryReceiverReturnsActualNonDirectoryHomeResolutionError; these rows share their parent environment and remain sequential.
 func TestRepositoryReceiverReturnsActualNonDirectoryHomeResolutionError(t *testing.T) {
 	// Actual HOME/USERPROFILE layout observation is process-global; this case is serial.
 	root := t.TempDir()

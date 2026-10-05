@@ -174,6 +174,7 @@ func TestIdentityBoundariesLegacyDetailsAndAbsentEndpoints(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestIdentityBoundariesDeduplicateNativeLegacyHomeAlias(t *testing.T) {
 	// Real HOME is deliberately changed only in this serial private fixture.
 	legacy := daemonLegacyFixture(t)

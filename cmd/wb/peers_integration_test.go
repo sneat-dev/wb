@@ -159,13 +159,15 @@ func newPeerAdminTestServerWithEngine(t *testing.T, engine string) (*peerAdminHo
 			if err != nil {
 				t.Errorf("private peer host shutdown: %v", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Error("private peer host did not join")
 		}
 	})
-	deadline := time.Now().Add(5 * time.Second)
+	// Wait for real private-host health; individual probes must tolerate an
+	// instrumented scheduler without replacing the readiness handshake.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
-		probe, cancelProbe := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		probe, cancelProbe := context.WithDeadline(t.Context(), deadline)
 		err := deps.Health(probe, address)
 		cancelProbe()
 		if err == nil {

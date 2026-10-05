@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestHookExecutableResolvesCurrentThenPATHThenFallback(t *testing.T) {
@@ -40,7 +42,7 @@ func TestResolveGovernorPreservesBarePermissionRuleOnlyForSameFile(t *testing.T)
 	first := filepath.Join(root, "first")
 	second := filepath.Join(root, "second")
 	for _, p := range []string{first, second} {
-		if err := os.WriteFile(p, []byte("provider"), 0o700); err != nil {
+		if err := testenv.WriteExecutableFile(p, []byte("provider"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	// a go test binary otherwise reports an undetermined version, which never counts as drifted
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestSessionStartAnnouncementAlwaysRemindsRegistration; these rows share their parent environment and remain sequential.
 func TestSessionStartAnnouncementAlwaysRemindsRegistration(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	buildinfo.Set("1.2.3")
@@ -28,6 +29,8 @@ func TestSessionStartAnnouncementAlwaysRemindsRegistration(t *testing.T) {
 		t.Errorf("announcement = %q, want a drift warning: skills were never synced under this home", announcement)
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestSessionStartAnnouncementWarnsWhenSkillsAreStale; these rows share their parent environment and remain sequential.
 func TestSessionStartAnnouncementWarnsWhenSkillsAreStale(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

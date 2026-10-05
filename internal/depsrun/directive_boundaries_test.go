@@ -20,6 +20,7 @@ func TestDirectiveChecksKeepSynchronousMutationAndResultAuthority(t *testing.T) 
 	refused := errors.New("module refused")
 	for _, apply := range []bool{false, true} {
 		t.Run(map[bool]string{false: "assess", true: "apply"}[apply], func(t *testing.T) {
+			t.Parallel()
 			var order []string
 			inspect := func(got context.Context, path string, p deps.DirectivePolicy, o deps.Options) (deps.DirectiveAssessment, error) {
 				if got != ctx || p.GoVersion != "1.26.0" || o.Retry != 7 {

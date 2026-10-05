@@ -11,6 +11,7 @@ import (
 )
 
 func TestResolveRepositorySlug(t *testing.T) {
+	t.Parallel()
 	// Inside the current repo, empty or dot resolves to the repo's origin slug (e.g. sneat-dev/wb)
 	gotDot := resolveRepositorySlug(".", func(string) (string, error) { return "https://github.com/sneat-dev/wb.git", nil })
 	if gotDot != "sneat-dev/wb" {
@@ -69,6 +70,7 @@ func TestResolveRepositorySlug(t *testing.T) {
 	}
 }
 func TestCoverageReportFromStored_DefaultStatus(t *testing.T) {
+	t.Parallel()
 	stored := []hub.StoredRepositoryCoverage{
 		{
 			Repository: "sneat-dev/wb",
@@ -89,6 +91,8 @@ func TestCoverageReportFromStored_DefaultStatus(t *testing.T) {
 		t.Errorf("expected 0 repositories, got %d", len(filtered.Repositories))
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestOpenDefaultCoverageStore; these rows share their parent environment and remain sequential.
 func TestOpenDefaultCoverageStore(t *testing.T) {
 	ctx := context.Background()
 
@@ -135,6 +139,8 @@ func TestOpenDefaultCoverageStore(t *testing.T) {
 		_ = closer.Close()
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestPublicStoredCoverageUnavailable; these rows share their parent environment and remain sequential.
 func TestPublicStoredCoverageUnavailable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())

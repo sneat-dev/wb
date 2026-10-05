@@ -72,6 +72,7 @@ func TestLocalRealPlanAndApplyArtifacts(t *testing.T) {
 	spec := writeSpec(t, migrationSpec)
 	root := migrationSource(t)
 	// This parent-owned immutable source is shared only by read-only plan children.
+	//nolint:paralleltest // This group must finish all read-only plans before the parent subsequently applies a rewrite to the same root; keep the enclosing group sequential.
 	t.Run("immutable plans", func(t *testing.T) {
 		for _, name := range []string{"plan", "check"} {
 			t.Run(name, func(t *testing.T) {

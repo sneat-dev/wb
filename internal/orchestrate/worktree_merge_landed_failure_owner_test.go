@@ -31,6 +31,7 @@ func TestLandedFailureOwnerEntryRefusalsPreserveNativeRecords(t *testing.T) {
 		{name: "sources", want: "lacks complete immutable", mutate: func(r *WorktreeMergeReceipt) { r.Sources = nil }},
 		{name: "audit", want: "--actor and --reason", apply: true},
 	} {
+		//nolint:paralleltest // Rows reuse one native receipt and operation lane, with a final unchanged receipt-byte assertion after refusals.
 		t.Run(row.name, func(t *testing.T) {
 			changed := r
 			changed.Sources = append([]WorktreeMergeSource(nil), r.Sources...)
@@ -75,6 +76,7 @@ func TestLandedFailureFinalizerUsesRealSidecarsAndRenamePersistence(t *testing.T
 		t.Fatal(err)
 	}
 	for _, name := range []string{"dry run", "persist refusal", "native apply", "existing", "different target", "malformed"} {
+		//nolint:paralleltest // Rows remove, replace and publish the same acknowledgement sidecar before testing each persistence outcome.
 		t.Run(name, func(t *testing.T) {
 			path := landedFailureAcknowledgementPath(r.ReceiptPath)
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

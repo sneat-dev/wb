@@ -119,6 +119,7 @@ func TestRemotePublishSaysThatHardwareIsIncludedWithoutAProgressWriter(t *testin
 
 }
 func TestOpenRemoteSelectsHTTPSHubProvider(t *testing.T) {
+	t.Parallel()
 	provider, err := testOpen(remotestate.Config{
 		Provider: "hub", URL: "https://hub.example", TokenFile: "/private/token", Machine: "laptop",
 	}, t.TempDir())
@@ -131,6 +132,7 @@ func TestOpenRemoteSelectsHTTPSHubProvider(t *testing.T) {
 }
 
 func TestRemotePublishUnconfiguredIsUsageError(t *testing.T) {
+	t.Parallel()
 	deps := testDependencies{Dependencies: remotepublish.DefaultDependencies("", testExitFactory)}
 	deps.ConfigPath = filepath.Join(t.TempDir(), "none.yaml")
 	var out bytes.Buffer
@@ -141,6 +143,7 @@ func TestRemotePublishUnconfiguredIsUsageError(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in newRemoteFixture, setGitIdentity; these rows share their parent environment and remain sequential.
 func TestRemotePublishWritesSnapshotToStore(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
@@ -170,6 +173,7 @@ func TestRemotePublishWritesSnapshotToStore(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestRemotePublishIncludesOrphanedWorktrees, setGitIdentity; these rows share their parent environment and remain sequential.
 func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 	setGitIdentity(t)
 	base := t.TempDir()
@@ -228,6 +232,7 @@ func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in newRemoteFixture, setGitIdentity; these rows share their parent environment and remain sequential.
 func TestRemotePublishDryRunTouchesNothing(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out bytes.Buffer
@@ -245,6 +250,7 @@ func TestRemotePublishDryRunTouchesNothing(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in newRemoteFixture, setGitIdentity; these rows share their parent environment and remain sequential.
 func TestRemotePublishFilterNoMatchStillErrors(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out bytes.Buffer

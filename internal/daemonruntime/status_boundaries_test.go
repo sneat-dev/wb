@@ -98,6 +98,7 @@ func TestHubStatusProjectsActualConfigurationAndCompleteLiveRedelivery(t *testin
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestStatusReportsGenuineRetiredHomeWithoutMutatingIt(t *testing.T) {
 	root := daemonTestRoot(t)
 	legacyDir := daemonLegacyFixture(t)

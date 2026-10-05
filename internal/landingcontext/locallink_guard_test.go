@@ -10,6 +10,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestLandingGuardIgnoresReservedFleetEventLog; these rows share their parent environment and remain sequential.
 func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
@@ -32,6 +33,8 @@ func TestLandingGuardIgnoresReservedFleetEventLog(t *testing.T) {
 // linked_consumers must still be guarded on its live links, exactly like a
 // member: joining as a linked consumer instead of a member must not be a way
 // to dodge the landing guard.
+//
+//nolint:paralleltest // Process-wide environment changes in TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository; these rows share their parent environment and remain sequential.
 func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
@@ -62,6 +65,8 @@ func TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository(t *testing.T) {
 // documented second form of the argument; refuseLinkedReceiptWorktrees must
 // route it straight into the live-link guard instead of trying to parse it
 // as a receipt.
+//
+//nolint:paralleltest // Process-wide environment changes in TestRefuseLinkedReceiptWorktreesGuardsAWorktreeArgumentDirectly; these rows share their parent environment and remain sequential.
 func TestRefuseLinkedReceiptWorktreesGuardsAWorktreeArgumentDirectly(t *testing.T) {
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)
@@ -81,6 +86,8 @@ func TestRefuseLinkedReceiptWorktreesGuardsAWorktreeArgumentDirectly(t *testing.
 // the same linked_consumers fixture shape as
 // TestLandingGuardRefusesALiveLinkOnALinkedConsumerRepository, must still be
 // refused when it is named directly (not via a merge receipt).
+//
+//nolint:paralleltest // Process-wide environment changes in TestRefuseLinkedReceiptWorktreesRefusesAWorktreeArgumentWithALiveLink; these rows share their parent environment and remain sequential.
 func TestRefuseLinkedReceiptWorktreesRefusesAWorktreeArgumentWithALiveLink(t *testing.T) {
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	t.Setenv(wbhome.EnvOverride, projectsRoot)

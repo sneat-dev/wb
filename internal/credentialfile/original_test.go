@@ -13,6 +13,7 @@ import (
 var errBoomForCmdWB = errors.New("injected write failure")
 
 func TestWritePrivateCredentialInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "credential")
 	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
 	if _, err := writePrivateInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -20,6 +21,7 @@ func TestWritePrivateCredentialInjectedHonoursAnInjectedCreateFailure(t *testing
 	}
 }
 func TestWritePrivateCredentialInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "credential")
 	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
 	if _, err := writePrivateInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -30,6 +32,7 @@ func TestWritePrivateCredentialInjectedHonoursAnInjectedWriteFailure(t *testing.
 	}
 }
 func TestWritePrivateCredentialInjectedHonoursAnInjectedSyncFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "credential")
 	inj := &filewrite.Injector{Step: filewrite.StepSync, Err: errBoomForCmdWB}
 	if _, err := writePrivateInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -40,6 +43,7 @@ func TestWritePrivateCredentialInjectedHonoursAnInjectedSyncFailure(t *testing.T
 	}
 }
 func TestWritePrivateCredentialInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "credential")
 	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
 	if _, err := writePrivateInjected(path, "secret", inj); !errors.Is(err, errBoomForCmdWB) {
@@ -50,6 +54,7 @@ func TestWritePrivateCredentialInjectedHonoursAnInjectedCloseFailure(t *testing.
 	}
 }
 func TestWritePrivateCredentialInjectedHonoursAnInjectedChmodFailureOnAnExistingFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "credential")
 	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -82,6 +87,7 @@ func TestWritePrivateCredentialInjectedReportsUnreadableExistingFile(t *testing.
 	}
 }
 func TestCwDepsReadRemoteEnrollmentTokenRefusals(t *testing.T) {
+	t.Parallel()
 	if _, err := ReadToken(strings.NewReader("")); err == nil ||
 		!strings.Contains(err.Error(), "one non-empty token") {
 		t.Fatalf("empty token = %v", err)

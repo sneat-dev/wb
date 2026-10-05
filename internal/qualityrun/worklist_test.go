@@ -65,6 +65,7 @@ func writeCoverageWorklistProfile(t *testing.T, dir, modulePath string) string {
 }
 
 func TestCoverageWorklistReadOnlyReports(t *testing.T) {
+	t.Parallel()
 	// Worklist reads the module, source and profile only. The parent owns
 	// one immutable fixture; each child owns its DTOs and output buffers.
 	modulePath := "fixture.test/cliworklist"

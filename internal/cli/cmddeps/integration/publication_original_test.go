@@ -529,7 +529,7 @@ func TestPreflightNpmPublishDelegatesToRealDependencyDiscovery(t *testing.T) { /
 	bin := t.TempDir()
 	script := "#!/bin/sh\ncase \"$*\" in *login*) echo 'cwcov-npm-user';; *) echo '[]';; esac\n"
 	path := filepath.Join(bin, "gh")
-	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

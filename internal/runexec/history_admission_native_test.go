@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+//nolint:paralleltest // This contract changes the process-wide runqueue CPU-count override; admission and restore must remain serial.
 func TestNativeHistoryRecordsQueueWaitAndAdmissionTime(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the WB fleet runs on macOS and Linux")

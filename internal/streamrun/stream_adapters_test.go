@@ -11,6 +11,7 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestStreamWorktreesPlansCentralLocalAndConfiguredSharedPaths; these rows share their parent environment and remain sequential.
 func TestStreamWorktreesPlansCentralLocalAndConfiguredSharedPaths(t *testing.T) {
 	projectsRoot := t.TempDir()
 	configHome := t.TempDir()
@@ -60,6 +61,7 @@ func TestStreamWorktreesPlansCentralLocalAndConfiguredSharedPaths(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestStreamWorktreesRefusesAnInvalidConfiguredRoot; these rows share their parent environment and remain sequential.
 func TestStreamWorktreesRefusesAnInvalidConfiguredRoot(t *testing.T) {
 	projectsRoot := t.TempDir()
 	configHome := t.TempDir()
@@ -77,6 +79,7 @@ func TestStreamWorktreesRefusesAnInvalidConfiguredRoot(t *testing.T) {
 }
 
 func TestStreamWorktreesPassesExactSquashReceiptToCleanup(t *testing.T) {
+	t.Parallel()
 	var got worktrees.CleanupOptions
 	cleanup := func(_ context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
 		got = options

@@ -8,6 +8,7 @@ import (
 )
 
 func TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	inside := filepath.Join(root, "repo")
 	if err := os.Mkdir(inside, 0o700); err != nil {
@@ -33,6 +34,7 @@ func TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots(t *tes
 	}
 }
 func TestCwCovCanonicalWorkerRootsAndPermissions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	nested := filepath.Join(root, "repo")
 	if err := os.Mkdir(nested, 0o700); err != nil {

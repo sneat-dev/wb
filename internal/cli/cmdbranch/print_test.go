@@ -150,6 +150,7 @@ func TestBranchCountAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T)
 	for _, format := range []string{"text", "json", "yaml", "bogus"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
+			t.Parallel()
 			command := newCount(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)
@@ -174,6 +175,7 @@ func TestBranchListAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) 
 	for _, format := range []string{"text", "json", "yaml", "bogus"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
+			t.Parallel()
 			command := newList(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)
@@ -198,6 +200,7 @@ func TestBranchCleanupAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.
 	for _, format := range []string{"text", "json", "bogus"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
+			t.Parallel()
 			command := newCleanup(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)

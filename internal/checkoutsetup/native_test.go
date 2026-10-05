@@ -12,6 +12,7 @@ import (
 )
 
 func TestBeforeCreateRefreshesExistingCloneAndRejectsInvalidOrMissingRepository(t *testing.T) {
+	t.Parallel()
 	seed := t.TempDir()
 	projects := t.TempDir()
 	clone := filepath.Join(projects, "acme", "app")

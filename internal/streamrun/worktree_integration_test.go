@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestStreamWorktreeAdapterCreateAndRemove; these rows share their parent environment and remain sequential.
 func TestStreamWorktreeAdapterCreateAndRemove(t *testing.T) {
 	root := t.TempDir()
 	seeds := t.TempDir()

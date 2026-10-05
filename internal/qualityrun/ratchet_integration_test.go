@@ -314,6 +314,7 @@ func TestCoverageChangedFailsClosedOnMalformedRepositoryQualityPolicy(t *testing
 	}
 }
 
+//nolint:paralleltest // Process-wide environment changes in TestCoverageChangedFailsClosedWhenCoverageProfileIsMalformed; these rows share their parent environment and remain sequential.
 func TestCoverageChangedFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) {
 	repo := newRatchetFixtureRepo(t)
 	repo.writeFile("app.go", ratchetFixtureBaseSource)

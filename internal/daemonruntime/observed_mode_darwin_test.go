@@ -13,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // These cases simulate the observed mode only at the private producer pipeline.
@@ -31,6 +32,7 @@ func TestPrivateProcessModeRetainsIndependentExecutableSuffixFence(t *testing.T)
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestPrivateLaunchdPipelinePreservesNativeOrderAndAtomicFailureBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
@@ -48,6 +50,7 @@ func TestPrivateLaunchdPipelinePreservesNativeOrderAndAtomicFailureBoundaries(t 
 		{name: "kickstart", failCommand: "kickstart", want: "start WB launch agent"},
 		{name: "ready timeout", want: "did not report a running PID within 100ms"},
 	} {
+		//nolint:paralleltest // This row or a sibling exercises process-wide environment selected by the native fixture.
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -116,8 +119,10 @@ func TestPrivateLaunchdPipelinePreservesNativeOrderAndAtomicFailureBoundaries(t 
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestPrivateLaunchdPreparationRefusesInvalidHomeAndDirectoriesBeforeExecutor(t *testing.T) {
 	for _, kind := range []string{"home missing", "log parent blocked", "plist parent blocked", "suffix fenced", "process fenced"} {
+		//nolint:paralleltest // This row or a sibling exercises process-wide environment selected by the native fixture.
 		t.Run(kind, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -150,21 +155,24 @@ func TestPrivateLaunchdPreparationRefusesInvalidHomeAndDirectoriesBeforeExecutor
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestPrivateLaunchctlModeRetainsExecutableFallbackAndRealBoundedChild(t *testing.T) {
+	//nolint:paralleltest // This row or a sibling exercises process-wide environment selected by the native fixture.
 	t.Run("fallback suffix remains refused", func(t *testing.T) {
 		boom := errors.New("unavailable executable")
 		if _, err := runNativeLaunchctlForMode(time.Second, false, func() (string, error) { return "", boom }, "print", "private-job"); err == nil || !strings.Contains(err.Error(), "Go test binary") {
 			t.Fatalf("fallback refusal=%v", err)
 		}
 	})
+	//nolint:paralleltest // This row or a sibling exercises process-wide environment selected by the native fixture.
 	t.Run("private executor", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "launchctl")
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s|%s' \"$1\" \"$2\""), 0700); err != nil {
+		if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\nprintf '%s|%s' \"$1\" \"$2\""), 0700); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", dir)
-		output, err := runNativeLaunchctlForMode(time.Second, false, func() (string, error) { return "/private/wb", nil }, "print", "private-job")
+		output, err := runNativeLaunchctlForMode(30*time.Second, false, func() (string, error) { return "/private/wb", nil }, "print", "private-job")
 		if err != nil || string(output) != "print|private-job" {
 			t.Fatalf("private executor=%q,%v", output, err)
 		}

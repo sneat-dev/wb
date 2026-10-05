@@ -28,6 +28,7 @@ func cwDepsMergePolicyReportFixture() Report {
 	}
 }
 
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestCwDepsMergePolicyReportPath(t *testing.T) {
 	explicit := filepath.Join(t.TempDir(), "policy")
 	path, err := mergePolicyReportPath(Scope{}, explicit)
@@ -54,6 +55,7 @@ func TestCwDepsMergePolicyReportPath(t *testing.T) {
 }
 
 func TestCwDepsSummarizeMergePolicyCountsEveryDisposition(t *testing.T) {
+	t.Parallel()
 	report := cwDepsMergePolicyReportFixture()
 	summarizeMergePolicy(&report)
 	if report.Summary.Inspected != 4 || report.Summary.Compliant != 1 || report.Summary.Drift != 1 ||
@@ -68,6 +70,7 @@ func TestCwDepsSummarizeMergePolicyCountsEveryDisposition(t *testing.T) {
 }
 
 func TestCwDepsMergePolicySmallHelpers(t *testing.T) {
+	t.Parallel()
 	if !allowsMerge([]string{"squash", "merge"}) {
 		t.Error("allowsMerge must find merge among the methods")
 	}
@@ -99,6 +102,7 @@ func TestCwDepsMergePolicySmallHelpers(t *testing.T) {
 		"empty":       {githubobserver.CommandResponse{}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if got := githubobserver.CommandDiagnostic(test.response); got != test.want {
 				t.Fatalf("githubCommandMessage = %q, want %q", got, test.want)
 			}
@@ -107,6 +111,7 @@ func TestCwDepsMergePolicySmallHelpers(t *testing.T) {
 }
 
 func TestCwDepsDecodeRepositoryPolicyRoundTrips(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(githubRepositoryPolicy{DefaultBranch: "main", AllowMergeCommit: true,
 		MergeCommitTitle: "PR_TITLE", MergeCommitMessage: "PR_BODY"})
 	if err != nil {
@@ -127,6 +132,7 @@ func TestCwDepsDecodeRepositoryPolicyRoundTrips(t *testing.T) {
 }
 
 func TestCwDepsIsGitHubPolicyPlanGate(t *testing.T) {
+	t.Parallel()
 	if isGitHubPolicyPlanGate(nil) {
 		t.Error("no error is not a plan gate")
 	}
@@ -144,6 +150,7 @@ func TestCwDepsIsGitHubPolicyPlanGate(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This contract changes process-wide PATH/HOME/WB_HOME; environment-mutating rows remain serial.
 func TestCwDepsDiscoverRemoteMergePolicyFleetExactRepositories(t *testing.T) {
 	service := New()
 
@@ -177,6 +184,7 @@ func TestCwDepsDiscoverRemoteMergePolicyFleetExactRepositories(t *testing.T) {
 // resolution and remote listing through the package's own injectable seams, so
 // no live GitHub call is made.
 func TestCwDepsDiscoverRemoteMergePolicyFleetStubsDiscovery(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	previousUser, previousOrgs, previousList := service.deps.AuthUser, service.deps.MemberOrgs, service.deps.ListRemote

@@ -8,6 +8,7 @@ import (
 )
 
 func TestCwDepsMatchesDependencyRepository(t *testing.T) {
+	t.Parallel()
 	expression, err := CompileRegex("^acme/")
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +70,7 @@ func TestParseReleaseEventsSupportsScopedNpmPackages(t *testing.T) {
 }
 
 func TestResolveDepsBumpResumeParallelRejectsAnInvalidPersistedValue(t *testing.T) {
+	t.Parallel()
 	lifecycle := deps.Options{Parallel: 4}
 	report := deps.BumpReport{Parallel: 0}
 	_, _, err := resolveDepsBumpResumeParallel(lifecycle, report, false)

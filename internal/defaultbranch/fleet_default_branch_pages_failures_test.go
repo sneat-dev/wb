@@ -12,6 +12,7 @@ import (
 )
 
 func TestDefaultBranchPagesFailureMatrix(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -33,6 +34,7 @@ func TestDefaultBranchPagesFailureMatrix(t *testing.T) {
 		{name: "post-update source differs", failure: "post-mismatch", want: "post-write verification did not preserve legacy build type"},
 		{name: "verified migration receipt", failure: "checkpoint#3", want: "persist verified Pages migration"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			originalRead, originalExecute := service.deps.Read, service.deps.Execute
 			t.Cleanup(func() { service.deps.Read, service.deps.Execute = originalRead, originalExecute })
@@ -106,6 +108,7 @@ func TestDefaultBranchPagesFailureMatrix(t *testing.T) {
 }
 
 func TestDefaultBranchPagesMigrationSkipsRepositoriesWithoutPages(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	planned := Repository{Repository: "acme/app", Desired: "main", Disposition: "compliant"}
@@ -120,6 +123,7 @@ func TestDefaultBranchPagesMigrationSkipsRepositoriesWithoutPages(t *testing.T) 
 }
 
 func TestDefaultBranchPagesAtDesiredClassifiesObservedSource(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -132,6 +136,7 @@ func TestDefaultBranchPagesAtDesiredClassifiesObservedSource(t *testing.T) {
 		{name: "legacy source follows default", body: `{"build_type":"legacy","source":{"branch":"main","path":"/docs"}}`, disposition: "compliant"},
 		{name: "legacy source still on master", body: `{"build_type":"legacy","source":{"branch":"master","path":"/docs"}}`, disposition: "drift", phase: "unfinished", wantError: "migration remains unfinished"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = oldRead })
@@ -157,6 +162,7 @@ func TestDefaultBranchPagesAtDesiredClassifiesObservedSource(t *testing.T) {
 }
 
 func TestDefaultBranchAutomaticPagesResumeRequiresFreshRemoteProof(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	sha := strings.Repeat("a", 40)
@@ -167,6 +173,7 @@ func TestDefaultBranchAutomaticPagesResumeRequiresFreshRemoteProof(t *testing.T)
 		{"Pages source unavailable", "Pages error", "could not read Pages source"},
 		{"Pages source malformed", "Pages malformed", "does not prove the automatic transition"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead := service.deps.Read
 			t.Cleanup(func() { service.deps.Read = oldRead })

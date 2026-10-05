@@ -6,6 +6,7 @@ import (
 )
 
 func TestRecordStreamSyncRemoteHeadPersistsTheNextStatusAndLeaseHead(t *testing.T) {
+	t.Parallel()
 	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
 	if _, err := store.Create(Stream{Name: "remote-advance", Members: []Member{{Repository: "acme/app", Role: RoleConsumer, Branch: "stream/remote-advance", Lease: Lease{RecordedHead: "stale-head"}}}}); err != nil {
 		t.Fatal(err)

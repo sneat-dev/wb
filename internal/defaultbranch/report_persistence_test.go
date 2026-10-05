@@ -7,6 +7,7 @@ import (
 )
 
 func TestDefaultBranchReportPersistsAndPrintsCloneFindings(t *testing.T) {
+	t.Parallel()
 	path, err := defaultBranchReportPath(Scope{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)

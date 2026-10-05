@@ -81,6 +81,7 @@ func TestDaemonLocalTransportRejectsOverlongSocketPath(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestDaemonStartRefusesWhileTheLegacySocketStillAnswers(t *testing.T) {
 	root := daemonTestRoot(t)
 	// The current home is <root>/.wb now, so the accepting legacy socket lives

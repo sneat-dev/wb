@@ -9,6 +9,7 @@ import (
 )
 
 func TestStartDaemonProcessRefusesATestBinary(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }
@@ -19,6 +20,7 @@ func TestStartDaemonProcessRefusesATestBinary(t *testing.T) {
 }
 
 func TestDaemonCheckOtherRootNeverRefusesOffMacOS(t *testing.T) {
+	t.Parallel()
 	native := defaultNativeOperations()
 	commandBounds := defaultNativeCommandBounds()
 	native.commandBounds = func() nativeCommandBounds { return commandBounds }

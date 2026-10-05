@@ -14,6 +14,7 @@ import (
 )
 
 func TestRunDefaultBranchRejectsInvalidInputsBeforeRemoteInspection(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -54,6 +55,7 @@ func TestRunDefaultBranchRejectsInvalidInputsBeforeRemoteInspection(t *testing.T
 			},
 		},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldConfig, oldRead := service.deps.ConfigPath, service.deps.Read
 			t.Cleanup(func() { service.deps.ConfigPath, service.deps.Read = oldConfig, oldRead })
@@ -72,6 +74,7 @@ func TestRunDefaultBranchRejectsInvalidInputsBeforeRemoteInspection(t *testing.T
 }
 
 func TestDefaultBranchApplyRefusesFreshComplianceAndInterruptedVisibility(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -82,6 +85,7 @@ func TestDefaultBranchApplyRefusesFreshComplianceAndInterruptedVisibility(t *tes
 		{name: "already changed before mutation", observed: "main", wantDisposition: "compliant"},
 		{name: "visibility wait interrupted", observed: "master", waitFails: true, wantDisposition: "error", wantError: "wait for renamed branch visibility", wantMutations: 1, wantCheckpoints: 2},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldRead, oldExecute, oldWait, oldNow := service.deps.Read, service.deps.Execute, service.deps.RenameWait, service.deps.RenameNow
 			t.Cleanup(func() {
@@ -135,6 +139,7 @@ func TestDefaultBranchApplyRefusesFreshComplianceAndInterruptedVisibility(t *tes
 }
 
 func TestDefaultBranchReconcileReportRefusesMissingChangedAndMalformedEvidence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing.json")
 	if report, err := readDefaultBranchReport(missing, strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "read --reconcile-from report") || report != nil {

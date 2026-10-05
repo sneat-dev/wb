@@ -148,6 +148,7 @@ func TestNpmPublishPreflightRejectsInvalidOptionsBeforeFleetDiscovery(t *testing
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			options := validNpmPublishOptions()
 			test.change(&options)
 			discovered := false
@@ -312,6 +313,7 @@ func TestCwDepsParseWorkflowInputsRejectsEveryMalformedShape(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := parseWorkflowInputs(test.values, test.count); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
@@ -522,6 +524,7 @@ func TestCwDepsPreflightNpmPublishRefusals(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			options := base
 			options.repositories = append([]string(nil), base.repositories...)
 			options.workflows = append([]string(nil), base.workflows...)

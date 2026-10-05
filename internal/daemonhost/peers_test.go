@@ -16,6 +16,7 @@ import (
 )
 
 func TestPeerAdminRoutesRequireTheOwnerToken(t *testing.T) {
+	t.Parallel()
 	_, handler := peerAdminTestMount(t)
 	for _, path := range []string{
 		peersRPCPrefix + "invite", peersRPCPrefix + "block", peersRPCPrefix + "unblock",
@@ -31,6 +32,7 @@ func TestPeerAdminRoutesRequireTheOwnerToken(t *testing.T) {
 }
 
 func TestPeerAdminRoutesAreUnreachableFromTheDashboardListener(t *testing.T) {
+	t.Parallel()
 	mount, _ := peerAdminTestMount(t)
 	dashboardHandler := dashboard.NewHandler(dashboard.Options{Mounts: mount.handlers()})
 	request := httptest.NewRequest(http.MethodPost, peersRPCPrefix+"invite", strings.NewReader(`{"name":"laptop"}`))
@@ -42,6 +44,7 @@ func TestPeerAdminRoutesAreUnreachableFromTheDashboardListener(t *testing.T) {
 }
 
 func TestPeerAdminInviteWiringReachesTheRealService(t *testing.T) {
+	t.Parallel()
 	_, handler := peerAdminTestMount(t)
 	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"invite", peerInviteRequest{Name: "laptop"})
 	if response.Code == http.StatusOK {
@@ -57,6 +60,7 @@ func TestPeerAdminInviteWiringReachesTheRealService(t *testing.T) {
 }
 
 func TestPeerAdminBlockUnblockDisconnectRoundTrip(t *testing.T) {
+	t.Parallel()
 	mount, handler := peerAdminTestMount(t)
 	now := time.Now().UTC()
 	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), hub.PeerRecord{
@@ -99,6 +103,7 @@ func TestPeerAdminBlockUnblockDisconnectRoundTrip(t *testing.T) {
 }
 
 func TestPeerAdminEnrollReusesTheEnrollmentService(t *testing.T) {
+	t.Parallel()
 	_, handler := peerAdminTestMount(t)
 	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"enroll", peerEnrollRequest{Name: "second-mac"})
 	if response.Code != http.StatusOK {
@@ -111,6 +116,7 @@ func TestPeerAdminEnrollReusesTheEnrollmentService(t *testing.T) {
 }
 
 func TestPeerAdminEnrollRefusesTheHubsOwnMachineName(t *testing.T) {
+	t.Parallel()
 	mount, handler := peerAdminTestMount(t)
 	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"enroll", peerEnrollRequest{Name: mount.Machine})
 	if response.Code == http.StatusOK {
@@ -119,6 +125,7 @@ func TestPeerAdminEnrollRefusesTheHubsOwnMachineName(t *testing.T) {
 }
 
 func TestPeerAdminEnrollRefusesAPeerName(t *testing.T) {
+	t.Parallel()
 	mount, handler := peerAdminTestMount(t)
 	if err := mount.PeerAdmin.Trust.CreatePeer(context.Background(), peerRecordFixture("laptop")); err != nil {
 		t.Fatal(err)
@@ -130,6 +137,7 @@ func TestPeerAdminEnrollRefusesAPeerName(t *testing.T) {
 }
 
 func TestPeerAdminHandlerWithoutAHubAnswersUnavailable(t *testing.T) {
+	t.Parallel()
 	handler := daemonruntime.AuthenticatedHandler("owner-token", newPeerAdminHTTPHandler(nil))
 	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"invite", peerInviteRequest{Name: "laptop"})
 	if response.Code != http.StatusServiceUnavailable {

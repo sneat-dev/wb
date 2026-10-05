@@ -89,6 +89,7 @@ func TestCwDepsPRLandCommandUsageRefusals(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var out, errOut strings.Builder
 			code := executeTest(New(testRuntime(), deps), test.args[1:], &out, &errOut)
 			stderr := errOut.String()

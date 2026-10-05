@@ -10,10 +10,12 @@ import (
 )
 
 func TestDefaultBranchDiscoveryExactScopeRejectsMalformedAndDeduplicates(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, invalid := range []string{"owner", "/repo", "owner/", "owner/repo/extra"} {
 		t.Run(invalid, func(t *testing.T) {
+			t.Parallel()
 			repos, failures, err := service.discoverDefaultBranchFleet("", nil, []string{invalid}, false, false)
 			if err == nil || !strings.Contains(err.Error(), "invalid --repo") || repos != nil || failures != nil {
 				t.Fatalf("invalid exact scope %q = repos=%v failures=%v err=%v", invalid, repos, failures, err)
@@ -27,6 +29,7 @@ func TestDefaultBranchDiscoveryExactScopeRejectsMalformedAndDeduplicates(t *test
 }
 
 func TestDefaultBranchDiscoveryBuildsOwnerScopeWithoutPartialResults(t *testing.T) {
+	t.Parallel()
 	service := New()
 
 	for _, test := range []struct {
@@ -44,6 +47,7 @@ func TestDefaultBranchDiscoveryBuildsOwnerScopeWithoutPartialResults(t *testing.
 		{name: "explicit owner and account", Owners: []string{" acme ", "", "acme"}, IncludeUser: true, wantOwners: []string{"account", "acme"}},
 		{name: "explicit owner and account lookup refused", Owners: []string{"acme"}, IncludeUser: true, authErr: errors.New("auth unavailable"), wantError: "auth unavailable"},
 	} {
+		//nolint:paralleltest // Rows replace callbacks or provider state on the same parent-owned policy Service.
 		t.Run(test.name, func(t *testing.T) {
 			oldAuth, oldOrgs, oldList := service.deps.AuthUser, service.deps.MemberOrgs, service.deps.ListRemote
 			t.Cleanup(func() {

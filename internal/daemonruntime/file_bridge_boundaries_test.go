@@ -22,6 +22,8 @@ import (
 
 // All writes, chmods, quarantine and cleanup remain in private TempDirs.
 // Cases that change HOME remain serial; TestMain isolates ambient user state.
+//
+//nolint:paralleltest // This native fixture or its helper changes process-wide HOME, PATH or supervisor environment; testing restores it.
 func TestFileBridgeBoundariesRejectUnresolvableHomeBeforePublication(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(t.TempDir(), "home-file")
@@ -48,6 +50,7 @@ func TestFileBridgeBoundariesRejectUnresolvableHomeBeforePublication(t *testing.
 }
 
 func TestFileBridgeBoundariesRejectBlockedNativeDirectories(t *testing.T) {
+	t.Parallel()
 	root := daemonTestRoot(t)
 	blocked := filepath.Join(root, ".wb")
 	if err := os.WriteFile(blocked, []byte("private blocker"), 0o600); err != nil {
@@ -72,11 +75,13 @@ func TestFileBridgeBoundariesRejectBlockedNativeDirectories(t *testing.T) {
 }
 
 func TestFileBridgeBoundariesStopAfterResponseQuarantineIfRequestCannotMove(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("native directory write refusal requires an unprivileged process")
 	}
 	for _, malformed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unauthenticated response", true: "unreadable response"}[malformed], func(t *testing.T) {
+			t.Parallel()
 			var calls atomic.Int32
 			server, _ := cwWtBridgeServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
 			server.lastCleanup = time.Now()
@@ -127,6 +132,7 @@ func TestFileBridgeBoundariesStopAfterResponseQuarantineIfRequestCannotMove(t *t
 }
 
 func TestFileBridgeBoundariesCleanupRefusesAnUninspectableRequestParent(t *testing.T) {
+	t.Parallel()
 	server, root := cwWtBridgeServer(t, nil)
 	path := cwWtBridgePut(t, server, server.responses, daemonFileEnvelope{Schema: daemonFileBridgeSchema, ID: "boundary-old-response", SchedulerGeneration: server.generation})
 	old := time.Now().Add(-2 * daemonFileBridgeCompletedAge)
@@ -147,6 +153,7 @@ func TestFileBridgeBoundariesCleanupRefusesAnUninspectableRequestParent(t *testi
 }
 
 func TestFileBridgeBoundariesQuarantineReportsNativeNameLimit(t *testing.T) {
+	t.Parallel()
 	server, root := cwWtBridgeServer(t, nil)
 	path := filepath.Join(root, "private-quarantine-candidate")
 	if err := os.WriteFile(path, []byte("preserve candidate"), 0o600); err != nil {

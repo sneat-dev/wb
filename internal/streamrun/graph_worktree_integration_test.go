@@ -16,6 +16,7 @@ import (
 )
 
 func TestProposedTransitiveConsumersWalksTheRecordedGraph(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	consumers, found, err := proposedTransitiveConsumers(projectsRoot, []string{"acme/lib"})
 	if err != nil || found || consumers != nil {
@@ -65,6 +66,7 @@ func TestProposedTransitiveConsumersWalksTheRecordedGraph(t *testing.T) {
 }
 
 func TestStreamWorktreesPlannedWorktreeAndRemove(t *testing.T) {
+	t.Parallel()
 	adapter := &streamWorktrees{projectsRoot: t.TempDir(), cleanup: worktrees.Cleanup}
 	if _, err := adapter.PlannedWorktree("task", "not-a-slug"); err == nil ||
 		!strings.Contains(err.Error(), "must be owner/name") {

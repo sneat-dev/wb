@@ -65,6 +65,7 @@ func TestParallelBaselineDoesNotRegress(t *testing.T) {
 		return
 	}
 	sort.Strings(offenders)
+	offenderCount := len(offenders)
 	const maxReported = 25
 	if len(offenders) > maxReported {
 		offenders = append(offenders[:maxReported], fmt.Sprintf("... and %d more", len(offenders)-maxReported))
@@ -74,5 +75,5 @@ func TestParallelBaselineDoesNotRegress(t *testing.T) {
 		"genuinely required to stay serial -- run `go run "+
 		"./internal/quality/cmd/parallelbaseline` to add a reasoned entry to "+
 		"internal/quality/testdata/paralleltest_baseline.txt:\n%s",
-		len(offenders), strings.Join(offenders, "\n"))
+		offenderCount, strings.Join(offenders, "\n"))
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+//nolint:paralleltest // Process-wide environment changes in TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches; these rows share their parent environment and remain sequential.
 func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) {
 	binDir := t.TempDir()
 	self := filepath.Join(t.TempDir(), "wb-binary")
@@ -24,6 +25,8 @@ func TestResolveWBExecutableForHookPrefersBareNameWhenPathMatches(t *testing.T) 
 		t.Fatalf("ResolveGovernorExecutable(%q) = %q, want \"\" (bare wb)", self, got)
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent; these rows share their parent environment and remain sequential.
 func TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent(t *testing.T) {
 	binDir := t.TempDir()
 	self := filepath.Join(t.TempDir(), "wb-binary")
@@ -45,6 +48,8 @@ func TestResolveWBExecutableForHookKeepsAbsolutePathWhenDifferent(t *testing.T) 
 		t.Fatalf("ResolveGovernorExecutable(%q) with no PATH match = %q, want %q", self, got, self)
 	}
 }
+
+//nolint:paralleltest // Process-wide environment changes in TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf; these rows share their parent environment and remain sequential.
 func TestResolveWBExecutableForHookHandlesEmptyAndUnstattableSelf(t *testing.T) {
 	if got := ResolveGovernorExecutable(""); got != "" {
 		t.Fatalf("ResolveGovernorExecutable(\"\") = %q, want \"\"", got)

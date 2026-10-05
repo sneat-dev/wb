@@ -20,6 +20,7 @@ import (
 )
 
 func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := workerTestService(t, root, "test-build", "worker-refusal", func() error { return errors.New("raw disabled") })
 	if err != nil {
@@ -29,7 +30,7 @@ func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) 
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	client := daemonv1connect.NewDaemonServiceClient(server.Client(), server.URL)
 	operation, err := client.SubmitOperation(context.Background(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
 		WorkingDirectory: root, Argv: []string{"go", "version"}, TargetWorkerId: "refusing-worker",
@@ -63,6 +64,7 @@ func TestWorkerRefusesLeasedDirectoryWhenItsOwnRootsDoNotPermitIt(t *testing.T) 
 	}
 }
 func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
 	if err := os.Mkdir(work, 0o700); err != nil {
@@ -76,7 +78,7 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	client := daemonv1connect.NewDaemonServiceClient(server.Client(), server.URL)
 
 	ctx := context.Background()
@@ -142,6 +144,7 @@ func TestCwCovExecuteWorkerAssignmentRunsAndReports(t *testing.T) {
 	}
 }
 func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
 	if err := os.Mkdir(work, 0o700); err != nil {
@@ -155,7 +158,7 @@ func TestCwCovExecuteWorkerAssignmentAdmitsExplicitCpuUnits(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	client := daemonv1connect.NewDaemonServiceClient(server.Client(), server.URL)
 
 	ctx := context.Background()

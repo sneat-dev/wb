@@ -15,6 +15,7 @@ import (
 )
 
 func TestPeersReadParityAcrossHubAndLocalMounts(t *testing.T) {
+	t.Parallel()
 	mount, err := mountHub(context.Background(), memoryHubConfig(t), "127.0.0.1:0", narrate.Writer{}, nil)
 	if err != nil || mount == nil {
 		t.Fatalf("mountHub = %v, %v", mount, err)
@@ -114,6 +115,7 @@ func TestPeersReadParityAcrossHubAndLocalMounts(t *testing.T) {
 }
 
 func TestLaptopWithoutHubPeersAPIAnswersEmptyListNotHTML(t *testing.T) {
+	t.Parallel()
 	handler := dashboard.NewHandler(dashboard.Options{
 		Peers: peers.NewHandler("/api/v1/peers", emptyPeersSource{}, nil),
 	})
@@ -142,6 +144,7 @@ func TestLaptopWithoutHubPeersAPIAnswersEmptyListNotHTML(t *testing.T) {
 }
 
 func TestEmptyPeersSourceIsAlwaysEmpty(t *testing.T) {
+	t.Parallel()
 	var source peers.Source = emptyPeersSource{}
 	list, err := source.ListPeers(context.Background())
 	if err != nil || len(list) != 0 {
@@ -154,6 +157,7 @@ func TestEmptyPeersSourceIsAlwaysEmpty(t *testing.T) {
 }
 
 func TestHubMountPeersSourceIsNilSafe(t *testing.T) {
+	t.Parallel()
 	var mount *hubMount
 	if source := mount.peersSource(); source != nil {
 		t.Fatalf("nil *hubMount.peersSource() = %v, want nil", source)
@@ -161,6 +165,7 @@ func TestHubMountPeersSourceIsNilSafe(t *testing.T) {
 }
 
 func TestPeersViewerAuthorizeAlwaysAdmitsTheLoopbackOperator(t *testing.T) {
+	t.Parallel()
 	authorize := peersViewerAuthorize()
 	if err := authorize(httptest.NewRequest(http.MethodGet, "/api/v1/peers", nil)); err != nil {
 		t.Fatalf("peersViewerAuthorize refused a loopback request: %v", err)

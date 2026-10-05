@@ -52,6 +52,7 @@ func newParkedResumeRefusalFixture(t *testing.T) parkedResumeRefusalFixture {
 }
 
 func TestSessionResumeRemoteRefusesInvalidCourierAndCompetingWinner(t *testing.T) {
+	t.Parallel()
 	fixture := newParkedResumeRefusalFixture(t)
 	state := fixture.state
 	state.Status = sessionpark.StatusResumed
@@ -63,6 +64,7 @@ func TestSessionResumeRemoteRefusesInvalidCourierAndCompetingWinner(t *testing.T
 		{"unsupported courier", "http", "unsupported resume courier", fixture.state},
 		{"local winner", "ssh", "different local or remote winner", state},
 	} {
+		//nolint:paralleltest // Rows reuse the same acquired SourceLock and durable parked-session aggregate.
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := resumeParkedRemote(fixture.root, context.Background(), ResumeDependencies{}, fixture.store, fixture.lock, tc.state, "target", tc.via, fixture.config, time.Unix(20, 0), io.Discard, filepath.Join(fixture.root, ".wb"))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -73,6 +75,7 @@ func TestSessionResumeRemoteRefusesInvalidCourierAndCompetingWinner(t *testing.T
 }
 
 func TestSessionResumeRemoteRefusesUnreconstructableBundleAndMissingTransport(t *testing.T) {
+	t.Parallel()
 	fixture := newParkedResumeRefusalFixture(t)
 	state := fixture.state
 	state.Bundle.Worktrees = []sessionpark.Worktree{{WorktreeDir: "/tmp/dirty-member", Dirty: true}}
@@ -94,8 +97,10 @@ func TestSessionResumeRemoteRefusesUnreconstructableBundleAndMissingTransport(t 
 }
 
 func TestSessionResumeRemotePropagatesCustodyAndDeliveryFailures(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"custody", "delivery"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			fixture := newParkedResumeRefusalFixture(t)
 			want := errors.New("remote " + stage + " unavailable")
 			deps := ResumeDependencies{
@@ -125,6 +130,7 @@ func TestSessionResumeRemotePropagatesCustodyAndDeliveryFailures(t *testing.T) {
 }
 
 func TestSessionResumeLocalRefusesRemoteWinnerAndMissingLauncher(t *testing.T) {
+	t.Parallel()
 	fixture := newParkedResumeRefusalFixture(t)
 	state := fixture.state
 	state.Status = sessionpark.StatusResumed
@@ -140,6 +146,7 @@ func TestSessionResumeLocalRefusesRemoteWinnerAndMissingLauncher(t *testing.T) {
 }
 
 func TestSessionResumeLocalPropagatesCustodyFailureWithoutClaimingRoute(t *testing.T) {
+	t.Parallel()
 	fixture := newParkedResumeRefusalFixture(t)
 	want := errors.New("local custody unavailable")
 	deps := ResumeDependencies{
@@ -169,6 +176,7 @@ func TestSessionResumeLocalPropagatesCustodyFailureWithoutClaimingRoute(t *testi
 }
 
 func TestParkedRemoteSSHConfigRetainsRouteAndRejectsChangedConfiguration(t *testing.T) {
+	t.Parallel()
 	fixture := newParkedResumeRefusalFixture(t)
 	route := &sessionpark.ResumeRoute{Mode: sessionpark.ResumeRouteRemote, TargetMachine: "target", Courier: "ssh", SSHHost: "target.example"}
 	retained, err := parkedRemoteSSHConfig(route, "target", "ssh", "")

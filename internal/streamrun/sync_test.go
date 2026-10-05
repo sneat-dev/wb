@@ -31,6 +31,7 @@ func streamSyncCommandFixture(t *testing.T) (string, *streams.Store) {
 	return root, store
 }
 func TestStreamSyncCommandPassesMemberSpecificOptionsAndPersistsRemoteHead(t *testing.T) {
+	t.Parallel()
 	root, store := streamSyncCommandFixture(t)
 	var calls []streamsync.Options
 	runner := func(_ context.Context, options streamsync.Options) (streamsync.Result, error) {
@@ -85,6 +86,7 @@ func TestStreamSyncCommandPassesMemberSpecificOptionsAndPersistsRemoteHead(t *te
 	}
 }
 func TestStreamSyncCommandUsesMemberBaseAndReportsRefusal(t *testing.T) {
+	t.Parallel()
 	root, _ := streamSyncCommandFixture(t)
 	var calls []streamsync.Options
 	runner := func(_ context.Context, options streamsync.Options) (streamsync.Result, error) {
@@ -106,6 +108,7 @@ func TestStreamSyncCommandUsesMemberBaseAndReportsRefusal(t *testing.T) {
 	}
 }
 func TestStreamSyncCommandPropagatesEngineError(t *testing.T) {
+	t.Parallel()
 	root, _ := streamSyncCommandFixture(t)
 	want := errors.New("injected sync failure")
 	service := isolatedService(t)

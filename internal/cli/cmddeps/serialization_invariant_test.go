@@ -17,7 +17,10 @@ func TestClosedDependencyReportsOnlyNormalizeToSupportedJSONValues(t *testing.T)
 	t.Parallel()
 	for _, report := range []any{deps.Report{}, deps.BumpReport{}, deps.DriftReport{}, deps.PeerReport{}} {
 		typ := reflect.TypeOf(report)
-		t.Run(typ.Name(), func(t *testing.T) { checkReportType(t, typ, map[reflect.Type]bool{}) })
+		t.Run(typ.Name(), func(t *testing.T) {
+			t.Parallel()
+			checkReportType(t, typ, map[reflect.Type]bool{})
+		})
 	}
 }
 func checkReportType(t *testing.T, typ reflect.Type, ancestors map[reflect.Type]bool) {
