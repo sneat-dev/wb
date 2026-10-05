@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 
 	"github.com/sneat-dev/wb/internal/progress"
 )
@@ -66,10 +67,7 @@ func updatePullRequestBranch(ctx context.Context, repository, number, expectedHe
 	response := githubExecute(ctx, "", "api", "--method", "PUT", endpoint,
 		"-f", "expected_head_sha="+expectedHead)
 	if response.ExitCode != 0 {
-		message := strings.TrimSpace(string(response.Stderr))
-		if message == "" {
-			message = strings.TrimSpace(string(response.Stdout))
-		}
+		message := githubobserver.CommandDiagnostic(response)
 		return "", fmt.Sprintf("update pull request branch: %s", message)
 	}
 	return waitForUpdatedHead(ctx, repository, number, expectedHead, reporter)
