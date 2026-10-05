@@ -261,14 +261,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		if err != nil {
 			return failResult(result, err)
 		}
-		_, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
+		operationWorktree, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
 		if err != nil {
 			return failResult(result, err)
 		}
-		worktree, err = placement.Path(options.Operation, repository.Slug)
-		if err != nil {
-			return failResult(result, err)
-		}
+		worktree = operationWorktree
 		result.WorktreeDir = worktree
 		result.Branch = options.Branch
 		phase("prepare_worktree")
