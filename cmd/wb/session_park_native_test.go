@@ -21,12 +21,6 @@ import (
 )
 
 func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
-	// Exercise the real preflight without requiring an installed agent harness.
-	bin := t.TempDir()
-	for _, name := range []string{"tmux", "codex"} {
-		writeJourneyExecutable(t, filepath.Join(bin, name), "#!/bin/sh\nexit 99\n")
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	projects := setUpRenameCLIFixture(t)
 	source := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-refusal-source", Machine: "source",
 		Runtime: "codex", Model: "test", StartedAt: time.Now().UTC().Add(-time.Minute)}
@@ -88,6 +82,15 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 	}
 	before := snapshotTrees(t, worktree, filepath.Join(home, session.DirName))
 	deps := sessionrun.DefaultResumeDependencies()
+	preflights := 0
+	// Launch is injected; keep its prerequisite scoped while retaining actual custody checks.
+	deps.PreflightLocal = func(record session.Record) error {
+		preflights++
+		if record.Runtime != source.Runtime {
+			t.Fatalf("preflight runtime=%q, want %q", record.Runtime, source.Runtime)
+		}
+		return nil
+	}
 	deps.StartLocal = func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error) {
 		t.Fatal("launcher reached after actual custody refusal")
 		return sessionlaunch.Result{}, nil
@@ -101,6 +104,9 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "newer session custody") {
 		t.Fatalf("local custody refusal error = %v", err)
+	}
+	if preflights != 1 {
+		t.Fatalf("custody refusal reached with %d preflights, want 1", preflights)
 	}
 	after := snapshotTrees(t, worktree, filepath.Join(home, session.DirName))
 	if !reflect.DeepEqual(before, after) {
