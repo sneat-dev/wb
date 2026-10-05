@@ -9,7 +9,7 @@ import (
 )
 
 //nolint:paralleltest // newGitFixture uses t.Setenv to isolate WB state for native Git subprocesses.
-func TestE2EWtLogCovValidateDependencyDeltasWrapper(t *testing.T) {
+func TestE2EValidateDependencyDeltasWrapper(t *testing.T) {
 	fixture := newGitFixture(t)
 	targetHead := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
 	entry := ListResult{
