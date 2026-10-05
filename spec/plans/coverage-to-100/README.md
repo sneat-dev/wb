@@ -285,6 +285,56 @@ functions and 2,336 covered statements. That ledger is not a total-coverage
 measurement. Continue with published recovery/adoption, then the separately
 reviewed published-terminal domain; remote publication remains deferred.
 
+
+### Published recovery and adoption checkpoint
+
+Published forward repair now carries its immutable input observations in one
+private evidence record. Its owner and revalidation stages share concrete
+per-invocation Runner, receipt-digest and byte-reader bindings at the original
+observation sites. Published adoption similarly delegates its ordered proof
+and materialized-candidate reading to private implementations. Native public
+wrappers retain real locks, held receipt reads, Work Log/Guard checks,
+publication proofs, creation and cleanup. Shared source/root helpers keep their
+genuine external native callers; negative tests refuse exact observations and
+delegate every other command to real Git.
+
+A fresh passing race profile covers **400/400 statements across 23 whole
+production declarations, including closures**, with no unexecuted
+zero-statement blocks. All 33 selected top-level tests passed in 347.578 seconds
+without failures or skips. The first passing 18-test run covered 321/399
+statements; its missing paths were resolved by native fixtures, narrow negative
+observations and two independently proved redundant-guard removals. The singleton Create contract remains native, and every primary/secondary
+cleanup error is retained. The additional private bodies and genuine native wrappers are included
+in the final denominator. Failed profiles supply diagnostics only and are
+excluded from accepted coverage.
+
+Fixture isolation lets independent rows run in parallel, while shared refusal
+rows remain sequential and check their original evidence bytes. Four repeated
+native setups were removed from three retained groups without removing any of
+their 17 original witnesses. The earlier temporal/revalidation fixture changes
+also passed a focused race run with all 21 native leaves. The final larger
+selector took 347.578 seconds versus 814.301 seconds for the initial 18-test run;
+this is an observed difference between selectors and source states, not a
+controlled speed benchmark. A now-unused environment-setting test wrapper was
+deleted after repository-wide consumer inspection and successful compilation.
+
+Early runs found fixture field, identity, stage and cleanup mistakes; those were
+corrected without weakening production assertions. One native secure-stage
+helper refusal occurred during initial fixture creation and did not reproduce
+in the exact unchanged retry or final complete run. The covered test executable
+runs that helper; rebuilding the private CLI does not establish helper binary
+provenance. Its logged paths satisfy current lexical containment, while the
+accompanying coverage-metadata emit error has no confirmed causal explanation.
+No production fix is claimed for this transient.
+
+Linux/Windows test compilation, scoped vet/lint and specification lint passed.
+All 122 previously accepted production declarations remain byte-identical and
+disjoint; the qualified ledger now contains 145 whole functions and 2,736
+covered statements. This is a bounded source-qualified result, not a refreshed
+package or repository percentage. Continue with published-terminal recovery
+and unpublished/retired-candidate owners; publication remains deferred to the
+coordinated boundary.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
