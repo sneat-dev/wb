@@ -316,22 +316,24 @@ type absorbedConflictProof struct {
 // operator-audited derived-index exclusion present in derivedPaths
 // ("derived_excused").
 func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget string, source WorktreeMergeSource, derivedPaths map[string]bool) (absorbedConflictProof, error) {
+	return proveAbsorbedConflictSourceWithRunner(ctx, defaultRunner, worktree, currentTarget, source, derivedPaths)
+}
+
+// proveAbsorbedConflictSourceWithRunner observes one merge base for both ancestry
+// and the content baseline; the resolver and content evidence remain native.
+func proveAbsorbedConflictSourceWithRunner(ctx context.Context, run runner.Runner, worktree, currentTarget string, source WorktreeMergeSource, derivedPaths map[string]bool) (absorbedConflictProof, error) {
 	if err := resolveAbsorbedConflictSourceObject(ctx, worktree, source); err != nil {
 		return absorbedConflictProof{}, err
 	}
-	ancestor, err := isMergeAncestor(ctx, worktree, source.SHA, currentTarget)
+	mergeBaseOutput, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "merge-base", source.SHA, currentTarget)
 	if err != nil {
 		return absorbedConflictProof{}, fmt.Errorf("verify source ancestry: %w", err)
 	}
-	if ancestor {
+	mergeBase := strings.TrimSpace(mergeBaseOutput)
+	if mergeBase == source.SHA {
 		return absorbedConflictProof{method: "ancestor"}, nil
 	}
-	mergeBaseOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "merge-base", source.SHA, currentTarget)
-	if err != nil {
-		return absorbedConflictProof{}, fmt.Errorf("resolve merge base with current target: %w", err)
-	}
-	mergeBase := strings.TrimSpace(mergeBaseOutput)
-	diffOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "diff", "--name-only", mergeBase, source.SHA)
+	diffOutput, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "diff", "--name-only", mergeBase, source.SHA)
 	if err != nil {
 		return absorbedConflictProof{}, fmt.Errorf("diff source from its merge base with current target: %w", err)
 	}
