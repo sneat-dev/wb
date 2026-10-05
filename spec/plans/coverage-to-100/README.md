@@ -445,6 +445,32 @@ The other 167 bodies and 3,258 statements stay source-qualified. Adding this sco
 gives 176 unique declarations and 3,427 accepted statements locally. This is a
 bounded cohort ledger, not current repository coverage or remote publication.
 
+### Landed-failure acknowledgement checkpoint
+
+Landed-failure acknowledgement now has a private owner and a shared concrete
+sidecar finalizer for live and terminal-cleaned paths. Each path retains its
+native custody, claim-base, remote-root and ancestry policy. Runner and receipt
+observations are passed per invocation; the native atomic Rename writer remains
+in use. Two redundant guards were removed only after native invariant review.
+
+The first scoped race batch passed but covered 144/156 statements. A test-only
+follow-up closes the remaining filesystem and ancestry refusals with real
+ENOTDIR paths, connected sibling commit DAGs, exact negative Runner slots and
+actual terminal cleanup evidence. Private independent fixtures run in parallel;
+process-wide provider cases reuse a serial native baseline.
+
+A fresh complete scoped race batch passed all 21 top-level tests in 163.545
+seconds and covered 156/156 statements in all five whole refactored declarations,
+including closures and every block. Linux/Windows test compilation, scoped vet,
+lint and specification lint passed. Earlier partial profiles do not establish
+complete coverage. The initial cross-platform compile also caught an invalid
+test enum name; its one-token correction changes no production behavior.
+
+All 176 previously accepted bodies remain source-identical. This scope brings
+the local accepted ledger to 181 unique declarations and 3,583 statements. These
+are bounded source-qualified cohorts, not current repository coverage or remote
+publication. Independent final review and normal hooks precede the local commit.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

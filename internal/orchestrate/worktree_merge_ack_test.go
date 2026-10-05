@@ -2627,7 +2627,7 @@ func TestCleanedLandedFailureAncestryRejectsIndependentlyIntegratedRoots(t *test
 				Sources:   []WorktreeMergeSource{{Task: "ancestry-source", SHA: strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))}},
 			}
 			claimBases := map[string]string{"ancestry-candidate": base, "ancestry-source": claimBase}
-			if err := validateCleanedLandedFailureAncestry(context.Background(), fixture.canonical, receipt, claimBases); err == nil || !strings.Contains(err.Error(), test.want) {
+			if err := validateCleanedLandedFailureAncestry(context.Background(), defaultRunner, fixture.canonical, receipt, claimBases); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("independently integrated ancestry error = %v, want %q", err, test.want)
 			}
 		})
