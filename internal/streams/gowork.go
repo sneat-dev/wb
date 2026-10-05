@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // GoWorkFile and GoWorkSum are the two untracked files a Go local link
@@ -24,47 +24,29 @@ const (
 // deliberately independent of stream state: state alone would miss a
 // hand-written workspace, so the refusal reads the file too.
 func GoWorkUseEntries(worktree string) ([]string, error) {
-	contents, err := os.ReadFile(filepath.Join(worktree, GoWorkFile))
+	path := filepath.Join(worktree, GoWorkFile)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			if _, pathErr := os.Lstat(path); os.IsNotExist(pathErr) {
+				return nil, nil
+			}
 		}
 		return nil, fmt.Errorf("read %s in %s: %w", GoWorkFile, worktree, err)
 	}
-	return ParseGoWorkUseEntries(string(contents)), nil
+	return parseGoWorkUseEntries(path, contents)
 }
 
-var goWorkSingleUse = regexp.MustCompile(`(?m)^\s*use\s+([^\s()]+)\s*$`)
-
-// ParseGoWorkUseEntries reads both spellings Go accepts — a bare `use <dir>`
-// and a `use (...)` block — and skips comments, so a commented-out entry is
-// never read as a live link.
-func ParseGoWorkUseEntries(contents string) []string {
-	var entries []string
-	for _, match := range goWorkSingleUse.FindAllStringSubmatch(contents, -1) {
-		entries = append(entries, strings.Trim(match[1], `"`))
+// parseGoWorkUseEntries owns Go workspace syntax and sorted dependency paths.
+func parseGoWorkUseEntries(path string, contents []byte) ([]string, error) {
+	workspace, err := modfile.ParseWork(path, contents, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	inBlock := false
-	for _, line := range strings.Split(contents, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if !inBlock {
-			if strings.HasPrefix(trimmed, "use") && strings.Contains(trimmed, "(") {
-				inBlock = true
-			}
-			continue
-		}
-		if trimmed == ")" {
-			inBlock = false
-			continue
-		}
-		if trimmed == "" {
-			continue
-		}
-		entries = append(entries, strings.Trim(trimmed, `"`))
+	entries := make([]string, 0, len(workspace.Use))
+	for _, use := range workspace.Use {
+		entries = append(entries, use.Path)
 	}
 	sort.Strings(entries)
-	return entries
+	return entries, nil
 }

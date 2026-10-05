@@ -82,7 +82,9 @@ func (store *Store) Load(name string) (Stream, error) {
 	contents, err := os.ReadFile(store.statePath(name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Stream{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+			if _, pathErr := os.Lstat(store.statePath(name)); os.IsNotExist(pathErr) {
+				return Stream{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+			}
 		}
 		return Stream{}, fmt.Errorf("read stream state %s: %w", store.statePath(name), err)
 	}
@@ -510,7 +512,7 @@ func unreadableStreamExcludesRepository(path, repository string) (excludes, know
 // must be able to ask the question without importing a stream verb.
 func (store *Store) LiveLinksForWorktree(worktree string) ([]StreamLink, error) {
 	resolved := normalizePath(worktree)
-	all, _, err := store.List()
+	all, err := store.readableLinkStreams()
 	if err != nil {
 		return nil, err
 	}
@@ -562,7 +564,7 @@ type StreamLink struct {
 // repointed by hand.
 func (store *Store) LinkSourcesForWorktree(worktree string) ([]StreamLinkSource, error) {
 	resolved := normalizePath(worktree)
-	all, _, err := store.List()
+	all, err := store.readableLinkStreams()
 	if err != nil {
 		return nil, err
 	}

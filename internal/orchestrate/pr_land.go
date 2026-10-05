@@ -17,7 +17,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/landinglane"
-	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -1749,68 +1748,4 @@ func appendLandEvent(options PullRequestLandOptions, result PullRequestLandResul
 		DurationMS:  time.Since(started).Milliseconds(),
 		Evidence:    evidence,
 	})
-}
-
-// preflightLandingCleanup refuses a landing whose tidy-up would fail, before
-// the merge makes the landing irreversible.
-//
-// linksOnly is set when the caller passed --keep: the dirty-worktree check is
-// about retiring a checkout and does not apply, while the live-link check is
-// about what is being landed and always does.
-func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, number string, linksOnly bool) *landRefusal {
-	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
-		ProjectsRoot: options.ProjectsRoot,
-		Base:         view.Base.Ref,
-		Filter:       options.Repository,
-	})
-	if err != nil {
-		// The inventory is unreadable, which is not the same as clean. Refuse
-		// rather than merge into an unknown tidy-up.
-		return &landRefusal{
-			code:    "cleanup-unverifiable",
-			reason:  "the worktree inventory could not be read, so this landing's cleanup cannot be pre-flighted: " + err.Error(),
-			command: "wb pr land " + options.Repository + "#" + number + " --keep",
-		}
-	}
-	for _, entry := range listed.Results {
-		if entry.Repository != options.Repository || entry.Branch != view.Head.Ref {
-			continue
-		}
-		if !entry.Clean && !linksOnly {
-			return &landRefusal{
-				code: "cleanup-blocked-dirty",
-				reason: "the worktree for task " + entry.Task + " has uncommitted changes, so landing now would " +
-					"merge the work and then be unable to retire the checkout that produced it",
-				command: "wb worktree end " + entry.Task + ", or land with --keep",
-			}
-		}
-		if refusal := refuseLinkedWorktree(options.ProjectsRoot, entry); refusal != nil {
-			return refusal
-		}
-	}
-	return nil
-}
-
-// refuseLinkedWorktree refuses a checkout that still holds a live local
-// dependency link, through the one implementation WB has of that question.
-//
-// It consults both signals — recorded stream links and a `go.work` nobody
-// recorded — because either alone misses the other, and it reuses
-// locallink.HasLiveLink rather than asking half the question a second way.
-func refuseLinkedWorktree(projectsRoot string, entry worktrees.ListResult) *landRefusal {
-	store, err := streams.Open(projectsRoot)
-	if err != nil {
-		// No stream state at all is the ordinary case outside a stream, but a
-		// `go.work` can still exist, so the check continues with no store.
-		store = nil
-	}
-	links, err := locallink.HasLiveLink(store, entry.WorktreeDir)
-	if err != nil || len(links) == 0 {
-		return nil
-	}
-	return &landRefusal{
-		code:    "cleanup-blocked-live-link",
-		reason:  locallink.RefusalMessage(entry.WorktreeDir, links),
-		command: "wb deps propagate local --undo, or land with --keep",
-	}
 }
