@@ -63,11 +63,17 @@ type WorktreeMergeAbsorbedConflictAcknowledgementOptions struct {
 // --apply requires --actor and --reason and writes only the new
 // acknowledgement artifact.
 func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsorbedConflictAcknowledgementOptions) (WorktreeMergeAbsorbedConflictAcknowledgement, error) {
+	return acknowledgeAbsorbedConflict(ctx, options, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, mergeack.Persist)
+}
+
+// acknowledgeAbsorbedConflict binds receipt IO per invocation; lock custody and
+// every source/target proof remain native.
+func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsorbedConflictAcknowledgementOptions, readReceipt func(string) (WorktreeMergeReceipt, error), hashReceipt func(string) (string, error), persist func(string, WorktreeMergeAbsorbedConflictAcknowledgement) error) (WorktreeMergeAbsorbedConflictAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
@@ -78,9 +84,6 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
 	}
 	lockID := receipt.Lane
-	if lockID == "" {
-		lockID = worktreeMergeLaneID(receipt.Repository, receipt.Target)
-	}
 	lock, err := AcquireOperationLock(options.ProjectsRoot, lockID, true)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
@@ -90,12 +93,15 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	// Re-read and re-validate beneath the lane lock: every proof below must
 	// run against evidence observed while this acknowledgement exclusively
 	// owns the lane, never against values captured before it.
-	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	receipt, err = readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
 	if err := validateAbsorbedConflictReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
+	if receipt.Lane != lockID {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipt %s changed lane while acquiring ownership: held %s, reread %s", receiptPath, lockID, receipt.Lane)
 	}
 	for _, source := range receipt.Sources {
 		if _, statErr := os.Stat(source.Worktree); statErr == nil {
@@ -133,7 +139,7 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 			Method: result.method, MergeBaseSHA: result.mergeBaseSHA, PathCount: result.pathCount, PathProofs: result.pathProofs,
 		})
 	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hashReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
@@ -159,7 +165,7 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := mergeack.Persist(ackPath, ack); err != nil {
+	if err := persist(ackPath, ack); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
 	return ack, nil
