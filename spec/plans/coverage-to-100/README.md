@@ -505,6 +505,40 @@ the local accepted ledger to 195 unique declarations and 3,797 statements. It is
 a bounded cohort ledger, not current repository coverage or remote publication.
 Independent final review and normal hooks precede the local commit.
 
+### Missing-cleanup acknowledgement checkpoint
+
+Missing-cleanup acknowledgement and reauthentication now pass native Runner and
+receipt observations per invocation. The owner, validator and retained Land
+consumers share the actual absent-branch proof. Existing native wrappers retain
+their genuine callers; all custody, partial-acknowledgement returns, ordering and
+append-only Link publication remain. No production guard was removed.
+
+Seven whole refactored functions cover all 104 statements, including closures
+and every block, from two passing scoped race profiles of identical production
+bodies. The original twelve selected groups passed in 138.512 seconds, covering
+96/104. Two new refusal groups passed in 27.450 seconds and close the remaining
+eight statements. Exact native body hashes, complete atomic profile tuple sets,
+original held source bytes and native fixture binary bindings match. Coverage
+bits are combined only for these unchanged bodies. This is fourteen distinct
+passing groups across two runs, not one complete fourteen-group execution.
+
+The follow-up proves native lane contention, an actual append-only collision,
+canonical-coordinate refusal, a late filesystem refusal after genuine inspection,
+and acknowledged-target error/rewind. The filesystem case temporarily replaces
+only a private fixture ancestor with an ordinary file and restores it immediately;
+it requires neither a symlink privilege nor a Windows skip. One failed run reached
+the branches but incorrectly required a PathError wrapper for Go's bare ENOTDIR.
+The assertion now checks the precise error identity. That failed profile is
+excluded entirely; its counters provide no acceptance credit.
+
+Linux/Windows test compilation, scoped vet, lint and specification lint passed.
+Independent source review verified the narrow assertion and passing-profile
+qualification strategy. All 195 previously accepted bodies remain unchanged;
+this scope brings the local accepted ledger to 202 unique declarations and
+3,901 statements. These are bounded source-qualified cohorts, not current
+repository coverage or remote publication. Final independent execution review
+and normal hooks precede the local commit.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

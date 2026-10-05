@@ -1956,37 +1956,6 @@ func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, project
 	return true, nil
 }
 
-// requireTerminalCleanupBranchesAbsent prevents a sealed-but-interrupted
-// cleanup from being mistaken for a complete one. A removed Work Log proves
-// the worktree terminalization; local and origin branch absence independently
-// prove the remaining branch-retirement part of cleanup.
-func requireTerminalCleanupBranchesAbsent(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, expectations []worktrees.TerminalWorkLogExpectation, timeout time.Duration, retry int) error {
-	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
-	if canonicalErr != nil {
-		return canonicalErr
-	}
-	for _, expectation := range expectations {
-		if expectation.Branch == receipt.Target {
-			return fmt.Errorf("terminal cleanup recovery refuses receipt task %s because its branch is the target %s", expectation.Task, receipt.Target)
-		}
-		local, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
-		if err != nil {
-			return fmt.Errorf("inspect local cleanup branch for task %s: %w", expectation.Task, err)
-		}
-		if strings.TrimSpace(local) != "" {
-			return fmt.Errorf("terminal cleanup recovery refuses task %s because local branch %s remains", expectation.Task, expectation.Branch)
-		}
-		remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
-		if err != nil {
-			return fmt.Errorf("inspect remote cleanup branch for task %s: %w", expectation.Task, err)
-		}
-		if strings.TrimSpace(remote) != "" {
-			return fmt.Errorf("terminal cleanup recovery refuses task %s because remote branch %s remains", expectation.Task, expectation.Branch)
-		}
-	}
-	return nil
-}
-
 func terminalWorkLogExpectations(receipt WorktreeMergeReceipt) ([]worktrees.TerminalWorkLogExpectation, error) {
 	if receipt.Repository == "" || receipt.Target == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" ||
 		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" {
