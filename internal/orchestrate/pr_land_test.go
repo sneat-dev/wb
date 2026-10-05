@@ -51,17 +51,11 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	}
 	root := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(root, "projects"))
-	seed := filepath.Join(root, "seed")
+	seed := pullRequestGitSeed(t)
 	remote := filepath.Join(root, "remote.git")
 	projects := filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
-	writeEngineFile(t, filepath.Join(seed, "go.mod"), "module example.test/app\n\ngo 1.24\n")
-	runEngineGit(t, seed, "init", "-b", "main")
-	runEngineGit(t, seed, "config", "user.name", "WB Test")
-	runEngineGit(t, seed, "config", "user.email", "wb@example.test")
-	runEngineGit(t, seed, "add", "-A")
-	runEngineGit(t, seed, "commit", "-m", "initial")
-	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	runEngineGit(t, root, "clone", "--bare", "--no-hardlinks", seed, remote)
 	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	// The fake GitHub commits in the remote itself (update-branch, another
 	// landing advancing main), so it needs an identity of its own: a CI runner
@@ -71,7 +65,7 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runEngineGit(t, root, "clone", remote, canonical)
+	runEngineGit(t, root, "clone", "--no-hardlinks", remote, canonical)
 	runEngineGit(t, canonical, "config", "user.name", "WB Test")
 	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")
 
