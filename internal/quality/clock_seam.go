@@ -79,6 +79,7 @@ var ClockSeamSites = []ClockSeamSite{
 	{File: "internal/agents/owner.go", Func: "StopRun"},
 	{File: "internal/agents/owner.go", Func: "waitForProcessExit"},
 	{File: "internal/orchestrate/pr_create_adoption.go", Func: "pinPullRequestViewToHead"},
+	{File: "internal/orchestrate/pr_land_update_branch.go", Func: "waitForUpdatedHead"},
 	{File: "internal/orchestrate/worktree_merge_ack.go", Func: "closeSupersededWorktreeMergePullRequest"},
 	{File: "internal/orchestrate/worktree_merge_ack.go", Func: "ensurePreparedWorktreeMergeRebatch"},
 	{File: "internal/worktrees/repository_registration_lock.go", Func: "acquireRepositoryRegistrationLock"},

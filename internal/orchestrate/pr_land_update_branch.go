@@ -70,27 +70,27 @@ func updatePullRequestBranch(ctx context.Context, repository, number, expectedHe
 		message := githubobserver.CommandDiagnostic(response)
 		return "", fmt.Sprintf("update pull request branch: %s", message)
 	}
-	return waitForUpdatedHead(ctx, repository, number, expectedHead, reporter)
+	return waitForUpdatedHead(ctx, repository, number, expectedHead, reporter, time.Now, time.After)
 }
 
 // waitForUpdatedHead polls until the pull request reports a head other than the
 // one that was updated. GitHub accepts the update asynchronously, so reading
 // the head immediately would return the commit that is about to be replaced.
-func waitForUpdatedHead(ctx context.Context, repository, number, previousHead string, reporter progress.Reporter) (string, string) {
-	deadline := time.Now().Add(updateBranchSettleTimeout)
+func waitForUpdatedHead(ctx context.Context, repository, number, previousHead string, reporter progress.Reporter, now func() time.Time, after func(time.Duration) <-chan time.Time) (string, string) {
+	deadline := now().Add(updateBranchSettleTimeout)
 	for {
 		view, err := githubchecks.ReadPullRequest(ctx, repository, number)
 		if err == nil && !strings.EqualFold(view.Head.SHA, previousHead) && strings.TrimSpace(view.Head.SHA) != "" {
 			return view.Head.SHA, ""
 		}
-		if time.Now().After(deadline) {
+		if now().After(deadline) {
 			return "", fmt.Sprintf("updated head for %s#%s did not appear within %s", repository, number, updateBranchSettleTimeout)
 		}
 		reportPullRequestLandProgress(reporter, "update_branch", progress.Waiting, "waiting for the updated head", 0, 0)
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err().Error()
-		case <-time.After(updateBranchSettlePoll):
+		case <-after(updateBranchSettlePoll):
 		}
 	}
 }
