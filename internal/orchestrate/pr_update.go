@@ -273,23 +273,7 @@ func persistPullRequestUpdateReceipt(result PullRequestUpdateResult) error {
 	if err != nil {
 		return err
 	}
-	file, err := filewrite.CreateTemp(filepath.Dir(result.ReceiptPath), ".update-*.tmp", nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(file.Name()) }()
-	if err = filewrite.Write(file, append(data, '\n'), file.Name(), nil); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err = file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err = file.Close(); err != nil {
-		return err
-	}
-	return filewrite.Rename(file.Name(), result.ReceiptPath, nil)
+	return filewrite.WriteBytesAtomic(filepath.Dir(result.ReceiptPath), filepath.Base(result.ReceiptPath), append(data, '\n'), 0o600)
 }
 
 func syncOwnedPullRequestUpdateWorktree(ctx context.Context, options PullRequestUpdateOptions, branch, head string) string {

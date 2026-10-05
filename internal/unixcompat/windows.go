@@ -216,4 +216,8 @@ func Linkat(olddirfd int, oldname string, newdirfd int, newname string, flags in
 	return os.Link(filepath.Join(pathOf(olddirfd), oldname), filepath.Join(pathOf(newdirfd), newname))
 }
 
-func SyncDirectory(file *os.File) error { return nil }
+// SyncDirectory validates the handle without an unsupported directory flush.
+func SyncDirectory(file *os.File) error {
+	_, err := file.Stat()
+	return err
+}

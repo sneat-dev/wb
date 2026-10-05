@@ -237,6 +237,13 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	}
 	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
 	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
+	filtersStep, _ := windowsScopeSteps[1].(map[string]any)
+	filtersWith, _ := filtersStep["with"].(map[string]any)
+	for _, path := range []string{"internal/filewrite/**", "internal/unixcompat/**", "internal/orchestrate/pr_update.go", "internal/orchestrate/pr_update*_test.go"} {
+		if !strings.Contains(fmt.Sprint(filtersWith["filters"]), "- '"+path+"'") {
+			t.Errorf("native Windows scope omits receipt publication owner %q", path)
+		}
+	}
 	windows, ok := jobs["windows"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows validation job missing")
@@ -250,6 +257,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
 		"go test ./internal/lifecyclehooks -run '^TestWindowsTrust'",
 		"go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'",
+		"go test ./internal/filewrite ./internal/orchestrate ./internal/unixcompat -count=1 -json -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'",
 		"go test ./api/githubapp -count=1",
 	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
