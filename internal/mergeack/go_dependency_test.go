@@ -1,4 +1,4 @@
-package orchestrate
+package mergeack
 
 import (
 	"reflect"
@@ -103,5 +103,34 @@ func TestGoDependencyOwnerChecksumContracts(t *testing.T) {
 	want := map[string]int{"a v1 h1:x": 2, "b v2 h1:y": 1}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("counts=%v want %v", got, want)
+	}
+}
+
+func TestProveGoDependencyUpgradeComposition(t *testing.T) {
+	t.Parallel()
+	const sourceMod = "module example.test/app\n\ngo 1.22\n\nrequire example.test/a v1.0.0\n"
+	const sourceSum = "example.test/a v1.0.0 h1:old\n"
+	targetMod := strings.Replace(sourceMod, "v1.0.0", "v1.1.0", 1)
+	const targetSum = "example.test/a v1.1.0 h1:new\n"
+	for _, row := range []struct {
+		name, sourceMod, targetMod, sourceSum, targetSum, wantError string
+		wantCount                                                   int
+	}{
+		{name: "module refusal precedes checksum refusal", sourceMod: "module (", targetMod: targetMod, sourceSum: "bad", targetSum: "different bad", wantError: "parse source go.mod"},
+		{name: "checksum refusal", sourceMod: sourceMod, targetMod: targetMod, sourceSum: sourceSum, targetSum: "unrelated v1 h1:x\n", wantError: "outside upgraded dependencies"},
+		{name: "one upgrade", sourceMod: sourceMod, targetMod: targetMod, sourceSum: sourceSum, targetSum: targetSum, wantCount: 1},
+		{name: "two upgrades", sourceMod: sourceMod + "require example.test/b v1.0.0\n", targetMod: targetMod + "require example.test/b v1.2.0\n", sourceSum: sourceSum, targetSum: targetSum, wantCount: 2},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			count, err := ProveGoDependencyUpgrade(row.sourceMod, row.targetMod, row.sourceSum, row.targetSum)
+			if row.wantError != "" {
+				if count != 0 || err == nil || !strings.Contains(err.Error(), row.wantError) {
+					t.Fatalf("proof=%d/%v want zero/%q", count, err, row.wantError)
+				}
+			} else if err != nil || count != row.wantCount {
+				t.Fatalf("proof=%d/%v want %d", count, err, row.wantCount)
+			}
+		})
 	}
 }
