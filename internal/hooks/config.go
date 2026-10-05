@@ -461,6 +461,9 @@ if [ -n "$unformatted" ]; then
     echo "$unformatted" >&2
     exit 1
 fi
+if [ ! -f go.mod ]; then
+    exit 0
+fi
 if ! command -v go >/dev/null 2>&1; then
     exit 0
 fi
@@ -471,7 +474,8 @@ fi
 # module (its own go.mod, no go.work) is not part of the root module, so its
 # packages cannot be loaded from the repository root: they are grouped by
 # module and each group is vetted from its own module directory. A staged file
-# under no go.mod at all is not vetted. (WB-831)
+# under no go.mod at all is not vetted, and a repository with no go.mod at its
+# root is not vetted at all (exit above). (WB-831)
 nearest_module() {
     candidate="$1"
     while :; do
@@ -525,7 +529,9 @@ EOF_TARGETS
     if [ "$#" -eq 0 ]; then
         continue
     fi
-    if ! ( cd "./$module" && go vet "$@" ); then
+    # </dev/null: the loop's stdin is the list of remaining modules, which a
+    # go wrapper that reads stdin must not be able to swallow.
+    if ! ( cd "./$module" && go vet "$@" </dev/null ); then
         if [ "$module" = "." ]; then
             echo "WB hook: go vet failed on the packages in this commit." >&2
         else

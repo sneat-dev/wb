@@ -1,3 +1,5 @@
+//go:build e2e
+
 package hooks
 
 import (
@@ -8,6 +10,10 @@ import (
 	"testing"
 )
 
+// These tests run the real built-in hook script under /bin/sh against temporary
+// repositories (real git, a fake `go` on PATH), so they are real-process e2e
+// tests and run in the e2e CI job (go test -tags e2e -run ^TestE2E).
+//
 // goPreCommitFixture is a temporary repository with the built-in Go
 // pre-commit profile active and no other policy.
 func goPreCommitFixture(t *testing.T) string {
@@ -40,12 +46,34 @@ const (
 
 func runGoPreCommit(t *testing.T, repo string) (int, string) {
 	t.Helper()
+	result, stderr := runGoPreCommitResult(t, repo)
+	return result.ExitCode, stderr
+}
+
+// runGoPreCommitResult is runGoPreCommit that also returns the RunResult, so a
+// test can tell "the go/pre-commit block ran and skipped" from "the block never
+// ran".
+func runGoPreCommitResult(t *testing.T, repo string) (RunResult, string) {
+	t.Helper()
 	var stderr bytes.Buffer
 	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &bytes.Buffer{}, Stderr: &stderr})
 	if err == nil && result.ExitCode != 0 {
 		t.Fatalf("exit code %d without an error", result.ExitCode)
 	}
-	return result.ExitCode, stderr.String()
+	return result, stderr.String()
+}
+
+// requireGoPreCommitBlockRan fails unless the go/pre-commit block executed, so
+// a "go was never called" assertion cannot hold merely because the profile was
+// inactive.
+func requireGoPreCommitBlockRan(t *testing.T, result RunResult) {
+	t.Helper()
+	for _, block := range result.Blocks {
+		if block.ID == "go/pre-commit" {
+			return
+		}
+	}
+	t.Fatalf("the go/pre-commit block did not run: %+v", result.Blocks)
 }
 
 // installFakeGo puts a `go` on PATH that appends "<cwd>|<args>" to the
@@ -53,9 +81,17 @@ func runGoPreCommit(t *testing.T, repo string) (int, string) {
 // the hook ran and from which directory.
 func installFakeGo(t *testing.T) string {
 	t.Helper()
+	return installFakeGoScript(t, "")
+}
+
+// installFakeGoScript is installFakeGo with extra shell run before the call is
+// logged, for a `go` wrapper that behaves differently (for example one that
+// reads standard input).
+func installFakeGoScript(t *testing.T, prelude string) string {
+	t.Helper()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "go-calls.log")
-	script := "#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$*\" >> '" + logPath + "'\n"
+	script := "#!/bin/sh\n" + prelude + "printf '%s|%s\\n' \"$(pwd -P)\" \"$*\" >> '" + logPath + "'\n"
 	mustWriteExecutable(t, filepath.Join(binDir, "go"), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
@@ -73,11 +109,13 @@ func readFakeGoLog(t *testing.T, logPath string) []string {
 	return strings.Split(strings.TrimSpace(string(content)), "\n")
 }
 
-// TestBuiltInGoPreCommitVetsNestedModuleFromItsOwnDirectory pins WB-831: a
+// TestE2EBuiltInGoPreCommitVetsNestedModuleFromItsOwnDirectory pins WB-831: a
 // nested module (own go.mod, no go.work) is not part of the root module, so
 // vetting its packages from the repository root fails with "main module does
 // not contain package". Each staged package is vetted from its own module.
-func TestBuiltInGoPreCommitVetsNestedModuleFromItsOwnDirectory(t *testing.T) {
+//
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitVetsNestedModuleFromItsOwnDirectory(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	writeGoModule(t, repo, "example.invalid/root")
 	writeGoModule(t, filepath.Join(repo, "end2end"), "example.invalid/root/end2end")
@@ -89,7 +127,8 @@ func TestBuiltInGoPreCommitVetsNestedModuleFromItsOwnDirectory(t *testing.T) {
 	}
 }
 
-func TestBuiltInGoPreCommitFailsNamingTheNestedModuleWhenItsVetFails(t *testing.T) {
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitFailsNamingTheNestedModuleWhenItsVetFails(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	writeGoModule(t, repo, "example.invalid/root")
 	writeGoModule(t, filepath.Join(repo, "end2end"), "example.invalid/root/end2end")
@@ -108,7 +147,8 @@ func TestBuiltInGoPreCommitFailsNamingTheNestedModuleWhenItsVetFails(t *testing.
 	}
 }
 
-func TestBuiltInGoPreCommitVetsEveryModuleTheCommitTouches(t *testing.T) {
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitVetsEveryModuleTheCommitTouches(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	writeGoModule(t, repo, "example.invalid/root")
 	writeGoModule(t, filepath.Join(repo, "end2end"), "example.invalid/root/end2end")
@@ -135,10 +175,12 @@ func TestBuiltInGoPreCommitVetsEveryModuleTheCommitTouches(t *testing.T) {
 	}
 }
 
-func TestBuiltInGoPreCommitRunsVetPerModuleFromThatModuleDirectory(t *testing.T) {
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitRunsVetPerModuleFromThatModuleDirectory(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	writeGoModule(t, repo, "example.invalid/root")
 	writeGoModule(t, filepath.Join(repo, "tools", "gen"), "example.invalid/root/tools/gen")
+	writeGoModule(t, filepath.Join(repo, "tools", "gen", "inner"), "example.invalid/root/tools/gen/inner")
 	writeGoModule(t, filepath.Join(repo, "my mod"), "example.invalid/root/mymod")
 	writeGoFile(t, filepath.Join(repo, "a.go"), cleanGoBody)
 	writeGoFile(t, filepath.Join(repo, "svc", "b.go"), cleanGoBody)
@@ -154,7 +196,8 @@ func TestBuiltInGoPreCommitRunsVetPerModuleFromThatModuleDirectory(t *testing.T)
 	want := []string{
 		repo + "|vet . ./svc",
 		filepath.Join(repo, "my mod") + "|vet ./sub dir",
-		filepath.Join(repo, "tools", "gen") + "|vet . ./inner",
+		filepath.Join(repo, "tools", "gen") + "|vet .",
+		filepath.Join(repo, "tools", "gen", "inner") + "|vet .",
 	}
 	got := readFakeGoLog(t, logPath)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -162,10 +205,40 @@ func TestBuiltInGoPreCommitRunsVetPerModuleFromThatModuleDirectory(t *testing.T)
 	}
 }
 
-// TestBuiltInGoPreCommitSingleModuleRunsTheSameVetAsBefore pins that a
+// TestE2EBuiltInGoPreCommitSingleModuleRunsTheSameVetAsBefore pins that a
 // repository with one module still gets one `go vet` from the repository
 // root over exactly the staged packages, as before WB-831.
-func TestBuiltInGoPreCommitSingleModuleRunsTheSameVetAsBefore(t *testing.T) {
+//
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitVetsEveryModuleEvenWhenGoReadsStandardInput(t *testing.T) {
+	repo := goPreCommitFixture(t)
+	writeGoModule(t, repo, "example.invalid/root")
+	writeGoModule(t, filepath.Join(repo, "a"), "example.invalid/root/a")
+	writeGoModule(t, filepath.Join(repo, "b"), "example.invalid/root/b")
+	writeGoFile(t, filepath.Join(repo, "r.go"), cleanGoBody)
+	writeGoFile(t, filepath.Join(repo, "a", "a.go"), cleanGoBody)
+	writeGoFile(t, filepath.Join(repo, "b", "b.go"), cleanGoBody)
+	git(t, repo, "add", ".")
+	// A wrapper that drains stdin must not swallow the list of modules the hook
+	// is still going to vet.
+	logPath := installFakeGoScript(t, "cat >/dev/null\n")
+
+	if code, stderr := runGoPreCommit(t, repo); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	want := []string{
+		repo + "|vet .",
+		filepath.Join(repo, "a") + "|vet .",
+		filepath.Join(repo, "b") + "|vet .",
+	}
+	got := readFakeGoLog(t, logPath)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("go invocations\n got: %q\nwant: %q", got, want)
+	}
+}
+
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitSingleModuleRunsTheSameVetAsBefore(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	writeGoModule(t, repo, "example.invalid/root")
 	writeGoFile(t, filepath.Join(repo, "a.go"), cleanGoBody)
@@ -184,24 +257,34 @@ func TestBuiltInGoPreCommitSingleModuleRunsTheSameVetAsBefore(t *testing.T) {
 	}
 }
 
-func TestBuiltInGoPreCommitSkipsVetForGoFilesUnderNoModule(t *testing.T) {
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitSkipsVetForGoFilesUnderNoModule(t *testing.T) {
 	repo := goPreCommitFixture(t)
+	// A root go.mod activates the profile by detection, so force it on instead:
+	// the repository has no go.mod anywhere and the block must still run and
+	// find nothing to vet.
+	mustWrite(t, filepath.Join(repo, ".wb", "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
 	writeGoFile(t, filepath.Join(repo, "scripts", "a.go"), cleanGoBody)
 	git(t, repo, "add", "scripts")
 	logPath := installFakeGo(t)
 
-	if code, stderr := runGoPreCommit(t, repo); code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr)
+	result, stderr := runGoPreCommitResult(t, repo)
+	if result.ExitCode != 0 {
+		t.Fatalf("exit %d: %s", result.ExitCode, stderr)
 	}
+	requireGoPreCommitBlockRan(t, result)
 	if got := readFakeGoLog(t, logPath); len(got) != 0 {
 		t.Fatalf("go ran for files under no go.mod: %q", got)
 	}
 }
 
-// Auto-detection of the go profile needs a root go.mod, so a repository with
-// only nested modules reaches this block through profiles.include, which
-// forces the profile on.
-func TestBuiltInGoPreCommitVetsNestedModuleOfRepositoryWithoutRootModule(t *testing.T) {
+// profiles.include forces the go profile on in a repository with no root
+// go.mod (the founder's fleet policy does), so the block must keep skipping vet
+// there exactly as it did before WB-831: nested modules of such a repository
+// are not vetted. Widening that is a separate decision.
+//
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitSkipsVetWhenRepositoryHasNoRootModule(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	mustWrite(t, filepath.Join(repo, ".wb", "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
 	writeGoModule(t, filepath.Join(repo, "svc"), "example.invalid/svc")
@@ -210,17 +293,18 @@ func TestBuiltInGoPreCommitVetsNestedModuleOfRepositoryWithoutRootModule(t *test
 	git(t, repo, "add", ".")
 	logPath := installFakeGo(t)
 
-	if code, stderr := runGoPreCommit(t, repo); code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr)
+	result, stderr := runGoPreCommitResult(t, repo)
+	if result.ExitCode != 0 {
+		t.Fatalf("exit %d: %s", result.ExitCode, stderr)
 	}
-	got := readFakeGoLog(t, logPath)
-	want := []string{filepath.Join(repo, "svc") + "|vet ."}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("go invocations\n got: %q\nwant: %q", got, want)
+	requireGoPreCommitBlockRan(t, result)
+	if got := readFakeGoLog(t, logPath); len(got) != 0 {
+		t.Fatalf("go ran in a repository with no root go.mod: %q", got)
 	}
 }
 
-func TestBuiltInGoPreCommitSkipsPackagesWhoseDirectoryIsGone(t *testing.T) {
+//nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
+func TestE2EBuiltInGoPreCommitSkipsPackagesWhoseDirectoryIsGone(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	writeGoModule(t, repo, "example.invalid/root")
 	writeGoFile(t, filepath.Join(repo, "svc", "a.go"), cleanGoBody)
@@ -230,9 +314,11 @@ func TestBuiltInGoPreCommitSkipsPackagesWhoseDirectoryIsGone(t *testing.T) {
 	}
 	logPath := installFakeGo(t)
 
-	if code, stderr := runGoPreCommit(t, repo); code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr)
+	result, stderr := runGoPreCommitResult(t, repo)
+	if result.ExitCode != 0 {
+		t.Fatalf("exit %d: %s", result.ExitCode, stderr)
 	}
+	requireGoPreCommitBlockRan(t, result)
 	if got := readFakeGoLog(t, logPath); len(got) != 0 {
 		t.Fatalf("go ran for a package that no longer exists: %q", got)
 	}
