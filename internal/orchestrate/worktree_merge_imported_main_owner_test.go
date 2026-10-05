@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runner"
 )
@@ -37,8 +39,8 @@ func (r *importedMainOwnerRunner) RunOpts(ctx context.Context, dir string, opts 
 
 func TestImportedMainOwnerExactReportContracts(t *testing.T) {
 	t.Parallel()
-	failed := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "native tool wire contract", "main.A", "main.B")
-	passed := quality.VerificationReport{Results: []quality.VerificationEntry{{Language: "go", Check: quality.CheckLint, Command: worktreeMergeDeadcodeCommand, Status: quality.StatusPassed, Module: "."}}}
+	failed := deadcodeFailureReport(mergevalidation.DeadcodeCommand, "native tool wire contract", "main.A", "main.B")
+	passed := quality.VerificationReport{Results: []quality.VerificationEntry{{Language: "go", Check: quality.CheckLint, Command: mergevalidation.DeadcodeCommand, Status: quality.StatusPassed, Module: "."}}}
 	for _, row := range []struct {
 		name         string
 		mutate       func(*quality.VerificationReport)
@@ -46,7 +48,7 @@ func TestImportedMainOwnerExactReportContracts(t *testing.T) {
 	}{
 		{"same", func(*quality.VerificationReport) {}, true, true},
 		{"foreign ignored", func(r *quality.VerificationReport) {
-			r.Results = append(r.Results, quality.VerificationEntry{Language: "other", Check: quality.CheckLint, Command: worktreeMergeDeadcodeCommand})
+			r.Results = append(r.Results, quality.VerificationEntry{Language: "other", Check: quality.CheckLint, Command: mergevalidation.DeadcodeCommand})
 		}, true, true},
 		{"duplicate", func(r *quality.VerificationReport) { r.Results = append(r.Results, r.Results[0]) }, false, false},
 		{"missing", func(r *quality.VerificationReport) { r.Results = nil }, false, false},
@@ -74,7 +76,7 @@ func TestImportedMainOwnerExactReportContracts(t *testing.T) {
 			d.Identities = append([]string(nil), d.Identities...)
 			current.Results[0].Deadcode = &d
 			row.mutate(&current)
-			if got := validImportedMainDeadcodeReport(current); got != row.valid {
+			if got := mergevalidation.ValidImportedMainDeadcodeReport(current); got != row.valid {
 				t.Fatalf("valid=%t want=%t %+v", got, row.valid, current)
 			}
 			if got := sameImportedMainDeadcodeEvidence(failed, current); got != row.equal {
@@ -82,13 +84,13 @@ func TestImportedMainOwnerExactReportContracts(t *testing.T) {
 			}
 		})
 	}
-	if !validImportedMainDeadcodeReport(passed) || !sameImportedMainDeadcodeEvidence(passed, passed) {
+	if !mergevalidation.ValidImportedMainDeadcodeReport(passed) || !sameImportedMainDeadcodeEvidence(passed, passed) {
 		t.Fatal("exact passed entry rejected")
 	}
 	withDeadcode := passed
 	withDeadcode.Results = append([]quality.VerificationEntry(nil), passed.Results...)
 	withDeadcode.Results[0].Deadcode = failed.Results[0].Deadcode
-	if !validImportedMainDeadcodeReport(withDeadcode) || sameImportedMainDeadcodeEvidence(passed, withDeadcode) || sameImportedMainDeadcodeEvidence(withDeadcode, passed) {
+	if !mergevalidation.ValidImportedMainDeadcodeReport(withDeadcode) || sameImportedMainDeadcodeEvidence(passed, withDeadcode) || sameImportedMainDeadcodeEvidence(withDeadcode, passed) {
 		t.Fatal("passed validity and nil-deadcode equality contracts collapsed")
 	}
 	plainFailed := failed
@@ -96,9 +98,6 @@ func TestImportedMainOwnerExactReportContracts(t *testing.T) {
 	plainFailed.Results[0].Deadcode = nil
 	if sameImportedMainDeadcodeEvidence(plainFailed, failed) || sameImportedMainDeadcodeEvidence(failed, plainFailed) {
 		t.Fatal("invalid failure compared equal")
-	}
-	if _, valid := importedMainDeadcodeIdentities(failed, quality.CheckLint, worktreeMergeDeadcodeCommand, "."); !valid {
-		t.Fatal("complete exact identity set lost")
 	}
 }
 

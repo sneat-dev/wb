@@ -1,4 +1,4 @@
-package orchestrate
+package mergevalidation
 
 import (
 	"errors"
@@ -11,10 +11,10 @@ import (
 )
 
 func worktreeMergeValidationRegression(baseline, candidate quality.VerificationReport) error {
-	return worktreeMergeValidationRegressionWithImportedMain(baseline, candidate, nil)
+	return RegressionWithImportedMain(baseline, candidate, nil)
 }
 
-func worktreeMergeValidationRegressionWithImportedMain(baseline, candidate quality.VerificationReport, imported *WorktreeMergeImportedMainDeadcode) error {
+func RegressionWithImportedMain(baseline, candidate quality.VerificationReport, imported *ImportedMainDeadcode) error {
 	baselineFailures := failedWorktreeMergeVerificationEntries(baseline)
 	candidateFailures := failedWorktreeMergeVerificationEntries(candidate)
 	if candidate.Status == quality.StatusFailed && len(candidateFailures) == 0 {
@@ -86,7 +86,7 @@ func worktreeMergeNonDeadcodeRegression(baseline, candidate quality.Verification
 	return worktreeMergeValidationRegression(baseline, candidate)
 }
 
-func worktreeMergeValidationWithImportedMainAttestation(baseline, candidate quality.VerificationReport, attest func() (*WorktreeMergeImportedMainDeadcode, error)) (*WorktreeMergeImportedMainDeadcode, error) {
+func WithImportedMainAttestation(baseline, candidate quality.VerificationReport, attest func() (*ImportedMainDeadcode, error)) (*ImportedMainDeadcode, error) {
 	targetErr := worktreeMergeValidationRegression(baseline, candidate)
 	if targetErr == nil {
 		return nil, nil
@@ -98,14 +98,14 @@ func worktreeMergeValidationWithImportedMainAttestation(baseline, candidate qual
 	if err != nil {
 		return nil, fmt.Errorf("attest imported main deadcode baseline: %w", err)
 	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, candidate, evidence); err != nil {
+	if err := RegressionWithImportedMain(baseline, candidate, evidence); err != nil {
 		return evidence, err
 	}
 	return evidence, nil
 }
 
-func matchImportedMainDeadcodeFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry, imported *WorktreeMergeImportedMainDeadcode) bool {
-	if imported == nil || candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != worktreeMergeDeadcodeCommand || !candidate.Deadcode.Valid() {
+func matchImportedMainDeadcodeFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry, imported *ImportedMainDeadcode) bool {
+	if imported == nil || candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != DeadcodeCommand || !candidate.Deadcode.Valid() {
 		return false
 	}
 	target, valid := worktreeMergeDeadcodeIdentitySet(baseline, candidate.Language, candidate.Check, candidate.Command, candidate.Module)

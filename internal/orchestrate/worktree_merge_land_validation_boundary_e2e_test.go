@@ -4,14 +4,16 @@ package orchestrate
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/progress"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // These faults change only the private candidate. Every positive Git and
@@ -425,7 +427,7 @@ func TestE2ELandValidationPreservedCandidateRejectsCorruptImportedMainIdentity(t
 	// The underlying prepared candidate and its real validation are untouched.
 	// Only untrusted persisted attestation metadata is malformed: this must
 	// never grant imported-main validation or authorize publication.
-	r.ImportedMainDeadcode = &WorktreeMergeImportedMainDeadcode{CandidateSHA: r.TargetSHA, TargetSHA: r.TargetSHA}
+	r.ImportedMainDeadcode = &mergevalidation.ImportedMainDeadcode{CandidateSHA: r.TargetSHA, TargetSHA: r.TargetSHA}
 	if r.Candidate.SHA == r.TargetSHA {
 		t.Fatal("actual prepared source must advance the native target")
 	}

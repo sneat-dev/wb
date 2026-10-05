@@ -9,31 +9,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
-const worktreeMergeDeadcodeCommand = "go run ./cmd/wb deadcode"
-
-// WorktreeMergeImportedMainDeadcode binds the one imported main parent to the
-// candidate and the exact target whose validation it may supplement.
-type WorktreeMergeImportedMainDeadcode struct {
-	CandidateSHA string `json:"candidate_sha"`
-	TargetSHA    string `json:"target_sha"`
-	MergeSHA     string `json:"merge_sha"`
-	ImportedSHA  string `json:"imported_sha"`
-	// OriginMainSHA is the authoritative main head at initial validation. It
-	// may be later than ImportedSHA; resumes require it to remain an ancestor
-	// of the freshly fetched authoritative main head.
-	OriginMainSHA string                     `json:"origin_main_sha"`
-	Validation    quality.VerificationReport `json:"validation"`
-}
-
-func worktreeMergeImportedMainDeadcode(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*WorktreeMergeImportedMainDeadcode, error) {
+func worktreeMergeImportedMainDeadcode(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*mergevalidation.ImportedMainDeadcode, error) {
 	return worktreeMergeImportedMainDeadcodeWithRunner(ctx, defaultRunner, receipt, timeout, retry, checkTimeout)
 }
 
-func worktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run runner.Runner, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*WorktreeMergeImportedMainDeadcode, error) {
+func worktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run runner.Runner, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*mergevalidation.ImportedMainDeadcode, error) {
 	path := receipt.Candidate.Worktree
 	mergeSHA, importedSHA, found, err := worktreeMergeImportedMainGraph(ctx, run, path, receipt.Candidate.SHA, receipt.TargetSHA)
 	if err != nil || !found {
@@ -47,7 +33,7 @@ func worktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run runner
 	if err != nil {
 		return nil, err
 	}
-	return &WorktreeMergeImportedMainDeadcode{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: attestedMainSHA, Validation: validation}, nil
+	return &mergevalidation.ImportedMainDeadcode{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: attestedMainSHA, Validation: validation}, nil
 }
 
 // worktreeMergeImportedMainGraph accepts only a linear candidate suffix above
@@ -111,7 +97,7 @@ func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, run runner.Run
 	}
 	configured := false
 	for _, command := range runOptions.GoLintCommands {
-		if strings.Join(command, " ") == worktreeMergeDeadcodeCommand {
+		if strings.Join(command, " ") == mergevalidation.DeadcodeCommand {
 			configured = true
 			break
 		}
@@ -122,30 +108,10 @@ func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, run runner.Run
 	runOptions.GoLintCommands = [][]string{{"go", "run", "./cmd/wb", "deadcode"}}
 	report := quality.VerifyWithOptions(ctx, repository, snapshot, []quality.Check{quality.CheckLint}, runOptions)
 	report.Path, report.Revision, report.WorkspaceClean = "git:"+importedSHA, importedSHA, true
-	if !validImportedMainDeadcodeReport(report) {
+	if !mergevalidation.ValidImportedMainDeadcodeReport(report) {
 		return report, errors.New("imported main deadcode validation is incomplete or did not run the exact configured command")
 	}
 	return report, nil
-}
-
-func validImportedMainDeadcodeReport(report quality.VerificationReport) bool {
-	entry, unique := importedMainDeadcodeEntry(report)
-	return unique && (entry.Status == quality.StatusPassed || (entry.Status == quality.StatusFailed && entry.Deadcode.Valid()))
-}
-
-func importedMainDeadcodeEntry(report quality.VerificationReport) (quality.VerificationEntry, bool) {
-	var match quality.VerificationEntry
-	count := 0
-	for _, entry := range report.Results {
-		if entry.Language == "go" && entry.Check == quality.CheckLint && entry.Command == worktreeMergeDeadcodeCommand {
-			match, count = entry, count+1
-		}
-	}
-	return match, count == 1
-}
-
-func importedMainDeadcodeIdentities(report quality.VerificationReport, check quality.Check, command, module string) (map[string]bool, bool) {
-	return worktreeMergeDeadcodeIdentitySet(report.Results, "go", check, command, module)
 }
 
 func verifyImportedMainLineage(ctx context.Context, run runner.Runner, repository, importedSHA, previousAttestedSHA string, retry int) (string, error) {
@@ -211,7 +177,7 @@ func recheckWorktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run
 	if evidence == nil {
 		return nil
 	}
-	if evidence.CandidateSHA != receipt.Candidate.SHA || evidence.TargetSHA != receipt.TargetSHA || evidence.OriginMainSHA == "" || evidence.Validation.Revision != evidence.ImportedSHA || !validImportedMainDeadcodeReport(evidence.Validation) {
+	if evidence.CandidateSHA != receipt.Candidate.SHA || evidence.TargetSHA != receipt.TargetSHA || evidence.OriginMainSHA == "" || evidence.Validation.Revision != evidence.ImportedSHA || !mergevalidation.ValidImportedMainDeadcodeReport(evidence.Validation) {
 		return errors.New("imported main deadcode evidence does not bind the exact candidate, target and imported main revision")
 	}
 	ioTimeout := timeout
@@ -241,7 +207,7 @@ func recheckWorktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run
 	return nil
 }
 
-func revalidateImportedMainDeadcodeEvidence(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt, evidence *WorktreeMergeImportedMainDeadcode, timeout time.Duration, retry int, checkTimeout time.Duration) error {
+func revalidateImportedMainDeadcodeEvidence(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt, evidence *mergevalidation.ImportedMainDeadcode, timeout time.Duration, retry int, checkTimeout time.Duration) error {
 	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, run, receipt.Repository, receipt.Candidate.Worktree, evidence.ImportedSHA, timeout, retry, checkTimeout)
 	if err != nil {
 		return err
@@ -253,8 +219,8 @@ func revalidateImportedMainDeadcodeEvidence(ctx context.Context, run runner.Runn
 }
 
 func sameImportedMainDeadcodeEvidence(previous, current quality.VerificationReport) bool {
-	old, oldOK := importedMainDeadcodeEntry(previous)
-	now, nowOK := importedMainDeadcodeEntry(current)
+	old, oldOK := mergevalidation.ImportedMainDeadcodeEntry(previous)
+	now, nowOK := mergevalidation.ImportedMainDeadcodeEntry(current)
 	if !oldOK || !nowOK || old.Module != now.Module || old.Status != now.Status {
 		return false
 	}

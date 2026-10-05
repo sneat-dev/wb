@@ -1,4 +1,4 @@
-package orchestrate
+package mergevalidation
 
 import (
 	"errors"
@@ -16,8 +16,8 @@ func TestValidationRegressionOwnerExactEvidenceSelection(t *testing.T) {
 	for _, name := range []string{"valid", "passed empty", "missing", "duplicate", "wrong language", "wrong module", "wrong command", "wrong check", "failed nil", "passed evidence", "incomplete", "count", "empty identity", "duplicate identity", "legacy same", "legacy changed", "first invalid", "first unknown", "unmatched baseline"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			candidate := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "same", "known.A").Results[0]
-			baseline := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "same", "known.A", "known.B").Results
+			candidate := deadcodeFailureReport(DeadcodeCommand, "same", "known.A").Results[0]
+			baseline := deadcodeFailureReport(DeadcodeCommand, "same", "known.A", "known.B").Results
 			wantSet, wantLegacy := false, false
 			switch name {
 			case "valid":
@@ -58,11 +58,11 @@ func TestValidationRegressionOwnerExactEvidenceSelection(t *testing.T) {
 			case "legacy changed":
 				baseline[0].Deadcode, baseline[0].Detail = nil, "different"
 			case "first invalid":
-				valid := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "same", "known.A").Results[0]
+				valid := deadcodeFailureReport(DeadcodeCommand, "same", "known.A").Results[0]
 				baseline[0].Deadcode.Complete = false
 				baseline = append(baseline, valid)
 			case "first unknown":
-				baseline[0] = deadcodeFailureReport(worktreeMergeDeadcodeCommand, "same", "other.C").Results[0]
+				baseline[0] = deadcodeFailureReport(DeadcodeCommand, "same", "other.C").Results[0]
 				wantSet = true
 			case "unmatched baseline":
 				other := baseline[0]
@@ -70,7 +70,7 @@ func TestValidationRegressionOwnerExactEvidenceSelection(t *testing.T) {
 				baseline = append([]quality.VerificationEntry{other}, baseline...)
 				wantSet, wantLegacy = true, true
 			}
-			set, ok := worktreeMergeDeadcodeIdentitySet(baseline, "go", quality.CheckLint, worktreeMergeDeadcodeCommand, ".")
+			set, ok := worktreeMergeDeadcodeIdentitySet(baseline, "go", quality.CheckLint, DeadcodeCommand, ".")
 			if ok != wantSet || (!ok && set != nil) {
 				t.Fatalf("exact selection = (%v, %t), want valid=%t", set, ok, wantSet)
 			}
@@ -89,9 +89,9 @@ func TestValidationRegressionOwnerImportedUnionAndMembership(t *testing.T) {
 	for _, name := range []string{"union", "nil imported", "wrong language", "wrong check", "wrong command", "invalid candidate", "absent target", "invalid parent", "unknown", "ambiguous parent"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			target := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "target", "target.A")
-			candidate := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "candidate", "target.A", "parent.B").Results[0]
-			imported := &WorktreeMergeImportedMainDeadcode{Validation: deadcodeFailureReport(worktreeMergeDeadcodeCommand, "parent", "parent.B")}
+			target := deadcodeFailureReport(DeadcodeCommand, "target", "target.A")
+			candidate := deadcodeFailureReport(DeadcodeCommand, "candidate", "target.A", "parent.B").Results[0]
+			imported := &ImportedMainDeadcode{Validation: deadcodeFailureReport(DeadcodeCommand, "parent", "parent.B")}
 			want := name == "union"
 			switch name {
 			case "nil imported":
@@ -176,8 +176,8 @@ func TestValidationRegressionOwnerMultisetAndDiagnosticOrder(t *testing.T) {
 			}
 		})
 	}
-	base := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "target", "known.A")
-	candidate := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "candidate", "new.Z", "known.A", "new.B")
+	base := deadcodeFailureReport(DeadcodeCommand, "target", "known.A")
+	candidate := deadcodeFailureReport(DeadcodeCommand, "candidate", "new.Z", "known.A", "new.B")
 	delta, ok := worktreeMergeDeadcodeTargetDelta(base.Results, candidate.Results[0])
 	if !ok || !reflect.DeepEqual(delta, []string{"new.Z", "new.B"}) {
 		t.Fatalf("candidate-order delta=(%v,%t)", delta, ok)
@@ -192,16 +192,16 @@ func TestValidationRegressionOwnerLazyAttestationPolicy(t *testing.T) {
 	for _, name := range []string{"covered", "ordinary failure", "mixed failure", "error", "partial refusal", "success", "nil evidence"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			base := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "target", "target.A")
-			candidate := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "candidate", "parent.B")
-			proof := &WorktreeMergeImportedMainDeadcode{Validation: deadcodeFailureReport(worktreeMergeDeadcodeCommand, "parent", "parent.B")}
+			base := deadcodeFailureReport(DeadcodeCommand, "target", "target.A")
+			candidate := deadcodeFailureReport(DeadcodeCommand, "candidate", "parent.B")
+			proof := &ImportedMainDeadcode{Validation: deadcodeFailureReport(DeadcodeCommand, "parent", "parent.B")}
 			ordinary := quality.VerificationEntry{Language: "node", Check: quality.CheckBuild, Command: "build", Status: quality.StatusFailed, Detail: "new"}
 			sentinel := errors.New("controlled attestation refusal")
 			calls := 0
 			wantCalls := 1
 			switch name {
 			case "covered":
-				candidate = deadcodeFailureReport(worktreeMergeDeadcodeCommand, "candidate", "target.A")
+				candidate = deadcodeFailureReport(DeadcodeCommand, "candidate", "target.A")
 				wantCalls = 0
 			case "ordinary failure":
 				candidate.Results = []quality.VerificationEntry{ordinary}
@@ -215,7 +215,7 @@ func TestValidationRegressionOwnerLazyAttestationPolicy(t *testing.T) {
 				proof = nil
 			}
 			before := append([]quality.VerificationEntry(nil), candidate.Results...)
-			got, err := worktreeMergeValidationWithImportedMainAttestation(base, candidate, func() (*WorktreeMergeImportedMainDeadcode, error) {
+			got, err := WithImportedMainAttestation(base, candidate, func() (*ImportedMainDeadcode, error) {
 				calls++
 				if name == "error" {
 					return proof, sentinel
@@ -275,7 +275,7 @@ func TestValidationRegressionOwnerFailureIdentityAndFiltering(t *testing.T) {
 			}
 		})
 	}
-	dead := deadcodeFailureReport(worktreeMergeDeadcodeCommand, "candidate", "new.A")
+	dead := deadcodeFailureReport(DeadcodeCommand, "candidate", "new.A")
 	passing := quality.VerificationEntry{Status: quality.StatusPassed, Language: "node", Command: "build"}
 	dead.Results = append(dead.Results, passing)
 	if !hasWorktreeMergeDeadcodeFailure(dead) || hasWorktreeMergeDeadcodeFailure(quality.VerificationReport{Results: []quality.VerificationEntry{passing}}) {

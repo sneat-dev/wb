@@ -5,13 +5,15 @@ package orchestrate
 import (
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/runner"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestE2EImportedMainOwnerNativeGraphBoundaryMatrix(t *testing.T) {
@@ -82,7 +84,7 @@ func TestE2EImportedMainOwnerNativeLineageStageRefusals(t *testing.T) {
 	if _, err := verifyImportedMainLineage(t.Context(), defaultRunner, dir, imported, unrelated, 0); err == nil || !strings.Contains(err.Error(), "initially attested") {
 		t.Fatalf("unrelated attestation=%v", err)
 	}
-	r := WorktreeMergeReceipt{TargetSHA: "target", Candidate: WorktreeMergeCandidate{SHA: "candidate", Worktree: dir}, ImportedMainDeadcode: &WorktreeMergeImportedMainDeadcode{}}
+	r := WorktreeMergeReceipt{TargetSHA: "target", Candidate: WorktreeMergeCandidate{SHA: "candidate", Worktree: dir}, ImportedMainDeadcode: &mergevalidation.ImportedMainDeadcode{}}
 	if err := recheckWorktreeMergeImportedMainDeadcodeWithRunner(t.Context(), defaultRunner, r, 0, 0, 0); err == nil || !strings.Contains(err.Error(), "does not bind") {
 		t.Fatalf("negative evidence accepted: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestE2EImportedMainOwnerInitialAndResumeEvidenceStages(t *testing.T) {
 	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
 	r := WorktreeMergeReceipt{Repository: "example.test/wb", TargetSHA: target, Candidate: WorktreeMergeCandidate{SHA: candidate, Worktree: dir}}
 	evidence, err := worktreeMergeImportedMainDeadcode(t.Context(), &r, 10*time.Second, 0, 5*time.Second)
-	if err != nil || evidence == nil || evidence.MergeSHA != merge || evidence.ImportedSHA != imported || !validImportedMainDeadcodeReport(evidence.Validation) {
+	if err != nil || evidence == nil || evidence.MergeSHA != merge || evidence.ImportedSHA != imported || !mergevalidation.ValidImportedMainDeadcodeReport(evidence.Validation) {
 		t.Fatalf("native graph/archive and controlled tool evidence=%+v %v", evidence, err)
 	}
 	r.ImportedMainDeadcode = evidence

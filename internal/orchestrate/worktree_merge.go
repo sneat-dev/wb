@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+
 	"github.com/sneat-dev/wb/internal/githubchecks"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
@@ -236,28 +238,28 @@ type WorktreeMergeHostLoadAdmission struct {
 }
 
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                                `json:"schema_version"`
-	ID                    string                             `json:"id"`
-	Lane                  string                             `json:"lane"`
-	Phase                 WorktreeMergePhase                 `json:"phase"`
-	Status                WorktreeMergeStatus                `json:"status"`
-	Repository            string                             `json:"repository"`
-	Target                string                             `json:"target"`
-	TargetSHA             string                             `json:"target_sha"`
-	Sources               []WorktreeMergeSource              `json:"sources"`
-	Candidate             WorktreeMergeCandidate             `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt        `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt        `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision         `json:"route,omitempty"`
-	PullRequest           string                             `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                             `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                             `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                             `json:"landing_sha,omitempty"`
-	CanonicalSync         string                             `json:"canonical_sync,omitempty"`
-	LocalSync             string                             `json:"local_sync,omitempty"`
-	Validation            quality.VerificationReport         `json:"validation,omitempty"`
-	BaselineValidation    quality.VerificationReport         `json:"baseline_validation,omitempty"`
-	ImportedMainDeadcode  *WorktreeMergeImportedMainDeadcode `json:"imported_main_deadcode,omitempty"`
+	SchemaVersion         int                                   `json:"schema_version"`
+	ID                    string                                `json:"id"`
+	Lane                  string                                `json:"lane"`
+	Phase                 WorktreeMergePhase                    `json:"phase"`
+	Status                WorktreeMergeStatus                   `json:"status"`
+	Repository            string                                `json:"repository"`
+	Target                string                                `json:"target"`
+	TargetSHA             string                                `json:"target_sha"`
+	Sources               []WorktreeMergeSource                 `json:"sources"`
+	Candidate             WorktreeMergeCandidate                `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt           `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt           `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision            `json:"route,omitempty"`
+	PullRequest           string                                `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                                `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                                `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                                `json:"landing_sha,omitempty"`
+	CanonicalSync         string                                `json:"canonical_sync,omitempty"`
+	LocalSync             string                                `json:"local_sync,omitempty"`
+	Validation            quality.VerificationReport            `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport            `json:"baseline_validation,omitempty"`
+	ImportedMainDeadcode  *mergevalidation.ImportedMainDeadcode `json:"imported_main_deadcode,omitempty"`
 	// ValidationDeferral is set exactly when local validation was skipped for
 	// the pull-request route rather than run. See
 	// WorktreeMergeValidationDeferral.
@@ -1853,7 +1855,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	lint := quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree, []quality.Check{quality.CheckLint}, runOptions)
 	lint.Revision = receipt.Candidate.SHA
 	lint.WorkspaceClean = true
-	var earlyImportedMain *WorktreeMergeImportedMainDeadcode
+	var earlyImportedMain *mergevalidation.ImportedMainDeadcode
 	if lint.Status == quality.StatusFailed {
 		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Started, shortMergeRevision(receipt.TargetSHA))
 		baselineLint, baselineErr := verifyWorktreeMergeTargetChecks(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry, checkTimeout, shardAttemptTimeout, []quality.Check{quality.CheckLint})
@@ -1862,7 +1864,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		}
 		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baselineLint.Status))
 		var regressionErr error
-		earlyImportedMain, regressionErr = worktreeMergeValidationWithImportedMainAttestation(baselineLint, lint, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		earlyImportedMain, regressionErr = mergevalidation.WithImportedMainAttestation(baselineLint, lint, func() (*mergevalidation.ImportedMainDeadcode, error) {
 			return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
 		})
 		if regressionErr != nil {
@@ -1902,7 +1904,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	receipt.BaselineValidation = baseline
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
 	receipt.ImportedMainDeadcode = nil
-	parentEvidence, regressionErr := worktreeMergeValidationWithImportedMainAttestation(baseline, receipt.Validation, func() (*WorktreeMergeImportedMainDeadcode, error) {
+	parentEvidence, regressionErr := mergevalidation.WithImportedMainAttestation(baseline, receipt.Validation, func() (*mergevalidation.ImportedMainDeadcode, error) {
 		if earlyImportedMain != nil {
 			return earlyImportedMain, nil
 		}
@@ -1912,7 +1914,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return regressionErr
 	}
 	receipt.ImportedMainDeadcode = parentEvidence
-	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, receipt.Validation, parentEvidence); err != nil {
+	if err := mergevalidation.RegressionWithImportedMain(baseline, receipt.Validation, parentEvidence); err != nil {
 		return err
 	}
 	return nil
@@ -2008,7 +2010,7 @@ func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt
 	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return fmt.Errorf("recheck imported main deadcode attestation before publish: %w", err)
 	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+	if err := mergevalidation.RegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
 		return fmt.Errorf("recheck candidate deadcode regression before publish: %w", err)
 	}
 	// Finding B1 (sneat-dev/wb#591): an exact PR-route deferral, or the
@@ -2067,7 +2069,7 @@ func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMe
 	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return false, err
 	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+	if err := mergevalidation.RegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
 		return false, nil
 	}
 	if deferral := receipt.ValidationDeferral; plan.Defer && receipt.Status == WorktreeMergePrepared && deferral != nil &&
