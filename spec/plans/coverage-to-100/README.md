@@ -660,6 +660,29 @@ creates a fresh genuine landed fixture for each row. Reusing one private sealed
 baseline with exact row restoration is a separate performance candidate; this
 checkpoint preserves that original witness unchanged.
 
+### Failure identity and CI diagnostic checkpoint
+
+Coverage and specification baseline matching now share a concrete identity-subset
+helper while retaining their distinct format, metadata and fallback policies.
+CI diagnostic parsing is grouped separately; annotation and finding caps share
+one rune-truncation helper that preserves their existing sanitization order.
+The remaining native/provider owners and original witness tests are unchanged.
+
+Twenty-four whole functions cover all 208 statements and every block, including
+closures, in a fresh passing scoped race run. All 27 selected groups passed.
+Pure fixtures run in parallel; Linux/Windows compilation, scoped vet, lint and
+specification lint also pass. An initial passing run exposed a redundant parser
+guard. Independent review proved that whitespace normalization and the fixed
+regex already prevent empty captures; the guard was removed, and explicit
+Unicode-whitespace, invalid-UTF8 and malformed-input contracts preserve that
+invariant. Only the fresh passing profile after this change qualifies it.
+
+All 240 previously accepted bodies remain unchanged. The bounded local ledger
+now contains 264 declarations and 4,611 covered statements. These source-bound
+cohorts are not a refreshed package or repository coverage percentage. The batch
+is independently reviewed and committed locally with normal hooks; publication
+remains deferred to the coordinated final boundary.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
