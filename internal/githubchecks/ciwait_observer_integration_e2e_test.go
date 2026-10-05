@@ -335,9 +335,12 @@ func TestE2ECIWaitDirectTargetHonorsPinnedRequiredCheckIntegration(t *testing.T)
 		wantStatus string
 		wantCode   int
 		slice      string
+		interval   string
 	}{
-		{name: "matching app", appID: "42", wantStatus: "passed", wantCode: exitOK, slice: "15s"},
-		{name: "same name wrong app", appID: "7", wantStatus: "pending", wantCode: exitFindings, slice: "5s"},
+		{name: "matching app", appID: "42", wantStatus: "passed", wantCode: exitOK, slice: "15s", interval: "100ms"},
+		// Producer identity needs one completed observation; the poll-budget
+		// guard then returns pending without incidental wall-clock polling.
+		{name: "same name wrong app", appID: "7", wantStatus: "pending", wantCode: exitFindings, slice: ciWaitSliceBudget.String(), interval: ciWaitSingleObservationInterval.String()},
 	} {
 		//nolint:paralleltest // Each real observer subtest replaces process PATH/cache/state environment.
 		t.Run(test.name, func(t *testing.T) {
@@ -368,7 +371,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 			writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			var stdout, stderr bytes.Buffer
-			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", "100ms", "--json"}, &stdout, &stderr)
+			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", test.interval, "--json"}, &stdout, &stderr)
 			var output githubchecks.PullRequestWaitResult
 			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 				t.Fatal(err)
@@ -391,9 +394,12 @@ func TestE2ECIWaitPullRequestHonorsPinnedRequiredCheckIntegration(t *testing.T) 
 		wantStatus string
 		wantCode   int
 		slice      string
+		interval   string
 	}{
-		{name: "matching app", appID: "42", wantStatus: "passed", wantCode: exitOK, slice: "15s"},
-		{name: "same name wrong app", appID: "7", wantStatus: "pending", wantCode: exitFindings, slice: "5s"},
+		{name: "matching app", appID: "42", wantStatus: "passed", wantCode: exitOK, slice: "15s", interval: "100ms"},
+		// Producer identity needs one completed observation; the poll-budget
+		// guard then returns pending without incidental wall-clock polling.
+		{name: "same name wrong app", appID: "7", wantStatus: "pending", wantCode: exitFindings, slice: ciWaitSliceBudget.String(), interval: ciWaitSingleObservationInterval.String()},
 	} {
 		//nolint:paralleltest // Each real observer subtest replaces process PATH/cache/state environment.
 		t.Run(test.name, func(t *testing.T) {
@@ -433,7 +439,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 			writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			var stdout, stderr bytes.Buffer
-			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", "100ms", "--json"}, &stdout, &stderr)
+			code := observeForTest(t, []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", test.interval, "--json"}, &stdout, &stderr)
 			var output githubchecks.PullRequestWaitResult
 			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 				t.Fatal(err)
