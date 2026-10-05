@@ -237,24 +237,16 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 		}
 
 		requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason := ops.required(sliceCtx, options, &policyCache)
-		if authorityReason != "" {
-			if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
-				return pendingCommitWaitResult(result), nil
-			}
-			result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + authorityReason
+		if !adoptCommitCheckPolicy(sliceCtx, &result, requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason) {
 			return pendingCommitWaitResult(result), nil
 		}
-		result.RequiredChecks = requiredChecks
-		result.RequiredChecksAuthority = authority
-		result.TargetFreshnessAuthority = freshnessAuthority
-		result.PolicyAuthorityUnavailable = policyUnavailable
 		if options.ExpectedActionChecks != nil {
 			checks = relevantExpectedActionChecks(checks, options.ExpectedActionChecks, requiredChecks)
 			result.Checks = checks
 			pending = false
 			if failedObservedChecks(checks, &pending) {
 				failedResult := failedCommitWaitResult(result, "observed required or expected GitHub checks failed or were cancelled")
-				failedResult.FailureDetails = failedCheckDetails(sliceCtx, options.Repository, checks)
+				failedResult.FailureDetails = ops.failureDetails(sliceCtx, options.Repository, checks)
 				reportPullRequestWaitProgress(options, observations, failedResult, 0)
 				return failedResult, nil
 			}
@@ -331,17 +323,9 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 			// requests from every pending poll, but a pass must still be based on
 			// a fresh authority receipt in case policy changed during the slice.
 			requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason = ops.required(sliceCtx, options, nil)
-			if authorityReason != "" {
-				if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
-					return pendingCommitWaitResult(result), nil
-				}
-				result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + authorityReason
+			if !adoptCommitCheckPolicy(sliceCtx, &result, requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason) {
 				return pendingCommitWaitResult(result), nil
 			}
-			result.RequiredChecks = requiredChecks
-			result.RequiredChecksAuthority = authority
-			result.TargetFreshnessAuthority = freshnessAuthority
-			result.PolicyAuthorityUnavailable = policyUnavailable
 			if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 				return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 			}
@@ -446,12 +430,9 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 		timer := time.NewTimer(nextObservation)
 		select {
 		case <-sliceCtx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			// This timer belongs only to this observation. Cancellation returns
+			// immediately, so no later receiver can need a buffered value drained.
+			timer.Stop()
 			if sliceCtx.Err() == context.DeadlineExceeded {
 				return pendingCommitWaitResult(result), nil
 			}
@@ -459,6 +440,24 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 		case <-timer.C:
 		}
 	}
+}
+
+// adoptCommitCheckPolicy applies one complete policy receipt. A failed read
+// leaves the prior policy fields intact; expiry also preserves an existing
+// observation reason. Freshness refusal stays with the caller because expected
+// checks must report their failure before the cached receipt's freshness fence.
+func adoptCommitCheckPolicy(ctx context.Context, result *PullRequestWaitResult, required []RequiredRemoteCheck, authority, freshnessAuthority, policyUnavailable, reason string) bool {
+	if reason != "" {
+		if ctx.Err() != context.DeadlineExceeded || strings.TrimSpace(result.Reason) == "" {
+			result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + reason
+		}
+		return false
+	}
+	result.RequiredChecks = required
+	result.RequiredChecksAuthority = authority
+	result.TargetFreshnessAuthority = freshnessAuthority
+	result.PolicyAuthorityUnavailable = policyUnavailable
+	return true
 }
 
 func reportPullRequestWaitProgress(options PullRequestWaitOptions, observation int, result PullRequestWaitResult, nextPoll time.Duration) {

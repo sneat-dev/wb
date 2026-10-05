@@ -343,3 +343,48 @@ echo "unexpected gh args: $*" >&2; exit 30
 		t.Fatalf("result = %+v, want a pending receipt", result)
 	}
 }
+
+func TestExactCommitWaitPreservesObservationAcrossPolicyExpiry(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"first policy", "cached policy", "final policy", "poll"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			deadlineCtx := newTriggerContext(context.Background())
+			defer deadlineCtx.trigger()
+			var observationCtx context.Context
+			ops.targetHead = func(ctx context.Context, _, _ string) (string, string) { observationCtx = ctx; return "head", "" }
+			policyCalls := 0
+			ops.required = func(ctx context.Context, _ PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				policyCalls++
+				if stage == "first policy" || stage == "cached policy" && policyCalls == 2 || stage == "final policy" && cache == nil {
+					// Wait for derived cancellation propagation before returning the failed read.
+					// The child context is a real WithDeadline context, not a timer fake.
+					deadlineCtx.trigger()
+					<-ctx.Done()
+					return nil, "discarded", "discarded", "discarded", "expired policy read"
+				}
+				return []RequiredRemoteCheck{{Name: "build"}}, "ruleset", "strict", "", ""
+			}
+			if stage == "poll" {
+				options.Progress = func(event PullRequestWaitProgress) {
+					if event.NextPoll > 0 {
+						deadlineCtx.trigger()
+						<-observationCtx.Done()
+					}
+				}
+			}
+			result, err := waitForCommitChecksWith(deadlineCtx, options, ops)
+			wantReason := "terminal checks require one unchanged foreground reread"
+			if stage == "first policy" {
+				wantReason = "authority is unavailable"
+			}
+			if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, wantReason) {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+			if stage != "first policy" && (result.RequiredChecksAuthority != "ruleset" || result.TargetFreshnessAuthority != "strict" || len(result.RequiredChecks) != 1 || result.RequiredChecks[0].Name != "build") {
+				t.Fatalf("prior complete policy receipt lost: %+v", result)
+			}
+		})
+	}
+}

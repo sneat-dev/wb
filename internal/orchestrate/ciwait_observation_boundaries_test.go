@@ -2,9 +2,12 @@ package orchestrate
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 func exactWaitFixture() (PullRequestWaitOptions, commitChecksWaitOps) {
@@ -31,6 +34,7 @@ func TestExactCommitWaitRejectsInvalidObservationWindow(t *testing.T) {
 		change func(*PullRequestWaitOptions)
 		want   string
 	}{
+		{"invalid slice", func(options *PullRequestWaitOptions) { options.Slice = 0 }, "check wait slice must be positive"},
 		{"missing exact identity", func(options *PullRequestWaitOptions) { options.Head = " " }, "repository, target, and exact head are required"},
 		{"nonpositive interval", func(options *PullRequestWaitOptions) { options.CheckPollInterval = 0 }, "check poll interval must be positive"},
 		{"interval consumes slice", func(options *PullRequestWaitOptions) { options.CheckPollInterval = options.Slice }, "shorter than the foreground slice"},
@@ -105,6 +109,36 @@ func TestExactCommitWaitRefusesDriftAndUnreadableObservations(t *testing.T) {
 				return nil, "ruleset", "", "", ""
 			}
 		}, PullRequestWaitFailed, "no nonempty server-enforced"},
+		{
+			"transient PR identity", true, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+				ops.pullRequestIdentity = func(context.Context, string, string) (string, string, string) {
+					return "", "", githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+			}, PullRequestWaitPending, "pending"},
+		{
+			"transient PR target", true, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+				ops.targetHead = func(context.Context, string, string) (string, string) {
+					return "", githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+			}, PullRequestWaitPending, "pending"},
+		{
+			"transient PR containment", true, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+				ops.containsTarget = func(context.Context, string, string, string) (bool, string) {
+					return false, githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+			}, PullRequestWaitPending, "pending"},
+		{
+			"transient direct target", false, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+				ops.targetHead = func(context.Context, string, string) (string, string) {
+					return "", githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+			}, PullRequestWaitPending, "pending"},
+		{
+			"transient checks", false, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+				ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+					return nil, false, githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+			}, PullRequestWaitPending, "pending"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,13 +158,53 @@ func TestExactCommitWaitRefusesDriftAndUnreadableObservations(t *testing.T) {
 
 func TestExactCommitWaitRecordsFailedCheckDetails(t *testing.T) {
 	t.Parallel()
-	options, ops := exactWaitFixture()
-	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
-		return []RemoteCheck{{Name: "check-run:build", Bucket: "fail"}}, false, ""
-	}
-	result, err := waitForCommitChecksWith(context.Background(), options, ops)
-	if err != nil || result.Status != PullRequestWaitFailed || len(result.FailureDetails) != 1 || !strings.Contains(result.Reason, "failed or were cancelled") {
-		t.Fatalf("result=%+v error=%v", result, err)
+	for _, expectedMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expected=%t", expectedMode), func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			trace := []string{}
+			checks := []RemoteCheck{{Name: "check-run:security", Bucket: "fail", Conclusion: "failure"}}
+			if expectedMode {
+				options.PullRequest = "7"
+				options.ExpectedActionChecks = &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 7, PullRequestBase: "main", Names: []string{"build"}}
+				checks = append(checks,
+					RemoteCheck{Name: "check-run:build", Bucket: "pass", Conclusion: "success", WorkflowID: 300, WorkflowEvent: "pull_request", WorkflowRunID: 15, PullRequestNumber: 7, PullRequestBase: "main"},
+					RemoteCheck{Name: "check-run:unrelated", Bucket: "fail"})
+				ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+					trace = append(trace, "policy")
+					// Failure diagnosis precedes freshness refusal even when this fence is missing.
+					return []RequiredRemoteCheck{{Name: "security"}}, "ruleset", "", "", ""
+				}
+			}
+			ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) { return checks, false, "" }
+			ops.failureDetails = func(_ context.Context, _ string, selected []RemoteCheck) []CIFailureDetail {
+				trace = append(trace, "details")
+				for _, check := range selected {
+					if check.Name == "check-run:unrelated" {
+						t.Fatal("unrelated failure reached diagnosis")
+					}
+				}
+				return []CIFailureDetail{{Check: "security", Reason: "diagnosed"}}
+			}
+			options.Progress = func(event PullRequestWaitProgress) {
+				if event.Result.Status == PullRequestWaitFailed {
+					trace = append(trace, "failed-progress")
+				} else {
+					trace = append(trace, "progress")
+				}
+			}
+			result, err := waitForCommitChecksWith(context.Background(), options, ops)
+			wantTrace := "progress,details,failed-progress"
+			if expectedMode {
+				wantTrace = "progress,policy,details,failed-progress"
+			}
+			if err != nil || result.Status != PullRequestWaitFailed || len(result.FailureDetails) != 1 || result.FailureDetails[0].Reason != "diagnosed" || !strings.Contains(result.Reason, "failed or were cancelled") || strings.Join(trace, ",") != wantTrace {
+				t.Fatalf("result=%+v error=%v trace=%v, want %s", result, err, trace, wantTrace)
+			}
+			if expectedMode && (result.RequiredChecksAuthority != "ruleset" || len(result.RequiredChecks) != 1 || result.RequiredChecks[0].Name != "security") {
+				t.Fatalf("policy not adopted before diagnosis: %+v", result)
+			}
+		})
 	}
 }
 
@@ -245,6 +319,45 @@ func TestExactCommitWaitRefusesLateAuthorityAndIdentityLoss(t *testing.T) {
 		status PullRequestWaitStatus
 		want   string
 	}{
+		{"final freshness lost", true, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			ops.required = func(_ context.Context, _ PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				freshness := "strict"
+				if cache == nil {
+					freshness = ""
+				}
+				return []RequiredRemoteCheck{{Name: "build"}}, "ruleset", freshness, "", ""
+			}
+		}, PullRequestWaitFailed, "no nonempty server-enforced"},
+		{"final transient PR identity", true, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			calls := 0
+			ops.pullRequestIdentity = func(context.Context, string, string) (string, string, string) {
+				calls++
+				if calls >= 3 {
+					return "", "", githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+				return "head", "main", ""
+			}
+		}, PullRequestWaitPending, "terminal checks require"},
+		{"final transient PR target", true, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			calls := 0
+			ops.targetHead = func(context.Context, string, string) (string, string) {
+				calls++
+				if calls >= 3 {
+					return "", githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+				return "head", ""
+			}
+		}, PullRequestWaitPending, "terminal checks require"},
+		{"final transient direct target", false, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
+			calls := 0
+			ops.targetHead = func(context.Context, string, string) (string, string) {
+				calls++
+				if calls >= 3 {
+					return "", githubobserver.ErrTransientRetriesExhausted.Error()
+				}
+				return "head", ""
+			}
+		}, PullRequestWaitPending, "terminal checks require"},
 		{"final policy unavailable", false, func(_ *PullRequestWaitOptions, ops *commitChecksWaitOps) {
 			ops.required = func(_ context.Context, _ PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
 				if cache == nil {
@@ -363,6 +476,109 @@ func TestExactCommitWaitExplainsEachTerminalReceiptMode(t *testing.T) {
 			result, err := waitForCommitChecksWith(context.Background(), options, ops)
 			if err != nil || result.Status != PullRequestWaitPassed || !strings.Contains(result.Reason, tc.want) {
 				t.Fatalf("result=%+v error=%v, want passed reason containing %q", result, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExactCommitWaitStopsCancelledObservationAndPoll(t *testing.T) {
+	t.Parallel()
+	for _, atPoll := range []bool{false, true} {
+		t.Run(fmt.Sprintf("poll=%t", atPoll), func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if atPoll {
+				options.Progress = func(event PullRequestWaitProgress) {
+					if event.NextPoll > 0 {
+						cancel()
+					}
+				}
+			} else {
+				cancel()
+			}
+			result, err := waitForCommitChecksWith(ctx, options, ops)
+			if err != nil || result.Status != PullRequestWaitFailed || result.Reason != context.Canceled.Error() {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestExactCommitWaitReturnsPendingForExpiredObservation(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancel)
+	result, err := waitForCommitChecksWith(ctx, options, ops)
+	if err != nil || result.Status != PullRequestWaitPending || result.ObservedHead != "" {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+}
+
+func TestExactCommitWaitNamesExpectedJobsThatAreMissingOrRejected(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rejected=%t", rejected), func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			options.Slice, options.CheckPollInterval = time.Second, 900*time.Millisecond
+			options.ExpectedActionChecks = &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 7, PullRequestBase: "main", Names: []string{"build"}}
+			ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				return nil, "ruleset", "", "", ""
+			}
+			ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+				if rejected {
+					return []RemoteCheck{{Name: "check-run:build", Bucket: "fail", Conclusion: "failure", WorkflowID: 300, WorkflowEvent: "pull_request", WorkflowRunID: 15, PullRequestNumber: 7, PullRequestBase: "main"}}, false, ""
+				}
+				return nil, false, ""
+			}
+			result, err := waitForCommitChecksWith(context.Background(), options, ops)
+			wantStatus, wantReason := PullRequestWaitPending, "expected Actions jobs have not registered"
+			if rejected {
+				wantStatus, wantReason = PullRequestWaitFailed, "expected CI jobs did not execute successfully"
+			}
+			if err != nil || result.Status != wantStatus || !strings.Contains(result.Reason, wantReason) {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestExactCommitWaitAdoptsFreshPolicyBeforeFinalIdentity(t *testing.T) {
+	t.Parallel()
+	for _, pr := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pr=%t", pr), func(t *testing.T) {
+			t.Parallel()
+			options, ops := exactWaitFixture()
+			if pr {
+				options.PullRequest = "7"
+			}
+			trace := []string{}
+			ops.required = func(_ context.Context, _ PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+				if cache == nil {
+					trace = append(trace, "fresh-policy")
+				} else {
+					trace = append(trace, "cached-policy")
+				}
+				return []RequiredRemoteCheck{{Name: "build"}}, "ruleset", "strict", "", ""
+			}
+			ops.pullRequestIdentity = func(context.Context, string, string) (string, string, string) {
+				trace = append(trace, "pr")
+				return "head", "main", ""
+			}
+			ops.targetHead = func(context.Context, string, string) (string, string) {
+				trace = append(trace, "target")
+				return "head", ""
+			}
+			result, err := waitForCommitChecksWith(context.Background(), options, ops)
+			wantSuffix := "fresh-policy,target"
+			if pr {
+				wantSuffix = "fresh-policy,pr,target"
+			}
+			if err != nil || result.Status != PullRequestWaitPassed || !strings.HasSuffix(strings.Join(trace, ","), wantSuffix) || result.RequiredChecksAuthority != "ruleset" || result.TargetFreshnessAuthority != "strict" {
+				t.Fatalf("result=%+v error=%v trace=%v", result, err, trace)
 			}
 		})
 	}

@@ -984,6 +984,12 @@ type OperationLock struct {
 // unheld remnant is reclaimable only by an explicit resume and only when its
 // descriptor proves exact ownership of this operation.
 func AcquireOperationLock(githubDir, operation string, resume bool) (OperationLock, error) {
+	return acquireOperationLockWithMetadataInitializer(githubDir, operation, resume, initializeOperationLockMetadata)
+}
+
+// initialize owns metadata IO only; it must not release or preserve the candidate.
+// Acquisition, interrupted-owner validation, and cleanup retain native lock custody.
+func acquireOperationLockWithMetadataInitializer(githubDir, operation string, resume bool, initialize func(OperationLock, string) error) (OperationLock, error) {
 	home, err := wbhome.EnsureRoot(githubDir)
 	if err != nil {
 		return OperationLock{}, err
@@ -1012,28 +1018,40 @@ func AcquireOperationLock(githubDir, operation string, resume bool) (OperationLo
 		}
 		return OperationLock{directory: directory, lock: lock}, nil
 	}
-	file := lock.File()
-	if file == nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, fmt.Errorf("initialize operation %q lock: descriptor is unavailable", operation)
+	candidate := OperationLock{directory: directory, lock: lock}
+	if err := initialize(candidate, operation); err != nil {
+		_ = candidate.Release()
+		return OperationLock{}, err
 	}
+	return candidate, nil
+}
+
+func initializeOperationLockMetadata(candidate OperationLock, operation string) error {
+	file := candidate.lock.File()
+	if file == nil {
+		return fmt.Errorf("initialize operation %q lock: descriptor is unavailable", operation)
+	}
+	return writeOperationLockMetadata(file, operation)
+}
+
+// operationLockMetadataFile describes only initialization IO, not lock ownership.
+type operationLockMetadataFile interface {
+	Truncate(int64) error
+	Seek(int64, int) (int64, error)
+	Write([]byte) (int, error)
+}
+
+func writeOperationLockMetadata(file operationLockMetadataFile, operation string) error {
 	if err := file.Truncate(0); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, fmt.Errorf("initialize operation %q lock: %w", operation, err)
+		return fmt.Errorf("initialize operation %q lock: %w", operation, err)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, err
+		return err
 	}
 	if _, err := fmt.Fprintf(file, "operation=%s\npid=%d\n", operation, os.Getpid()); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, err
+		return err
 	}
-	return OperationLock{directory: directory, lock: lock}, nil
+	return nil
 }
 
 func operationLockAcquisitionError(operation string, err error) error {
