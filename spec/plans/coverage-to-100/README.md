@@ -623,6 +623,43 @@ the local checkpoint. All 227 prior accepted bodies remain source-identical;
 the bounded local ledger becomes 234 declarations and 4,284 statements. This
 is not refreshed repository coverage or remote publication.
 
+### Terminal recovery and canonical-sync checkpoint
+
+Terminal cleanup recovery, canonical synchronization, task ordering and terminal
+expectation construction now form one cohesive producer. The existing Runner
+is passed per synchronization invocation through real branch, cleanliness,
+revision, fetch, fast-forward and ancestry observations. The native wrapper
+retains both Land and PR landing consumers. A concrete equality/dedup/append
+helper is shared by the actual source and rebatch expectation loops, preserving
+their distinct Base values, original identity-error order and nil-on-conflict
+result. Terminal recovery and task ordering remain byte-identical.
+
+Six whole functions cover all 119 statements and every block, including
+closures, in a fresh passing scoped race run. Nine selected groups passed in
+116.848 seconds. Native fixtures prove actual target updates, dirty/diverged
+refusals, notification conditions, retained post-HEAD-error ancestry observation,
+terminal/claim/outbox validation, missing-cleanup acknowledgement, partial
+recovery and an actual receipt-destination refusal. Positive custody and cleanup
+evidence remains native. No proof/save callbacks or production guard deletion
+were added; provider environment fixtures stay serial, independently rooted
+native Git and pure contracts run in parallel.
+
+Early compilation caught two orphan imports after extraction; removing exactly
+those imports changes no declaration body. A protected-source manifest had also
+collapsed two receiver methods with the same short name. Its immutable repair
+records all 100 remaining main declarations, including the unchanged LandOptions
+resolver; the full original main complement was already protected. Linux/Windows
+compilation, scoped vet, lint and specification lint passed on the repaired source.
+All 234 prior accepted bodies remain unchanged, bringing the bounded local ledger
+to 240 declarations and 4,403 statements. Independent final review and normal
+hooks precede the local checkpoint; this is not refreshed repository coverage
+or remote publication.
+
+The retained seven-row incomplete-evidence refusal test takes 82.12 seconds and
+creates a fresh genuine landed fixture for each row. Reusing one private sealed
+baseline with exact row restoration is a separate performance candidate; this
+checkpoint preserves that original witness unchanged.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
