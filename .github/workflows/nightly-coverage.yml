@@ -20,8 +20,8 @@ concurrency:
 
 jobs:
   coverage:
-    name: Full merged coverage (main)
-    if: github.ref == 'refs/heads/main'
+    name: Full merged coverage
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Matches go-ci.yml's coverage budget: internal/orchestrate joined the
     # sharded package list in #578 (it was over 15 minutes unsharded), and
@@ -91,7 +91,7 @@ jobs:
           --module .
           --repo "${{ github.repository }}"
           --sha "${{ steps.revision.outputs.sha }}"
-          --ref refs/heads/main
+          --ref "${{ github.ref }}"
           --workflow-run-id "${{ github.run_id }}"
           --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           --out coverage-summary.json
