@@ -95,6 +95,11 @@ func TestE2EOwnerRecordsNativeFailedAndMalformedTurns(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			t.Parallel()
 			store, record, deps := ownerBoundaryRun(t)
+			// These cases exercise transcript failures, not the job deadline.
+			record.TimeoutMS = 0
+			if err := store.Save(record); err != nil {
+				t.Fatal(err)
+			}
 			script := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"turn.failed\"}'\nexit 3\n"
 			want := "harness reported a failed turn"
 			limit := int64(maxLogBytes)
@@ -112,7 +117,9 @@ func TestE2EOwnerRecordsNativeFailedAndMalformedTurns(t *testing.T) {
 				t.Fatal(err)
 			}
 			deps.LookPath = func(string) (string, error) { return path, nil }
-			if err := runOwnerWithSave(context.Background(), store, record.AgentID, deps, store.Save, limit); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+			if err := runOwnerWithSave(ctx, store, record.AgentID, deps, store.Save, limit); err != nil {
 				t.Fatal(err)
 			}
 			loaded, err := store.Load(record.AgentID)
