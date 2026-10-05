@@ -128,7 +128,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	}
 	if budget > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, budget)
+		ctx, cancel = context.WithTimeoutCause(ctx, budget, errLogicalCheckTimeout)
 		defer cancel()
 	}
 	if err := ctx.Err(); err != nil {
@@ -146,7 +146,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	unitOptions.coverPackages = packages
 	output, attempts, err := runCoverageWithOptions(ctx, unitOptions, module, unitProfile)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return output, attempts, ctxErr
+		return output, attempts, errors.Join(ctxErr, err)
 	}
 	if err != nil {
 		return output, attempts, err
@@ -163,7 +163,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	nativeOutput, _, err := runGoCoverageCommand(ctx, nativeOptions, module, nativeProfile, arguments)
 	output += "\n[native E2E and contract tests]\n" + nativeOutput
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return output, attempts, ctxErr
+		return output, attempts, errors.Join(ctxErr, err)
 	}
 	if err != nil {
 		return output, attempts, err
@@ -175,20 +175,78 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 // A failure is final unless options carries a redBaseRecorder that accepts
 // it, which only a merge-base measurement ever does.
 func runGoCoverageCommand(ctx context.Context, options RunOptions, module, profilePath string, arguments []string) (string, int, error) {
+	return runGoCoverageCommandWithAttempt(ctx, options, module, profilePath, arguments, nativeCoverageAttempt{run: runWithEnv})
+}
+
+func runGoCoverageCommandWithAttempt(ctx context.Context, options RunOptions, module, profilePath string, arguments []string, attempt nativeCoverageAttempt) (string, int, error) {
 	canonical, err := runCoverageDiscoveryCommand(ctx, options.Timeout, "resolve native coverage scope", func(discoveryCtx context.Context) ([]string, error) {
 		return resolveNativeCoveragePackages(discoveryCtx, module, options.Env, arguments, nil, nil)
 	})
 	if err != nil {
+		if options.CoverageDiagnosticsDir != "" {
+			err = &coverageCommandError{cause: err}
+		}
 		return "", 0, err
 	}
 	environment := nativeCoverageEnvironment(options.Env, canonical)
+	started := time.Now()
+	var timeoutSource string
 	output, attempts, err := runCommandAttempts(ctx, options.Timeout, options.Retry, func(attemptCtx context.Context) (string, error) {
-		return (nativeCoverageAttempt{run: runWithEnv}).execute(attemptCtx, module, environment, profilePath, arguments)
+		output, err := attempt.execute(attemptCtx, module, environment, profilePath, arguments)
+		timeoutSource = coverageCommandTimeoutSource(ctx, attemptCtx, output, err)
+		return output, err
 	})
+	result := goCoverageJobResult{output: output, err: err, attempts: attempts, elapsed: time.Since(started), timeoutSource: timeoutSource}
 	if err != nil && !isNativeCoverageFailure(err) && options.redBase.accept(goTestExitCode(err), output, profilePath) {
 		err = nil
 	}
+	if result.err != nil && options.CoverageDiagnosticsDir != "" {
+		phase := "unsharded"
+		for _, argument := range arguments {
+			if argument == "-tags=e2e" {
+				phase = "native"
+			}
+		}
+		sink := newCoverageDiagnosticsSink(options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, module)
+		sink.stem += "-" + phase
+		manifestPath := filepath.Join(sink.directory, "coverage-diagnostics-"+sink.stem+".yaml")
+		if diagnosticErr := sink.persist(0, goCoverageJob{label: phase + " coverage"}, result); diagnosticErr != nil {
+			err = errors.Join(err, fmt.Errorf("write coverage diagnostics: %w", diagnosticErr))
+			manifestPath = ""
+		}
+		if err != nil {
+			err = &coverageCommandError{cause: err, manifestPath: manifestPath}
+		}
+	}
 	return output, attempts, err
+}
+
+// coverageCommandError binds a failure report to this invocation's manifest.
+// An empty path means publication failed, so stale manifests must not be read.
+type coverageCommandError struct {
+	cause        error
+	manifestPath string
+}
+
+func (failure *coverageCommandError) Error() string { return failure.cause.Error() }
+func (failure *coverageCommandError) Unwrap() error { return failure.cause }
+
+func coverageCommandTimeoutSource(ctx, attemptCtx context.Context, output string, err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(context.Cause(ctx), errLogicalCheckTimeout):
+		return "check"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "caller"
+	case errors.Is(ctx.Err(), context.Canceled):
+		return "caller-cancelled"
+	case errors.Is(attemptCtx.Err(), context.DeadlineExceeded), strings.Contains(output, "panic: test timed out after "):
+		return "attempt"
+	default:
+		return ""
+	}
 }
 
 func appendCoverageInstrumentation(arguments, packages []string) []string {
@@ -608,7 +666,10 @@ func coverageDiagnosticStem(repository, module string) string {
 }
 
 func coverageDiagnosticFor(directory, repository, module string) *CoverageDiagnostic {
-	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml")
+	return coverageDiagnosticFromPath(filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml"))
+}
+
+func coverageDiagnosticFromPath(manifestPath string) *CoverageDiagnostic {
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil

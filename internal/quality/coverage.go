@@ -6,6 +6,7 @@ package quality
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -109,7 +110,12 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			report.Status = StatusFailed
 			report.Error = commandError(command, output, err)
 			if options.CoverageDiagnosticsDir != "" {
-				report.Diagnostic = coverageDiagnosticFor(options.CoverageDiagnosticsDir, repository, module)
+				var commandFailure *coverageCommandError
+				if errors.As(err, &commandFailure) {
+					report.Diagnostic = coverageDiagnosticFromPath(commandFailure.manifestPath)
+				} else {
+					report.Diagnostic = coverageDiagnosticFor(options.CoverageDiagnosticsDir, repository, module)
+				}
 			}
 			reportQualityProgress(options, Progress{
 				Language: "go", Module: relativePath(path, module), Check: CheckTest,
