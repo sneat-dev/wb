@@ -14,9 +14,9 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-//nolint:paralleltest // newEngineFixture calls t.Setenv to isolate this native Git journey.
 func TestE2EValidationFailedSupersessionSourceRequiresImmutableClaimBase(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	source := createMergeSource(t, fixture, "source-base-guard", "feature/source-base-guard", "source.txt", "source\n")
 	view, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: source.WorktreeDir})
 	if err != nil || view.Claim == nil {
@@ -56,14 +56,14 @@ func TestE2EValidationFailedSupersessionSourceRequiresImmutableClaimBase(t *test
 	}
 	receipt := WorktreeMergeReceipt{Repository: claim.Repository, Target: "main"}
 	input := WorktreeMergeSource{Task: view.Claim.Task, Worktree: source.WorktreeDir, Branch: source.Branch, SHA: strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))}
-	if _, _, err := validateValidationFailedSupersessionSource(context.Background(), fixture.githubDir, receipt, input); err == nil || !strings.Contains(err.Error(), "no immutable claim base") {
+	if _, _, err := validateValidationFailedSupersessionSourceWithRunner(context.Background(), defaultRunner, fixture.githubDir, receipt, input); err == nil || !strings.Contains(err.Error(), "no immutable claim base") {
 		t.Fatalf("missing claim base accepted: %v", err)
 	}
 }
 
-//nolint:paralleltest // newEngineFixture calls t.Setenv to isolate this native Git journey.
 func TestE2EValidationFailedSupersessionSourceRequiresRecordedRootAfterClaimBase(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	oldHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
 	writeEngineFile(t, filepath.Join(fixture.canonical, "new-base.txt"), "new base\n")
 	runEngineGit(t, fixture.canonical, "add", "new-base.txt")
@@ -76,7 +76,7 @@ func TestE2EValidationFailedSupersessionSourceRequiresRecordedRootAfterClaimBase
 	}
 	receipt := WorktreeMergeReceipt{Repository: view.Claim.Repository, Target: "main"}
 	input := WorktreeMergeSource{Task: view.Claim.Task, Worktree: source.WorktreeDir, Branch: source.Branch, SHA: oldHead}
-	if _, _, err := validateValidationFailedSupersessionSource(context.Background(), fixture.githubDir, receipt, input); err == nil || !strings.Contains(err.Error(), "does not descend from immutable claim base") {
+	if _, _, err := validateValidationFailedSupersessionSourceWithRunner(context.Background(), defaultRunner, fixture.githubDir, receipt, input); err == nil || !strings.Contains(err.Error(), "does not descend from immutable claim base") {
 		t.Fatalf("source predating claim base accepted: %v", err)
 	}
 }

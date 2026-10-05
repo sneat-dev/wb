@@ -246,6 +246,45 @@ custody through a fake. Compile checks for Linux/Windows, scoped lint/vet and
 spec validation passed. Remote publication stays deferred while the approved
 replacement/correction and published-recovery protocol batches are completed.
 
+### Replacement and correction protocol checkpoint
+
+Receipt collisions, failed/conflicted-candidate replacement and self-supersession
+correction now live in two cohesive producer files. Native public entry points
+bind the existing Runner and real receipt/hash observations. The immutable
+claim-base check shares one private Runner implementation between both legacy
+resolvers, while its native wrapper retains the other genuine caller. Late
+claim-hash and canonical-path observations retain their original fallible
+guards, error identity and custody/proof ordering.
+
+One fresh, passing race profile covers **552/552 statements across 22 entire
+production declarations, including closures**. All 41 selected top-level groups
+passed in 216.540 seconds without failures or skips. The first passing run had
+covered 488/545 statements across the original 20-function scope; the current
+scope also includes the native claim-base wrapper and its six-statement shared
+body. All 57 previously missing paths are now reached. Failed runs supplied only
+diagnostics and contribute no accepted coverage. This is complete scoped
+coverage, not a refreshed package or repository percentage.
+
+Three existing fixture recipes now accept an explicitly rooted fixture while
+their environment-setting wrappers remain available to other genuine callers.
+Fifteen retained top-level groups and five independent children can therefore
+run in parallel. The earlier 28-group passing run took 407.139 seconds; the
+current larger selector took 216.540 seconds. This is an observed improvement
+between different selectors, not a controlled benchmark or a sum of overlapping
+test durations. Native provider/environment cases remain serial.
+
+The final cases assert actual late native ancestry, permission refusal,
+restoration, immutable bytes and publication disposition. Cleanup verification
+uses a bounded context that survives cancellation of the test context. An
+earlier fixture-only secure-stage refusal did not reproduce in the unchanged
+targeted cases or the final complete run; its cause remains unconfirmed and its
+failed profile is excluded. Linux/Windows compilation, scoped vet/lint and spec
+validation passed. The 100 previously accepted, disjoint whole declarations
+remain byte-identical; with this cohort the qualified ledger contains 122
+functions and 2,336 covered statements. That ledger is not a total-coverage
+measurement. Continue with published recovery/adoption, then the separately
+reviewed published-terminal domain; remote publication remains deferred.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

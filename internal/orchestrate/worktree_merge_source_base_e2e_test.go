@@ -12,9 +12,9 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-//nolint:paralleltest // newEngineFixture configures process-wide WB and Git environment for real repositories.
 func TestE2ESupersedeValidationFailedWorktreeMergePreservesSourceOwnBase(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	source := createMergeSource(t, fixture, "main-based-source", "feature/main-based-source", "source.txt", "source\n")
 	sourceView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: source.WorktreeDir})
 	if err != nil || sourceView.Claim == nil {
@@ -65,7 +65,7 @@ func TestE2ESupersedeValidationFailedWorktreeMergePreservesSourceOwnBase(t *test
 	unrelated := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "commit-tree", "HEAD^{tree}", "-m", "test: unrelated root"))
 	unrooted := receipt.Sources[0]
 	unrooted.SHA = unrelated
-	if _, _, err := validateValidationFailedSupersessionSource(context.Background(), fixture.githubDir, receipt, unrooted); err == nil || !strings.Contains(err.Error(), "does not descend from immutable claim base") {
+	if _, _, err := validateValidationFailedSupersessionSourceWithRunner(context.Background(), defaultRunner, fixture.githubDir, receipt, unrooted); err == nil || !strings.Contains(err.Error(), "does not descend from immutable claim base") {
 		t.Fatalf("unrooted source claim ancestry error = %v", err)
 	}
 }
