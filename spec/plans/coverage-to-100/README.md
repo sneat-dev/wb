@@ -213,6 +213,39 @@ Runner routing, shared timeout persistence, and meaningful native/private fault
 matrices. Their selected-run diagnostics and historical gap counts remain
 separate from complete package coverage. Publication stays deferred.
 
+### Whole Prepare and Land ownership checkpoint
+
+Prepare and Land now have explicit ownership: concrete receipt/continuation
+construction lives beside Prepare, Land lives in its own producer file, and
+validation timeout persistence shares one implementation. Public entry points
+still bind native effects. Private per-call read, Save and existing Runner
+observations reach precise refusals without changing process cwd or replacing
+successful custody, lock, claim, WorkLog, Git or cleanup authority.
+
+The acceptance scope is nine entire production declarations, including closures:
+986/986 statements. Prepare has 41 passing top-level race groups; Land has
+83 across its same-source passing waves. The final two groups passed in
+23.904 seconds. Its evidence combines passing native/race Land waves from
+one unchanged producer with the independently reviewed, byte-identical whole
+Prepare declaration ledger. Failed or skipped runs contribute no coverage, and
+zero-statement closures contribute no missing statements. This is scoped
+acceptance, not a new package or repository coverage percentage.
+
+Three independently proven impossible/redundant branches were removed: an inner
+status test whose two producers already establish Preparing, an adoption error
+branch whose concrete callee never returns an error, and a second resolution of
+the same already-cached validation plan. The refactoring scope before those
+three trims contained 995 statements; current source is 986. Fallible guards remain in place. Existing test assertions
+and every production declaration outside the approved scope remain protected.
+
+Native boundary cases retain durable receipt/error identity and verify physical
+Git refs, actual locks and refusal-before-cleanup. Final fixture corrections
+used real published history, real strict-policy preparation and a restored
+private Git replacement; none weakened an assertion or supplied successful
+custody through a fake. Compile checks for Linux/Windows, scoped lint/vet and
+spec validation passed. Remote publication stays deferred while the approved
+replacement/correction and published-recovery protocol batches are completed.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
