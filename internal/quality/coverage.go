@@ -70,6 +70,10 @@ const (
 // CoverWithOptions measures coverage with a deadline and retries for each Go
 // module's test command.
 func CoverWithOptions(ctx context.Context, repository, path string, options RunOptions) RepositoryCoverage {
+	return coverWithOptionsRun(ctx, repository, path, options, runCoverageWithOptions)
+}
+
+func coverWithOptionsRun(ctx context.Context, repository, path string, options RunOptions, run func(context.Context, RunOptions, string, string) (string, int, error)) RepositoryCoverage {
 	if options.CoverageDiagnosticsRepository == "" {
 		options.CoverageDiagnosticsRepository = repository
 	}
@@ -102,7 +106,7 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			Language: "go", Module: relativePath(path, module), Check: CheckTest,
 			Command: command, State: ProgressStarted,
 		})
-		output, attempts, err := runCoverageWithOptions(ctx, options, module, profilePath)
+		output, attempts, err := run(ctx, options, module, profilePath)
 		if err != nil {
 			if removeProfile {
 				_ = os.Remove(profilePath)

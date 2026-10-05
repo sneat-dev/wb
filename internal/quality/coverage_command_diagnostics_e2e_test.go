@@ -303,11 +303,9 @@ exit 0
 		ctx := context.Background()
 		cancel := func() {}
 		if name == "deadline" {
-			ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
 			options.Env[1] = "WAIT=1"
 		}
 		if name == "check deadline" {
-			options.CheckTimeout = 2 * time.Second
 			options.Env[1] = "WAIT=1"
 		}
 		cancelDone := make(chan error, 1)
@@ -338,7 +336,49 @@ exit 0
 				t.Fatal(err)
 			}
 		}
-		report := CoverWithOptions(ctx, "example/repo", module, options)
+		var report RepositoryCoverage
+		if name == "deadline" || name == "check deadline" {
+			report = coverWithOptionsRun(ctx, "example/repo", module, options, func(parent context.Context, runOptions RunOptions, runModule, profile string) (string, int, error) {
+				// This delay exceeds the old outer deadline. Preparation cannot
+				// consume the deadline of the command whose evidence is tested.
+				if name == "deadline" {
+					time.Sleep(3 * time.Second)
+				}
+				temporaryRoot := t.TempDir()
+				deadline := time.Now().Add(2 * time.Second)
+				nativeCtx, finish := context.WithDeadline(parent, deadline)
+				if name == "check deadline" {
+					finish()
+					nativeCtx, finish = context.WithDeadlineCause(parent, deadline, errLogicalCheckTimeout)
+				}
+				defer finish()
+				calls := 0
+				attempt := nativeCoverageAttempt{temporaryRoot: temporaryRoot, run: func(commandCtx context.Context, _ []string, _, _ string, _ ...string) (string, error) {
+					calls++
+					if commandCtx.Err() != nil {
+						t.Fatal("native callback entered after deadline", commandCtx.Err())
+					}
+					<-commandCtx.Done()
+					if !errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
+						t.Fatal("native callback did not observe the real deadline", commandCtx.Err())
+					}
+					return "native head\ncomplete middle evidence\nnative tail\n", commandCtx.Err()
+				}}
+				output, attempts, err := runGoCoverageCommandWithAttempt(nativeCtx, runOptions, runModule, profile, []string{"test", "-tags=e2e"}, attempt)
+				if calls != 1 || attempts != 1 {
+					t.Fatal("native deadline attempts", calls, attempts)
+				}
+				// Match combined coverage's context replacement while retaining
+				// the exact lower command manifest and deadline identity.
+				joined := errors.Join(nativeCtx.Err(), err)
+				if !errors.Is(joined, context.DeadlineExceeded) {
+					t.Fatal("native deadline identity lost", joined)
+				}
+				return output, attempts, joined
+			})
+		} else {
+			report = CoverWithOptions(ctx, "example/repo", module, options)
+		}
 		cancel()
 		if name == "cancel" {
 			if err := <-cancelDone; err != nil {
@@ -389,4 +429,47 @@ exit 0
 			t.Fatal(report.Error)
 		}
 	}
+}
+
+func TestE2ECoverageReportPreservesEarlyDiscoveryDeadlinesWithoutNativeEvidence(t *testing.T) {
+	if qualityFixtureChild(t) {
+		for _, name := range []string{"caller", "check"} {
+			module := nativeModule(t)
+			shim := dqCovFakeGo(t, module)
+			ready := filepath.Join(module, "native-ready")
+			nativeWrite(t, shim, `#!/bin/sh
+if [ "$1" = list ]; then sleep 600; exit 0; fi
+printf ready > "$READY"
+exit 1
+`)
+			directory := t.TempDir()
+			old := newCoverageDiagnosticsSink(directory, "example/repo", module)
+			if err := old.persist(0, goCoverageJob{label: "old shard"}, goCoverageJobResult{output: "stale", err: errors.New("old")}); err != nil {
+				t.Fatal(err)
+			}
+			options := RunOptions{IncludeE2E: true, CoverageDiagnosticsDir: directory, Env: []string{"READY=" + ready}}
+			ctx := context.Background()
+			cancel := func() {}
+			if name == "caller" {
+				ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+			} else {
+				// The public path must construct the actual combined budget.
+				options.CheckTimeout = 2 * time.Second
+			}
+			report := CoverWithOptions(ctx, "example/repo", module, options)
+			if name == "caller" && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				t.Fatal(ctx.Err())
+			}
+			cancel()
+			if report.Status != StatusFailed || report.Diagnostic != nil || !strings.Contains(report.Error, context.DeadlineExceeded.Error()) || !strings.Contains(report.Error, "resolve selected packages") {
+				t.Fatalf("%s discovery deadline report=%+v", name, report)
+			}
+			if _, err := os.Stat(ready); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s native phase started before discovery completed: %v", name, err)
+			}
+		}
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
 }
