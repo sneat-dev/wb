@@ -447,7 +447,13 @@ func TestWtLogCovValidateAuthoritativeSourcePullRequest(t *testing.T) {
 }
 
 func TestWtLogCovValidateDependencyDeltasWrapper(t *testing.T) {
-	entry := ListResult{Task: "plain-task", Branch: "wb/plain-task", WorktreeDir: t.TempDir()}
+	fixture := newGitFixture(t)
+	targetHead := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	entry := ListResult{
+		Task: "plain-task", Repository: "acme/app", Branch: "wb/plain-task",
+		CanonicalDir: fixture.canonical, WorktreeDir: t.TempDir(),
+		HeadSHA: targetHead, RemoteTargetSHA: targetHead,
+	}
 	if err := ValidateDependencyDeltas(context.Background(), SupersessionReceipt{Version: 1}, entry); err != nil {
 		t.Fatalf("generic receipt should not require dependency proof: %v", err)
 	}

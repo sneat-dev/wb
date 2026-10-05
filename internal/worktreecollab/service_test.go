@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -193,6 +194,7 @@ func TestServiceBoundaryRefusals(t *testing.T) {
 		{"join", func(s Service, path string) error { _, err := s.Join(ctx, path); return err }},
 		{"leave", func(s Service, path string) error { _, err := s.Leave(ctx, path); return err }},
 		{"take", func(s Service, path string) error { _, err := s.Take(ctx, path, NoOwner, false, ""); return err }},
+		{"rebind", func(s Service, path string) error { _, err := s.Rebind(ctx, path, "/retired"); return err }},
 		{"transfer", func(s Service, path string) error { _, err := s.Transfer(ctx, path, "peer"); return err }},
 		{"send", func(s Service, path string) error {
 			_, _, err := s.Send(ctx, path, "key", []string{"peer"}, "body")
@@ -231,6 +233,38 @@ func TestServiceBoundaryRefusals(t *testing.T) {
 	service.Ports.Caller = func() (string, error) { return "", nil }
 	if _, err := service.Join(ctx, "worktree"); err == nil || !strings.Contains(err.Error(), "registered") {
 		t.Fatalf("invalid caller = %v", err)
+	}
+}
+
+func TestServiceRebindRepairsRetiredCheckoutRoot(t *testing.T) {
+	t.Parallel()
+	service, _, _ := testService(t)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCheckout := testCheckout()
+	oldCheckout.Root = filepath.Join(base, "retired")
+	currentCheckout := oldCheckout
+	currentCheckout.Root = filepath.Join(base, "current")
+	if err := os.Mkdir(currentCheckout.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service.Ports.Resolve = func(context.Context, string) (Checkout, error) { return currentCheckout, nil }
+	if _, err := service.Store.WithLocked(context.Background(), oldCheckout, func(state *State, found bool) error {
+		if found {
+			t.Fatal("unexpected existing coordination state")
+		}
+		return state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := service.Rebind(context.Background(), "worktree", oldCheckout.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Checkout != currentCheckout || state.Revision != 2 || len(state.CheckoutRebinds) != 1 {
+		t.Fatalf("service rebind state = %+v", state)
 	}
 }
 

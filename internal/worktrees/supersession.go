@@ -15,6 +15,7 @@ type SupersessionDependencyDelta = worktreebranches.SupersessionDependencyDelta
 type SupersessionReplacement = worktreebranches.SupersessionReplacement
 type SupersessionResidual = worktreebranches.SupersessionResidual
 type SupersessionApproval = worktreebranches.SupersessionApproval
+type SupersessionWorkflowAdoption = worktreebranches.SupersessionWorkflowAdoption
 
 func supersessionEntry(entry ListResult) worktreebranches.SupersessionEntry {
 	return worktreebranches.SupersessionEntry{
@@ -27,7 +28,10 @@ func supersessionEntry(entry ListResult) worktreebranches.SupersessionEntry {
 
 func supersessionService() worktreebranches.SupersessionService {
 	return worktreebranches.SupersessionService{Ports: worktreebranches.SupersessionPorts{
-		Git:         git,
+		Git: git,
+		ReadGitFileBytes: func(ctx context.Context, repository, revision, file string) ([]byte, error) {
+			return heartbeatPorts().GitRaw(ctx, repository, "cat-file", "blob", revision+":"+file)
+		},
 		IsAncestor:  isAncestor,
 		ReadReceipt: os.ReadFile,
 		ReadCampaignMarker: func(worktree string) (bool, error) {

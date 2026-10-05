@@ -109,6 +109,50 @@ func (store Store) Load(checkout Checkout) (State, bool, error) {
 // before it returns: a failed callback never writes coordination state. A
 // missing snapshot is distinct from an initialized but unowned state.
 func (store Store) WithLocked(ctx context.Context, checkout Checkout, change func(*State, bool) error) (result State, returnErr error) {
+	return store.withLocked(ctx, checkout, "", nil, change)
+}
+
+// Rebind changes a stale snapshot's root only after an explicit expected-root
+// comparison. The caller must be the current owner, the previous root must
+// already be absent, and every Git identity field must match. The snapshot
+// write remains under the normal per-checkout lock.
+func (store Store) Rebind(ctx context.Context, checkout Checkout, expectedRoot, actor string, at time.Time) (State, error) {
+	if !validID(actor) || actor == NoOwner || at.IsZero() {
+		return State{}, fmt.Errorf("checkout rebind requires an admitted actor and timestamp")
+	}
+	if err := checkout.Validate(); err != nil {
+		return State{}, err
+	}
+	// The locked change callback validates expectedRoot against the prior checkout
+	// before changing the revision, so this hook only checks that the path is retired.
+	ensureOldRootAbsent := func() error {
+		if _, err := os.Lstat(expectedRoot); err == nil {
+			return fmt.Errorf("expected previous checkout root still exists; refusing rebind")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect expected previous checkout root: %w", err)
+		}
+		return nil
+	}
+	return store.withLocked(ctx, checkout, expectedRoot, ensureOldRootAbsent, func(state *State, found bool) error {
+		if !found {
+			return fmt.Errorf("coordination is not initialized")
+		}
+		if err := state.ValidateRebind(checkout, expectedRoot); err != nil {
+			return err
+		}
+		if state.Owner != actor {
+			return fmt.Errorf("checkout rebind requires the corroborated current owner")
+		}
+		state.Checkout = checkout
+		state.Revision++
+		state.CheckoutRebinds = append(state.CheckoutRebinds, CheckoutRebind{
+			PreviousRoot: expectedRoot, CurrentRoot: checkout.Root, Actor: actor, At: at.UTC(),
+		})
+		return nil
+	})
+}
+
+func (store Store) withLocked(ctx context.Context, checkout Checkout, allowedPreviousRoot string, beforeWrite func() error, change func(*State, bool) error) (result State, returnErr error) {
 	state, err := New(checkout)
 	if err != nil {
 		return State{}, err
@@ -155,13 +199,23 @@ func (store Store) WithLocked(ctx context.Context, checkout Checkout, change fun
 	} else if err != nil {
 		return State{}, fmt.Errorf("read coordination state: %w", err)
 	} else if err := state.Validate(checkout); err != nil {
-		return State{}, err
+		if allowedPreviousRoot == "" {
+			return State{}, err
+		}
+		if rebindErr := state.ValidateRebind(checkout, allowedPreviousRoot); rebindErr != nil {
+			return State{}, rebindErr
+		}
 	}
 	revision := state.Revision
 	if err := change(&state, found); err != nil {
 		return State{}, err
 	}
 	if state.Revision != revision {
+		if beforeWrite != nil {
+			if err := beforeWrite(); err != nil {
+				return State{}, err
+			}
+		}
 		if err := state.Validate(checkout); err != nil {
 			return State{}, err
 		}
