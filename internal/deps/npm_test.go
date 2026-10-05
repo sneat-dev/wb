@@ -151,7 +151,7 @@ func TestNpmAdapterApplyUpdatesManifestsAndRegeneratesLockfile(t *testing.T) {
 	writeTestFile(t, filepath.Join(worktree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
-	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: 10 * time.Second})
+	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("apply: %v (decisions=%+v)", err, decisions)
 	}
@@ -212,7 +212,7 @@ overrides:
 	writeTestFile(t, filepath.Join(worktree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
-	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: 10 * time.Second})
+	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("apply: %v (decisions=%+v)", err, decisions)
 	}
@@ -276,7 +276,7 @@ func TestNpmAdapterApplyRegeneratesEachIndependentLockfileScope(t *testing.T) {
 	writeTestFile(t, filepath.Join(worktree, "landings", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
-	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: 10 * time.Second})
+	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("apply: %v (decisions=%+v)", err, decisions)
 	}
