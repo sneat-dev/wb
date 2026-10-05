@@ -335,6 +335,29 @@ package or repository percentage. Continue with published-terminal recovery
 and unpublished/retired-candidate owners; publication remains deferred to the
 coordinated boundary.
 
+### Published terminal recovery checkpoint
+
+The retired-publication and stranded-landing owners now expose narrow private
+observation seams while retaining native Git, custody, lane claims, receipt
+persistence and cleanup on their positive paths. Their eligibility policies stay
+separate: a closed unmerged publication and a merged PR with live target
+containment require different proofs. Two redundant empty-lane fallbacks were
+removed only after proving their validators reject that input before use.
+
+A fresh selected race run passed all 12 top-level tests in 123.640 seconds.
+All nine whole production declarations, including closures, covered 205 of 205
+statements with no unexecuted blocks. Linux and Windows test compilation, scoped
+vet and lint, and specification lint passed. New native cases share restored
+fixtures; isolated pure cases run in parallel, and each pushed fixture ref has
+bounded native cleanup registered immediately.
+
+Two unchanged validators (35 statements) were already accepted. The seven new
+identities add 170 accepted statements, bringing the source-qualified local
+ledger to 152 unique declarations and 2,906 statements. This is a bounded local
+checkpoint, not a fresh package or repository coverage percentage. The prior
+145 accepted declaration bodies remain byte-identical. Publication remains
+deferred to the coordinated delivery boundary.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

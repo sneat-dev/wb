@@ -95,11 +95,15 @@ type WorktreeMergeStrandedLandingAcknowledgementOptions struct {
 // It never rewrites the historical receipt or any Work Log. This is a
 // dry-run by default; --apply requires --actor and --reason.
 func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options WorktreeMergeStrandedLandingAcknowledgementOptions) (WorktreeMergeStrandedLandingAcknowledgement, error) {
+	return acknowledgeStrandedPullRequestLanding(ctx, options, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, persistStrandedLandingAcknowledgement, githubRead)
+}
+
+func acknowledgeStrandedPullRequestLanding(ctx context.Context, options WorktreeMergeStrandedLandingAcknowledgementOptions, readReceipt func(string) (WorktreeMergeReceipt, error), hash func(string) (string, error), persist func(string, WorktreeMergeStrandedLandingAcknowledgement) error, readPR func(context.Context, string, ...string) (string, error)) (WorktreeMergeStrandedLandingAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
@@ -110,9 +114,6 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 		return WorktreeMergeStrandedLandingAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
 	}
 	lockID := receipt.Lane
-	if lockID == "" {
-		lockID = worktreeMergeLaneID(receipt.Repository, receipt.Target)
-	}
 	lock, err := AcquireOperationLock(options.ProjectsRoot, lockID, true)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
@@ -122,12 +123,12 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	// Every dynamic proof is queried live, under the lane lock: GitHub, never
 	// a local worktree or any evidence gathered before this lock, is
 	// authoritative for whether this candidate landed and still does.
-	landingSHA, currentTarget, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA, proofErr := proveStrandedPullRequestLanding(ctx, receipt)
+	landingSHA, currentTarget, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA, proofErr := proveStrandedPullRequestLandingWithRead(ctx, receipt, readPR)
 	if proofErr != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, proofErr
 	}
 
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hash(receiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
@@ -158,7 +159,7 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := persistStrandedLandingAcknowledgement(ackPath, ack); err != nil {
+	if err := persist(ackPath, ack); err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
 	return ack, nil
@@ -260,7 +261,11 @@ type strandedPullRequestLandingView struct {
 // this proof may depend on a local worktree, because this receipt shape is
 // defined by that worktree already being gone.
 func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeReceipt) (landingSHA, currentTargetSHA, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA string, err error) {
-	output, readErr := githubRead(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
+	return proveStrandedPullRequestLandingWithRead(ctx, receipt, githubRead)
+}
+
+func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt WorktreeMergeReceipt, readPR func(context.Context, string, ...string) (string, error)) (landingSHA, currentTargetSHA, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA string, err error) {
+	output, readErr := readPR(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
 		"--json", "state,mergedAt,mergeCommit,headRefOid,baseRefName")
 	if readErr != nil {
 		return "", "", "", "", "", fmt.Errorf("read pull-request landing state: %w", readErr)
