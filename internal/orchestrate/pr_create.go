@@ -302,7 +302,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 		result.CommittedPaths = committed
 	}
 
-	dirtyPaths, err := pullRequestCreateDirtyPaths(ctx, worktree)
+	dirtyPaths, err := pullRequestCreateDirtyPathsWithRunner(ctx, options.resolveRunner(), worktree)
 	if err != nil {
 		return result, err
 	}
@@ -384,7 +384,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	}
 
 	url, adopted, err := openOrAdoptPullRequest(ctx, worktree, repository, branch, base, title, body, options.Draft,
-		Options{Timeout: options.Timeout, Retry: options.Retry}, options.Closes)
+		Options{Timeout: options.Timeout, Retry: options.Retry, run: options.run}, options.Closes)
 	if err != nil {
 		var mismatch *pullRequestBaseMismatchError
 		if errors.As(err, &mismatch) {

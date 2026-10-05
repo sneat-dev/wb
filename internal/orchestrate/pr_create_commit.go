@@ -3,11 +3,12 @@ package orchestrate
 import (
 	"context"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/runner"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // performPullRequestCreateCommit commits the worktree's own change before
@@ -221,12 +222,8 @@ func resolveAddPathsWithPathResolver(ctx context.Context, run runner.Runner, wor
 	return resolved, nil
 }
 
-// pullRequestCreateDirtyPaths lists every uncommitted entry in worktree, or
+// pullRequestCreateDirtyPathsWithRunner lists every uncommitted entry in worktree, or
 // nil for a clean one.
-func pullRequestCreateDirtyPaths(ctx context.Context, worktree string) ([]worktreeStatusEntry, error) {
-	return pullRequestCreateDirtyPathsWithRunner(ctx, defaultRunner, worktree)
-}
-
 func pullRequestCreateDirtyPathsWithRunner(ctx context.Context, run runner.Runner, worktree string) ([]worktreeStatusEntry, error) {
 	entries, err := readPorcelainStatus(ctx, run, 0, worktree)
 	if err != nil {
