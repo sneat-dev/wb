@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -12,7 +14,7 @@ import (
 	"time"
 )
 
-func TestSupersessionServiceAuthenticatesExactWorkflowBlobWhitespace(t *testing.T) {
+func TestE2ESupersessionServiceAuthenticatesExactWorkflowBlobWhitespace(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
@@ -23,6 +25,7 @@ func TestSupersessionServiceAuthenticatesExactWorkflowBlobWhitespace(t *testing.
 		{name: "target trailing whitespace drift is rejected", targetBody: "name: provider tools  \njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n ", want: "differs from the reviewed source bytes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			supersessionBlobGit(t, root, "init")
 			supersessionBlobGit(t, root, "config", "user.name", "WB test")

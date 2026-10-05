@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktreebranches
 
 import (
@@ -12,7 +14,7 @@ import (
 	"time"
 )
 
-func TestWorkflowAdoptionUsesExactGitBlobBytes(t *testing.T) {
+func TestE2EWorkflowAdoptionUsesExactGitBlobBytes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
@@ -23,6 +25,7 @@ func TestWorkflowAdoptionUsesExactGitBlobBytes(t *testing.T) {
 		{name: "trailing newline drift", targetBody: "name: provider tools\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4", want: "differs from the reviewed source bytes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			gitBlobTest(t, root, "init")
 			gitBlobTest(t, root, "config", "user.name", "WB test")

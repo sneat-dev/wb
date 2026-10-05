@@ -60,6 +60,7 @@ func TestSupersessionAcceptsOnlyExactLandedAddedWorkflowAdoption(t *testing.T) {
 		{name: "missing adoption evidence", paths: []string{workflowPath}, want: "must cover every dependency-bearing", setup: func(r *SupersessionReceipt) { r.WorkflowAdoptions = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			receipt, entry := valid()
 			if tc.setup != nil {
 				tc.setup(&receipt)
