@@ -381,6 +381,34 @@ new identities add 189 source-qualified statements: 163 unique declarations
 and 3,095 statements are now accepted locally. This is a qualified cohort ledger,
 not a new total-package coverage measurement or a publication receipt.
 
+### Ancestry-seal checkpoint
+
+The no-content ancestry-seal workflow now has a private owner that reuses the
+existing runner-aware custody and ancestry helpers. Its public wrapper binds the
+native receipt reader, digest and runner. Successful Create, List, Guard, claims,
+source validation and Git remain native. The seal retains its existing policy of
+preserving a managed candidate after later refusal; it does not inherit content
+repair's abort policy. Only a separately proven redundant singleton Create-result
+guard was removed. Exact Work Log, target-tree and temporal guards remain.
+
+A fresh scoped race run passed all 11 top-level tests in 82.626 seconds and
+covered 165 of 165 statements across six whole declarations, including closures.
+Every block executed. Linux and Windows test compilation, scoped vet and lint,
+and specification lint passed. The two original test files remain byte-identical;
+new private native cases run in parallel, while process environment cases stay
+serial with exact environment restoration before native postconditions.
+
+The first run failed two test-premise assertions: a claim ID omitted its native
+Base input and a scratch blocker remained active during subsequent Apple Git
+checks. Test-only repairs retain native authentication and restore the original
+environment. That failed profile is excluded from acceptance; the single fresh
+passing profile covers the entire scope. No production condition was weakened.
+
+These six declarations add 165 statements with no prior scope overlap, bringing
+the source-qualified local ledger to 169 unique declarations and 3,260 statements.
+All prior 163 accepted declaration bodies remain byte-identical. This is a bounded
+local checkpoint, not repository-wide coverage or a remote delivery receipt.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
