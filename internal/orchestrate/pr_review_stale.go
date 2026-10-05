@@ -309,9 +309,6 @@ func reviewStaleRefusal(ctx context.Context, options PullRequestLandOptions, vie
 		return nil, ""
 	}
 	if unverifiable {
-		if strings.TrimSpace(cause) == "" {
-			cause = "the check could not be verified"
-		}
 		return nil, "the review's binding to " + shortMergeRevision(reviewedHead) +
 			" could not be verified against the current head " + shortMergeRevision(currentHead) +
 			": " + cause

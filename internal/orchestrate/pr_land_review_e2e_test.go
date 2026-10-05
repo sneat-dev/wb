@@ -14,9 +14,12 @@ package orchestrate
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -66,5 +69,59 @@ func TestE2ELandFileReviewSurvivesOnlyAWBUpdateBranchMerge(t *testing.T) {
 	}
 	if !reviewBound(result) {
 		t.Fatal("the review must still be recorded as bound")
+	}
+}
+
+//nolint:paralleltest // The existing review parent/proof hooks are process-global and restored after this native witness.
+func TestE2EReviewHeadAdvanceChainBoundsNativeProvenMerges(t *testing.T) {
+	fixture := newExplicitRootEngineFixture(t)
+	writeEngineFile(t, fixture.canonical+"/candidate.txt", "reviewed candidate\n")
+	runEngineGit(t, fixture.canonical, "add", "candidate.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: reviewed candidate")
+	reviewed := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	runEngineGit(t, fixture.canonical, "checkout", "main")
+	// Leave main at the seed while the candidate is a separate first parent.
+	runEngineGit(t, fixture.canonical, "reset", "--hard", "HEAD^")
+	head := reviewed
+	heads := make([]string, 0, maxReviewAdvanceHops+1)
+	for hop := 0; hop <= maxReviewAdvanceHops; hop++ {
+		writeEngineFile(t, fixture.canonical+"/target.txt", fmt.Sprintf("target step %d\n", hop))
+		runEngineGit(t, fixture.canonical, "add", "target.txt")
+		runEngineGit(t, fixture.canonical, "commit", "-m", fmt.Sprintf("test: target advance %d", hop))
+		targetParent := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "merge-tree", "--write-tree", head, targetParent))
+		head = strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-p", head, "-p", targetParent, "-m", fmt.Sprintf("test: update-branch merge %d", hop)))
+		heads = append(heads, head)
+	}
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	previousParents, previousProof := reviewCommitParents, reviewHeadAdvanceProof
+	t.Cleanup(func() { reviewCommitParents, reviewHeadAdvanceProof = previousParents, previousProof })
+	parentsRead, proofs := 0, 0
+	reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
+		want := heads[len(heads)-1-parentsRead]
+		if repository != "acme/app" || sha != want {
+			t.Fatalf("parent read %d=%s/%s want %s", parentsRead, repository, sha, want)
+		}
+		parentsRead++
+		fields := strings.Fields(runEngineGit(t, fixture.canonical, "rev-list", "--parents", "-n", "1", sha))
+		if len(fields) != 3 || fields[0] != sha {
+			t.Fatalf("native merge parents=%v", fields)
+		}
+		return fields[1:], nil
+	}
+	reviewHeadAdvanceProof = func(ctx context.Context, git Git, run runner.Runner, worktree, branch, target, repository, candidateSHA, targetParent, headSHA string) (bool, error) {
+		if headSHA != heads[len(heads)-1-proofs] || parentsRead != proofs+1 {
+			t.Fatalf("proof order %d head=%s reads=%d", proofs, headSHA, parentsRead)
+		}
+		proven, err := verifyUpdateBranchMergeProof(ctx, git, run, worktree, branch, target, repository, candidateSHA, targetParent, headSHA)
+		if !proven || err != nil {
+			t.Fatalf("actual native update-branch proof failed: %v/%v", proven, err)
+		}
+		proofs++
+		return proven, err
+	}
+	advanced, unverifiable, cause := reviewedHeadAdvanceChain(t.Context(), defaultGit, defaultRunner, fixture.canonical, "feature", "acme/app", "main", reviewed, head)
+	if advanced || unverifiable || cause != "" || parentsRead != maxReviewAdvanceHops || proofs != maxReviewAdvanceHops {
+		t.Fatalf("bounded proof=%v/%v/%q reads=%d proofs=%d", advanced, unverifiable, cause, parentsRead, proofs)
 	}
 }

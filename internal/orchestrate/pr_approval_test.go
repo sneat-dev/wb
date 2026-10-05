@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -39,6 +40,7 @@ func TestClassifyApprovedBy(t *testing.T) {
 		// the {model}@{harness}[@{session}] shape must fall back to the
 		// free-form approval, not be misclassified as an identity and
 		// refused.
+		"opus@codex@session@extra":   approvalKindFile,
 		emailShapedApprovedBy:        approvalKindFile, // an email
 		"@octocat":                   approvalKindFile, // an "@handle"
 		"/tmp/user@example.com/x.md": approvalKindFile, // a path containing "@"
@@ -90,6 +92,22 @@ func TestParseReviewerIdentityFillsFromEnvironmentAndFinalizesUnknown(t *testing
 	if identity != (ReviewerIdentity{Model: unknownIdentityPart, Harness: unknownIdentityPart, Session: unknownIdentityPart}) {
 		t.Fatalf("undeterminable identity = %#v", identity)
 	}
+
+	// Explicit harness still permits only the omitted session to be filled.
+	for _, row := range []struct {
+		session        string
+		supplied, want ReviewerIdentity
+	}{
+		{session: " session-explicit ", supplied: ReviewerIdentity{Model: "opus", Harness: "claude-code"}, want: ReviewerIdentity{Model: "opus", Harness: "claude-code", Session: "session-explicit"}},
+		{session: "", supplied: ReviewerIdentity{Model: "opus", Harness: "claude-code"}, want: ReviewerIdentity{Model: "opus", Harness: "claude-code"}},
+		{session: "ambient", supplied: ReviewerIdentity{Model: "opus", Harness: "claude-code", Session: "supplied"}, want: ReviewerIdentity{Model: "opus", Harness: "claude-code", Session: "supplied"}},
+	} {
+		t.Setenv(envClaudeCodeSessionID, row.session)
+		if got := FillReviewerIdentityFromEnvironment(row.supplied); got != row.want {
+			t.Fatalf("identity=%+v want %+v", got, row.want)
+		}
+	}
+
 }
 
 func TestReviewerIdentitySelfReviewOnlyOnFullTripleMatch(t *testing.T) {
@@ -138,6 +156,15 @@ func TestReadReviewCommentTextPrefersLiteralThenFile(t *testing.T) {
 	if text, err := readReviewCommentText("", ""); err != nil || text != "" {
 		t.Fatalf("empty comment = %q, %v", text, err)
 	}
+
+	missing := dir + "/missing-review.txt"
+	if text, err := readReviewCommentText("", missing); text != "" || err == nil || !strings.Contains(err.Error(), "read --review-comment-file "+missing) {
+		t.Fatalf("missing file=%q/%v", text, err)
+	}
+	if text, err := readReviewCommentText(" literal wins ", missing); text != "literal wins" || err != nil {
+		t.Fatalf("literal with missing file=%q/%v", text, err)
+	}
+
 }
 
 // #586: the head-binding walk. A foreign commit breaks the chain; a chain
@@ -210,6 +237,38 @@ func TestReviewedHeadAdvanceChain(t *testing.T) {
 			t.Fatalf("a transient proof failure must be unverifiable, not a stale verdict: advanced=%v unverifiable=%v", advanced, unverifiable)
 		}
 	})
+
+	// Fault rows share the existing serial hook lifetime; neither grants proof.
+	for _, row := range []struct {
+		parentsError, proofError error
+		wantUnverifiable         bool
+	}{
+		{parentsError: errors.New("authoritative parent refusal")},
+		{proofError: errors.New("authoritative proof refusal")},
+		{parentsError: githubobserver.ErrTransientRetriesExhausted, wantUnverifiable: true},
+	} {
+		parentCalls, proofCalls := 0, 0
+		reviewCommitParents = func(context.Context, string, string) ([]string, error) {
+			parentCalls++
+			return []string{"reviewed", "target"}, row.parentsError
+		}
+		reviewHeadAdvanceProof = func(context.Context, Git, runner.Runner, string, string, string, string, string, string, string) (bool, error) {
+			proofCalls++
+			return false, row.proofError
+		}
+		advanced, unverifiable, cause := reviewedHeadAdvanceChain(ctx, nil, nil, "wt", "feature", "acme/app", "main", "reviewed", "current")
+		expectedProofCalls := 1
+		if row.parentsError != nil {
+			expectedProofCalls = 0
+		}
+		if advanced || unverifiable != row.wantUnverifiable || parentCalls != 1 || proofCalls != expectedProofCalls {
+			t.Fatalf("fault classification=%v/%v/%q reads=%d proof=%d", advanced, unverifiable, cause, parentCalls, proofCalls)
+		}
+		if row.wantUnverifiable && !strings.Contains(cause, "transient") || !row.wantUnverifiable && cause != "" {
+			t.Fatalf("fault cause=%q", cause)
+		}
+	}
+
 }
 
 func TestClosesLinesAndSuggestionsAndFinding(t *testing.T) {
