@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/landinglane"
-	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -604,124 +602,6 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	return result, nil
 }
 
-// pinPullRequestViewPollDelay is the real poll interval pinPullRequestViewToHead
-// waits between re-reads.
-const pinPullRequestViewPollDelay = 200 * time.Millisecond
-
-// pinPullRequestViewToHead re-reads a pull request until its own reported
-// head SHA matches pushedHead, bounded rather than immediate: GitHub's own
-// read-after-write for a pull request this call just adopted or created can
-// briefly still report the head observed before the push that produced
-// pushedHead. A view already at pushedHead is returned unchanged with no
-// extra call.
-//
-// sleep is the retry-backoff seam: createPullRequestAutoMerge always passes
-// time.Sleep; a test passes a recorder. It is a function parameter, not a
-// package-level mutable var, so a test cannot leave shared package state
-// mutated for another test running in parallel.
-func pinPullRequestViewToHead(ctx context.Context, repository, number, pushedHead string, view githubchecks.PullRequestView, sleep func(time.Duration)) (githubchecks.PullRequestView, error) {
-	if pushedHead == "" || view.Head.SHA == pushedHead {
-		return view, nil
-	}
-	const attempts = 5
-	for attempt := 1; attempt < attempts; attempt++ {
-		sleep(pinPullRequestViewPollDelay)
-		refreshed, err := githubchecks.ReadPullRequest(ctx, repository, number)
-		if err != nil {
-			return view, fmt.Errorf("re-read pull request %s#%s to confirm its pushed head: %w", repository, number, err)
-		}
-		view = refreshed
-		if view.Head.SHA == pushedHead {
-			return view, nil
-		}
-	}
-	return view, fmt.Errorf("pull request %s#%s still reports head %s, not the pushed head %s",
-		repository, number, view.Head.SHA, pushedHead)
-}
-
-// openOrAdoptPullRequest opens or adopts one branch's pull request. It is a
-// thin extension of the shared, idempotent `openPullRequest` (engine.go):
-// that primitive is reused verbatim for the non-draft path, which is the
-// common case. Draft creation is a separate branch because `openPullRequest`
-// deliberately never passes `--draft` — its only caller before this one is
-// `wb worktree merge`'s non-draft candidate publication — and changing its
-// signature would also have to change that call site, which belongs to a
-// change in flight elsewhere. The adoption check therefore runs once here so
-// both branches agree on it, and `openPullRequest` repeats its own equivalent
-// check before ever creating anything, so no path can create twice.
-// pullRequestBaseMismatchError reports that an already-open pull request was
-// found for the branch, but against a different base than this invocation
-// asked for. Adoption looks for the branch's open pull request against ANY
-// base — GitHub allows exactly one open pull request per (repository, head
-// branch) regardless of base, so a `--base`-scoped list can miss the one
-// that already exists — but adopting a pull request onto the WRONG base
-// would silently retarget it, so a mismatch refuses instead.
-type pullRequestBaseMismatchError struct {
-	url, wantBase, gotBase string
-}
-
-func (mismatch *pullRequestBaseMismatchError) Error() string {
-	return fmt.Sprintf("pull request %s is already open against %s, not %s", mismatch.url, mismatch.gotBase, mismatch.wantBase)
-}
-
-// openOrAdoptPullRequest opens or adopts one branch's pull request, pinned to
-// repository with `--repo` on every `gh pr list`/`gh pr create` call so the
-// worktree's own cwd-inferred repository is never silently substituted.
-func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, base, title, body string, draft bool, options Options, closesIssues []int) (url string, adopted bool, err error) {
-	// Round 3, minor 6: the body field is read here too, only so an
-	// adopted (already-open) pull request's --closes lines can be applied
-	// to it below — the "body" this function otherwise takes as a
-	// parameter is used solely by the create calls further down, and was
-	// never previously applied to a pull request that already existed.
-	existing, listErr := githubRead(ctx, worktree, "pr", "list", "--repo", repository, "--head", branch,
-		"--state", "open", "--json", "url,baseRefName,body", "--jq", ".[0] | (.url + \"\\t\" + .baseRefName + \"\\t\" + (.body // \"\"))")
-	if listErr == nil {
-		if trimmed := strings.TrimSpace(existing); trimmed != "" {
-			parts := strings.SplitN(trimmed, "\t", 3)
-			if len(parts) >= 2 {
-				url, gotBase := parts[0], parts[1]
-				currentBody := ""
-				if len(parts) == 3 {
-					currentBody = parts[2]
-				}
-				if gotBase != base {
-					return "", false, &pullRequestBaseMismatchError{url: url, wantBase: base, gotBase: gotBase}
-				}
-				if len(closesIssues) > 0 {
-					if editErr := applyClosesToAdoptedPullRequest(ctx, worktree, repository, url, currentBody, closesIssues, options); editErr != nil {
-						return "", false, editErr
-					}
-				}
-				return url, true, nil
-			}
-		}
-	}
-	if !draft {
-		created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create",
-			"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", body)
-		if createErr != nil {
-			return "", false, createErr
-		}
-		if createdURL := lastNonEmptyLine(created); createdURL != "" {
-			return createdURL, false, nil
-		}
-		return "", false, fmt.Errorf("gh pr create returned no pull request URL")
-	}
-	draftBody := body
-	if manifest, manifestErr := worktrees.ReadManifest(worktree); manifestErr == nil {
-		draftBody = prmeta.Append(draftBody, prmeta.Provenance{Effort: manifest.EffortID})
-	}
-	created, _, createErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "gh", "pr", "create",
-		"--repo", repository, "--base", base, "--head", branch, "--title", title, "--body", draftBody, "--draft")
-	if createErr != nil {
-		return "", false, createErr
-	}
-	if createdURL := lastNonEmptyLine(created); createdURL != "" {
-		return createdURL, false, nil
-	}
-	return "", false, fmt.Errorf("gh pr create --draft returned no pull request URL")
-}
-
 // resolvePullRequestCreateWorktree resolves the CLI's `<worktree|task>`
 // argument. An existing directory is used as-is; anything else is looked up
 // as a task name against the fleet's worktree inventory. Resolution never
@@ -849,101 +729,6 @@ func splitNonEmptyLines(value string) []string {
 		}
 	}
 	return lines
-}
-
-// wipSubjectPattern recognizes a work-in-progress commit subject in any of
-// its ordinary spellings: "wip", "wip:", "wip(scope):". GitHub would
-// otherwise happily title a pull request with exactly this, and a caller
-// cannot fix that afterward without rewriting a protected branch's history.
-var wipSubjectPattern = regexp.MustCompile(`(?i)^wip\b`)
-
-func isWipSubject(subject string) bool {
-	return wipSubjectPattern.MatchString(strings.TrimSpace(subject))
-}
-
-// pullRequestCreateTitle derives a pull request title from the branch's own
-// commit subjects: a single commit contributes its subject verbatim, and
-// several commits contribute the most recent one that reads like a real
-// change. A "wip"-shaped subject never wins either way, because it is a
-// placeholder, not a description.
-func pullRequestCreateTitle(subjects []string) string {
-	nonEmpty := make([]string, 0, len(subjects))
-	for _, subject := range subjects {
-		if trimmed := strings.TrimSpace(subject); trimmed != "" {
-			nonEmpty = append(nonEmpty, trimmed)
-		}
-	}
-	if len(nonEmpty) == 0 {
-		return "Open pull request"
-	}
-	if len(nonEmpty) == 1 {
-		if !isWipSubject(nonEmpty[0]) {
-			return nonEmpty[0]
-		}
-		return "apply 1 commit"
-	}
-	usable := make([]string, 0, len(nonEmpty))
-	for _, subject := range nonEmpty {
-		if !isWipSubject(subject) {
-			usable = append(usable, subject)
-		}
-	}
-	if len(usable) == 0 {
-		return fmt.Sprintf("apply %d commits", len(nonEmpty))
-	}
-	if len(usable) == 1 {
-		return usable[0]
-	}
-	// git log lists newest first; the oldest usable subject normally states
-	// the branch's own purpose, and later commits are review/CI repairs.
-	base := usable[len(usable)-1]
-	related := len(usable) - 1
-	word := "changes"
-	if related == 1 {
-		word = "change"
-	}
-	return fmt.Sprintf("%s and %d related %s", base, related, word)
-}
-
-// pullRequestCreateBody derives a pull request body from options and the
-// branch's own commits, in the order the contract fixes: literal --body wins,
-// then --body-file, then the commit-derived default. --title alone never
-// substitutes for a body: overriding what the pull request is called says
-// nothing about what it contains.
-func pullRequestCreateBody(options PullRequestCreateOptions, worktree string, subjects []string) (string, error) {
-	body, err := pullRequestCreateBodyWithoutCloses(options, worktree, subjects)
-	if err != nil {
-		return "", err
-	}
-	return withClosesPrefix(body, options.Closes), nil
-}
-
-func pullRequestCreateBodyWithoutCloses(options PullRequestCreateOptions, worktree string, subjects []string) (string, error) {
-	if body := strings.TrimSpace(options.Body); body != "" {
-		return options.Body, nil
-	}
-	if path := strings.TrimSpace(options.BodyFile); path != "" {
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read --body-file %s: %w", path, err)
-		}
-		return string(contents), nil
-	}
-	if len(subjects) == 1 {
-		commitBody, _, err := runCommand(context.Background(), options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "log", "-1", "--format=%b")
-		if err == nil {
-			if trimmed := strings.TrimSpace(commitBody); trimmed != "" {
-				return trimmed, nil
-			}
-		}
-		return "", nil
-	}
-	var body strings.Builder
-	body.WriteString("Mechanically prepared by `wb pr create` from the branch's own commits.\n\nCommits:\n\n")
-	for index := len(subjects) - 1; index >= 0; index-- {
-		fmt.Fprintf(&body, "- %s\n", subjects[index])
-	}
-	return body.String(), nil
 }
 
 func appendCreateEvent(events streams.EventAppender, streamName string, result PullRequestCreateResult, started time.Time, createErr error) {
