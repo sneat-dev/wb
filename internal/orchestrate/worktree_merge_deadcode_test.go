@@ -304,7 +304,7 @@ func TestWorktreeMergeSavedImportedMainReceiptReusesAndPublishesWithCleanTarget(
 	gitMergeGraphTest(t, repository, "add", "first-main.go")
 	gitMergeGraphTest(t, repository, "commit", "-m", "advance origin main before prepare")
 	gitMergeGraphTest(t, repository, "push", "origin", "main")
-	initialMainSHA, err := verifyImportedMainLineage(ctx, repository, importedSHA, "", 0)
+	initialMainSHA, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, "", 0)
 	if err != nil || initialMainSHA == importedSHA {
 		t.Fatalf("initial descendant attestation = (%s, %v), imported %s", initialMainSHA, err, importedSHA)
 	}
@@ -316,7 +316,7 @@ func TestWorktreeMergeSavedImportedMainReceiptReusesAndPublishesWithCleanTarget(
 	advancedMainSHA := gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
 	gitMergeGraphTest(t, repository, "push", "origin", "main")
 	gitMergeGraphTest(t, repository, "checkout", "integration")
-	if current, err := verifyImportedMainLineage(ctx, repository, importedSHA, initialMainSHA, 0); err != nil || current != advancedMainSHA {
+	if current, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, initialMainSHA, 0); err != nil || current != advancedMainSHA {
 		t.Fatalf("fast-forward lineage recheck = (%s, %v), want %s", current, err, advancedMainSHA)
 	}
 	const command = worktreeMergeDeadcodeCommand
@@ -360,7 +360,7 @@ func TestWorktreeMergeImportedMainLineageRejectsRewindDivergenceAndBadLookup(t *
 	repository, _, importedSHA, mergeSHA, _, _ := importedMainReceiptFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
-	initial, err := verifyImportedMainLineage(ctx, repository, importedSHA, "", 0)
+	initial, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, "", 0)
 	if err != nil || initial != importedSHA {
 		t.Fatalf("initial lineage = (%s, %v)", initial, err)
 	}
@@ -377,21 +377,21 @@ func TestWorktreeMergeImportedMainLineageRejectsRewindDivergenceAndBadLookup(t *
 		}
 	}
 	secondAdvance := gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
-	if current, err := verifyImportedMainLineage(ctx, repository, importedSHA, initial, 0); err != nil || current != secondAdvance {
+	if current, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, initial, 0); err != nil || current != secondAdvance {
 		t.Fatalf("second fast-forward = (%s, %v), want %s", current, err, secondAdvance)
 	}
 	gitMergeGraphTest(t, repository, "push", "--force", "origin", initial+":refs/heads/main")
-	if _, err := verifyImportedMainLineage(ctx, repository, importedSHA, secondAdvance, 0); err == nil {
+	if _, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, secondAdvance, 0); err == nil {
 		t.Fatal("rewind to the previously attested head was accepted")
 	}
 	baseSHA := gitMergeGraphTest(t, repository, "rev-parse", importedSHA+"^")
 	gitMergeGraphTest(t, repository, "push", "--force", "origin", baseSHA+":refs/heads/main")
-	if _, err := verifyImportedMainLineage(ctx, repository, importedSHA, initial, 0); err == nil {
+	if _, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, initial, 0); err == nil {
 		t.Fatal("rewound origin/main accepted")
 	}
 	targetSHA := gitMergeGraphTest(t, repository, "rev-parse", mergeSHA+"^1")
 	gitMergeGraphTest(t, repository, "push", "--force", "origin", targetSHA+":refs/heads/main")
-	if _, err := verifyImportedMainLineage(ctx, repository, importedSHA, initial, 0); err == nil {
+	if _, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, initial, 0); err == nil {
 		t.Fatal("diverged origin/main accepted")
 	}
 	if _, err := matchedFetchedOriginMain("", ""); err == nil {
@@ -400,11 +400,11 @@ func TestWorktreeMergeImportedMainLineageRejectsRewindDivergenceAndBadLookup(t *
 	if _, err := matchedFetchedOriginMain(importedSHA, "different refs/heads/main"); err == nil {
 		t.Fatal("fetch/ls-remote mismatch accepted")
 	}
-	if err := requireGitAncestor(ctx, repository, "missing-commit", targetSHA); err == nil {
+	if err := requireGitAncestor(ctx, defaultRunner, repository, "missing-commit", targetSHA); err == nil {
 		t.Fatal("missing ancestry commit accepted")
 	}
 	gitMergeGraphTest(t, repository, "push", "--force", "origin", ":refs/heads/main")
-	if _, err := verifyImportedMainLineage(ctx, repository, importedSHA, initial, 0); err == nil {
+	if _, err := verifyImportedMainLineage(ctx, defaultRunner, repository, importedSHA, initial, 0); err == nil {
 		t.Fatal("missing origin/main accepted")
 	}
 }
@@ -561,7 +561,7 @@ func TestWorktreeMergeImportedMainGraphRequiresExactLinearMerge(t *testing.T) {
 	gitMergeGraphTest(t, repository, "merge", "--no-ff", "imported", "-m", "import main")
 	merge := gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
 	candidate := writeAndCommit("fix", "fix")
-	gotMerge, gotImported, found, err := worktreeMergeImportedMainGraph(context.Background(), repository, candidate, target)
+	gotMerge, gotImported, found, err := worktreeMergeImportedMainGraph(context.Background(), defaultRunner, repository, candidate, target)
 	if err != nil || !found || gotMerge != merge || gotImported != imported {
 		t.Fatalf("valid graph = (%s, %s, %t, %v)", gotMerge, gotImported, found, err)
 	}
@@ -569,7 +569,7 @@ func TestWorktreeMergeImportedMainGraphRequiresExactLinearMerge(t *testing.T) {
 	gitMergeGraphTest(t, repository, "checkout", "-b", "reverse", imported)
 	gitMergeGraphTest(t, repository, "merge", "--no-ff", target, "-m", "reverse parents")
 	reversed := gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
-	if _, _, _, err := worktreeMergeImportedMainGraph(context.Background(), repository, reversed, target); err == nil {
+	if _, _, _, err := worktreeMergeImportedMainGraph(context.Background(), defaultRunner, repository, reversed, target); err == nil {
 		t.Fatal("wrong parent order accepted")
 	}
 
@@ -579,7 +579,7 @@ func TestWorktreeMergeImportedMainGraphRequiresExactLinearMerge(t *testing.T) {
 	gitMergeGraphTest(t, repository, "checkout", "extra")
 	gitMergeGraphTest(t, repository, "merge", "--no-ff", "side", "-m", "extra merge")
 	extra := gitMergeGraphTest(t, repository, "rev-parse", "HEAD")
-	if _, _, _, err := worktreeMergeImportedMainGraph(context.Background(), repository, extra, target); err == nil {
+	if _, _, _, err := worktreeMergeImportedMainGraph(context.Background(), defaultRunner, repository, extra, target); err == nil {
 		t.Fatal("extra merge accepted")
 	}
 }

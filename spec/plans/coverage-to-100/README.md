@@ -539,6 +539,34 @@ this scope brings the local accepted ledger to 202 unique declarations and
 repository coverage or remote publication. Final independent execution review
 and normal hooks precede the local commit.
 
+### Imported-main evidence checkpoint
+
+Imported-main initial and resumed dead-code attestation now share one concrete
+report-entry lookup and pass the existing Runner per invocation. The native
+wrappers retain their actual Land consumers. Module, check, identity, count and
+lineage distinctions remain explicit, including passed-report nil semantics;
+archive extraction, native Git authority, timeouts and verification ordering
+remain unchanged.
+
+All fourteen whole declarations cover 154/154 statements and every block,
+including closures. Thirteen selected race groups passed in 18.208 seconds,
+covering 153/154. One additional parallel native Git case advances an actual
+private origin after fetch, verifies the physical FETCH_HEAD/remote mismatch,
+and proves refusal before ancestry checks. Its passing profile closes the last
+statement. Coverage bits combine only two passing runs with identical whole
+production bodies, exact complete profile tuples, protected original source
+and the same native fixture binary; no changed-body union is used.
+
+Linux/Windows compilation, scoped vet, lint and specification lint passed.
+The narrow original-test change qualifies the per-call implementation, and one
+new assertion uses equivalent De Morgan form to satisfy lint. Existing positive
+Git/archive/lineage evidence remains genuine; controlled external tool output
+is identified as a transport fixture. Independent review and normal hooks
+precede this local checkpoint. All 202 previously accepted bodies remain
+unchanged, bringing the bounded local ledger to 216 unique declarations and
+4,055 statements. This is not a refreshed repository coverage percentage or
+remote publication.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
