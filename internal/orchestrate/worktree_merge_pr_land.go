@@ -203,11 +203,8 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
 	if mergeErr != nil {
-		if IsTransientGitHubFailure(mergeErr) {
-			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
-				fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
-		}
-		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, mergeErr)
+		return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+			fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
 	}
 	if mergeRefusal != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("%s", mergeRefusal.reason))
@@ -349,16 +346,7 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, git Git, run run
 		return fmt.Errorf("update-branch merge commit %s does not prove an ordinary merge of candidate %s and target %s; refusing to adopt it as an advance",
 			shortMergeRevision(updated), shortMergeRevision(previous), receipt.Target)
 	}
-	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
-		RecordedAt:           time.Now().UTC(),
-		PreviousTargetSHA:    receipt.TargetSHA,
-		NewTargetSHA:         newTarget,
-		PreviousCandidateSHA: receipt.Candidate.SHA,
-		NewCandidateSHA:      updated,
-	})
-	receipt.TargetSHA = newTarget
-	receipt.Candidate.SHA = updated
-	receipt.PublishedCandidateSHA = updated
+	recordWorktreeMergeUpdateBranchAdvance(receipt, newTarget, updated)
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(*receipt); err != nil {
 		return fmt.Errorf("persist update-branch advance: %w", err)
@@ -464,11 +452,11 @@ func verifyUpdateBranchMergeProof(ctx context.Context, git Git, run runner.Runne
 			}
 		}
 	}
-	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, worktree, target)
+	remoteTarget, fetchErr := fetchExactMergeTargetWithRunner(ctx, run, worktree, target)
 	if fetchErr != nil {
 		return false, nil
 	}
-	targetAncestor, ancestorErr := isMergeAncestor(ctx, worktree, targetParent, remoteTarget)
+	targetAncestor, ancestorErr := isMergeAncestorWithRunner(ctx, run, worktree, targetParent, remoteTarget)
 	if ancestorErr != nil || !targetAncestor {
 		return false, nil
 	}
@@ -573,16 +561,7 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, run runne
 		// for the ordinary drift/conflict handling to judge.
 		return false, nil
 	}
-	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
-		RecordedAt:           time.Now().UTC(),
-		PreviousTargetSHA:    receipt.TargetSHA,
-		NewTargetSHA:         parents[1],
-		PreviousCandidateSHA: receipt.Candidate.SHA,
-		NewCandidateSHA:      view.Head.SHA,
-	})
-	receipt.TargetSHA = parents[1]
-	receipt.Candidate.SHA = view.Head.SHA
-	receipt.PublishedCandidateSHA = view.Head.SHA
+	recordWorktreeMergeUpdateBranchAdvance(receipt, parents[1], view.Head.SHA)
 	if note := fastForwardWorktreeToUpdatedHead(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, view.Head.SHA); note != "" {
 		receipt.LocalSync = note
 	}
@@ -644,4 +623,19 @@ func worktreeMergeRefreshChainAdvances(refreshes []WorktreeMergeTargetRefresh, f
 		}
 		visited[current] = true
 	}
+}
+
+// recordWorktreeMergeUpdateBranchAdvance records only the shared proven identity
+// transition. Its two owners retain their distinct persistence and time policies.
+func recordWorktreeMergeUpdateBranchAdvance(receipt *WorktreeMergeReceipt, newTarget, newCandidate string) {
+	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
+		RecordedAt:           time.Now().UTC(),
+		PreviousTargetSHA:    receipt.TargetSHA,
+		NewTargetSHA:         newTarget,
+		PreviousCandidateSHA: receipt.Candidate.SHA,
+		NewCandidateSHA:      newCandidate,
+	})
+	receipt.TargetSHA = newTarget
+	receipt.Candidate.SHA = newCandidate
+	receipt.PublishedCandidateSHA = newCandidate
 }

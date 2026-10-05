@@ -471,6 +471,40 @@ the local accepted ledger to 181 unique declarations and 3,583 statements. These
 are bounded source-qualified cohorts, not current repository coverage or remote
 publication. Independent final review and normal hooks precede the local commit.
 
+### Pull-request route checkpoint
+
+Live and resumed pull-request update adoption now share one concrete history
+recording helper. Live UpdatedAt and persistence-before-sync stay in the live
+owner; resume adds neither mutation. Update proof propagates the supplied runner
+through actual Git fetch and ancestry stages. Original native defaults, parent
+ordering, compare-and-swap races and transient/definitive policies remain.
+
+The first race run exposed two test fixture mistakes: shell default expansion
+added a brace to explicit repository JSON, and a stderr-only failed CI-wait was
+mistaken for a typed transient await error. Test-only corrections use the existing
+exact hosted endpoint override, preserve the actual failed-wait checkpoint and
+add a genuine native branch update followed by a typed parent-read refusal.
+That failed profile is diagnostic only. A subsequent passing run covered 215/216
+statements and identified an unreachable definitive merge-error fallback.
+
+Independent source proof verified every concrete merge error wraps the existing
+unknown-mutation sentinel, including cancellation and secondary outcome reads.
+Definitive and head-moved refusals have a separate nil-error return. The owner
+therefore drops its redundant nested classifier and impossible Conflict return,
+while preserving the pending/resume wrapped error and native outcome re-read.
+
+A fresh complete scoped race batch passed all 16 top-level tests in 123.967
+seconds and covered all 214 statements in fourteen whole declarations, including
+closures and every block. Linux/Windows test compilation, scoped vet, lint and
+specification lint passed. Private fixtures run in parallel; process-wide hosted
+provider cases retain explicit serial reasons. Earlier profiles are not used to
+cover the changed body.
+
+All 181 previously accepted bodies remain source-identical. This scope brings
+the local accepted ledger to 195 unique declarations and 3,797 statements. It is
+a bounded cohort ledger, not current repository coverage or remote publication.
+Independent final review and normal hooks precede the local commit.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
