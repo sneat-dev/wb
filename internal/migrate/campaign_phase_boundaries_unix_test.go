@@ -54,7 +54,7 @@ func campaignBoundaryChildFilter(selected string) string {
 		return own
 	}
 	for _, character := range name {
-		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-') {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' && character != '-' {
 			return own
 		}
 	}
