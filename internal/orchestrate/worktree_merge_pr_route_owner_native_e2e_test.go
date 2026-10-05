@@ -519,6 +519,10 @@ func TestE2EPRRouteSharedEnginePreservesFailureAndServerResultContracts(t *testi
 				gh.writeState(t, "github-merges-on-arm", "1")
 				success = true
 			case "unrecorded native CAS head":
+				// This row proves the native CAS fence, not foreground wait expiry.
+				// Use the established CI-wait fixture slice budget so both unchanged
+				// exact-head observations finish before testing the CAS rejection.
+				options.WaitSlice = 5 * time.Minute
 				runEngineGit(t, f.f.repository.CloneURL, "update-ref", "refs/heads/main", f.target)
 				// The recorded candidate C does not yet contain T; raced M is
 				// an actual ordinary merge that does contain T, without WB's hook.
@@ -556,6 +560,19 @@ func TestE2EPRRouteSharedEnginePreservesFailureAndServerResultContracts(t *testi
 				}
 				if mode != "final persistence" && (got.Status != want || !strings.Contains(e.Error(), wantText)) {
 					t.Fatalf("%s status=%s error=%v want=%s/%q", mode, got.Status, e, want, wantText)
+				}
+			}
+			if mode == "unrecorded native CAS head" {
+				if _, err := os.Stat(filepath.Join(gh.state, "native-CAS-race")); !os.IsNotExist(err) {
+					t.Fatalf("native CAS race was not consumed: %v", err)
+				}
+				actual := strings.TrimSpace(runEngineGit(t, f.f.repository.CloneURL, "rev-parse", "refs/heads/"+r.Candidate.Branch))
+				if actual != f.merged {
+					t.Fatalf("native raced head=%s want=%s", actual, f.merged)
+				}
+				persisted, err := readWorktreeMergeReceipt(r.ReceiptPath)
+				if err != nil || persisted.Candidate.SHA != r.Candidate.SHA {
+					t.Fatalf("unrecorded native head entered receipt: %+v %v", persisted, err)
 				}
 			}
 			if mode == "update proof transient" {
