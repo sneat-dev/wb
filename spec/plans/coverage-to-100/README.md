@@ -358,6 +358,29 @@ checkpoint, not a fresh package or repository coverage percentage. The prior
 145 accepted declaration bodies remain byte-identical. Publication remains
 deferred to the coordinated delivery boundary.
 
+### Unpublished and retired-candidate checkpoint
+
+Unpublished validation-failure acknowledgement and retired prepare-candidate
+acknowledgement now have separate private owners with precise read, hash,
+runner and persistence seams. Their public wrappers retain their original native
+bindings and distinct receipt policies. A shared unpublished-candidate check is
+reused by the genuine absorbed-conflict consumer; no successful custody or
+cleanup proof is replaced with a test substitute. Real claims, Guard, Git DAG,
+backlog discard and persisted acknowledgement replay remain exercised.
+
+One fresh scoped race run passed all 19 top-level tests in 111.673 seconds.
+All 12 whole production declarations, including closures, covered 195 of 195
+statements with every block executed. Linux and Windows test compilation,
+scoped vet and lint, and specification lint passed. New tests run independently
+in parallel where their fixture state is private; shared mutable rows remain
+sequential. Eight original test entry points and all 152 previously accepted
+production declaration bodies remain byte-identical.
+
+The one unchanged validator overlaps six already accepted statements. The 11
+new identities add 189 source-qualified statements: 163 unique declarations
+and 3,095 statements are now accepted locally. This is a qualified cohort ledger,
+not a new total-package coverage measurement or a publication receipt.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.

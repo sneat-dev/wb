@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/mergeack"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -283,7 +284,11 @@ func verifyMissingAbsorbedConflictCandidate(ctx context.Context, gitRoot string,
 // when a legacy receipt has no candidate SHA: an empty recorded SHA alone
 // does not prove that nobody subsequently published the branch.
 func requireAbsorbedConflictCandidateUnpublished(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt) error {
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	return requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx, defaultRunner, gitRoot, receipt)
+}
+
+func requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx context.Context, run runner.Runner, gitRoot string, receipt WorktreeMergeReceipt) error {
+	remote, _, err := runCommand(ctx, run, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("inspect candidate publication state: %w", err)
 	}

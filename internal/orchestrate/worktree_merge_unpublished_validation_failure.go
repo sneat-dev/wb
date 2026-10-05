@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -61,11 +62,15 @@ type WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions struct {
 // validation failure was never published or landed and that all receipted
 // source work is still preserved. It is a dry-run unless Apply is true.
 func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions) (WorktreeMergeUnpublishedValidationFailureAcknowledgement, error) {
+	return acknowledgeUnpublishedValidationFailure(ctx, options, readWorktreeMergeReceipt, defaultRunner, worktreeMergeReceiptSHA256, persistUnpublishedValidationFailureAcknowledgement, worktrees.CanonicalRepositoryPath)
+}
+
+func acknowledgeUnpublishedValidationFailure(ctx context.Context, options WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions, readReceipt func(string) (WorktreeMergeReceipt, error), run runner.Runner, hash func(string) (string, error), persist func(string, WorktreeMergeUnpublishedValidationFailureAcknowledgement) error, resolveCanonical func(string, string) (string, error)) (WorktreeMergeUnpublishedValidationFailureAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
@@ -82,7 +87,7 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	}
 	defer func() { _ = lock.Release() }()
 
-	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	receipt, err = readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
@@ -98,7 +103,7 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove discarded interrupted candidate: %w", proofErr)
 		}
 		candidateCleanupBacklog = proof.Path
-		resolvedRoot, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, receipt.Repository)
+		resolvedRoot, canonicalErr := resolveCanonical(options.ProjectsRoot, receipt.Repository)
 		if canonicalErr != nil {
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, canonicalErr
 		}
@@ -111,10 +116,10 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		if guard.Kind != "linked" || guard.Branch != receipt.Candidate.Branch || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) {
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("candidate worktree %s no longer has its exact linked-worktree identity", receipt.Candidate.Worktree)
 		}
-		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
+		if err := requireCleanMergeWorktreeWithRunner(ctx, run, receipt.Candidate.Worktree); err != nil {
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("candidate worktree is not clean: %w", err)
 		}
-		if head, headErr := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD"); headErr != nil || head != receipt.Candidate.SHA {
+		if head, headErr := mergeRevision(ctx, run, receipt.Candidate.Worktree, "HEAD"); headErr != nil || head != receipt.Candidate.SHA {
 			if headErr != nil {
 				return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("read candidate HEAD: %w", headErr)
 			}
@@ -131,25 +136,25 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		preserved.SHA = preservedSHA
 		preservedSources = append(preservedSources, preserved)
 	}
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, run, 0, 0, gitRoot, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("inspect candidate publication state: %w", err)
 	}
 	if strings.TrimSpace(remote) != "" {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("candidate branch %s is published; use a published-candidate recovery", receipt.Candidate.Branch)
 	}
-	currentTarget, err := fetchExactMergeTarget(ctx, gitRoot, receipt.Target)
+	currentTarget, err := fetchExactMergeTargetWithRunner(ctx, run, gitRoot, receipt.Target)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
-	landed, err := isMergeAncestor(ctx, gitRoot, receipt.Candidate.SHA, currentTarget)
+	landed, err := isMergeAncestorWithRunner(ctx, run, gitRoot, receipt.Candidate.SHA, currentTarget)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("verify candidate against current target: %w", err)
 	}
 	if landed {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("candidate %s is already reachable from current target %s; use acknowledge-landed-failed", receipt.Candidate.SHA, currentTarget)
 	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hash(receiptPath)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
@@ -177,7 +182,7 @@ func AcknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := persistUnpublishedValidationFailureAcknowledgement(ack.AcknowledgementPath, ack); err != nil {
+	if err := persist(ack.AcknowledgementPath, ack); err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
 	return ack, nil
