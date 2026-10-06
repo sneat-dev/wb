@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"golang.org/x/mod/modfile"
 	modmodule "golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
@@ -25,7 +27,6 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/encode"
 	"github.com/sneat-dev/wb/internal/githubobserver"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -2230,11 +2231,11 @@ func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
 // installed on this fleet does not support — the same dependency that broke the
 // merge verb's checks stage and sent operators back to raw `gh pr merge`.
 func requiredChecksGreen(_ string, prURL string) ([]RemoteCheck, bool, error) {
-	repository, err := orchestrate.RepositoryFromPullRequestURL(prURL)
+	repository, err := githubchecks.RepositoryFromPullRequestURL(prURL)
 	if err != nil {
 		return nil, false, err
 	}
-	observed, green, err := orchestrate.PullRequestHeadChecks(context.Background(), repository, prURL)
+	observed, green, err := githubchecks.PullRequestHeadChecks(context.Background(), repository, prURL)
 	if err != nil {
 		return nil, false, err
 	}

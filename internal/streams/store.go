@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -82,7 +82,9 @@ func (store *Store) Load(name string) (Stream, error) {
 	contents, err := os.ReadFile(store.statePath(name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Stream{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+			if _, pathErr := os.Lstat(store.statePath(name)); os.IsNotExist(pathErr) {
+				return Stream{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+			}
 		}
 		return Stream{}, fmt.Errorf("read stream state %s: %w", store.statePath(name), err)
 	}
@@ -510,7 +512,7 @@ func unreadableStreamExcludesRepository(path, repository string) (excludes, know
 // must be able to ask the question without importing a stream verb.
 func (store *Store) LiveLinksForWorktree(worktree string) ([]StreamLink, error) {
 	resolved := normalizePath(worktree)
-	all, _, err := store.List()
+	all, err := store.readableLinkStreams()
 	if err != nil {
 		return nil, err
 	}
@@ -562,7 +564,7 @@ type StreamLink struct {
 // repointed by hand.
 func (store *Store) LinkSourcesForWorktree(worktree string) ([]StreamLinkSource, error) {
 	resolved := normalizePath(worktree)
-	all, _, err := store.List()
+	all, err := store.readableLinkStreams()
 	if err != nil {
 		return nil, err
 	}
@@ -609,4 +611,18 @@ func normalizePath(path string) string {
 		return filepath.Clean(resolved)
 	}
 	return filepath.Clean(trimmed)
+}
+
+// RecordRemoteHead persists the fetched branch head for the next status and push lease.
+func (store *Store) RecordRemoteHead(streamName, repository, head string) error {
+	_, err := store.Update(streamName, func(stream *Stream) error {
+		for index := range stream.Members {
+			if strings.EqualFold(stream.Members[index].Repository, repository) {
+				stream.Members[index].Lease.RecordedHead = head
+				return nil
+			}
+		}
+		return fmt.Errorf("stream member %q not found", repository)
+	})
+	return err
 }

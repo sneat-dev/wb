@@ -1,23 +1,23 @@
 package orchestrate
 
 import (
-	"archive/tar"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/filewrite"
@@ -209,13 +209,13 @@ type WorktreeMergeValidationTimeouts struct {
 // candidate and receipt instead of abandoning either or pretending the prior
 // remote landing never happened.
 type WorktreeMergeForwardRepairReceipt struct {
-	Status       WorktreeMergeStatus   `json:"status"`
-	TargetSHA    string                `json:"target_sha"`
-	CandidateSHA string                `json:"candidate_sha"`
-	LandingSHA   string                `json:"landing_sha"`
-	PullRequest  string                `json:"pull_request,omitempty"`
-	Checks       PullRequestWaitResult `json:"checks"`
-	Failure      string                `json:"failure"`
+	Status       WorktreeMergeStatus                `json:"status"`
+	TargetSHA    string                             `json:"target_sha"`
+	CandidateSHA string                             `json:"candidate_sha"`
+	LandingSHA   string                             `json:"landing_sha"`
+	PullRequest  string                             `json:"pull_request,omitempty"`
+	Checks       githubchecks.PullRequestWaitResult `json:"checks"`
+	Failure      string                             `json:"failure"`
 }
 
 // WorktreeMergeHostLoadAdmission records one host-load admission check that
@@ -236,28 +236,28 @@ type WorktreeMergeHostLoadAdmission struct {
 }
 
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                                `json:"schema_version"`
-	ID                    string                             `json:"id"`
-	Lane                  string                             `json:"lane"`
-	Phase                 WorktreeMergePhase                 `json:"phase"`
-	Status                WorktreeMergeStatus                `json:"status"`
-	Repository            string                             `json:"repository"`
-	Target                string                             `json:"target"`
-	TargetSHA             string                             `json:"target_sha"`
-	Sources               []WorktreeMergeSource              `json:"sources"`
-	Candidate             WorktreeMergeCandidate             `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt        `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt        `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision         `json:"route,omitempty"`
-	PullRequest           string                             `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                             `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                             `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                             `json:"landing_sha,omitempty"`
-	CanonicalSync         string                             `json:"canonical_sync,omitempty"`
-	LocalSync             string                             `json:"local_sync,omitempty"`
-	Validation            quality.VerificationReport         `json:"validation,omitempty"`
-	BaselineValidation    quality.VerificationReport         `json:"baseline_validation,omitempty"`
-	ImportedMainDeadcode  *WorktreeMergeImportedMainDeadcode `json:"imported_main_deadcode,omitempty"`
+	SchemaVersion         int                                   `json:"schema_version"`
+	ID                    string                                `json:"id"`
+	Lane                  string                                `json:"lane"`
+	Phase                 WorktreeMergePhase                    `json:"phase"`
+	Status                WorktreeMergeStatus                   `json:"status"`
+	Repository            string                                `json:"repository"`
+	Target                string                                `json:"target"`
+	TargetSHA             string                                `json:"target_sha"`
+	Sources               []WorktreeMergeSource                 `json:"sources"`
+	Candidate             WorktreeMergeCandidate                `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt           `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt           `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision            `json:"route,omitempty"`
+	PullRequest           string                                `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                                `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                                `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                                `json:"landing_sha,omitempty"`
+	CanonicalSync         string                                `json:"canonical_sync,omitempty"`
+	LocalSync             string                                `json:"local_sync,omitempty"`
+	Validation            quality.VerificationReport            `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport            `json:"baseline_validation,omitempty"`
+	ImportedMainDeadcode  *mergevalidation.ImportedMainDeadcode `json:"imported_main_deadcode,omitempty"`
 	// ValidationDeferral is set exactly when local validation was skipped for
 	// the pull-request route rather than run. See
 	// WorktreeMergeValidationDeferral.
@@ -269,7 +269,7 @@ type WorktreeMergeReceipt struct {
 	// never cause a refusal and never lengthen a wait. See
 	// WorktreeMergeFinding and recordDeferredValidationCheckSkippedFinding.
 	Findings       []WorktreeMergeFinding              `json:"findings,omitempty"`
-	Checks         PullRequestWaitResult               `json:"checks,omitempty"`
+	Checks         githubchecks.PullRequestWaitResult  `json:"checks,omitempty"`
 	PushGate       *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
 	ForwardRepairs []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
 	Cleanup        bool                                `json:"cleanup_requested"`
@@ -491,11 +491,19 @@ func (options WorktreeMergePrepareOptions) resolveRunner() runner.Runner {
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (preparedReceipt WorktreeMergeReceipt, prepareErr error) {
+	return prepareWorktreeMerge(ctx, options, readWorktreeMergeReceipt, persistWorktreeMergeReceipt)
+}
+
+// prepareWorktreeMerge binds durable reads and writes per invocation. Native
+// entry points use the actual receipt owners; failures after exclusivity or
+// integration can be observed without racing permissions or global overrides.
+func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions, read func(string) (WorktreeMergeReceipt, error), save func(WorktreeMergeReceipt) error) (preparedReceipt WorktreeMergeReceipt, prepareErr error) {
 	if options.PrepareTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, options.PrepareTimeout)
 		defer cancel()
 	}
+	run := options.resolveRunner()
 	sleep := options.Sleep
 	if sleep == nil {
 		sleep = time.Sleep
@@ -510,7 +518,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	target := strings.TrimSpace(options.Target)
 	if target == "" {
-		canonicalProbe, probeErr := canonicalForMergeSource(ctx, options.Sources[0])
+		canonicalProbe, probeErr := canonicalForMergeSourceWithRunner(ctx, run, options.Sources[0])
 		if probeErr != nil {
 			return WorktreeMergeReceipt{}, fmt.Errorf("resolve source canonical clone: %w", probeErr)
 		}
@@ -519,18 +527,13 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return WorktreeMergeReceipt{}, fmt.Errorf("resolve remote default branch: %w", probeErr)
 		}
 	}
-	sources, repository, canonical, err := inspectWorktreeMergeSources(ctx, projectsRoot, options.Sources, target)
+	sources, repository, canonical, err := inspectWorktreeMergeSourcesWithRunner(ctx, run, projectsRoot, options.Sources, target)
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
 	reportWorktreeMergeProgress(options.Progress, "inspect_sources", progress.Completed, fmt.Sprintf("%s: %d source worktree(s) targeting %s", repository, len(sources), target))
 	if !validMergeBranch(ctx, canonical, target) {
 		return WorktreeMergeReceipt{}, fmt.Errorf("invalid target branch %q", target)
-	}
-	for _, source := range sources {
-		if source.Branch == target {
-			return WorktreeMergeReceipt{}, fmt.Errorf("source worktree %s is on target branch %q", source.Worktree, target)
-		}
 	}
 	// The landing-lane guard runs before any receipt is created: a different
 	// live session already driving this (repository, target) lane must be
@@ -573,7 +576,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	receiptPath := filepath.Join(reportsDir, operation+".json")
 	var prior *WorktreeMergeReceipt
 	for {
-		existing, readErr := readWorktreeMergeReceipt(receiptPath)
+		existing, readErr := read(receiptPath)
 		if errors.Is(readErr, os.ErrNotExist) {
 			break
 		}
@@ -657,7 +660,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				// Re-read all evidence under the lane lock. This is the only recovery
 				// permitted after a crash or write failure between durable replacement
 				// receipt creation and append-only acknowledgement persistence.
-				current, currentErr := readWorktreeMergeReceipt(receiptPath)
+				current, currentErr := read(receiptPath)
 				if currentErr != nil {
 					return existing, currentErr
 				}
@@ -668,10 +671,10 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				if current.RebatchOf != rechecked.ReceiptPath || current.TargetSHA != rechecked.CurrentTargetSHA || current.Candidate.SHA == "" || len(current.RebatchedCandidates) != 1 || current.RebatchedCandidates[0] != rechecked.OriginalCandidate || !sameWorktreeMergeSources(current.Sources, sources) {
 					return existing, fmt.Errorf("existing replacement receipt %s no longer matches the requested immutable rebatch", receiptPath)
 				}
-				if _, candidateErr := validateMergeAcknowledgementCandidate(ctx, projectsRoot, current, current.Candidate); candidateErr != nil {
+				if _, candidateErr := validateMergeAcknowledgementCandidateWithRunner(ctx, run, projectsRoot, current, current.Candidate); candidateErr != nil {
 					return existing, fmt.Errorf("validate replacement candidate before rebatch acknowledgement recovery: %w", candidateErr)
 				}
-				containsOriginal, ancestorErr := isMergeAncestor(ctx, current.Candidate.Worktree, rechecked.OriginalCandidate.SHA, current.Candidate.SHA)
+				containsOriginal, ancestorErr := isMergeAncestorWithRunner(ctx, run, current.Candidate.Worktree, rechecked.OriginalCandidate.SHA, current.Candidate.SHA)
 				if ancestorErr != nil || !containsOriginal {
 					if ancestorErr == nil {
 						ancestorErr = fmt.Errorf("replacement candidate %s does not retain original rebatch candidate %s", current.Candidate.SHA, rechecked.OriginalCandidate.SHA)
@@ -697,7 +700,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				return existing, fmt.Errorf("merge receipt %s is validation_failed; only an exact preparing receipt may resume", receiptPath)
 			}
 			if existing.Status == WorktreeMergePreparing {
-				if err := validateExactPreparingWorktreeMergeReceipt(ctx, existing, lane, operation, sources); err != nil {
+				if err := validateExactPreparingWorktreeMergeReceiptWithRunner(ctx, run, existing, lane, operation, sources); err != nil {
 					return existing, fmt.Errorf("merge receipt %s cannot resume: %w", receiptPath, err)
 				}
 				prior = &existing
@@ -712,7 +715,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if rebatch != nil {
 		activeExcept = append(activeExcept, rebatch.ReceiptPath)
 	}
-	if active, activeErr := activeWorktreeMergeLaneReceipt(ctx, projectsRoot, reportsDir, lane, activeExcept...); activeErr != nil {
+	if active, activeErr := activeWorktreeMergeLaneReceiptWithRunner(ctx, projectsRoot, reportsDir, lane, run, activeExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		if collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(*active); collisionErr != nil {
@@ -736,16 +739,12 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if replay {
 			return *active, nil
 		}
-		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, *active, sources)
-		if refreshErr != nil {
-			return *active, refreshErr
+		continuation, continuationErr := choosePrepareContinuation(ctx, run, *active, sources)
+		if continuationErr != nil {
+			return *active, continuationErr
 		}
-		if !canRefresh {
-			canRepair, repairErr := canPreparePostTargetRepair(ctx, *active, sources)
-			if repairErr != nil {
-				return *active, repairErr
-			}
-			if !canRepair {
+		if continuation != prepareRefresh {
+			if continuation != prepareForwardRepair {
 				if active.Status == WorktreeMergeValidationFailed {
 					return *active, fmt.Errorf("merge receipt %s is validation_failed; only an exact preparing receipt may resume", active.ReceiptPath)
 				}
@@ -779,7 +778,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	// Re-read the durable lane after acquiring exclusivity: another prepare may
 	// have advanced the same resumable candidate before this lock was held.
 	if prior != nil {
-		current, readErr := readWorktreeMergeReceipt(receiptPath)
+		current, readErr := read(receiptPath)
 		if readErr != nil {
 			return WorktreeMergeReceipt{}, readErr
 		}
@@ -800,16 +799,12 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if replay {
 			return current, nil
 		}
-		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, current, sources)
-		if refreshErr != nil {
-			return current, refreshErr
+		continuation, continuationErr := choosePrepareContinuation(ctx, run, current, sources)
+		if continuationErr != nil {
+			return current, continuationErr
 		}
-		if !canRefresh {
-			canRepair, repairErr := canPreparePostTargetRepair(ctx, current, sources)
-			if repairErr != nil {
-				return current, repairErr
-			}
-			if !canRepair {
+		if continuation != prepareRefresh {
+			if continuation != prepareForwardRepair {
 				if current.Status == WorktreeMergeValidationFailed {
 					return current, fmt.Errorf("merge receipt %s is validation_failed; only an exact preparing receipt may resume", receiptPath)
 				}
@@ -835,7 +830,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if rebatch != nil {
 		postLockExcept = append(postLockExcept, rebatch.ReceiptPath)
 	}
-	if active, activeErr := activeWorktreeMergeLaneReceipt(ctx, projectsRoot, reportsDir, lane, postLockExcept...); activeErr != nil {
+	if active, activeErr := activeWorktreeMergeLaneReceiptWithRunner(ctx, projectsRoot, reportsDir, lane, run, postLockExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)
@@ -873,17 +868,14 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if err != nil {
 		return WorktreeMergeReceipt{}, fmt.Errorf("create candidate worktree: %w", err)
 	}
-	if len(created) != 1 {
-		return WorktreeMergeReceipt{}, fmt.Errorf("candidate creation returned %d repositories", len(created))
-	}
 	candidate := created[0]
 	reportWorktreeMergeProgress(options.Progress, "create_candidate", progress.Completed, candidate.WorktreeDir)
 	if forwardRepair {
-		remoteTarget, fetchErr := fetchExactMergeTarget(ctx, candidate.WorktreeDir, target)
+		remoteTarget, fetchErr := fetchExactMergeTargetWithRunner(ctx, run, candidate.WorktreeDir, target)
 		if fetchErr != nil {
 			return *prior, fetchErr
 		}
-		containsLanding, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, prior.LandingSHA, remoteTarget)
+		containsLanding, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.WorktreeDir, prior.LandingSHA, remoteTarget)
 		if ancestorErr != nil || !containsLanding {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("remote target %s no longer contains prior landing %s", remoteTarget, prior.LandingSHA)
@@ -901,105 +893,52 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if !targetContainsCandidate {
 			mergeArgs = []string{"merge", "--no-ff", "--no-edit", remoteTarget}
 		}
-		if _, _, mergeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
+		if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
 			if !targetContainsCandidate {
-				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 			}
 			return *prior, fmt.Errorf("advance repair candidate to landed target %s: %w", remoteTarget, mergeErr)
 		}
 		candidate.BaseSHA = remoteTarget
 	}
 
-	now := time.Now().UTC()
-	createdAt := now
-	var refreshes []WorktreeMergeSourceRefresh
-	if prior != nil {
-		createdAt = prior.CreatedAt
-		refreshes = append(refreshes, prior.SourceRefreshes...)
-		refreshes = append(refreshes, WorktreeMergeSourceRefresh{RecordedAt: now, Sources: append([]WorktreeMergeSource(nil), prior.Sources...)})
-	}
-	receipt := WorktreeMergeReceipt{
-		SchemaVersion: WorktreeMergeSchemaVersion,
-		ID:            operation, Lane: lane, Phase: WorktreeMergePhasePrepare, Status: WorktreeMergePreparing,
-		Repository: repository, Target: target, TargetSHA: candidate.BaseSHA,
-		Sources:            sources,
-		Candidate:          WorktreeMergeCandidate{Task: operation, Worktree: candidate.WorktreeDir, Branch: candidate.Branch},
-		ValidationTimeouts: worktreeMergeValidationTimeouts(options.CheckTimeout, options.ShardAttemptTimeout),
-		SourceRefreshes:    refreshes,
-		ResumeArgs:         worktreeMergePrepareResumeArgs(receiptPath, options.ProgressRequested),
-		HostLoadAdmission:  options.HostLoadAdmission,
-		ReceiptPath:        receiptPath, CreatedAt: createdAt, UpdatedAt: now,
-	}
-	if laneRecord.Owner.WBSessionID != "" {
-		record := laneRecord
-		receipt.LaneOwner = &record
-	}
-	if rebatch != nil {
-		receipt.RebatchOf = rebatch.ReceiptPath
-		receipt.RebatchedCandidates = []WorktreeMergeCandidate{rebatch.OriginalCandidate}
-	}
-	if prior != nil {
-		// A refresh inherits omitted limits, but explicit caller limits win.
-		// Keeping the entire old policy silently reuses obsolete short deadlines.
-		checkTimeout, shardTimeout := receiptWorktreeMergeValidationTimeouts(*prior)
-		if options.CheckTimeout > 0 {
-			checkTimeout = options.CheckTimeout
-		}
-		if options.ShardAttemptTimeout > 0 {
-			shardTimeout = options.ShardAttemptTimeout
-		}
-		receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(checkTimeout, shardTimeout)
-		receipt.Route = prior.Route
-		receipt.Cleanup = prior.Cleanup
-		receipt.OnFailure = prior.OnFailure
-		receipt.ResumeArgs = append([]string(nil), prior.ResumeArgs...)
-		if forwardRepair {
-			receipt.ForwardRepairs = append([]WorktreeMergeForwardRepairReceipt(nil), prior.ForwardRepairs...)
-			receipt.ForwardRepairs = append(receipt.ForwardRepairs, WorktreeMergeForwardRepairReceipt{
-				Status: prior.Status, TargetSHA: prior.TargetSHA, CandidateSHA: prior.Candidate.SHA,
-				LandingSHA: prior.LandingSHA, PullRequest: prior.PullRequest, Checks: prior.Checks, Failure: prior.Failure,
-			})
-		} else {
-			receipt.PullRequest = prior.PullRequest
-			receipt.PublishedCandidateSHA = prior.PublishedCandidateSHA
-			if receipt.PullRequest != "" && receipt.PublishedCandidateSHA == "" {
-				receipt.PublishedCandidateSHA = prior.Candidate.SHA
-			}
-			receipt.PreviousTargetSHA = prior.PreviousTargetSHA
-		}
-	}
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+	receipt := newPreparingWorktreeMergeReceipt(preparingReceiptInput{
+		options: options, candidate: candidate, sources: sources, prior: prior, rebatch: rebatch,
+		laneRecord: laneRecord, forwardRepair: forwardRepair, now: time.Now().UTC(),
+		operation: operation, lane: lane, repository: repository, target: target, receiptPath: receiptPath,
+	})
+	if err := save(receipt); err != nil {
 		return receipt, err
 	}
 	if rebatch != nil && candidate.BaseSHA != rebatch.CurrentTargetSHA {
 		// Creation already owns a durable worktree and claim. Preserve its exact
 		// identity in a failed receipt so the target race cannot orphan them.
 		receipt.Candidate.SHA = candidate.BaseSHA
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("rebatch target changed during candidate creation from %s to %s", rebatch.CurrentTargetSHA, candidate.BaseSHA))
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("rebatch target changed during candidate creation from %s to %s", rebatch.CurrentTargetSHA, candidate.BaseSHA), save)
 	}
-	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	if err := requireCleanMergeWorktreeWithRunner(ctx, run, candidate.WorktreeDir); err != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 	}
 	if rebatch != nil {
 		// A rebatch is not only a source-list assertion: retain the original
 		// candidate in the new candidate DAG. That gives receipt-gated cleanup a
 		// real graph/landing proof for the superseded integration branch instead
 		// of treating an acknowledgement as if it were a landing.
-		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, rebatch.OriginalCandidate.SHA, "HEAD")
+		containsOriginal, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.WorktreeDir, rebatch.OriginalCandidate.SHA, "HEAD")
 		if ancestorErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 		if !containsOriginal {
-			if _, _, mergeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
-				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr))
+			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
+				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr), save)
 			}
-			receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
+			receipt.Candidate.SHA, err = mergeRevision(ctx, run, candidate.WorktreeDir, "HEAD")
 			if err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 			}
 			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			if err := save(receipt); err != nil {
 				return receipt, err
 			}
 		}
@@ -1007,43 +946,43 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 
 	for index := range receipt.Sources {
 		source := &receipt.Sources[index]
-		ancestor, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, source.SHA, "HEAD")
+		ancestor, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.WorktreeDir, source.SHA, "HEAD")
 		if ancestorErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 		if !ancestor {
-			if _, _, mergeErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", source.SHA); mergeErr != nil {
-				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", source.SHA); mergeErr != nil {
+				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				conflict := fmt.Errorf("merge conflict while integrating %s at %s: %w", source.Branch, source.SHA, mergeErr)
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, conflict)
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, conflict, save)
 			}
 		}
 		source.Merged = true
 		progress.Report(options.Progress, progress.Event{Operation: "worktree_merge", Phase: "integrate_sources", Repository: repository,
 			State: progress.Running, Completed: index + 1, Total: len(receipt.Sources), Detail: source.Branch + "@" + shortMergeRevision(source.SHA)})
-		receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
+		receipt.Candidate.SHA, err = mergeRevision(ctx, run, candidate.WorktreeDir, "HEAD")
 		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 		}
 		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		if err := save(receipt); err != nil {
 			return receipt, err
 		}
 	}
-	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	if err := recheckWorktreeMergeSourcesWithRunner(ctx, run, receipt.Sources); err != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 	}
 	for _, original := range receipt.RebatchedCandidates {
-		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, original.SHA, receipt.Candidate.SHA)
+		containsOriginal, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.WorktreeDir, original.SHA, receipt.Candidate.SHA)
 		if ancestorErr != nil || !containsOriginal {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("replacement candidate %s does not retain rebatched candidate %s", receipt.Candidate.SHA, original.SHA)
 			}
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 	}
-	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	if err := requireCleanMergeWorktreeWithRunner(ctx, run, candidate.WorktreeDir); err != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 	}
 	// Validate both the exact target baseline and the integrated candidate,
 	// unless this call resolves the pull-request route and the target's
@@ -1052,7 +991,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 	plan, planErr := resolveWorktreeMergeValidationPlan(ctx, repository, target, options.Route, options.ValidateLocally, false, options.DirectCIPullRequest)
 	if planErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, planErr, save)
 	}
 	// Round 4, minor 2: cmd/wb's combined `wb worktree land`/`wb land`
 	// command skips the up-front host-load admission check whenever a
@@ -1068,23 +1007,23 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if !plan.Defer && receipt.HostLoadAdmission == nil && options.RequireHostLoadAdmission != nil {
 		admission, admissionErr := options.RequireHostLoadAdmission()
 		if admissionErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, admissionErr)
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, admissionErr, save)
 		}
 		receipt.HostLoadAdmission = admission
 	}
 	checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
 	if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, validationErr)
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeValidationFailed, validationErr, save)
 	}
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
 	receipt.Status = WorktreeMergePrepared
 	receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
 	if err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 	}
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+	if err := save(receipt); err != nil {
 		return receipt, err
 	}
 	if rebatch != nil {
@@ -1108,1314 +1047,6 @@ func receiptWorktreeMergeValidationTimeouts(receipt WorktreeMergeReceipt) (time.
 		return 0, 0
 	}
 	return receipt.ValidationTimeouts.Check, receipt.ValidationTimeouts.ShardAttempt
-}
-
-// LandWorktreeMerge resumes a prepared receipt from its first incomplete
-// boundary. It never reconstructs identity from a branch name and never
-// force-pushes either the candidate or target branch.
-func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, error) {
-	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Started, options.Receipt)
-	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
-	if err != nil {
-		return WorktreeMergeReceipt{}, err
-	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
-	if err != nil {
-		return WorktreeMergeReceipt{}, err
-	}
-	if options.HostLoadAdmission != nil {
-		receipt.HostLoadAdmission = options.HostLoadAdmission
-	}
-	// Captured before any phase transition below, since receipt.Phase is
-	// unconditionally reassigned to "land" further down: this distinguishes
-	// a true resume of an already-published land-phase receipt (the
-	// land-phase re-validation gap this function closes) from an ordinary
-	// first-ever transition from prepare into land, which must keep refusing
-	// on a bare identity mismatch rather than silently re-validating it away.
-	resumedFromLandPhase := receipt.Phase == WorktreeMergePhaseLand
-	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
-		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
-	}
-	if options.StopBeforeMerge && options.Cleanup {
-		return receipt, fmt.Errorf("stop-before-merge cannot clean managed assets before a landing receipt exists")
-	}
-	if acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt); ackErr != nil {
-		return receipt, ackErr
-	} else if acknowledged {
-		return receipt, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; it cannot be replayed", receiptPath)
-	}
-	if superseded, supersessionErr := hasValidationFailureSupersession(ctx, options.ProjectsRoot, receipt); supersessionErr != nil {
-		return receipt, supersessionErr
-	} else if superseded {
-		return receipt, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; it cannot be replayed", receiptPath)
-	}
-	if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt); rebatchErr != nil {
-		return receipt, rebatchErr
-	} else if rebatched {
-		return receipt, fmt.Errorf("merge receipt %s was rebatched into an audited replacement candidate; it cannot be replayed", receiptPath)
-	}
-	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Completed, string(receipt.Status)+" at "+receiptPath)
-	if receipt.Status == WorktreeMergeComplete {
-		if err := normalizeCompletedWorktreeMergeReceipt(&receipt); err != nil {
-			return receipt, err
-		}
-		return receipt, nil
-	}
-	// The landing-lane guard runs before any push, merge, or check
-	// observation: a different live session already driving this
-	// (repository, target) lane must be refused before this call does more
-	// work it would otherwise have to strand. See LaneGuardRequest.
-	if laneRecord, laneErr := acquireLandingLane(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane); laneErr != nil {
-		return receipt, laneErr
-	} else if laneRecord.Owner.WBSessionID != "" {
-		record := laneRecord
-		receipt.LaneOwner = &record
-	}
-	if receipt.Candidate.Worktree == "" {
-		return receipt, fmt.Errorf("receipt %s has no prepared candidate", receiptPath)
-	}
-	lockID := receipt.Lane
-	if lockID == "" {
-		lockID = worktreeMergeLaneID(receipt.Repository, receipt.Target)
-	}
-	lock, err := AcquireOperationLock(options.ProjectsRoot, lockID, true)
-	if err != nil {
-		return receipt, err
-	}
-	locked := true
-	defer func() {
-		if locked {
-			_ = lock.Release()
-		}
-	}()
-	if receipt.Status == WorktreeMergeLanded && receipt.LandingSHA != "" && receipt.Cleanup && options.Cleanup {
-		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
-		if _, statErr := os.Stat(ackPath); statErr == nil {
-			terminalized, recoveryErr := recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
-			if recoveryErr != nil {
-				return receipt, recoveryErr
-			}
-			if !terminalized {
-				return receipt, fmt.Errorf("missing-cleanup acknowledgement %s did not prove every cleanup asset terminal", ackPath)
-			}
-			receipt.Status = WorktreeMergeComplete
-			receipt.Failure = ""
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			return receipt, nil
-		} else if !os.IsNotExist(statErr) {
-			return receipt, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
-		}
-	}
-	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
-		// Persist approved landing intent before remote-only recovery. If the
-		// recovery succeeds, the recursive pass continues through the ordinary
-		// post-target CI, canonical sync, and cleanup path with the same fence
-		// approval instead of forgetting it after the PR has merged.
-		if retainWorktreeMergeLandIntent(&receipt, &options) {
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-		}
-		recovered, recoveryErr := recoverAlreadyMergedPublishedWorktreeMerge(ctx, &receipt)
-		if recoveryErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, recoveryErr)
-		}
-		if recovered {
-			if err := lock.Release(); err != nil {
-				return receipt, err
-			}
-			locked = false
-			return LandWorktreeMerge(ctx, options)
-		}
-	}
-	// Resolve the route, and whether local validation may be deferred to it,
-	// exactly ONCE for this call — but LAZILY, on first actual use below,
-	// rather than eagerly here. A network round trip (and its conservative
-	// fallback for an explicit --route direct against an unreadable policy,
-	// which is a hard refusal — see conservativeWorktreeMergePRRoute) must
-	// never fire on a path that itself fails before reaching any validation
-	// site or the publish guard (e.g. a target-drift rebase conflict caught
-	// below): that would refuse work for a reason this call never needed to
-	// reach. Every validation site below and the publish/landing guard that
-	// follows them share planHolder, so whichever of them runs first performs
-	// the one resolution and every later one reuses it (M7, B1:
-	// sneat-dev/wb#591).
-	applyRecordedWorktreeMergeRouteBeforeFirstResolve(&receipt, &options)
-	planHolder := &worktreeMergeValidationPlanHolder{}
-	if receipt.Candidate.SHA == "" {
-		recovered, recoverErr := recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
-		if recoverErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, recoverErr)
-		}
-		if recovered {
-			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-			if planErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-			}
-			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-				// Keep retry truthful: the resolved head is present in the
-				// validation report, but it is not a prepared candidate until
-				// that validation succeeds. A later resume must recover and
-				// validate the exact head again.
-				receipt.Candidate.SHA = ""
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("recovered candidate validation failed: %w", validationErr))
-			}
-			receipt.Status = WorktreeMergePrepared
-			receipt.Failure = ""
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
-		}
-	}
-	if receipt.Status == WorktreeMergePreparing {
-		if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
-			storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if options.CheckTimeout > 0 {
-				storedCheckTimeout = options.CheckTimeout
-			}
-			if options.ShardAttemptTimeout > 0 {
-				storedShardAttemptTimeout = options.ShardAttemptTimeout
-			}
-			receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(storedCheckTimeout, storedShardAttemptTimeout)
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-		}
-		if err := validatePreparingWorktreeMergeCandidate(ctx, receipt); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-		if planErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-		}
-		validationContext := ctx
-		cancelValidation := func() {}
-		if options.PrepareTimeout > 0 {
-			validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
-		}
-		validationErr := applyOrDeferWorktreeMergeValidation(validationContext, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
-		cancelValidation()
-		if validationErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("interrupted candidate validation failed: %w", validationErr))
-		}
-		receipt.Status = WorktreeMergePrepared
-		receipt.Failure = ""
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
-	}
-	if receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergeValidationFailed && receipt.Candidate.SHA != "" {
-		// A prepare/validation_failed receipt must never reach publish without
-		// proving the exact candidate SHA again. Earlier code only re-ran
-		// validation for a "preparing" receipt; a receipt that had already
-		// recorded a failed validation fell through untouched and could reach
-		// the push/PR logic below with validation.status still "failed"
-		// (observed for receipts merge-sneat-dev-wb-main-1cbbf49dd60f-40222b81bf14
-		// and merge-sneat-dev-wb-main-...-35e45d0d254e). Resume closes that gap
-		// by re-validating here, before any conflict-advance or publish step.
-		if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
-			storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if options.CheckTimeout > 0 {
-				storedCheckTimeout = options.CheckTimeout
-			}
-			if options.ShardAttemptTimeout > 0 {
-				storedShardAttemptTimeout = options.ShardAttemptTimeout
-			}
-			receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(storedCheckTimeout, storedShardAttemptTimeout)
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-		}
-		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("validation_failed candidate is not safely resumable: %w", err))
-		}
-		head, headErr := mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
-		if headErr != nil || head != receipt.Candidate.SHA {
-			if headErr == nil {
-				headErr = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
-			}
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, headErr)
-		}
-		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-		if planErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-		}
-		validationContext := ctx
-		cancelValidation := func() {}
-		if options.PrepareTimeout > 0 {
-			validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
-		}
-		validationErr := applyOrDeferWorktreeMergeValidation(validationContext, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
-		cancelValidation()
-		if validationErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("resumed validation_failed candidate re-validation failed: %w", validationErr))
-		}
-		receipt.Status = WorktreeMergePrepared
-		receipt.Failure = ""
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Completed, string(receipt.Validation.Status))
-	}
-	advanced, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
-	if advanceErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
-	}
-	if advanced {
-		reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-	}
-	advancedNeedsValidation, advanceValidationErr := conflictCandidateAdvanceNeedsValidation(receipt)
-	if advanceValidationErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceValidationErr)
-	}
-	if advanced || advancedNeedsValidation {
-		if receipt.Status != WorktreeMergePreparing {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("advanced conflict candidate %s is %s without a completed exact validation", receipt.Candidate.SHA, receipt.Status))
-		}
-		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-		if planErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-		}
-		if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("advanced conflict candidate validation failed: %w", validationErr))
-		}
-		receipt.Status = WorktreeMergePrepared
-		receipt.Failure = ""
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
-	}
-	if retainWorktreeMergeLandIntent(&receipt, &options) {
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-	}
-	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
-		// Adopt an unrecorded server-side update-branch advance BEFORE the
-		// local-advance detection below: that detection reasons about the
-		// local candidate worktree's own HEAD, which a server-side update
-		// never touches, and would otherwise never see this advance at all.
-		// See adoptServerUpdatedWorktreeMergeHead (M5) and
-		// adoptWorktreeMergeUpdateBranchAdvance's M3 persist-first ordering,
-		// whose crash window this closes.
-		adopted, adoptErr := adoptServerUpdatedWorktreeMergeHead(ctx, options.resolveGit(), options.resolveRunner(), &receipt)
-		if adoptErr != nil {
-			if IsTransientGitHubFailure(adoptErr) {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
-					fmt.Errorf("%w; resume with wb worktree merge resume %s", adoptErr, receipt.ReceiptPath))
-			}
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, adoptErr)
-		}
-		if adopted {
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
-		}
-	}
-	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
-		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, options.resolveGit(), options.resolveRunner(), &receipt)
-		if advanceErr != nil {
-			if IsTransientGitHubFailure(advanceErr) {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
-					fmt.Errorf("%w; resume with wb worktree merge resume %s", advanceErr, receipt.ReceiptPath))
-			}
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
-		}
-		if advanced {
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
-		}
-	}
-	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
-		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
-		if observeErr != nil {
-			if IsTransientGitHubFailure(observeErr) {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeChecksPending,
-					fmt.Errorf("%w; resume with wb worktree merge resume %s", observeErr, receipt.ReceiptPath))
-			}
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, observeErr)
-		}
-		if merged {
-			remoteTarget, fetchErr := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
-			if fetchErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fetchErr)
-			}
-			containsLanding, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, serverLanding, remoteTarget)
-			if ancestorErr != nil || !containsLanding {
-				if ancestorErr == nil {
-					ancestorErr = fmt.Errorf("exact remote target %s does not contain already-merged pull-request result %s", remoteTarget, serverLanding)
-				}
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
-			}
-			receipt.LandingSHA = remoteTarget
-			// Candidate PR checks prove the pre-merge head only. Force the
-			// recursive landed pass to obtain fresh target-check evidence.
-			receipt.Checks = PullRequestWaitResult{}
-			receipt.Status = WorktreeMergeLanded
-			receipt.UpdatedAt = time.Now().UTC()
-			if persistErr := persistWorktreeMergeReceipt(receipt); persistErr != nil {
-				return receipt, persistErr
-			}
-			if releaseErr := lock.Release(); releaseErr != nil {
-				return receipt, releaseErr
-			}
-			locked = false
-			return LandWorktreeMerge(ctx, options)
-		}
-	}
-	if receipt.LandingSHA != "" {
-		if receipt.Checks.Status != PullRequestWaitPassed || receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect {
-			reportWorktreeMergeProgress(options.Progress, "target_checks", progress.Waiting, shortMergeRevision(receipt.LandingSHA))
-			postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", receipt.LandingSHA, true)
-			receipt.Checks = postChecks
-			if postErr != nil {
-				status := WorktreeMergePostTargetCIFailed
-				if postChecks.Status == PullRequestWaitPending {
-					status = WorktreeMergeChecksPending
-				}
-				return failWorktreeMergeReceipt(receipt, status, postErr)
-			}
-		}
-		if receipt.CanonicalSync != "fast_forwarded" && receipt.CanonicalSync != "not_checked_out" {
-			reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, receipt.Target+"@"+shortMergeRevision(receipt.LandingSHA))
-			canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, receipt.Repository)
-			if canonicalErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, canonicalErr)
-			}
-			receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, receipt.LandingSHA, options.Timeout, options.Retry, options.CheckoutUpdated)
-			if err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
-			}
-		}
-		reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Completed, receipt.CanonicalSync)
-		reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Started, "discovering exact absorbed heads")
-		if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry, options.Progress); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
-		}
-		reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
-		receipt.Status = WorktreeMergeLanded
-		receipt.Cleanup = receipt.Cleanup || options.Cleanup
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		if !receipt.Cleanup {
-			reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
-			return receipt, nil
-		}
-		reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Started, strings.Join(sortedUniqueMergeTasks(receipt), ", "))
-		if terminalized, terminalErr := recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry); terminalErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, terminalErr)
-		} else if terminalized {
-			reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Completed, strings.Join(receipt.CleanedTasks, ", "))
-			receipt.Status = WorktreeMergeComplete
-			receipt.Failure = ""
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			return receipt, nil
-		}
-		if err := lock.Release(); err != nil {
-			return receipt, err
-		}
-		locked = false
-		if err := cleanupWorktreeMergeAssets(ctx, options.ProjectsRoot, &receipt); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
-		}
-		reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Completed, strings.Join(receipt.CleanedTasks, ", "))
-		receipt.Status = WorktreeMergeComplete
-		receipt.Failure = ""
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		return receipt, nil
-	}
-
-	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	head, err := mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
-	if err != nil || head != receipt.Candidate.SHA {
-		if err == nil {
-			err = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
-		}
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-
-	remoteTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
-	if err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	reportWorktreeMergeProgress(options.Progress, "refresh_target", progress.Completed, receipt.Target+"@"+shortMergeRevision(remoteTarget))
-	if options.StopBeforeMerge && remoteTarget != receipt.TargetSHA {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("target drifted from recorded %s to %s; refusing to republish preserved candidate %s", receipt.TargetSHA, remoteTarget, receipt.Candidate.SHA))
-	}
-	containsTarget, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, remoteTarget, receipt.Candidate.SHA)
-	if err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	if !containsTarget {
-		if receipt.PullRequest != "" {
-			reportWorktreeMergeProgress(options.Progress, "refresh_published_candidate", progress.Started, receipt.Target+"@"+shortMergeRevision(remoteTarget))
-			if err := refreshPublishedWorktreeMergeCandidateTarget(ctx, &receipt, remoteTarget, options.Timeout, options.Retry); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "refresh_published_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
-			if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			reportWorktreeMergeProgress(options.Progress, "validate_refreshed_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-			if planErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-			}
-			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after refreshing published candidate to target %s: %w", remoteTarget, validationErr))
-			}
-			reportWorktreeMergeProgress(options.Progress, "validate_refreshed_candidate", progress.Completed, string(receipt.Validation.Status))
-		} else {
-			preparedCandidate, preparedTarget := receipt.Candidate.SHA, receipt.TargetSHA
-			containsPreparedTarget, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, preparedTarget, preparedCandidate)
-			if ancestorErr != nil || !containsPreparedTarget {
-				if ancestorErr == nil {
-					ancestorErr = fmt.Errorf("prepared candidate %s no longer contains recorded target %s", preparedCandidate, preparedTarget)
-				}
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
-			}
-			reportWorktreeMergeProgress(options.Progress, "rebase_candidate", progress.Started, shortMergeRevision(remoteTarget))
-			if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, receipt.Candidate.Worktree,
-				"git", "rebase", "--rebase-merges", "--onto", remoteTarget, preparedTarget, receipt.Candidate.Branch); err != nil {
-				_, _, _ = runCommand(ctx, options.resolveRunner(), options.Timeout, 0, receipt.Candidate.Worktree, "git", "rebase", "--abort")
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("target drift conflicts while rebasing the isolated candidate onto %s: %w", remoteTarget, err))
-			}
-			receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
-			if err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			receipt.TargetSHA = remoteTarget
-			receipt.Rebase = &WorktreeMergeRebaseReceipt{
-				CandidateBefore: preparedCandidate, TargetBefore: preparedTarget,
-				TargetAfter: remoteTarget, CandidateAfter: receipt.Candidate.SHA,
-			}
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			reportWorktreeMergeProgress(options.Progress, "validate_rebased_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-			if planErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-			}
-			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift: %w", validationErr))
-			}
-		}
-	}
-	if options.StopBeforeMerge {
-		// StopBeforeMerge requires the pull-request route (checked at the top
-		// of this function), so resolving the plan here and stamping
-		// receipt.Route before the reuse check lets preparedValidationStillValid
-		// recognize a matching PR-route deferral from an earlier call in this
-		// same receipt's history, without waiting for the later route
-		// resolution/publish guard below.
-		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-		if planErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-		}
-		receipt.Route = plan.Route
-		checkTimeout, _ := receiptWorktreeMergeValidationTimeouts(receipt)
-		reusable, identityErr := preparedValidationStillValidContext(ctx, receipt, plan, options.Timeout, options.Retry, checkTimeout)
-		if identityErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("recheck prepared validation identity: %w", identityErr))
-		}
-		if !reusable {
-			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
-			}
-			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
-		} else {
-			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, "reused exact prepared validation")
-		}
-	}
-
-	// Reuse the route this call already resolved ONCE, above, rather than
-	// re-querying GitHub: every validation site in this call and this
-	// publish/landing guard must observe the same decision (M7, B1:
-	// sneat-dev/wb#591).
-	plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-	if planErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-	}
-	decision := plan.Route
-	if decision.Route == WorktreeMergeRouteUnsupported {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("unsupported target policy: %s", decision.Reason))
-	}
-	reportWorktreeMergeProgress(options.Progress, "resolve_route", progress.Completed, string(decision.Route)+": "+decision.Reason)
-	receipt.Phase, receipt.Route = WorktreeMergePhaseLand, decision
-	if receipt.PreviousTargetSHA == "" {
-		receipt.PreviousTargetSHA = remoteTarget
-	}
-	receipt.Cleanup = receipt.Cleanup || options.Cleanup
-	receipt.UpdatedAt = time.Now().UTC()
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		return receipt, err
-	}
-	if resumedFromLandPhase && !options.StopBeforeMerge {
-		// A land-phase receipt whose candidate has moved past its last proven
-		// SHA must never reach a publish or landing transition without proving
-		// the exact candidate SHA again. Before this block, an ordinary resume
-		// of a receipt shaped like an already-published PR (PullRequest set,
-		// PublishedCandidateSHA naming an old head) whose candidate had since
-		// advanced to a new, still-failing SHA (Status validation_failed) fell
-		// straight through the old published-PR carve-out below and pushed the
-		// unvalidated candidate to the PR branch. StopBeforeMerge is excluded
-		// here because it already re-validates the preserved candidate earlier
-		// in this function (see preparedValidationStillValid above); running
-		// this block too would revalidate the same SHA twice. This block is
-		// gated on resumedFromLandPhase (the receipt's phase as loaded, before
-		// the unconditional reassignment above) rather than the always-true
-		// post-assignment receipt.Phase, so a fresh first-ever transition from
-		// prepare into land keeps refusing on a bare identity mismatch instead
-		// of silently re-validating it away.
-		identity := receipt.ValidationIdentity
-		identityMismatch := identity == nil || identity.CandidateSHA != receipt.Candidate.SHA
-		needsRevalidation := receipt.Status == WorktreeMergeValidationFailed ||
-			receipt.Validation.Revision != receipt.Candidate.SHA || identityMismatch
-		// Finding B1 (sneat-dev/wb#591): this carve-out is proven safe only by
-		// the push gate and PR-route CI checks that ran after publishing at
-		// this exact SHA. It must not fire on a route THIS call resolved as
-		// direct — that includes a resume that flips from a prior PR-route
-		// deferral to `--route direct` (scenario g), which must validate.
-		publishedAtCurrentSHA := decision.Route == WorktreeMergeRoutePullRequest &&
-			receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA
-		if needsRevalidation && !publishedAtCurrentSHA {
-			if options.CheckTimeout > 0 || options.ShardAttemptTimeout > 0 {
-				storedCheckTimeout, storedShardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-				if options.CheckTimeout > 0 {
-					storedCheckTimeout = options.CheckTimeout
-				}
-				if options.ShardAttemptTimeout > 0 {
-					storedShardAttemptTimeout = options.ShardAttemptTimeout
-				}
-				receipt.ValidationTimeouts = worktreeMergeValidationTimeouts(storedCheckTimeout, storedShardAttemptTimeout)
-				receipt.UpdatedAt = time.Now().UTC()
-				if err := persistWorktreeMergeReceipt(receipt); err != nil {
-					return receipt, err
-				}
-			}
-			if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			head, headErr := mergeRevision(ctx, options.resolveRunner(), receipt.Candidate.Worktree, "HEAD")
-			if headErr != nil || head != receipt.Candidate.SHA {
-				if headErr == nil {
-					headErr = fmt.Errorf("candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
-				}
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, headErr)
-			}
-			reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-			if planErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, planErr)
-			}
-			validationContext := ctx
-			cancelValidation := func() {}
-			if options.PrepareTimeout > 0 {
-				validationContext, cancelValidation = context.WithTimeout(ctx, options.PrepareTimeout)
-			}
-			validationErr := applyOrDeferWorktreeMergeValidation(validationContext, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress)
-			cancelValidation()
-			if validationErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("resumed land-phase candidate re-validation failed: %w", validationErr))
-			}
-			// Clear the stale validation_failed status the same way the
-			// prepare-phase re-validation block does (see the WorktreeMergePrepared
-			// assignment above): the guard below refuses on a lingering
-			// validation_failed status even after Validation itself now proves
-			// this exact candidate SHA.
-			receipt.Status = WorktreeMergePrepared
-			receipt.Failure = ""
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Completed, string(receipt.Validation.Status))
-		}
-	}
-	// Finding X1 (sneat-dev/wb#591 red-team follow-up): a receipt whose
-	// current validation record is still a stale deferral recorded by an
-	// earlier call must be re-validated locally right here whenever THIS
-	// call's plan no longer permits deferring (e.g. --validate-locally or
-	// --allow-unfenced on a resume, or the target's fence having been
-	// removed since the deferral was recorded) — never silently accepted by
-	// requireWorktreeMergePublishedValidation, and never silently refused
-	// either, since the whole point of these escape hatches is to let the
-	// call proceed after actually validating.
-	if receipt.ValidationDeferral != nil && receipt.Validation.Status == quality.StatusSkipped && !plan.Defer {
-		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-		if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("stale deferral must be re-validated locally on this call: %w", validationErr))
-		}
-		receipt.Status = WorktreeMergePrepared
-		receipt.Failure = ""
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		reportWorktreeMergeProgress(options.Progress, "revalidate_candidate", progress.Completed, string(receipt.Validation.Status))
-	}
-	checkTimeout, _ := receiptWorktreeMergeValidationTimeouts(receipt)
-	if err := requireWorktreeMergePublishedValidationContext(ctx, receipt, plan, options.Timeout, options.Retry, checkTimeout); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	if options.StopBeforeMerge && receipt.PullRequest != "" {
-		if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
-			remoteRef := "refs/heads/" + receipt.Candidate.Branch
-			reportWorktreeMergeProgress(options.Progress, "pre_push_gate", progress.Started, remoteRef)
-			receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
-			if err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			if receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA))
-			}
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, options.Timeout, options.Retry); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("candidate descendant push failed without force: %w", err))
-			}
-			reportWorktreeMergeProgress(options.Progress, "publish_candidate", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))
-			receipt.PublishedCandidateSHA = receipt.Candidate.SHA
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-		}
-		if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
-		receipt.Status = WorktreeMergePublished
-		receipt.Failure = ""
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		reportWorktreeMergeProgress(options.Progress, "published_merge_pending", progress.Completed, receipt.PullRequest)
-		return receipt, nil
-	}
-
-	serverLanding := receipt.Candidate.SHA
-	if decision.Route == WorktreeMergeRouteDirect {
-		if plan.DirectCI != nil {
-			if err := verifyWorktreeMergeDirectCIPullRequest(ctx, receipt, *plan.DirectCI, receipt.TargetSHA); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("direct CI pull request changed before push: %w", err))
-			}
-		}
-		remoteRef := "refs/heads/" + receipt.Target
-		reportWorktreeMergeProgress(options.Progress, "pre_push_gate", progress.Started, remoteRef)
-		receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
-		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, false, options.Timeout, options.Retry); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("direct target push failed without force: %w", err))
-		}
-		reportWorktreeMergeProgress(options.Progress, "publish_target", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))
-	} else {
-		remoteRef := "refs/heads/" + receipt.Candidate.Branch
-		reportWorktreeMergeProgress(options.Progress, "pre_push_gate", progress.Started, remoteRef)
-		receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
-		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA))
-		}
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, options.Timeout, options.Retry); err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("candidate push failed without force: %w", err))
-		}
-		reportWorktreeMergeProgress(options.Progress, "publish_candidate", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))
-		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		receipt.PullRequest, err = findExactOpenWorktreeMergePullRequest(ctx, receipt)
-		if err != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-		}
-		if receipt.PullRequest != "" {
-			if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("verify adopted pull request: %w", err))
-			}
-			reportWorktreeMergeProgress(options.Progress, "adopt_pull_request", progress.Completed, receipt.PullRequest)
-		} else {
-			title, body, textErr := worktreeMergePRText(ctx, receipt)
-			if textErr != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, textErr)
-			}
-			receipt.PullRequest, err = openPullRequest(ctx, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Target, title, body,
-				Options{Timeout: options.Timeout, Retry: options.Retry})
-			if err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			reportWorktreeMergeProgress(options.Progress, "open_pull_request", progress.Completed, receipt.PullRequest)
-		}
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(receipt); err != nil {
-			return receipt, err
-		}
-		if options.StopBeforeMerge {
-			if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			receipt.Status = WorktreeMergePublished
-			receipt.Failure = ""
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "published_merge_pending", progress.Completed, receipt.PullRequest)
-			return receipt, nil
-		}
-		reportWorktreeMergeProgress(options.Progress, "candidate_checks", progress.Waiting, receipt.PullRequest)
-		receipt, serverLanding, err = landWorktreeMergePullRequest(ctx, receipt, options)
-		if err != nil {
-			return receipt, err
-		}
-		reportWorktreeMergeProgress(options.Progress, "merge_pull_request", progress.Completed, shortMergeRevision(serverLanding))
-	}
-
-	landing, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
-	if err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	containsServerLanding, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, serverLanding, landing)
-	if err != nil || !containsServerLanding {
-		if err == nil {
-			err = fmt.Errorf("exact remote target %s does not contain server landing %s", landing, serverLanding)
-		}
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	if receipt.ValidationDeferral != nil && receipt.ValidationDeferral.Route == WorktreeMergeRouteDirect && landing != receipt.Candidate.SHA {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("direct CI deferral requires exact remote target %s, found %s", receipt.Candidate.SHA, landing))
-	}
-	receipt.LandingSHA = landing
-	reportWorktreeMergeProgress(options.Progress, "verify_remote_landing", progress.Completed, receipt.Target+"@"+shortMergeRevision(landing))
-	receipt.Status = WorktreeMergeLanded
-	receipt.UpdatedAt = time.Now().UTC()
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		return receipt, err
-	}
-
-	reportWorktreeMergeProgress(options.Progress, "target_checks", progress.Waiting, shortMergeRevision(landing))
-	postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", landing, true)
-	receipt.Checks = postChecks
-	if postErr != nil {
-		status := WorktreeMergePostTargetCIFailed
-		if postChecks.Status == PullRequestWaitPending {
-			status = WorktreeMergeChecksPending
-		}
-		failed, failure := failWorktreeMergeReceipt(receipt, status, postErr)
-		if status == WorktreeMergePostTargetCIFailed && strings.TrimSpace(options.OnFailure) == "revert" {
-			_, _ = PrepareWorktreeMergeRevert(ctx, options.ProjectsRoot, failed.ReceiptPath, options.Timeout, options.Retry)
-		}
-		return failed, failure
-	}
-
-	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, receipt.Repository)
-	if canonicalErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, canonicalErr)
-	}
-	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Started, canonical)
-	receipt.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, receipt.Target, landing, options.Timeout, options.Retry, options.CheckoutUpdated)
-	if err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeCanonicalSyncBlocked, err)
-	}
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		return receipt, err
-	}
-	reportWorktreeMergeProgress(options.Progress, "sync_canonical", progress.Completed, receipt.CanonicalSync)
-	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Started, "discovering exact absorbed heads")
-	if err := reconcileAbsorbedSourcePullRequests(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry, options.Progress); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
-	}
-	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
-	if !receipt.Cleanup {
-		reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
-		return receipt, nil
-	}
-	if err := lock.Release(); err != nil {
-		return receipt, err
-	}
-	locked = false
-	reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Started, strings.Join(sortedUniqueMergeTasks(receipt), ", "))
-	if err := cleanupWorktreeMergeAssets(ctx, options.ProjectsRoot, &receipt); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
-	}
-	reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Completed, strings.Join(receipt.CleanedTasks, ", "))
-	receipt.Status = WorktreeMergeComplete
-	receipt.Failure = ""
-	receipt.UpdatedAt = time.Now().UTC()
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		return receipt, err
-	}
-	return receipt, nil
-}
-
-func advancePublishedWorktreeMergeCandidate(ctx context.Context, git Git, run runner.Runner, receipt *WorktreeMergeReceipt) (bool, error) {
-	head, err := mergeRevision(ctx, run, receipt.Candidate.Worktree, "HEAD")
-	if err != nil {
-		return false, fmt.Errorf("read published candidate HEAD: %w", err)
-	}
-	if head == receipt.Candidate.SHA {
-		// Red-team finding M6: HEAD already matches the recorded candidate,
-		// so any earlier fast-forward note - a failure this resume has since
-		// been overtaken by, or a stale success message from a previous
-		// advance - no longer describes anything live. Clear it rather than
-		// leaving a stale receipt.LocalSync note to confuse the next read.
-		receipt.LocalSync = ""
-		return false, nil
-	}
-	// Red-team finding B1: a server-side update-branch advance can persist
-	// its new Candidate.SHA (M3's persist-first ordering) and then have its
-	// best-effort local fast-forward fail or never run at all (a crash, a
-	// kill, a dirty/missing worktree at the time). The worktree is then
-	// left at the OLD candidate the update replaced - behind, not diverged
-	// - and every later resume must recover that fast-forward rather than
-	// judge the worktree's stale HEAD as a conflicting advance.
-	//
-	// The proof that HEAD is an ancestor of the recorded candidate comes
-	// from the receipt's own append-only TargetRefreshes history
-	// (worktreeMergeCandidateAdvanceRecorded), not a local `git merge-base`:
-	// the recorded candidate's object may never have been fetched into this
-	// worktree at all when the advance was only recorded server side, so a
-	// local ancestry check would fail on a missing object even though the
-	// descent genuinely holds. fastForwardWorktreeToUpdatedHead
-	// (pr_land_local_sync.go, shared with the plain `wb pr land` route)
-	// fetches the candidate branch before fast-forwarding onto it, and is
-	// itself best-effort: the receipt is the durable record here, and the
-	// worktree is a convenience the next resume can still repair.
-	if worktreeMergeCandidateAdvanceRecorded(*receipt, head, receipt.Candidate.SHA) {
-		if note := fastForwardWorktreeToUpdatedHead(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA); note != "" {
-			receipt.LocalSync = note
-		}
-		return false, nil
-	}
-	if receipt.PublishedCandidateSHA == "" {
-		return false, worktreeMergeDriftError(receipt,
-			fmt.Errorf("candidate head drifted from %s to %s without an exact published predecessor", receipt.Candidate.SHA, head))
-	}
-	publishedContainsRecorded, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
-	if err != nil {
-		return false, fmt.Errorf("verify published candidate predecessor: %w", err)
-	}
-	if !publishedContainsRecorded {
-		return false, worktreeMergeDriftError(receipt,
-			fmt.Errorf("recorded candidate %s does not descend from published candidate %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA))
-	}
-	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, head)
-	if err != nil {
-		return false, fmt.Errorf("verify published candidate descendant: %w", err)
-	}
-	if !contains {
-		return false, worktreeMergeDriftError(receipt,
-			fmt.Errorf("candidate HEAD %s is not a descendant of published candidate %s", head, receipt.Candidate.SHA))
-	}
-	receipt.Candidate.SHA = head
-	return true, nil
-}
-
-// worktreeMergeDriftError closes red-team finding M6's second half: a
-// generic candidate-drift error, on its own, drops whatever
-// receipt.LocalSync already recorded about why the local worktree fell out
-// of step (an earlier fast-forward failure's exact reason). Append the note
-// when one is present, so the operator reading the error sees the reason
-// alongside the drift, not just the drift.
-func worktreeMergeDriftError(receipt *WorktreeMergeReceipt, base error) error {
-	note := strings.TrimSpace(receipt.LocalSync)
-	if note == "" {
-		return base
-	}
-	return fmt.Errorf("%w (%s)", base, note)
-}
-
-// recoverResolvedWorktreeMergeCandidate repairs the one durable prepare gap
-// where a conflict receipt necessarily predates the human resolution commit.
-// It accepts only the exact receipted WB candidate and proves its Work Log,
-// branch, target, sources, unpublished state, cleanliness, and validation
-// before recording the resolved commit. Every other empty-SHA receipt remains
-// a hard refusal.
-func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
-	if receipt == nil || receipt.Candidate.SHA != "" {
-		return false, nil
-	}
-	if receipt.Phase != WorktreeMergePhasePrepare ||
-		(receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed) ||
-		receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
-		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
-		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
-		return false, fmt.Errorf("receipt %s has no recoverable prepared candidate", receipt.ReceiptPath)
-	}
-
-	guard, err := worktrees.Guard(ctx, receipt.Candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
-	if err != nil {
-		return false, fmt.Errorf("guard receipted candidate: %w", err)
-	}
-	if guard.Kind != "linked" || guard.Transient || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) || guard.Branch != receipt.Candidate.Branch {
-		return false, fmt.Errorf("receipted candidate worktree or branch does not match WB Guard")
-	}
-	expectedCanonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
-	if canonicalErr != nil {
-		return false, canonicalErr
-	}
-	guardCanonical := guard.CanonicalDir
-	if resolved, resolveErr := filepath.EvalSymlinks(expectedCanonical); resolveErr == nil {
-		expectedCanonical = resolved
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(guardCanonical); resolveErr == nil {
-		guardCanonical = resolved
-	}
-	if filepath.Clean(guardCanonical) != filepath.Clean(expectedCanonical) {
-		return false, fmt.Errorf("receipted candidate canonical repository does not match %s", expectedCanonical)
-	}
-	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
-	if err != nil {
-		return false, fmt.Errorf("load Work Log for receipted candidate: %w", err)
-	}
-	if view.Claim == nil || view.Claim.Task != receipt.Candidate.Task || view.Claim.Repository != receipt.Repository ||
-		filepath.Clean(view.Claim.Worktree) != filepath.Clean(guard.Path) || view.Claim.Branch != receipt.Candidate.Branch ||
-		view.Claim.Base != receipt.Target || view.Claim.Lifecycle != "active" {
-		return false, fmt.Errorf("receipted candidate Work Log claim does not match task, repository, worktree, branch, or base")
-	}
-	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
-		return false, fmt.Errorf("receipted candidate: %w", err)
-	}
-	remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
-	if err != nil {
-		return false, fmt.Errorf("inspect receipted candidate publication state: %w", err)
-	}
-	if strings.TrimSpace(remote) != "" {
-		return false, fmt.Errorf("receipted candidate branch %s is already published without a recorded candidate SHA", receipt.Candidate.Branch)
-	}
-	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
-		return false, err
-	}
-
-	head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
-	if err != nil {
-		return false, err
-	}
-	if view.Claim.BaseSHA != receipt.TargetSHA {
-		if err := proveConflictResolvedCandidateTargetNormalization(ctx, guard.Path, receipt.Target, receipt.TargetSHA, view.Claim.BaseSHA, head, timeout, retry); err != nil {
-			return false, fmt.Errorf("receipted candidate Work Log claim base differs from receipt target: %w", err)
-		}
-	}
-	containsTarget, err := isMergeAncestor(ctx, guard.Path, receipt.TargetSHA, head)
-	if err != nil || !containsTarget {
-		if err == nil {
-			err = fmt.Errorf("resolved candidate %s does not contain recorded target %s", head, receipt.TargetSHA)
-		}
-		return false, err
-	}
-	for _, source := range receipt.Sources {
-		containsSource, ancestorErr := isMergeAncestor(ctx, guard.Path, source.SHA, head)
-		if ancestorErr != nil || !containsSource {
-			if ancestorErr == nil {
-				ancestorErr = fmt.Errorf("resolved candidate %s does not contain receipted source %s", head, source.SHA)
-			}
-			return false, ancestorErr
-		}
-	}
-
-	receipt.Candidate.SHA = head
-	receipt.Status = WorktreeMergePreparing
-	receipt.Failure = ""
-	receipt.UpdatedAt = time.Now().UTC()
-	return true, nil
-}
-
-// advanceResolvedConflictWorktreeMergeCandidate records the only permitted
-// non-empty candidate movement after prepare has stopped at a conflict. A
-// human may commit a clean resolution into WB's preserved candidate worktree;
-// this proves that exact descendant before the mutable receipt can name it.
-func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
-	if receipt == nil || receipt.Candidate.SHA == "" || receipt.Status != WorktreeMergeConflict {
-		return false, nil
-	}
-	// Older WB versions converted an otherwise recoverable published-candidate
-	// drift into conflict before the recorded-predecessor path could inspect it.
-	// Leave that state for advancePublishedWorktreeMergeCandidate below; this
-	// helper owns only unpublished prepare conflicts.
-	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.LandingSHA == "" {
-		return false, nil
-	}
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
-		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
-		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
-		return false, fmt.Errorf("receipt %s has no recoverable conflict candidate", receipt.ReceiptPath)
-	}
-	guard, err := worktrees.Guard(ctx, receipt.Candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
-	if err != nil {
-		return false, fmt.Errorf("guard receipted conflict candidate: %w", err)
-	}
-	if guard.Kind != "linked" || guard.Transient || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) || guard.Branch != receipt.Candidate.Branch {
-		return false, errors.New("receipted conflict candidate worktree or branch does not match WB Guard")
-	}
-	expectedCanonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
-	if canonicalErr != nil {
-		return false, canonicalErr
-	}
-	guardCanonical := guard.CanonicalDir
-	if resolved, resolveErr := filepath.EvalSymlinks(expectedCanonical); resolveErr == nil {
-		expectedCanonical = resolved
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(guardCanonical); resolveErr == nil {
-		guardCanonical = resolved
-	}
-	if filepath.Clean(guardCanonical) != filepath.Clean(expectedCanonical) {
-		return false, fmt.Errorf("receipted conflict candidate canonical repository does not match %s", expectedCanonical)
-	}
-	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
-	if err != nil {
-		return false, fmt.Errorf("load Work Log for receipted conflict candidate: %w", err)
-	}
-	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Task != receipt.Candidate.Task ||
-		view.Claim.Repository != receipt.Repository || filepath.Clean(view.Claim.Worktree) != filepath.Clean(guard.Path) ||
-		view.Claim.Branch != receipt.Candidate.Branch || view.Claim.Base != receipt.Target || view.Claim.BaseSHA != receipt.TargetSHA {
-		return false, errors.New("receipted conflict candidate Work Log claim does not match its exact receipt identity and target")
-	}
-	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
-		return false, fmt.Errorf("receipted conflict candidate: %w", err)
-	}
-	head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
-	if err != nil {
-		return false, err
-	}
-	if head == receipt.Candidate.SHA {
-		return false, nil
-	}
-	containsOriginal, err := isMergeAncestor(ctx, guard.Path, receipt.Candidate.SHA, head)
-	if err != nil {
-		return false, fmt.Errorf("verify receipted candidate ancestry: %w", err)
-	}
-	if !containsOriginal {
-		return false, fmt.Errorf("candidate HEAD %s is not a descendant of receipted candidate %s", head, receipt.Candidate.SHA)
-	}
-	remoteCandidate, _, err := runCommand(ctx, defaultRunner, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
-	if err != nil {
-		return false, fmt.Errorf("inspect receipted conflict candidate publication state: %w", err)
-	}
-	if strings.TrimSpace(remoteCandidate) != "" {
-		return false, fmt.Errorf("receipted conflict candidate branch %s is already published without a consistent published predecessor", receipt.Candidate.Branch)
-	}
-	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
-		return false, err
-	}
-	currentTarget, err := fetchExactMergeTarget(ctx, guard.Path, receipt.Target)
-	if err != nil {
-		return false, err
-	}
-	if currentTarget != receipt.TargetSHA {
-		return false, fmt.Errorf("target drifted from recorded %s to %s while conflict candidate was resolved", receipt.TargetSHA, currentTarget)
-	}
-	for _, root := range append([]string{receipt.TargetSHA}, sourceSHAs(receipt.Sources)...) {
-		contains, ancestorErr := isMergeAncestor(ctx, guard.Path, root, head)
-		if ancestorErr != nil || !contains {
-			if ancestorErr == nil {
-				ancestorErr = fmt.Errorf("resolved candidate %s does not contain required immutable root %s", head, root)
-			}
-			return false, ancestorErr
-		}
-	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
-	if err != nil {
-		return false, err
-	}
-	ackPath := conflictCandidateAdvancePath(receipt.ReceiptPath)
-	ack := WorktreeMergeConflictCandidateAdvance{
-		SchemaVersion: worktreeMergeConflictCandidateAdvanceSchemaVersion, Status: "conflict_candidate_advanced",
-		ReceiptPath: receipt.ReceiptPath, AcknowledgementPath: ackPath, ReceiptSHA256: receiptHash,
-		ReceiptID: receipt.ID, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target,
-		ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget, OriginalCandidate: receipt.Candidate,
-		AdvancedCandidateSHA: head, ClaimBaseSHA: view.Claim.BaseSHA, Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), RecordedAt: time.Now().UTC(),
-	}
-	ack.ID = conflictCandidateAdvanceID(ack)
-	if existing, readErr := readConflictCandidateAdvance(ackPath); readErr == nil {
-		if existing.ID != ack.ID {
-			return false, fmt.Errorf("conflict-candidate advance %s binds different immutable evidence", ackPath)
-		}
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return false, readErr
-	} else if err := persistConflictCandidateAdvance(ackPath, ack); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return false, err
-		}
-		existing, readErr := readConflictCandidateAdvance(ackPath)
-		if readErr != nil || existing.ID != ack.ID {
-			if readErr != nil {
-				return false, readErr
-			}
-			return false, fmt.Errorf("concurrent conflict-candidate advance %s binds different immutable evidence", ackPath)
-		}
-	}
-	receipt.Candidate.SHA = head
-	receipt.Status = WorktreeMergePreparing
-	receipt.Failure = ""
-	receipt.UpdatedAt = time.Now().UTC()
-	return true, nil
-}
-
-// conflictCandidateAdvanceNeedsValidation closes the interruption window after
-// the acknowledgement is durable but before validation has become terminal.
-func conflictCandidateAdvanceNeedsValidation(receipt WorktreeMergeReceipt) (bool, error) {
-	ack, err := readConflictCandidateAdvance(conflictCandidateAdvancePath(receipt.ReceiptPath))
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	// A recorded server update (the PR-land engine's update-branch advance;
-	// see TargetRefreshes and red-team finding M2) can legitimately move
-	// receipt.TargetSHA past the snapshot this acknowledgement took. That is
-	// not a mismatch to hard-fail on: the receipt's own append-only history
-	// proves why it changed.
-	targetMatches := ack.ReceiptTargetSHA == receipt.TargetSHA && ack.CurrentTargetSHA == receipt.TargetSHA ||
-		worktreeMergeTargetAdvanceRecorded(receipt, ack.ReceiptTargetSHA, receipt.TargetSHA) &&
-			worktreeMergeTargetAdvanceRecorded(receipt, ack.CurrentTargetSHA, receipt.TargetSHA)
-	// The same tolerance applies to the candidate side (red-team finding
-	// M2): one or more recorded server-side update-branch advances since
-	// this acknowledgement was taken must not be mistaken for a mismatch
-	// either. worktreeMergeCandidateAdvanceRecorded walks every hop
-	// TargetRefreshes records, not just a single one.
-	candidateMatches := ack.AdvancedCandidateSHA == receipt.Candidate.SHA ||
-		worktreeMergeCandidateAdvanceRecorded(receipt, ack.AdvancedCandidateSHA, receipt.Candidate.SHA)
-	if ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.Lane != receipt.Lane ||
-		ack.Repository != receipt.Repository || ack.Target != receipt.Target || !targetMatches ||
-		!sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
-		ack.OriginalCandidate.Task != receipt.Candidate.Task || ack.OriginalCandidate.Worktree != receipt.Candidate.Worktree ||
-		ack.OriginalCandidate.Branch != receipt.Candidate.Branch || !candidateMatches {
-		return false, fmt.Errorf("conflict-candidate advance %s does not match the current receipt", ack.AcknowledgementPath)
-	}
-	if receipt.Status == WorktreeMergePrepared {
-		if receipt.Validation.Revision != receipt.Candidate.SHA || receipt.Validation.Status != quality.StatusPassed {
-			return false, fmt.Errorf("advanced conflict candidate %s has no matching successful validation", receipt.Candidate.SHA)
-		}
-		return false, nil
-	}
-	return receipt.Status == WorktreeMergePreparing, nil
-}
-
-// proveConflictResolvedCandidateTargetNormalization permits the one explicit
-// recovery exception for a conflict-resolved candidate whose immutable Work
-// Log base predates the receipt target snapshot. It never rewrites either
-// historical record. The candidate must already contain the immutable claim
-// base, the receipt target, and the freshly fetched current remote target; the
-// caller separately proves every receipted source is also contained.
-func proveConflictResolvedCandidateTargetNormalization(ctx context.Context, worktree, target, receiptTarget, claimBase, head string, timeout time.Duration, retry int) error {
-	for _, evidence := range []struct {
-		label    string
-		revision string
-	}{
-		{label: "immutable Work Log base", revision: claimBase},
-		{label: "receipt target", revision: receiptTarget},
-	} {
-		contains, err := isMergeAncestor(ctx, worktree, evidence.revision, head)
-		if err != nil {
-			return err
-		}
-		if !contains {
-			return fmt.Errorf("resolved candidate %s does not contain %s %s", head, evidence.label, evidence.revision)
-		}
-	}
-	currentTarget, err := fetchExactMergeTarget(ctx, worktree, target)
-	if err != nil {
-		return err
-	}
-	containsCurrentTarget, err := isMergeAncestor(ctx, worktree, currentTarget, head)
-	if err != nil {
-		return err
-	}
-	if !containsCurrentTarget {
-		return fmt.Errorf("resolved candidate %s does not contain current remote target %s", head, currentTarget)
-	}
-	return nil
-}
-
-func canonicalForMergeSource(ctx context.Context, source string) (string, error) {
-	rootOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, source, "git", "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", err
-	}
-	root := strings.TrimSpace(rootOutput)
-	commonOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, root, "git", "rev-parse", "--git-common-dir")
-	if err != nil {
-		return "", err
-	}
-	common := strings.TrimSpace(commonOutput)
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(root, common)
-	}
-	return filepath.Dir(filepath.Clean(common)), nil
 }
 
 func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, error) {
@@ -2613,120 +1244,6 @@ func RunWorktreeMerge(ctx context.Context, prepare WorktreeMergePrepareOptions, 
 	return LandWorktreeMerge(ctx, land)
 }
 
-func inspectWorktreeMergeSources(ctx context.Context, projectsRoot string, paths []string, target string) ([]WorktreeMergeSource, string, string, error) {
-	sources := make([]WorktreeMergeSource, 0, len(paths))
-	seen := map[string]bool{}
-	var repository, canonical string
-	for _, input := range paths {
-		guard, err := worktrees.Guard(ctx, input, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: target})
-		if err != nil {
-			return nil, "", "", fmt.Errorf("guard source %s: %w", input, err)
-		}
-		if guard.Kind != "linked" || guard.Transient {
-			return nil, "", "", fmt.Errorf("source %s must be a non-transient WB linked worktree", input)
-		}
-		if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
-			return nil, "", "", fmt.Errorf("source %s: %w", input, err)
-		}
-		view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
-		if err != nil {
-			return nil, "", "", fmt.Errorf("load Work Log for source %s: %w", input, err)
-		}
-		if view.Claim == nil {
-			return nil, "", "", fmt.Errorf("source %s has no authoritative active Work Log claim", input)
-		}
-		if repository == "" {
-			repository, canonical = view.Claim.Repository, guard.CanonicalDir
-		} else if view.Claim.Repository != repository || filepath.Clean(guard.CanonicalDir) != filepath.Clean(canonical) {
-			return nil, "", "", fmt.Errorf("all source worktrees must belong to one repository; got %s and %s", repository, view.Claim.Repository)
-		}
-		head, err := mergeRevision(ctx, defaultRunner, guard.Path, "HEAD")
-		if err != nil {
-			return nil, "", "", err
-		}
-		if seen[head] {
-			return nil, "", "", fmt.Errorf("source head %s was supplied more than once", head)
-		}
-		seen[head] = true
-		sources = append(sources, WorktreeMergeSource{Task: view.Claim.Task, Worktree: guard.Path, Branch: guard.Branch, SHA: head})
-	}
-	return sources, repository, canonical, nil
-}
-
-func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, requested WorktreeMergeRoute) (WorktreeMergeRouteDecision, error) {
-	if requested == "" {
-		requested = WorktreeMergeRouteAuto
-	}
-	if requested != WorktreeMergeRouteAuto && requested != WorktreeMergeRouteDirect && requested != WorktreeMergeRoutePullRequest {
-		return WorktreeMergeRouteDecision{}, fmt.Errorf("unsupported merge route %q", requested)
-	}
-	escapedTarget := url.PathEscape(target)
-	branchEndpoint := "repos/" + repository + "/branches/" + escapedTarget
-	branchOutput, err := githubGet(ctx, "", repository, target, "", branchEndpoint)
-	if err != nil {
-		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("target branch policy is unavailable: %v", err))
-	}
-	var branch struct {
-		Protected  *bool `json:"protected"`
-		Protection struct {
-			RequiredPullRequestReviews json.RawMessage `json:"required_pull_request_reviews"`
-		} `json:"protection"`
-	}
-	if err := json.Unmarshal(branchOutput, &branch); err != nil || branch.Protected == nil {
-		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("authoritative target branch policy for %s is incomplete", target))
-	}
-	pages, err := activeBranchRules(ctx, repository, target)
-	if err != nil {
-		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("active target rules are unavailable: %v", err))
-	}
-	requiresPR := len(branch.Protection.RequiredPullRequestReviews) > 0 && string(branch.Protection.RequiredPullRequestReviews) != "null"
-	mergeQueue := false
-	unknownRule := false
-	for _, page := range pages {
-		for _, rule := range page {
-			switch strings.TrimSpace(rule.Type) {
-			case "pull_request":
-				requiresPR = true
-			case "merge_queue":
-				mergeQueue = true
-			case "required_status_checks", "creation", "update", "deletion", "non_fast_forward", "required_linear_history", "required_signatures", "commit_author_email_pattern", "commit_message_pattern", "branch_name_pattern", "tag_name_pattern":
-			default:
-				unknownRule = true
-			}
-		}
-	}
-	decision := WorktreeMergeRouteDecision{Requested: requested}
-	if mergeQueue {
-		decision.Route, decision.Reason = WorktreeMergeRouteUnsupported, "target requires a merge queue, whose merge-group receipt is not implemented"
-		return decision, nil
-	}
-	if requested == WorktreeMergeRouteDirect {
-		if *branch.Protected || requiresPR || unknownRule || activeRuleCount(pages) != 0 {
-			return decision, fmt.Errorf("direct route is not authoritatively permitted by target policy")
-		}
-		decision.Route, decision.Reason = WorktreeMergeRouteDirect, "explicit direct route is permitted by authoritative target policy"
-		return decision, nil
-	}
-	if requested == WorktreeMergeRoutePullRequest {
-		decision.Route, decision.Reason = WorktreeMergeRoutePullRequest, "explicit pull-request route"
-		return decision, nil
-	}
-	if !*branch.Protected && !requiresPR && !unknownRule && activeRuleCount(pages) == 0 {
-		decision.Route, decision.Reason = WorktreeMergeRouteDirect, "target is authoritatively unprotected and has no active rules"
-	} else {
-		decision.Route, decision.Reason = WorktreeMergeRoutePullRequest, "target protection or conservative policy requires a pull request"
-	}
-	return decision, nil
-}
-
-func conservativeWorktreeMergePRRoute(requested WorktreeMergeRoute, reason string) (WorktreeMergeRouteDecision, error) {
-	decision := WorktreeMergeRouteDecision{Requested: requested, Route: WorktreeMergeRoutePullRequest, Reason: reason + "; selecting a pull request conservatively"}
-	if requested == WorktreeMergeRouteDirect {
-		return decision, fmt.Errorf("direct route is not authoritatively permitted: %s", reason)
-	}
-	return decision, nil
-}
-
 // worktreeMergeReportSidecarSuffixes lists every worktree-merge report
 // sidecar/acknowledgement filename suffix that decorates a *.json report file
 // but is never itself a receipt. resolveWorktreeMergeReceiptPath and
@@ -2823,11 +1340,7 @@ func pathInsideWorktreeMergeReports(reports, path string) bool {
 }
 
 func fetchExactMergeTarget(ctx context.Context, worktree, target string) (string, error) {
-	refspec := "+refs/heads/" + target + ":refs/remotes/origin/" + target
-	if _, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "fetch", "--no-tags", "origin", refspec); err != nil {
-		return "", fmt.Errorf("fetch exact remote target %s: %w", target, err)
-	}
-	return mergeRevision(ctx, defaultRunner, worktree, "refs/remotes/origin/"+target)
+	return fetchExactMergeTargetWithRunner(ctx, defaultRunner, worktree, target)
 }
 
 func worktreeMergePRText(ctx context.Context, receipt WorktreeMergeReceipt) (string, string, error) {
@@ -2907,130 +1420,6 @@ func worktreeMergePRTitle(subjects []string, sourceCount int) string {
 		related = "change"
 	}
 	return fmt.Sprintf("%s %s and %d related %s", selected.prefix, selected.summary, sourceCount-1, related)
-}
-
-// checkWaitSlice is the budget of one exact-head check wait: WaitSlice when
-// set, otherwise Timeout, capped at 8 minutes either way.
-func (options WorktreeMergeLandOptions) checkWaitSlice() time.Duration {
-	slice := options.Timeout
-	if options.WaitSlice > 0 {
-		slice = options.WaitSlice
-	}
-	if slice <= 0 || slice > 8*time.Minute {
-		slice = 8 * time.Minute
-	}
-	return slice
-}
-
-func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {
-	slice := options.checkWaitSlice()
-	interval := options.CheckPollInterval
-	if interval <= 0 {
-		interval = DefaultCheckPollInterval
-	}
-	if interval >= slice {
-		return PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than wait slice %s", interval, slice)
-	}
-	// One slice can still run several minutes of CI observation: keep the
-	// lane's heartbeat fresh throughout so it never goes stale out from under
-	// this still-live session. See startLandingLaneHeartbeat. A no-op when
-	// options.Lane was never populated (no guard running for this call).
-	stopLaneHeartbeat := startLandingLaneHeartbeat(options.ProjectsRoot, receipt.Repository, receipt.Target, options.Lane.Owner.WBSessionID, 0)
-	waitOptions := PullRequestWaitOptions{
-		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
-		// --allow-unfenced is durable because a private repository can expose
-		// neither PR nor post-target branch-policy authority. Both phases still
-		// require stable exact-head check observations.
-		AllowUnfenced: options.AllowUnfenced,
-		Slice:         slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
-		OperationProgress: options.Progress,
-	}
-	var directCI *worktreeMergeDirectCIContract
-	if deferral := receipt.ValidationDeferral; pullRequest == "" && deferral != nil && deferral.Route == WorktreeMergeRouteDirect {
-		if deferral.CandidateSHA != head || deferral.DirectCIPullRequest == "" || deferral.DirectCIPullRequestNumber <= 0 || deferral.DirectCIBase == "" || deferral.DirectCIWorkflowID <= 0 {
-			stopLaneHeartbeat()
-			return PullRequestWaitResult{Status: PullRequestWaitFailed}, fmt.Errorf("direct CI deferral is not pinned to exact landed head %s", head)
-		}
-		directCI = &worktreeMergeDirectCIContract{PullRequest: deferral.DirectCIPullRequest, PullRequestNumber: deferral.DirectCIPullRequestNumber, Base: deferral.DirectCIBase, WorkflowID: deferral.DirectCIWorkflowID}
-		waitOptions.AllowTargetDescendant = false
-		waitOptions.ExpectedActionChecks = &ExpectedActionChecks{WorkflowID: directCI.WorkflowID, Event: "pull_request", PullRequestNumber: directCI.PullRequestNumber, PullRequestBase: directCI.Base, Names: directCIGoChecks}
-	}
-	result, err := WaitForCommitChecks(ctx, waitOptions)
-	stopLaneHeartbeat()
-	if err != nil {
-		return result, err
-	}
-	switch result.Status {
-	case PullRequestWaitPassed:
-		if directCI != nil {
-			if err := verifyWorktreeMergeDirectCIPullRequest(ctx, receipt, *directCI, head); err != nil {
-				result.Status = PullRequestWaitFailed
-				result.Reason = "direct CI pull request identity changed: " + err.Error()
-				return result, fmt.Errorf("%s", result.Reason)
-			}
-		}
-		return result, nil
-	case PullRequestWaitPending:
-		return result, fmt.Errorf("exact-head checks remain pending: %s; resume with wb worktree merge resume %s", result.Reason, receipt.ReceiptPath)
-	default:
-		if !options.AllowUnfenced && strings.Contains(result.Reason, "strict up-to-date fence") {
-			return result, fmt.Errorf("exact-head checks failed: %s; resume with wb worktree merge resume %s --allow-unfenced", result.Reason, receipt.ReceiptPath)
-		}
-		// #600: name each failing check and its first error line rather than
-		// leaving the caller to hand-roll the same log scraping WB already
-		// did while observing the checks.
-		if summary := summarizeCheckFailures(result.FailureDetails); summary != "" {
-			return result, fmt.Errorf("exact-head checks failed: %s; %s", result.Reason, summary)
-		}
-		return result, fmt.Errorf("exact-head checks failed: %s", result.Reason)
-	}
-}
-
-func worktreeMergeCheckPhase(pullRequest string) string {
-	if pullRequest != "" {
-		return "candidate_checks"
-	}
-	return "target_checks"
-}
-
-func reportWorktreeMergeCheckProgress(reporter progress.Reporter, phase string) func(PullRequestWaitProgress) {
-	if reporter == nil {
-		return nil
-	}
-	return func(event PullRequestWaitProgress) {
-		passed, pending, failed := 0, 0, 0
-		for _, check := range event.Result.Checks {
-			switch check.Bucket {
-			case "pass", "skipping":
-				passed++
-			case "fail", "cancel":
-				failed++
-			default:
-				pending++
-			}
-		}
-		var state progress.State
-		switch event.Result.Status {
-		case PullRequestWaitPending:
-			state = progress.Waiting
-		case PullRequestWaitPassed:
-			state = progress.Completed
-		case PullRequestWaitFailed:
-			state = progress.Failed
-		default:
-			state = progress.Running
-		}
-		detail := fmt.Sprintf("poll %d: %d passed, %d pending, %d failed", event.Observation, passed, pending, failed)
-		if event.Result.StableObservations > 0 {
-			detail += fmt.Sprintf("; stable %d/2", event.Result.StableObservations)
-		}
-		if event.NextPoll > 0 {
-			detail += "; next poll in " + event.NextPoll.String()
-		} else if strings.TrimSpace(event.Result.Reason) != "" {
-			detail += "; " + event.Result.Reason
-		}
-		progress.Report(reporter, progress.Event{Operation: "worktree_merge", Phase: phase, State: state, Detail: detail})
-	}
 }
 
 func reportWorktreeMergeQualityProgress(reporter progress.Reporter) func(quality.Progress) {
@@ -3122,7 +1511,7 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 			// never have been fetched locally at all, so a local
 			// `git merge-base --is-ancestor` would fail on a missing
 			// object even when the descent genuinely holds.
-			descendsFromCandidate, descentReason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID)
+			descendsFromCandidate, descentReason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID)
 			if !descendsFromCandidate {
 				descentErr := fmt.Errorf("pull-request head %s does not match exact candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
 				if descentReason != "" {
@@ -3191,109 +1580,6 @@ func findExactOpenWorktreeMergePullRequest(ctx context.Context, receipt Worktree
 		matched = view.HTMLURL
 	}
 	return matched, nil
-}
-
-// verifyPublishedWorktreeMergePullRequest proves the exact remote handoff
-// identity before an intentional stop. An open pull request at the candidate
-// SHA and target has one unambiguous remote diff; verifying just a local
-// branch, or a PR number without its current head, is insufficient.
-func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) error {
-	if receipt.PullRequest == "" {
-		return errors.New("published handoff has no pull request")
-	}
-	remote, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, receipt.Candidate.Worktree,
-		"git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
-	if err != nil {
-		return fmt.Errorf("read published candidate ref: %w", err)
-	}
-	if !strings.HasPrefix(strings.TrimSpace(remote), receipt.Candidate.SHA+"\t") {
-		return fmt.Errorf("published candidate ref %s does not match preserved candidate %s", receipt.Candidate.Branch, receipt.Candidate.SHA)
-	}
-
-	const maxHeadObservations = 4
-	delay := 2 * time.Second
-	if options.CheckPollInterval > 0 && options.CheckPollInterval < delay {
-		delay = options.CheckPollInterval
-	}
-	for observation := 1; observation <= maxHeadObservations; observation++ {
-		viewOutput, readErr := githubRead(ctx, "", "pr", "view", receipt.PullRequest,
-			"--repo", receipt.Repository, "--json", "state,headRefOid,baseRefName")
-		if readErr != nil {
-			return fmt.Errorf("read published pull-request identity: %w", readErr)
-		}
-		var view struct {
-			State       string `json:"state"`
-			HeadRefOID  string `json:"headRefOid"`
-			BaseRefName string `json:"baseRefName"`
-		}
-		if unmarshalErr := json.Unmarshal([]byte(viewOutput), &view); unmarshalErr != nil {
-			return fmt.Errorf("decode published pull-request identity: %w", unmarshalErr)
-		}
-		if view.State != "OPEN" {
-			return fmt.Errorf("published pull request %s is %s, not open", receipt.PullRequest, view.State)
-		}
-		if view.BaseRefName != receipt.Target {
-			return fmt.Errorf("published pull-request base %s does not match target %s", view.BaseRefName, receipt.Target)
-		}
-		if view.HeadRefOID == receipt.Candidate.SHA {
-			return nil
-		}
-		stalePredecessor := receipt.PushGate != nil && receipt.PushGate.Status == "passed" &&
-			receipt.PushGate.LocalSHA == receipt.Candidate.SHA && receipt.PushGate.PreviousRemoteSHA != "" &&
-			receipt.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA && view.HeadRefOID == receipt.PushGate.PreviousRemoteSHA
-		if !stalePredecessor || observation == maxHeadObservations {
-			return fmt.Errorf("published pull-request head %s does not match preserved candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
-		}
-		reportWorktreeMergeProgress(options.Progress, "verify_pull_request_head", progress.Waiting,
-			fmt.Sprintf("GitHub still reports published predecessor %s; observation %d/%d, retrying in %s",
-				shortMergeRevision(view.HeadRefOID), observation, maxHeadObservations, delay))
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("wait for published pull-request head %s: %w", receipt.Candidate.SHA, ctx.Err())
-		case <-timer.C:
-		}
-	}
-	return errors.New("published pull-request head verification exhausted without an observation")
-}
-
-func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int, checkoutUpdated func(context.Context, CheckoutUpdate)) (string, error) {
-	branch, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "branch", "--show-current")
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(branch) != target {
-		return "not_checked_out", nil
-	}
-	if err := requireCleanMergeWorktree(ctx, canonical); err != nil {
-		return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: %w", err)
-	}
-	beforeHead, err := mergeRevision(ctx, defaultRunner, canonical, "HEAD")
-	if err != nil {
-		return "", err
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":refs/remotes/origin/"+target); err != nil {
-		return "blocked_fetch", err
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "merge", "--ff-only", "refs/remotes/origin/"+target); err != nil {
-		return "blocked_diverged", fmt.Errorf("remote landed, but canonical target cannot fast-forward: %w", err)
-	}
-	head, err := mergeRevision(ctx, defaultRunner, canonical, "HEAD")
-	containsLanding, ancestorErr := isMergeAncestor(ctx, canonical, landing, head)
-	if err != nil || ancestorErr != nil || !containsLanding {
-		if err == nil {
-			err = ancestorErr
-		}
-		if err == nil {
-			err = fmt.Errorf("canonical target %s does not contain exact landed head %s", head, landing)
-		}
-		return "blocked_mismatch", err
-	}
-	if checkoutUpdated != nil && head != beforeHead {
-		checkoutUpdated(ctx, CheckoutUpdate{Checkout: canonical, OldSHA: beforeHead, NewSHA: head, Cause: "merge-land"})
-	}
-	return "fast_forwarded", nil
 }
 
 func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt) error {
@@ -3381,148 +1667,6 @@ func validateRebatchedWorktreeMergeCleanup(ctx context.Context, projectsRoot str
 	return nil
 }
 
-// recoverAlreadyTerminalizedWorktreeMergeCleanup handles the narrow crash and
-// cross-session recovery case where supported cleanup has already sealed and
-// removed one or more exact receipt worktrees, but did not update this merge
-// receipt. It trusts neither an absent worktree nor a caller-supplied cleanup
-// report: immutable claim+terminal evidence must reproduce every absent
-// identity before remaining live assets may enter ordinary cleanup.
-func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
-	if receipt == nil {
-		return false, errors.New("nil merge receipt")
-	}
-	expectations, err := terminalWorkLogExpectations(*receipt)
-	if err != nil {
-		return false, err
-	}
-	absent := make([]worktrees.TerminalWorkLogExpectation, 0, len(expectations))
-	for _, expectation := range expectations {
-		if _, statErr := os.Lstat(expectation.Worktree); statErr == nil {
-			continue
-		} else if os.IsNotExist(statErr) {
-			absent = append(absent, expectation)
-		} else {
-			return false, fmt.Errorf("inspect receipted cleanup worktree %s: %w", expectation.Worktree, statErr)
-		}
-	}
-	if len(absent) == 0 {
-		return false, nil
-	}
-	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, absent); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w", err)
-		}
-		if len(absent) != len(expectations) {
-			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate partially terminalized cleanup: %w", err)
-		}
-		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
-		if _, ackErr := validateMissingCleanupAcknowledgement(ctx, projectsRoot, *receipt, ackPath, timeout, retry); ackErr != nil {
-			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w; audited missing-cleanup recovery unavailable: %v", err, ackErr)
-		}
-	}
-	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, *receipt, absent, timeout, retry); err != nil {
-		return false, err
-	}
-	cleaned := make(map[string]bool, len(receipt.CleanedTasks)+len(absent))
-	for _, task := range receipt.CleanedTasks {
-		cleaned[task] = true
-	}
-	for _, expectation := range absent {
-		if !cleaned[expectation.Task] {
-			receipt.CleanedTasks = append(receipt.CleanedTasks, expectation.Task)
-			cleaned[expectation.Task] = true
-		}
-	}
-	sort.Strings(receipt.CleanedTasks)
-	if len(absent) != len(expectations) {
-		receipt.UpdatedAt = time.Now().UTC()
-		if err := persistWorktreeMergeReceipt(*receipt); err != nil {
-			return false, err
-		}
-		return false, nil
-	}
-	return true, nil
-}
-
-// requireTerminalCleanupBranchesAbsent prevents a sealed-but-interrupted
-// cleanup from being mistaken for a complete one. A removed Work Log proves
-// the worktree terminalization; local and origin branch absence independently
-// prove the remaining branch-retirement part of cleanup.
-func requireTerminalCleanupBranchesAbsent(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, expectations []worktrees.TerminalWorkLogExpectation, timeout time.Duration, retry int) error {
-	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
-	if canonicalErr != nil {
-		return canonicalErr
-	}
-	for _, expectation := range expectations {
-		if expectation.Branch == receipt.Target {
-			return fmt.Errorf("terminal cleanup recovery refuses receipt task %s because its branch is the target %s", expectation.Task, receipt.Target)
-		}
-		local, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
-		if err != nil {
-			return fmt.Errorf("inspect local cleanup branch for task %s: %w", expectation.Task, err)
-		}
-		if strings.TrimSpace(local) != "" {
-			return fmt.Errorf("terminal cleanup recovery refuses task %s because local branch %s remains", expectation.Task, expectation.Branch)
-		}
-		remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
-		if err != nil {
-			return fmt.Errorf("inspect remote cleanup branch for task %s: %w", expectation.Task, err)
-		}
-		if strings.TrimSpace(remote) != "" {
-			return fmt.Errorf("terminal cleanup recovery refuses task %s because remote branch %s remains", expectation.Task, expectation.Branch)
-		}
-	}
-	return nil
-}
-
-func terminalWorkLogExpectations(receipt WorktreeMergeReceipt) ([]worktrees.TerminalWorkLogExpectation, error) {
-	if receipt.Repository == "" || receipt.Target == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" ||
-		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" {
-		return nil, errors.New("receipt lacks exact candidate identity for terminal cleanup recovery")
-	}
-	expectations := []worktrees.TerminalWorkLogExpectation{{
-		Task: receipt.Candidate.Task, Repository: receipt.Repository, Worktree: receipt.Candidate.Worktree,
-		Branch: receipt.Candidate.Branch, Base: receipt.Target, FinalCommit: receipt.Candidate.SHA,
-	}}
-	byTask := map[string]worktrees.TerminalWorkLogExpectation{receipt.Candidate.Task: expectations[0]}
-	for _, source := range receipt.Sources {
-		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
-			return nil, errors.New("receipt lacks exact source identity for terminal cleanup recovery")
-		}
-		expectation := worktrees.TerminalWorkLogExpectation{
-			Task: source.Task, Repository: receipt.Repository, Worktree: source.Worktree,
-			Branch: source.Branch, FinalCommit: source.SHA,
-		}
-		if previous, exists := byTask[source.Task]; exists {
-			if previous != expectation {
-				return nil, fmt.Errorf("receipt has conflicting terminal cleanup identities for task %s", source.Task)
-			}
-			continue
-		}
-		byTask[source.Task] = expectation
-		expectations = append(expectations, expectation)
-	}
-	for _, candidate := range receipt.RebatchedCandidates {
-		if candidate.Task == "" || candidate.Worktree == "" || candidate.Branch == "" || candidate.SHA == "" {
-			return nil, errors.New("receipt lacks exact rebatched candidate identity for terminal cleanup recovery")
-		}
-		expectation := worktrees.TerminalWorkLogExpectation{
-			Task: candidate.Task, Repository: receipt.Repository, Worktree: candidate.Worktree,
-			Branch: candidate.Branch, Base: receipt.Target, FinalCommit: candidate.SHA,
-		}
-		if previous, exists := byTask[candidate.Task]; exists {
-			if previous != expectation {
-				return nil, fmt.Errorf("receipt has conflicting terminal cleanup identities for task %s", candidate.Task)
-			}
-			continue
-		}
-		byTask[candidate.Task] = expectation
-		expectations = append(expectations, expectation)
-	}
-	sort.Slice(expectations, func(i, j int) bool { return expectations[i].Task < expectations[j].Task })
-	return expectations, nil
-}
-
 func worktreeMergeCleanupProofs(receipt WorktreeMergeReceipt, task string) []worktrees.MergeReceiptCleanupProof {
 	proofs := make([]worktrees.MergeReceiptCleanupProof, 0, len(receipt.Sources))
 	for _, source := range receipt.Sources {
@@ -3536,247 +1680,6 @@ func worktreeMergeCleanupProofs(receipt WorktreeMergeReceipt, task string) []wor
 		})
 	}
 	return proofs
-}
-
-// PrepareWorktreeMergeRevert creates a fresh forward candidate which applies
-// the inverse landing tree delta onto today's remote target. It never resets or
-// force-pushes shared history.
-func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string, timeout time.Duration, retry int) (WorktreeMergeReceipt, error) {
-	return prepareWorktreeMergeRevertInjected(ctx, projectsRoot, input, timeout, retry, nil)
-}
-
-// prepareWorktreeMergeRevertInjected is PrepareWorktreeMergeRevert's test
-// seam (task-9 PR-9): every production call site reaches it only through
-// PrepareWorktreeMergeRevert, which always passes a nil *filewrite.Injector,
-// so production behaviour is unchanged. A test passes its own Injector to
-// reach the scratch git-diff patch file's create/write/close failure
-// branches deterministically.
-func prepareWorktreeMergeRevertInjected(ctx context.Context, projectsRoot, input string, timeout time.Duration, retry int, inj *filewrite.Injector) (WorktreeMergeReceipt, error) {
-	path, err := resolveWorktreeMergeReceiptPath(projectsRoot, input)
-	if err != nil {
-		return WorktreeMergeReceipt{}, err
-	}
-	receipt, err := readWorktreeMergeReceipt(path)
-	if err != nil {
-		return receipt, err
-	}
-	if receipt.Phase == WorktreeMergePhaseRevert {
-		if receipt.Status == WorktreeMergePrepared {
-			return receipt, nil
-		}
-		return receipt, fmt.Errorf("receipt already represents a forward revert with status %s", receipt.Status)
-	}
-	if receipt.PreviousTargetSHA == "" || receipt.LandingSHA == "" {
-		return receipt, fmt.Errorf("receipt has no landed before/after target identity to revert")
-	}
-	revertOf := &WorktreeMergeRevertReceipt{
-		PreviousTargetSHA: receipt.PreviousTargetSHA,
-		LandingSHA:        receipt.LandingSHA,
-		CandidateSHA:      receipt.Candidate.SHA,
-	}
-	task := "revert-" + receipt.ID
-	prompt, err := writeWorktreeMergePromptInjected(receipt.Repository, receipt.Target, receipt.Sources, inj)
-	if err != nil {
-		return receipt, err
-	}
-	defer func() { _ = os.Remove(prompt) }()
-	created, err := worktrees.Create(ctx, []string{receipt.Repository}, worktrees.CreateOptions{
-		ProjectsRoot: projectsRoot, Operation: task, Branch: "wb/revert/" + receipt.ID, BranchChosen: true, Base: receipt.Target,
-		WorkLog: worktrees.WorkLogOptions{EffortID: task, RunID: task, Model: "unknown", AgentRuntime: "wb", OriginalPrompt: prompt, RequireOriginalPrompt: true},
-	})
-	if err != nil {
-		return receipt, err
-	}
-	if len(created) != 1 {
-		return receipt, fmt.Errorf("revert candidate creation returned %d repositories", len(created))
-	}
-	patchOutput, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "diff", "--binary", revertOf.PreviousTargetSHA, revertOf.LandingSHA)
-	if err != nil {
-		return receipt, err
-	}
-	patchPath, err := filewrite.CreateScratch("", "wb-worktree-revert-*.patch", 0, []byte(patchOutput), inj)
-	if patchPath != "" {
-		defer func() { _ = os.Remove(patchPath) }()
-	}
-	if err != nil {
-		return receipt, err
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "apply", "--check", "--3way", "--reverse", patchPath); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("forward revert conflicts with current target: %w", err))
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "apply", "--3way", "--reverse", "--index", patchPath); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, created[0].WorktreeDir, "git", "commit", "-m", "revert: reverse worktree merge "+receipt.ID); err != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-	}
-	receipt.Phase = WorktreeMergePhaseRevert
-	receipt.Status = WorktreeMergePrepared
-	receipt.TargetSHA = created[0].BaseSHA
-	receipt.Sources = nil
-	receipt.Candidate = WorktreeMergeCandidate{Task: task, Worktree: created[0].WorktreeDir, Branch: created[0].Branch}
-	receipt.Candidate.SHA, err = mergeRevision(ctx, defaultRunner, created[0].WorktreeDir, "HEAD")
-	receipt.RevertOf = revertOf
-	receipt.Rebase = nil
-	receipt.Route = WorktreeMergeRouteDecision{}
-	receipt.PullRequest = ""
-	receipt.PreviousTargetSHA = ""
-	receipt.LandingSHA = ""
-	receipt.CanonicalSync = ""
-	receipt.Checks = PullRequestWaitResult{}
-	receipt.Cleanup = false
-	receipt.CleanupReports = nil
-	receipt.CleanedTasks = nil
-	receipt.Failure = ""
-	receipt.UpdatedAt = time.Now().UTC()
-	if err != nil {
-		return receipt, err
-	}
-	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, timeout, retry, 0, 0, nil); validationErr != nil {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("forward revert candidate validation failed: %w", validationErr))
-	}
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		return receipt, err
-	}
-	return receipt, nil
-}
-
-// validateWorktreeMergeCandidate validates the candidate first. A passing
-// candidate cannot regress a red target, so the expensive target snapshot is
-// evaluated lazily only when candidate failure evidence needs comparison.
-// Any new or changed candidate failure remains a hard gate.
-// worktreeMergeValidationPlan is resolved exactly once per LandWorktreeMerge
-// (and per PrepareWorktreeMerge) call and then threaded through every
-// validation site in that call (see applyOrDeferWorktreeMergeValidation),
-// instead of each site independently deciding whether to skip local
-// validation. Route is also the single decision every publish/landing
-// transition in the same call reuses (see requireWorktreeMergePublishedValidation),
-// so a route resolved as "pr" and deferred cannot be silently published on a
-// route later resolved as "direct" within a different call — see red-team
-// finding B1 (sneat-dev/wb#591).
-type worktreeMergeValidationPlan struct {
-	Route    WorktreeMergeRouteDecision
-	Defer    bool
-	Reason   string
-	DirectCI *worktreeMergeDirectCIContract
-}
-
-// resolveWorktreeMergeValidationPlan resolves the merge route once and
-// decides whether this call may defer local candidate validation to the
-// pull-request route's authoritative CI. It never defers when validateLocally
-// is set (the --validate-locally escape hatch) or when the resolved route is
-// not the pull-request route.
-// worktreeMergeValidationPlanHolder memoizes one resolveWorktreeMergeValidationPlan
-// call across every validation site and the publish/landing guard in a single
-// LandWorktreeMerge invocation, resolved lazily on first use (see the "resolve
-// once, lazily" note in LandWorktreeMerge). It is not safe for concurrent use;
-// LandWorktreeMerge is not itself concurrent.
-type worktreeMergeValidationPlanHolder struct {
-	resolved bool
-	plan     worktreeMergeValidationPlan
-	err      error
-}
-
-func (h *worktreeMergeValidationPlanHolder) resolve(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool, directCIPullRequest ...string) (worktreeMergeValidationPlan, error) {
-	if !h.resolved {
-		h.plan, h.err = resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced, directCIPullRequest...)
-		h.resolved = true
-	}
-	return h.plan, h.err
-}
-
-// resolveWorktreeMergeValidationPlan never defers when validateLocally or
-// allowUnfenced is set for THIS call (red-team finding X1): AllowUnfenced
-// tells ciwait it may accept an unfenced or unreadable policy as a merge
-// gate, which is exactly the authoritative-fence guarantee deferral relies
-// on, so a call made with either flag must always validate locally.
-func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool, directCIPullRequest ...string) (worktreeMergeValidationPlan, error) {
-	decision, err := ResolveWorktreeMergeRoute(ctx, repository, target, requestedRoute)
-	if err != nil {
-		return worktreeMergeValidationPlan{}, err
-	}
-	plan := worktreeMergeValidationPlan{Route: decision}
-	if len(directCIPullRequest) > 0 && strings.TrimSpace(directCIPullRequest[0]) != "" {
-		if requestedRoute != WorktreeMergeRouteDirect || decision.Route != WorktreeMergeRouteDirect || validateLocally || allowUnfenced {
-			return plan, fmt.Errorf("direct CI deferral requires --route direct without --validate-locally or --allow-unfenced")
-		}
-		contract, contractErr := resolveWorktreeMergeDirectCIContract(ctx, repository, target, directCIPullRequest[0])
-		if contractErr != nil {
-			return plan, fmt.Errorf("direct CI deferral cannot prove open head PR and workflow: %w", contractErr)
-		}
-		plan.Defer, plan.DirectCI = true, contract
-		plan.Reason = fmt.Sprintf("exact Go CI on open head PR %s into %s will validate the direct target SHA", contract.PullRequest, contract.Base)
-		return plan, nil
-	}
-	if validateLocally || allowUnfenced || decision.Route != WorktreeMergeRoutePullRequest {
-		return plan, nil
-	}
-	eligible, reason := worktreeMergeValidationDeferralEligible(ctx, repository, target)
-	plan.Defer, plan.Reason = eligible, reason
-	return plan, nil
-}
-
-// PeekWorktreeMergeValidationDeferral cheaply resolves the merge route for
-// not-yet-prepared source worktrees and reports whether this call's local
-// candidate validation will be deferred to the pull-request route's
-// authoritative CI, reusing the exact same resolveWorktreeMergeValidationPlan
-// logic RunWorktreeMerge itself applies once a receipt exists. It performs
-// only source inspection and remote route/required-check-policy reads --
-// never a CPU-heavy local validation run -- so a caller deciding whether to
-// gate a not-yet-started merge on host load can learn the answer without
-// paying for the validation it is trying to avoid gating on (Minor 10,
-// sneat-dev/wb#591 round 3 red-team follow-up: the combined `wb worktree
-// land`/`wb land` used to check host load before it could know validation
-// would be deferred).
-func PeekWorktreeMergeValidationDeferral(ctx context.Context, projectsRoot string, sources []string, target string, requestedRoute WorktreeMergeRoute, validateLocally, allowUnfenced bool, directCIPullRequest ...string) (bool, error) {
-	projectsRoot, err := filepath.Abs(strings.TrimSpace(projectsRoot))
-	if err != nil || strings.TrimSpace(projectsRoot) == "" {
-		return false, fmt.Errorf("projects root is required")
-	}
-	if len(sources) == 0 {
-		return false, fmt.Errorf("at least one source worktree is required")
-	}
-	target = strings.TrimSpace(target)
-	if target == "" {
-		canonicalProbe, probeErr := canonicalForMergeSource(ctx, sources[0])
-		if probeErr != nil {
-			return false, fmt.Errorf("resolve source canonical clone: %w", probeErr)
-		}
-		target, probeErr = gitops.DefaultBranch(canonicalProbe)
-		if probeErr != nil {
-			return false, fmt.Errorf("resolve remote default branch: %w", probeErr)
-		}
-	}
-	_, repository, _, err := inspectWorktreeMergeSources(ctx, projectsRoot, sources, target)
-	if err != nil {
-		return false, err
-	}
-	plan, err := resolveWorktreeMergeValidationPlan(ctx, repository, target, requestedRoute, validateLocally, allowUnfenced, directCIPullRequest...)
-	if err != nil {
-		return false, err
-	}
-	return plan.Defer, nil
-}
-
-// worktreeMergeValidationDeferralEligible reports whether the pull-request
-// route may defer local candidate validation to CI (red-team finding B2). It
-// requires the target's required-check policy to have been read
-// authoritatively (never under an AllowUnfenced fallback), to be non-empty,
-// and to be fenced by a server-enforced strict up-to-date policy. Any of an
-// unreadable policy, zero required checks, or an unfenced policy keeps
-// validation local.
-func worktreeMergeValidationDeferralEligible(ctx context.Context, repository, target string) (bool, string) {
-	checks, freshness, reason := targetBranchRequiredChecks(ctx, repository, target, true)
-	if reason != "" {
-		return false, fmt.Sprintf("required-check policy for %s is unreadable, so validation stays local: %s", target, reason)
-	}
-	if len(checks) == 0 {
-		return false, fmt.Sprintf("target %s has no required status checks, so validation stays local", target)
-	}
-	if freshness == "" {
-		return false, fmt.Sprintf("target %s has no server-enforced strict up-to-date fence, so validation stays local", target)
-	}
-	return true, fmt.Sprintf("target %s has an authoritative, non-empty, server-fenced required-check policy (%s); the pull-request route defers local validation to it", target, freshness)
 }
 
 // applyOrDeferWorktreeMergeValidation is the single choke point every
@@ -3795,7 +1698,7 @@ func applyOrDeferWorktreeMergeValidation(ctx context.Context, receipt *WorktreeM
 	// (see the "resolve_route" progress step), and PrepareWorktreeMerge must
 	// never overwrite a receipt's previously recorded landing Route with a
 	// value freshly re-resolved for an unrelated re-preparation (observed by
-	// TestPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail).
+	// TestE2EPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail).
 	if !plan.Defer {
 		// Clear any stale deferral recorded by an earlier call (finding X1):
 		// this call is actually validating locally, so a lingering
@@ -3847,7 +1750,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	lint := quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree, []quality.Check{quality.CheckLint}, runOptions)
 	lint.Revision = receipt.Candidate.SHA
 	lint.WorkspaceClean = true
-	var earlyImportedMain *WorktreeMergeImportedMainDeadcode
+	var earlyImportedMain *mergevalidation.ImportedMainDeadcode
 	if lint.Status == quality.StatusFailed {
 		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Started, shortMergeRevision(receipt.TargetSHA))
 		baselineLint, baselineErr := verifyWorktreeMergeTargetChecks(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry, checkTimeout, shardAttemptTimeout, []quality.Check{quality.CheckLint})
@@ -3856,7 +1759,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		}
 		reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baselineLint.Status))
 		var regressionErr error
-		earlyImportedMain, regressionErr = worktreeMergeValidationWithImportedMainAttestation(baselineLint, lint, func() (*WorktreeMergeImportedMainDeadcode, error) {
+		earlyImportedMain, regressionErr = mergevalidation.WithImportedMainAttestation(baselineLint, lint, func() (*mergevalidation.ImportedMainDeadcode, error) {
 			return worktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout)
 		})
 		if regressionErr != nil {
@@ -3896,7 +1799,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	receipt.BaselineValidation = baseline
 	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
 	receipt.ImportedMainDeadcode = nil
-	parentEvidence, regressionErr := worktreeMergeValidationWithImportedMainAttestation(baseline, receipt.Validation, func() (*WorktreeMergeImportedMainDeadcode, error) {
+	parentEvidence, regressionErr := mergevalidation.WithImportedMainAttestation(baseline, receipt.Validation, func() (*mergevalidation.ImportedMainDeadcode, error) {
 		if earlyImportedMain != nil {
 			return earlyImportedMain, nil
 		}
@@ -3906,7 +1809,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return regressionErr
 	}
 	receipt.ImportedMainDeadcode = parentEvidence
-	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, receipt.Validation, parentEvidence); err != nil {
+	if err := mergevalidation.RegressionWithImportedMain(baseline, receipt.Validation, parentEvidence); err != nil {
 		return err
 	}
 	return nil
@@ -4002,7 +1905,7 @@ func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt
 	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return fmt.Errorf("recheck imported main deadcode attestation before publish: %w", err)
 	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+	if err := mergevalidation.RegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
 		return fmt.Errorf("recheck candidate deadcode regression before publish: %w", err)
 	}
 	// Finding B1 (sneat-dev/wb#591): an exact PR-route deferral, or the
@@ -4061,7 +1964,7 @@ func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMe
 	if err := recheckWorktreeMergeImportedMainDeadcode(ctx, receipt, timeout, retry, checkTimeout); err != nil {
 		return false, err
 	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
+	if err := mergevalidation.RegressionWithImportedMain(receipt.BaselineValidation, receipt.Validation, receipt.ImportedMainDeadcode); err != nil {
 		return false, nil
 	}
 	if deferral := receipt.ValidationDeferral; plan.Defer && receipt.Status == WorktreeMergePrepared && deferral != nil &&
@@ -4220,588 +2123,7 @@ func validationCacheValidatorSHAs(checks []quality.Check) map[string]string {
 	return nil
 }
 
-func configureWorktreeMergeBaselineRemote(ctx context.Context, candidateWorktree, snapshot string, timeout time.Duration, retry int) error {
-	remote, _, err := runCommand(ctx, defaultRunner, timeout, retry, candidateWorktree, "git", "remote", "get-url", "origin")
-	if err != nil {
-		return fmt.Errorf("read candidate origin remote for target baseline: %w", err)
-	}
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return errors.New("candidate origin remote for target baseline is empty")
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, snapshot, "git", "init", "--quiet"); err != nil {
-		return fmt.Errorf("initialize target baseline Git context: %w", err)
-	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, snapshot, "git", "remote", "add", "origin", remote); err != nil {
-		return fmt.Errorf("configure target baseline origin remote: %w", err)
-	}
-	return nil
-}
-
-func extractWorktreeMergeArchive(archivePath, destination string) error {
-	return extractWorktreeMergeArchiveInjected(archivePath, destination, nil)
-}
-
-// extractWorktreeMergeArchiveInjected is extractWorktreeMergeArchive's test
-// seam (task-9 PR-4): every production call site reaches it only through
-// extractWorktreeMergeArchive, which always passes a nil
-// *filewrite.Injector, so production behaviour is unchanged; a test passes
-// its own Injector directly to reach a create/write/close failure branch
-// on a tar.TypeReg entry deterministically. Each regular-file entry is
-// created with a fixed name (from the archive) that is always fully
-// overwritten (O_CREATE|O_TRUNC, never O_EXCL), so this uses
-// CreateOrTruncatePath rather than CreateExclusivePath. The streaming copy
-// from the tar reader goes through io.Copy(filewrite.Writer(file, path,
-// inj), reader) (review-t9-pr6 N1): filewrite.Writer is an io.Writer
-// adapter, not a []byte-at-a-time primitive, so it fits an arbitrary-size
-// streaming source exactly as well as it fits a small in-memory payload,
-// making io.Copy's write failures injectable without changing the chunks
-// io.Copy writes or how it wraps their errors.
-func extractWorktreeMergeArchiveInjected(archivePath, destination string, inj *filewrite.Injector) error {
-	archive, err := os.Open(archivePath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = archive.Close() }()
-	reader := tar.NewReader(archive)
-	for {
-		header, err := reader.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		name := filepath.Clean(header.Name)
-		if name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("unsafe archived path %q", header.Name)
-		}
-		path := filepath.Join(destination, name)
-		switch header.Typeflag {
-		case tar.TypeXGlobalHeader, tar.TypeXHeader:
-			// git archive emits PAX metadata before regular entries on some
-			// platforms. The tar reader applies it to the following header.
-			continue
-		case tar.TypeDir:
-			if err := os.MkdirAll(path, os.FileMode(header.Mode)); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			file, err := filewrite.CreateOrTruncatePath(path, os.FileMode(header.Mode), inj)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(filewrite.Writer(file, path, inj), reader)
-			closeErr := filewrite.Close(file, path, inj)
-			if copyErr != nil {
-				return copyErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-		case tar.TypeSymlink:
-			if filepath.IsAbs(header.Linkname) {
-				return fmt.Errorf("unsafe archived symlink %q -> %q", header.Name, header.Linkname)
-			}
-			linkTarget := filepath.Clean(filepath.Join(filepath.Dir(path), header.Linkname))
-			relativeTarget, err := filepath.Rel(destination, linkTarget)
-			if err != nil || relativeTarget == ".." || strings.HasPrefix(relativeTarget, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("unsafe archived symlink %q -> %q", header.Name, header.Linkname)
-			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(header.Linkname, path); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unsupported archived entry %q", header.Name)
-		}
-	}
-}
-
-func worktreeMergeValidationRegression(baseline, candidate quality.VerificationReport) error {
-	return worktreeMergeValidationRegressionWithImportedMain(baseline, candidate, nil)
-}
-
-func worktreeMergeValidationRegressionWithImportedMain(baseline, candidate quality.VerificationReport, imported *WorktreeMergeImportedMainDeadcode) error {
-	baselineFailures := failedWorktreeMergeVerificationEntries(baseline)
-	candidateFailures := failedWorktreeMergeVerificationEntries(candidate)
-	if candidate.Status == quality.StatusFailed && len(candidateFailures) == 0 {
-		return errors.New("candidate validation reported failure without failed check evidence")
-	}
-	matched := make([]bool, len(baselineFailures))
-	for _, candidateFailure := range candidateFailures {
-		if candidateFailure.Deadcode != nil {
-			if matchDeadcodeBaselineFailure(baselineFailures, candidateFailure) || matchImportedMainDeadcodeFailure(baseline.Results, candidateFailure, imported) {
-				continue
-			}
-			if imported == nil {
-				if delta, ok := worktreeMergeDeadcodeTargetDelta(baseline.Results, candidateFailure); ok {
-					return fmt.Errorf("candidate validation has %d deadcode finding(s) absent from exact target: %s", len(delta), strings.Join(delta, ", "))
-				}
-			}
-			return fmt.Errorf("candidate validation introduced or changed deadcode failure: %s", candidateFailure.Command)
-		}
-		if candidateFailure.Language == "go" && candidateFailure.Check == quality.CheckTest {
-			if matchGoCoverageBaselineFailure(baselineFailures, candidateFailure) {
-				continue
-			}
-		}
-		if candidateFailure.Language == "specscore" {
-			if matchSpecScoreBaselineFailure(baselineFailures, candidateFailure) {
-				continue
-			}
-			return fmt.Errorf("candidate validation introduced or changed failure: %s %s %s", candidateFailure.Language, candidateFailure.Check, candidateFailure.Command)
-		}
-		found := false
-		for index, baselineFailure := range baselineFailures {
-			if !matched[index] && sameWorktreeMergeFailure(baselineFailure, candidateFailure) {
-				matched[index] = true
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("candidate validation introduced or changed failure: %s %s %s", candidateFailure.Language, candidateFailure.Check, candidateFailure.Command)
-		}
-	}
-	return nil
-}
-
-func hasWorktreeMergeDeadcodeFailure(report quality.VerificationReport) bool {
-	for _, entry := range report.Results {
-		if entry.Deadcode != nil {
-			return true
-		}
-	}
-	return false
-}
-
-func worktreeMergeNonDeadcodeRegression(baseline, candidate quality.VerificationReport) error {
-	withoutDeadcode := func(report quality.VerificationReport) quality.VerificationReport {
-		results := make([]quality.VerificationEntry, 0, len(report.Results))
-		for _, entry := range report.Results {
-			if entry.Deadcode == nil {
-				results = append(results, entry)
-			}
-		}
-		report.Results = results
-		return report
-	}
-	baseline, candidate = withoutDeadcode(baseline), withoutDeadcode(candidate)
-	if candidate.Status == quality.StatusFailed && len(failedWorktreeMergeVerificationEntries(candidate)) == 0 {
-		candidate.Status = quality.StatusPassed
-	}
-	return worktreeMergeValidationRegression(baseline, candidate)
-}
-
-func worktreeMergeValidationWithImportedMainAttestation(baseline, candidate quality.VerificationReport, attest func() (*WorktreeMergeImportedMainDeadcode, error)) (*WorktreeMergeImportedMainDeadcode, error) {
-	targetErr := worktreeMergeValidationRegression(baseline, candidate)
-	if targetErr == nil {
-		return nil, nil
-	}
-	if !hasWorktreeMergeDeadcodeFailure(candidate) || worktreeMergeNonDeadcodeRegression(baseline, candidate) != nil {
-		return nil, targetErr
-	}
-	evidence, err := attest()
-	if err != nil {
-		return nil, fmt.Errorf("attest imported main deadcode baseline: %w", err)
-	}
-	if err := worktreeMergeValidationRegressionWithImportedMain(baseline, candidate, evidence); err != nil {
-		return evidence, err
-	}
-	return evidence, nil
-}
-
-func matchImportedMainDeadcodeFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry, imported *WorktreeMergeImportedMainDeadcode) bool {
-	if imported == nil || candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != worktreeMergeDeadcodeCommand || !candidate.Deadcode.Valid() {
-		return false
-	}
-	target, valid := worktreeMergeDeadcodeIdentitySet(baseline, candidate.Language, candidate.Check, candidate.Command, candidate.Module)
-	if !valid {
-		return false
-	}
-	parent, valid := importedMainDeadcodeIdentities(imported.Validation, candidate.Check, candidate.Command, candidate.Module)
-	if !valid {
-		return false
-	}
-	for id := range parent {
-		target[id] = true
-	}
-	for _, id := range candidate.Deadcode.Identities {
-		if !target[id] {
-			return false
-		}
-	}
-	return true
-}
-
-func worktreeMergeDeadcodeIdentitySet(entries []quality.VerificationEntry, language string, check quality.Check, command, module string) (map[string]bool, bool) {
-	var matching *quality.VerificationEntry
-	for index := range entries {
-		entry := &entries[index]
-		if entry.Language != language || entry.Check != check || entry.Command != command || entry.Module != module {
-			continue
-		}
-		if matching != nil {
-			return nil, false
-		}
-		matching = entry
-	}
-	if matching == nil {
-		return nil, false
-	}
-	if matching.Status == quality.StatusPassed && matching.Deadcode == nil {
-		return map[string]bool{}, true
-	}
-	if matching.Status != quality.StatusFailed || !matching.Deadcode.Valid() {
-		return nil, false
-	}
-	identities := make(map[string]bool, len(matching.Deadcode.Identities))
-	for _, identity := range matching.Deadcode.Identities {
-		identities[identity] = true
-	}
-	return identities, true
-}
-
-// worktreeMergeDeadcodeTargetDelta is diagnostic only. An incomplete or
-// ambiguous exact-target report cannot supply a trustworthy difference.
-func worktreeMergeDeadcodeTargetDelta(target []quality.VerificationEntry, candidate quality.VerificationEntry) ([]string, bool) {
-	if !candidate.Deadcode.Valid() {
-		return nil, false
-	}
-	known, valid := worktreeMergeDeadcodeIdentitySet(target, candidate.Language, candidate.Check, candidate.Command, candidate.Module)
-	if !valid {
-		return nil, false
-	}
-	var delta []string
-	for _, identity := range candidate.Deadcode.Identities {
-		if !known[identity] {
-			delta = append(delta, identity)
-		}
-	}
-	return delta, len(delta) > 0
-}
-
-// matchDeadcodeBaselineFailure compares complete function identities, not the
-// bounded human diagnostic or its count alone. An older baseline receipt
-// without structured evidence retains the strict historical detail match.
-func matchDeadcodeBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
-	if candidate.Language != "go" || candidate.Check != quality.CheckLint || candidate.Command != "go run ./cmd/wb deadcode" || !candidate.Deadcode.Valid() {
-		return false
-	}
-	for _, previous := range baseline {
-		if previous.Language != candidate.Language || previous.Module != candidate.Module || previous.Check != candidate.Check || previous.Command != candidate.Command {
-			continue
-		}
-		if previous.Deadcode == nil {
-			return sameWorktreeMergeFailure(previous, candidate)
-		}
-		if !previous.Deadcode.Valid() {
-			return false
-		}
-		known := make(map[string]bool, len(previous.Deadcode.Identities))
-		for _, identity := range previous.Deadcode.Identities {
-			known[identity] = true
-		}
-		for _, identity := range candidate.Deadcode.Identities {
-			if !known[identity] {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-// matchGoCoverageBaselineFailure compares the failing-test identities emitted
-// by WB's compact coverage index. Process-isolated shard numbers are scheduler
-// placement, not failure identity, and can change when the package inventory
-// changes. A candidate may remove baseline failures but must not add a failing
-// test that was absent from the exact target baseline.
-func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
-	candidateIDs := goCoverageFailureIdentities(candidate.Detail)
-	if len(candidateIDs) == 0 {
-		return false
-	}
-	for _, baselineFailure := range baseline {
-		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || normalizeGoCoverageCommand(baselineFailure.Command) != normalizeGoCoverageCommand(candidate.Command) {
-			continue
-		}
-		baselineIDs := goCoverageFailureIdentities(baselineFailure.Detail)
-		if len(baselineIDs) == 0 {
-			continue
-		}
-		allKnown := true
-		for identity := range candidateIDs {
-			if _, ok := baselineIDs[identity]; !ok {
-				allKnown = false
-				break
-			}
-		}
-		if allKnown {
-			return true
-		}
-	}
-	return false
-}
-
-var (
-	goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
-	goCoverageCommandShardsPattern  = regexp.MustCompile(`\s+\([0-9]+\s+process-isolated shards for [^)]*\)$`)
-	// A raw-output section header: either the unsharded group or one package
-	// path, optionally carrying its scheduler shard placement.
-	goCoveragePlacementHeaderPattern = regexp.MustCompile(`^\[(unsharded packages|[^\[\] \t]+)(\s+shard\s+[0-9]+/[0-9]+)?\]$`)
-)
-
-// goCoverageTimeoutIdentity is the failure identity of a group that ran out of
-// time instead of failing a named test.
-const goCoverageTimeoutIdentity = "timed out"
-
-func normalizeGoCoverageCommand(command string) string {
-	return goCoverageCommandShardsPattern.ReplaceAllString(command, " (<process-isolated shards>)")
-}
-
-func goCoverageFailureIdentities(detail string) map[string]struct{} {
-	const (
-		failureIndexHeader = "WB coverage failure index:\n"
-	)
-	identities := make(map[string]struct{})
-	indexStart := strings.Index(detail, failureIndexHeader)
-	if indexStart < 0 {
-		return identities
-	}
-	index := detail[indexStart+len(failureIndexHeader):]
-	rawOutput := ""
-	for _, header := range []string{"WB coverage raw output:\n", "WB coverage raw output\n"} {
-		if raw := strings.Index(index, header); raw >= 0 {
-			rawOutput = index[raw+len(header):]
-			index = index[:raw]
-			break
-		}
-	}
-	// A test-binary timeout kills the group wherever it happens to be, so the
-	// test it names is incidental: the same pre-existing timeout names a
-	// different test, or none at all, on the next run. Collapse a timed-out
-	// placement to one identity so a repeated timeout is recognised as the
-	// baseline failure it is instead of reading as a newly introduced one.
-	timedOut := goCoverageTimedOutPlacements(rawOutput)
-	for _, rawLine := range strings.Split(index, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if !strings.HasPrefix(line, "- [") {
-			continue
-		}
-		closing := strings.Index(line, "] ")
-		if closing < 0 {
-			continue
-		}
-		placement := strings.TrimPrefix(line[:closing], "- [")
-		placement = goCoverageShardPlacementPattern.ReplaceAllString(placement, "")
-		testName := strings.TrimSpace(line[closing+2:])
-		if placement == "" || testName == "" {
-			continue
-		}
-		stableTimeout, hasSource := goCoverageTimeoutFailureIdentity(testName)
-		if hasSource {
-			// Elapsed time is diagnostic data; the timeout source is part of
-			// the failure identity and must survive raw-output timeout folding.
-			testName = stableTimeout
-		} else if _, ok := timedOut[placement]; ok {
-			testName = goCoverageTimeoutIdentity
-		}
-		identities[placement+"\x00"+testName] = struct{}{}
-	}
-	return identities
-}
-
-func goCoverageTimeoutFailureIdentity(detail string) (string, bool) {
-	if !strings.HasSuffix(detail, ")") {
-		return "", false
-	}
-	start := strings.LastIndex(detail, " (")
-	if start <= 0 {
-		return "", false
-	}
-	cause, elapsed, ok := strings.Cut(strings.TrimSuffix(detail[start+2:], ")"), "; elapsed ")
-	if !ok {
-		return "", false
-	}
-	switch cause {
-	case "attempt timeout", "check timeout", "caller timeout", "caller-cancelled cancellation":
-	default:
-		return "", false
-	}
-	if _, err := time.ParseDuration(elapsed); err != nil {
-		return "", false
-	}
-	return detail[:start] + " (" + cause + ")", true
-}
-
-// goCoverageTimedOutPlacements reports which check placements recorded a
-// test-binary timeout in WB's coverage raw output.
-func goCoverageTimedOutPlacements(rawOutput string) map[string]struct{} {
-	placements := make(map[string]struct{})
-	placement := ""
-	for _, rawLine := range strings.Split(rawOutput, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if goCoveragePlacementHeaderPattern.MatchString(line) {
-			placement = goCoverageShardPlacementPattern.ReplaceAllString(strings.Trim(line, "[]"), "")
-			continue
-		}
-		if placement != "" && strings.Contains(line, "timed out after") {
-			placements[placement] = struct{}{}
-		}
-	}
-	return placements
-}
-
-// matchSpecScoreBaselineFailure treats the exact violation identity set as the
-// authoritative comparison for SpecScore. A candidate may remove a legacy
-// finding (or report the same finding from a different checkout path) but may
-// never introduce an identity absent from the exact target baseline. Counts
-// and rendered diagnostics are not identities, so a strict subset is a safe
-// improvement while a new rule remains a hard failure.
-func matchSpecScoreBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
-	candidateIDs := specScoreViolationIdentities(candidate.Detail)
-	for _, baselineFailure := range baseline {
-		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || baselineFailure.Command != candidate.Command {
-			continue
-		}
-		baselineIDs := specScoreViolationIdentities(baselineFailure.Detail)
-		if len(candidateIDs) == 0 || len(baselineIDs) == 0 {
-			// Some SpecScore failures describe an environment/configuration
-			// problem rather than a rule violation (for example, a missing
-			// configured spec root). There is no structured identity to compare;
-			// use the same normalized diagnostic comparison as other checks so
-			// paths and other approved volatile tokens do not become behavior.
-			if len(candidateIDs) == 0 && len(baselineIDs) == 0 &&
-				normalizeWorktreeMergeFailureDetail(baselineFailure.Detail) == normalizeWorktreeMergeFailureDetail(candidate.Detail) {
-				return true
-			}
-			continue
-		}
-		allKnown := true
-		for identity := range candidateIDs {
-			if _, ok := baselineIDs[identity]; !ok {
-				allKnown = false
-				break
-			}
-		}
-		if allKnown {
-			return true
-		}
-	}
-	return false
-}
-
-var specScoreViolationIdentityPattern = regexp.MustCompile(`^(.+?):[0-9]+(?:-[0-9]+)?\s+([^:]+):`)
-
-func specScoreViolationIdentities(detail string) map[string]struct{} {
-	identities := make(map[string]struct{})
-	for _, rawLine := range strings.Split(detail, "\n") {
-		line := strings.TrimSpace(normalizeWorktreeMergeFailureDetail(rawLine))
-		match := specScoreViolationIdentityPattern.FindStringSubmatch(line)
-		if len(match) != 3 {
-			continue
-		}
-		path := strings.TrimSpace(match[1])
-		rule := strings.TrimSpace(match[2])
-		if path == "" || rule == "" {
-			continue
-		}
-		identities[strings.Join(strings.Fields(path+" "+rule), " ")] = struct{}{}
-	}
-	return identities
-}
-
-func failedWorktreeMergeVerificationEntries(report quality.VerificationReport) []quality.VerificationEntry {
-	entries := make([]quality.VerificationEntry, 0, len(report.Results))
-	for _, entry := range report.Results {
-		if entry.Status == quality.StatusFailed {
-			entries = append(entries, entry)
-		}
-	}
-	return entries
-}
-
-func sameWorktreeMergeFailure(baseline, candidate quality.VerificationEntry) bool {
-	// The discriminating comparison is the exact check identity plus the
-	// normalized diagnostic. Any identity mismatch or remaining normalized
-	// detail difference falsifies equivalence.
-	return baseline.Language == candidate.Language && baseline.Module == candidate.Module && baseline.Check == candidate.Check &&
-		baseline.Command == candidate.Command && normalizeWorktreeMergeFailureDetail(baseline.Detail) == normalizeWorktreeMergeFailureDetail(candidate.Detail)
-}
-
-var (
-	worktreeMergeFailureTimestampPattern     = regexp.MustCompile(`(?m)^((?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9])(\s+\[[^\r\n]*\]|\s+[✓├])`)
-	worktreeMergeFailureGeneratedPattern     = regexp.MustCompile(`(?i)\b(Generated)\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
-	worktreeMergeFailureBuiltPattern         = regexp.MustCompile(`(?i)\b(built in|Completed in)\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
-	worktreeMergeFailureParenthesizedPattern = regexp.MustCompile(`\(\+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\)`)
-	worktreeMergeFailureTruncationPattern    = regexp.MustCompile(`(?s)(… output truncated; final [0-9]+ bytes:\r?\n)([^\r\n]*)`)
-	worktreeMergeFailurePartialTimingPattern = regexp.MustCompile(`(?i)^([[:alpha:]]+)\s+in\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)$`)
-)
-
-func normalizeWorktreeMergeFailureDetail(detail string) string {
-	// Quality command output can include the ephemeral checkout path. It is not
-	// behavior, so compare a whitespace-normalized form after erasing absolute
-	// paths. The path may be quoted or wrapped in diagnostic punctuation, so
-	// normalize it inside the field rather than requiring the whole field to be
-	// an absolute path. All command, check, module, and error text still has to
-	// match.
-	detail = worktreeMergeFailureTimestampPattern.ReplaceAllString(detail, `<timestamp>${2}`)
-	detail = worktreeMergeFailureGeneratedPattern.ReplaceAllString(detail, `${1} <duration>`)
-	detail = worktreeMergeFailureBuiltPattern.ReplaceAllString(detail, `${1} <duration>`)
-	detail = worktreeMergeFailureParenthesizedPattern.ReplaceAllString(detail, `(+<duration>)`)
-	detail = worktreeMergeFailureTruncationPattern.ReplaceAllStringFunc(detail, normalizeWorktreeMergeFailureTruncatedTail)
-	fields := strings.Fields(detail)
-	for index, field := range fields {
-		fields[index] = normalizeWorktreeMergeFailureField(field)
-	}
-	return strings.Join(fields, " ")
-}
-
-func normalizeWorktreeMergeFailureTruncatedTail(match string) string {
-	const markerEnd = "\n"
-	lineStart := strings.Index(match, markerEnd)
-	if lineStart < 0 || lineStart+len(markerEnd) >= len(match) {
-		return match
-	}
-	line := strings.TrimSpace(match[lineStart+len(markerEnd):])
-	partial := worktreeMergeFailurePartialTimingPattern.FindStringSubmatch(line)
-	if len(partial) != 2 {
-		return match
-	}
-	word := strings.ToLower(partial[1])
-	for _, complete := range []string{"built", "completed"} {
-		if strings.HasSuffix(complete, word) {
-			return match[:lineStart+len(markerEnd)] + complete + " in <duration>"
-		}
-	}
-	return match
-}
-
-const worktreeMergeFailurePathPunctuation = "\"'`()[]{}<>,;."
-
-func normalizeWorktreeMergeFailureField(field string) string {
-	start := 0
-	for start < len(field) && strings.ContainsRune(worktreeMergeFailurePathPunctuation, rune(field[start])) {
-		start++
-	}
-	end := len(field)
-	for end > start && strings.ContainsRune(worktreeMergeFailurePathPunctuation, rune(field[end-1])) {
-		end--
-	}
-	if start != end && filepath.IsAbs(field[start:end]) {
-		field = field[:start] + "<workspace>" + field[end:]
-	}
-	return field
-}
-
-func activeRuleCount(pages [][]githubActiveBranchRule) int {
+func activeRuleCount(pages [][]githubchecks.ActiveBranchRule) int {
 	count := 0
 	for _, page := range pages {
 		count += len(page)
@@ -5070,55 +2392,6 @@ func activeWorktreeMergeLaneReceiptWithRunner(ctx context.Context, projectsRoot,
 	return nil, nil
 }
 
-func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
-	switch prior.Status {
-	case WorktreeMergePreparing, WorktreeMergePrepared, WorktreeMergeConflict, WorktreeMergeChecksFailed, WorktreeMergeChecksPending, WorktreeMergePublished:
-	default:
-		return false, nil
-	}
-	if prior.LandingSHA != "" || prior.Candidate.Worktree == "" || prior.Candidate.Branch == "" || len(prior.Sources) != len(sources) {
-		return false, nil
-	}
-	advanced := false
-	for index := range sources {
-		oldSource, newSource := prior.Sources[index], sources[index]
-		if oldSource.Worktree != newSource.Worktree || oldSource.Branch != newSource.Branch || oldSource.Task != newSource.Task {
-			return false, nil
-		}
-		if oldSource.SHA == newSource.SHA {
-			continue
-		}
-		containsOld, err := isMergeAncestor(ctx, newSource.Worktree, oldSource.SHA, newSource.SHA)
-		if err != nil {
-			return false, err
-		}
-		if !containsOld {
-			return false, nil
-		}
-		advanced = true
-	}
-	if !advanced || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
-		return false, nil
-	}
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
-	if err != nil {
-		return false, err
-	}
-	remote = strings.TrimSpace(remote)
-	if prior.PullRequest == "" {
-		return remote == "", nil
-	}
-	localHead, headErr := mergeRevision(ctx, defaultRunner, prior.Candidate.Worktree, "HEAD")
-	if headErr != nil || localHead != prior.Candidate.SHA {
-		return false, headErr
-	}
-	published := prior.PublishedCandidateSHA
-	if published == "" {
-		published = prior.Candidate.SHA
-	}
-	return strings.HasPrefix(remote, published+"\t"), nil
-}
-
 // isExactPublishedValidationFailureReplay proves the only read-only retry
 // allowed after validation_failed. It additionally accepts the founder-approved
 // recorded forward-repair shape only after every immutable ancestry root is
@@ -5172,127 +2445,6 @@ func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot s
 		return false, err
 	}
 	return strings.HasPrefix(strings.TrimSpace(remote), receipt.PublishedCandidateSHA+"\t"), nil
-}
-
-// validateExactPreparingWorktreeMergeReceipt defines the normal recovery
-// boundary for an existing deterministic receipt path. A receipt that has left
-// preparing must not be reset in place; validation_failed has explicit audited
-// recovery paths instead.
-func validateExactPreparingWorktreeMergeReceipt(ctx context.Context, receipt WorktreeMergeReceipt, lane, operation string, sources []WorktreeMergeSource) error {
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePreparing {
-		return fmt.Errorf("receipt is %s/%s; only an exact preparing receipt may resume", receipt.Phase, receipt.Status)
-	}
-	if receipt.Lane != lane || receipt.ID != operation || !sameWorktreeMergeSources(receipt.Sources, sources) {
-		return errors.New("receipt immutable operation identity differs")
-	}
-	if receipt.Candidate.Task != operation || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" {
-		return errors.New("receipt candidate identity is incomplete or differs")
-	}
-	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-		return fmt.Errorf("receipt candidate is not safely resumable: %w", err)
-	}
-	if receipt.Candidate.SHA != "" {
-		head, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
-		if err != nil {
-			return fmt.Errorf("read receipt candidate head: %w", err)
-		}
-		if head != receipt.Candidate.SHA {
-			return fmt.Errorf("receipt candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
-		}
-	}
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
-	if err != nil {
-		return fmt.Errorf("read receipt candidate remote: %w", err)
-	}
-	if strings.TrimSpace(remote) != "" {
-		return errors.New("receipt candidate was published")
-	}
-	return nil
-}
-
-// validatePreparingWorktreeMergeCandidate closes the interruption window
-// between persisting an integrated candidate SHA and persisting its completed
-// validation receipt. Landing may resume that exact candidate, but it must
-// prove the complete source/target graph before rerunning validation.
-func validatePreparingWorktreeMergeCandidate(ctx context.Context, receipt WorktreeMergeReceipt) error {
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePreparing || receipt.Candidate.SHA == "" {
-		return errors.New("receipt has no exact interrupted preparing candidate")
-	}
-	if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
-		return fmt.Errorf("interrupted candidate is not clean: %w", err)
-	}
-	head, err := mergeRevision(ctx, defaultRunner, receipt.Candidate.Worktree, "HEAD")
-	if err != nil {
-		return fmt.Errorf("read interrupted candidate head: %w", err)
-	}
-	if head != receipt.Candidate.SHA {
-		return fmt.Errorf("interrupted candidate head drifted from %s to %s", receipt.Candidate.SHA, head)
-	}
-	containsTarget, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.TargetSHA, head)
-	if err != nil || !containsTarget {
-		if err == nil {
-			err = fmt.Errorf("candidate %s does not contain target %s", head, receipt.TargetSHA)
-		}
-		return fmt.Errorf("verify interrupted candidate target: %w", err)
-	}
-	for _, source := range receipt.Sources {
-		containsSource, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, source.SHA, head)
-		if ancestorErr != nil || !containsSource {
-			if ancestorErr == nil {
-				ancestorErr = fmt.Errorf("candidate %s does not contain source %s", head, source.SHA)
-			}
-			return fmt.Errorf("verify interrupted candidate source %s: %w", source.Branch, ancestorErr)
-		}
-	}
-	return nil
-}
-
-// canPreparePostTargetRepair recognizes the one safe continuation after a
-// remote landing: exact target CI failed, the same source worktrees advanced
-// additively, and the retained candidate has not moved. Prepare then advances
-// that candidate to the fetched landed target before integrating the repair.
-// Other landed states still own the lane and fail closed.
-func canPreparePostTargetRepair(ctx context.Context, prior WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
-	if prior.Status != WorktreeMergePostTargetCIFailed || prior.LandingSHA == "" ||
-		prior.Candidate.Worktree == "" || prior.Candidate.Branch == "" || prior.Candidate.SHA == "" ||
-		len(prior.Sources) != len(sources) {
-		return false, nil
-	}
-	advanced := false
-	for index := range sources {
-		oldSource, newSource := prior.Sources[index], sources[index]
-		if oldSource.Worktree != newSource.Worktree || oldSource.Branch != newSource.Branch || oldSource.Task != newSource.Task {
-			return false, nil
-		}
-		if oldSource.SHA == newSource.SHA {
-			continue
-		}
-		containsOld, err := isMergeAncestor(ctx, newSource.Worktree, oldSource.SHA, newSource.SHA)
-		if err != nil {
-			return false, err
-		}
-		if !containsOld {
-			return false, nil
-		}
-		advanced = true
-	}
-	if !advanced || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
-		return false, nil
-	}
-	localHead, err := mergeRevision(ctx, defaultRunner, prior.Candidate.Worktree, "HEAD")
-	if err != nil || localHead != prior.Candidate.SHA {
-		return false, err
-	}
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
-	if err != nil {
-		return false, err
-	}
-	remote = strings.TrimSpace(remote)
-	published := prior.PublishedCandidateSHA
-	if published == "" {
-		published = prior.Candidate.SHA
-	}
-	return remote == "" || strings.HasPrefix(remote, published+"\t"), nil
 }
 
 func writeWorktreeMergePrompt(repository, target string, sources []WorktreeMergeSource) (string, error) {
@@ -5410,40 +2562,15 @@ func readWorktreeMergeReceipt(path string) (WorktreeMergeReceipt, error) {
 }
 
 func failWorktreeMergeReceipt(receipt WorktreeMergeReceipt, status WorktreeMergeStatus, failure error) (WorktreeMergeReceipt, error) {
-	receipt.Status = status
-	receipt.Failure = failure.Error()
-	receipt.UpdatedAt = time.Now().UTC()
-	if persistErr := persistWorktreeMergeReceipt(receipt); persistErr != nil {
-		return receipt, fmt.Errorf("%w; persist failure receipt: %v", failure, persistErr)
-	}
-	return receipt, failure
+	return failWorktreeMergeReceiptWithSave(receipt, status, failure, persistWorktreeMergeReceipt)
 }
 
 func requireCleanMergeWorktree(ctx context.Context, path string) error {
-	status, _, err := runCommand(ctx, defaultRunner, 0, 0, path, "git", "status", "--porcelain=v1")
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(status) != "" {
-		return fmt.Errorf("worktree is dirty: %s", strings.TrimSpace(status))
-	}
-	return nil
+	return requireCleanMergeWorktreeWithRunner(ctx, defaultRunner, path)
 }
 
 func recheckWorktreeMergeSources(ctx context.Context, sources []WorktreeMergeSource) error {
-	for _, source := range sources {
-		if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
-			return fmt.Errorf("source %s changed during prepare: %w", source.Worktree, err)
-		}
-		head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
-		if err != nil {
-			return err
-		}
-		if head != source.SHA {
-			return fmt.Errorf("source %s advanced from %s to %s during prepare", source.Worktree, source.SHA, head)
-		}
-	}
-	return nil
+	return recheckWorktreeMergeSourcesWithRunner(ctx, defaultRunner, sources)
 }
 
 // mergeRevision resolves revision to a commit SHA in path. Unlike the Git
@@ -5493,11 +2620,7 @@ func worktreeMergeCandidateAbsorbed(ctx context.Context, path string, prior Work
 }
 
 func isMergeAncestor(ctx context.Context, path, ancestor, descendant string) (bool, error) {
-	output, _, err := runCommand(ctx, defaultRunner, 0, 0, path, "git", "merge-base", ancestor, descendant)
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(output) == ancestor, nil
+	return isMergeAncestorWithRunner(ctx, defaultRunner, path, ancestor, descendant)
 }
 
 func validMergeBranch(ctx context.Context, path, branch string) bool {
@@ -5515,27 +2638,4 @@ func sameWorktreeMergeSources(left, right []WorktreeMergeSource) bool {
 		}
 	}
 	return true
-}
-
-func sortedUniqueMergeTasks(receipt WorktreeMergeReceipt) []string {
-	seen := map[string]bool{}
-	tasks := make([]string, 0, len(receipt.Sources)+1)
-	for _, source := range receipt.Sources {
-		if source.Task != "" && !seen[source.Task] {
-			seen[source.Task] = true
-			tasks = append(tasks, source.Task)
-		}
-	}
-	if receipt.Candidate.Task != "" && !seen[receipt.Candidate.Task] {
-		seen[receipt.Candidate.Task] = true
-		tasks = append(tasks, receipt.Candidate.Task)
-	}
-	for _, candidate := range receipt.RebatchedCandidates {
-		if candidate.Task != "" && !seen[candidate.Task] {
-			seen[candidate.Task] = true
-			tasks = append(tasks, candidate.Task)
-		}
-	}
-	sort.Strings(tasks)
-	return tasks
 }

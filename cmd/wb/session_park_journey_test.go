@@ -59,10 +59,10 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", ambientXDGState)
 	t.Setenv("XDG_CACHE_HOME", ambientXDGCache)
 
-	binary := buildJourneyWB(t)
+	binary := buildWB(t)
 	// Park always invokes the fixed remote command name, so the target is
 	// reached by placing the built binary on PATH as "wb" rather than by
-	// configuring ssh.wb_path, which park ignores.
+	// configuring ssh.wb_path, which remote park admission refuses.
 	linkJourneyRemoteWB(t, filepath.Join(fakeBin, "wb"), binary)
 	writeJourneyExecutable(t, filepath.Join(fakeBin, "tmux"), journeyTmuxScript(tmuxState))
 	writeJourneyExecutable(t, filepath.Join(fakeBin, "codex"), journeyCodexScript(harnessReceipt))
@@ -94,16 +94,47 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	}
 	// Model a crash after immutable aggregate publication but before lifecycle
 	// marking. The real CLI must recapture the same members through its
-	// aggregate function variable and repair the original parked identity.
+	// actual aggregate operation and repair the original parked identity.
 	listed, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: sourceRoot, Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownedListed := make([]worktrees.ListResult, 0, len(listed))
+	// Creation precedes registration, so the immutable claims can have no
+	// WB session link despite their explicit WorkLog.AgentID. Select this
+	// fixture's known paths and prove their real post-registration custody;
+	// the subprocess still exercises Park's production owner-fallback policy.
+	expectedMembers := make(map[string]journeySourceMember, len(sourceMembers))
+	for _, member := range sourceMembers {
+		expectedMembers[member.Worktree] = member
+	}
+	ownedListed := make([]worktrees.ListResult, 0, len(sourceMembers))
+	seenMembers := make(map[string]bool, len(sourceMembers))
 	for _, result := range listed {
-		if ownedBySession(result, source) {
-			ownedListed = append(ownedListed, result)
+		member, expected := expectedMembers[result.WorktreeDir]
+		if !expected {
+			t.Fatalf("unexpected private fixture member: %#v", result)
 		}
+		if seenMembers[result.WorktreeDir] {
+			t.Fatalf("duplicate private fixture member: %s", result.WorktreeDir)
+		}
+		if result.Repository != member.Repository || result.HeadSHA != member.Commit {
+			t.Fatalf("listed member identity=%#v want=%#v", result, member)
+		}
+		ownerFound := false
+		for _, owner := range result.Owners {
+			if owner.PID == source.PID && !owner.At.Before(source.StartedAt) {
+				ownerFound = true
+				break
+			}
+		}
+		if !ownerFound {
+			t.Fatalf("member %s lacks actual source custody PID=%d since=%s: %#v", result.WorktreeDir, source.PID, source.StartedAt, result.Owners)
+		}
+		seenMembers[result.WorktreeDir] = true
+		ownedListed = append(ownedListed, result)
+	}
+	if len(sourceMembers) != 2 || len(ownedListed) != len(sourceMembers) {
+		t.Fatalf("known private members=%#v listed=%#v", sourceMembers, ownedListed)
 	}
 	parkedStore := sessionpark.NewStore(filepath.Join(sourceHome, "parked-sessions"))
 	const parkedID = "park-journey-crash-retry"
@@ -274,21 +305,6 @@ func TestSessionParkResumeAcrossProcessTransport(t *testing.T) {
 	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("private successor continuation permissions = %s, want regular 0600", info.Mode())
 	}
-}
-
-func buildJourneyWB(t *testing.T) string {
-	t.Helper()
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	binary := filepath.Join(t.TempDir(), "wb")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	command := exec.Command("go", "build", "-o", binary, "./cmd/wb")
-	command.Dir = repoRoot
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build journey wb: %v\n%s", err, output)
-	}
-	return binary
 }
 
 type journeySourceMember struct {

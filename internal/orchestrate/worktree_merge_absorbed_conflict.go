@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/mergeack"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -62,11 +63,17 @@ type WorktreeMergeAbsorbedConflictAcknowledgementOptions struct {
 // --apply requires --actor and --reason and writes only the new
 // acknowledgement artifact.
 func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsorbedConflictAcknowledgementOptions) (WorktreeMergeAbsorbedConflictAcknowledgement, error) {
+	return acknowledgeAbsorbedConflict(ctx, options, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, mergeack.Persist)
+}
+
+// acknowledgeAbsorbedConflict binds receipt IO per invocation; lock custody and
+// every source/target proof remain native.
+func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsorbedConflictAcknowledgementOptions, readReceipt func(string) (WorktreeMergeReceipt, error), hashReceipt func(string) (string, error), persist func(string, WorktreeMergeAbsorbedConflictAcknowledgement) error) (WorktreeMergeAbsorbedConflictAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
@@ -77,9 +84,6 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
 	}
 	lockID := receipt.Lane
-	if lockID == "" {
-		lockID = worktreeMergeLaneID(receipt.Repository, receipt.Target)
-	}
 	lock, err := AcquireOperationLock(options.ProjectsRoot, lockID, true)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
@@ -89,12 +93,15 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	// Re-read and re-validate beneath the lane lock: every proof below must
 	// run against evidence observed while this acknowledgement exclusively
 	// owns the lane, never against values captured before it.
-	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	receipt, err = readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
 	if err := validateAbsorbedConflictReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
+	if receipt.Lane != lockID {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipt %s changed lane while acquiring ownership: held %s, reread %s", receiptPath, lockID, receipt.Lane)
 	}
 	for _, source := range receipt.Sources {
 		if _, statErr := os.Stat(source.Worktree); statErr == nil {
@@ -132,7 +139,7 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 			Method: result.method, MergeBaseSHA: result.mergeBaseSHA, PathCount: result.pathCount, PathProofs: result.pathProofs,
 		})
 	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hashReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
@@ -158,7 +165,7 @@ func AcknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := mergeack.Persist(ackPath, ack); err != nil {
+	if err := persist(ackPath, ack); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
 	return ack, nil
@@ -283,7 +290,11 @@ func verifyMissingAbsorbedConflictCandidate(ctx context.Context, gitRoot string,
 // when a legacy receipt has no candidate SHA: an empty recorded SHA alone
 // does not prove that nobody subsequently published the branch.
 func requireAbsorbedConflictCandidateUnpublished(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt) error {
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	return requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx, defaultRunner, gitRoot, receipt)
+}
+
+func requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx context.Context, run runner.Runner, gitRoot string, receipt WorktreeMergeReceipt) error {
+	remote, _, err := runCommand(ctx, run, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("inspect candidate publication state: %w", err)
 	}
@@ -311,22 +322,24 @@ type absorbedConflictProof struct {
 // operator-audited derived-index exclusion present in derivedPaths
 // ("derived_excused").
 func proveAbsorbedConflictSource(ctx context.Context, worktree, currentTarget string, source WorktreeMergeSource, derivedPaths map[string]bool) (absorbedConflictProof, error) {
+	return proveAbsorbedConflictSourceWithRunner(ctx, defaultRunner, worktree, currentTarget, source, derivedPaths)
+}
+
+// proveAbsorbedConflictSourceWithRunner observes one merge base for both ancestry
+// and the content baseline; the resolver and content evidence remain native.
+func proveAbsorbedConflictSourceWithRunner(ctx context.Context, run runner.Runner, worktree, currentTarget string, source WorktreeMergeSource, derivedPaths map[string]bool) (absorbedConflictProof, error) {
 	if err := resolveAbsorbedConflictSourceObject(ctx, worktree, source); err != nil {
 		return absorbedConflictProof{}, err
 	}
-	ancestor, err := isMergeAncestor(ctx, worktree, source.SHA, currentTarget)
+	mergeBaseOutput, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "merge-base", source.SHA, currentTarget)
 	if err != nil {
 		return absorbedConflictProof{}, fmt.Errorf("verify source ancestry: %w", err)
 	}
-	if ancestor {
+	mergeBase := strings.TrimSpace(mergeBaseOutput)
+	if mergeBase == source.SHA {
 		return absorbedConflictProof{method: "ancestor"}, nil
 	}
-	mergeBaseOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "merge-base", source.SHA, currentTarget)
-	if err != nil {
-		return absorbedConflictProof{}, fmt.Errorf("resolve merge base with current target: %w", err)
-	}
-	mergeBase := strings.TrimSpace(mergeBaseOutput)
-	diffOutput, _, err := runCommand(ctx, defaultRunner, 0, 0, worktree, "git", "diff", "--name-only", mergeBase, source.SHA)
+	diffOutput, _, err := runCommand(ctx, run, 0, 0, worktree, "git", "diff", "--name-only", mergeBase, source.SHA)
 	if err != nil {
 		return absorbedConflictProof{}, fmt.Errorf("diff source from its merge base with current target: %w", err)
 	}

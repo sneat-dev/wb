@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdcatalog"
+
 	"github.com/spf13/cobra"
 )
 
@@ -94,7 +96,7 @@ func TestParentHelpShowsOnlySelectorsSupportedByADescendant(t *testing.T) {
 
 func TestEveryRunnableHelpHidesRejectedRootSelectors(t *testing.T) {
 	root := newRootCmd()
-	visitPublicCommands(root, func(command *cobra.Command) {
+	cmdcatalog.VisitPublic(root, func(command *cobra.Command) {
 		if !command.Runnable() {
 			return
 		}

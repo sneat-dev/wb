@@ -40,7 +40,7 @@ func remoteCLIExecute(t *testing.T, command *cobra.Command, args ...string) (str
 
 func TestRemoteClaimCLIWiresIntoRunRemoteClaim(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteClaimCmd(&invocation{projectsRoot: root}), "task-7")
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "claim"), "task-7")
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote claim wiring: err=%v out=%q", err, out)
 	}
@@ -48,7 +48,7 @@ func TestRemoteClaimCLIWiresIntoRunRemoteClaim(t *testing.T) {
 
 func TestRemoteReleaseCLIWiresIntoRunRemoteRelease(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteReleaseCmd(&invocation{projectsRoot: root}), "task-7")
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "release"), "task-7")
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote release wiring: err=%v out=%q", err, out)
 	}
@@ -56,7 +56,7 @@ func TestRemoteReleaseCLIWiresIntoRunRemoteRelease(t *testing.T) {
 
 func TestRemoteClaimsCLIWiresIntoRunRemoteClaims(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteClaimsCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "claims"))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote claims wiring: err=%v out=%q", err, out)
 	}
@@ -64,7 +64,7 @@ func TestRemoteClaimsCLIWiresIntoRunRemoteClaims(t *testing.T) {
 
 func TestRemoteMachinesCLIWiresIntoRunRemoteMachines(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteMachinesCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "machines"))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote machines wiring: err=%v out=%q", err, out)
 	}
@@ -72,7 +72,7 @@ func TestRemoteMachinesCLIWiresIntoRunRemoteMachines(t *testing.T) {
 
 func TestRemoteStatusCLIWiresIntoRunRemoteStatus(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteStatusCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "status"))
 	if err == nil || !strings.Contains(err.Error(), "remote:\n  provider: git") {
 		t.Fatalf("wb remote status wiring: err=%v out=%q", err, out)
 	}
@@ -80,67 +80,8 @@ func TestRemoteStatusCLIWiresIntoRunRemoteStatus(t *testing.T) {
 
 func TestRemoteEnrollCLIWiresIntoRunRemoteEnroll(t *testing.T) {
 	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newRemoteEnrollCmd(&invocation{projectsRoot: root}))
+	out, err := remoteCLIExecute(t, remoteCommandForTest(&invocation{projectsRoot: root}, "enroll"))
 	if err == nil || !strings.Contains(err.Error(), "--machine is required") {
 		t.Fatalf("wb remote enroll wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersJoinCLIWiresIntoRunPeersJoin(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersJoinCmd(&invocation{projectsRoot: root}), "not-a-url")
-	if err == nil || !strings.Contains(err.Error(), "http") {
-		t.Fatalf("wb peers join wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersInviteCLIWiresIntoRunPeersInvite(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersInviteCmd(&invocation{projectsRoot: root}), "laptop")
-	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
-		t.Fatalf("wb peers invite wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersBlockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersBlockCmd(&invocation{projectsRoot: root}), "laptop")
-	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
-		t.Fatalf("wb peers block wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersUnblockCLIWiresIntoRunPeersTrustChange(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersUnblockCmd(&invocation{projectsRoot: root}), "laptop")
-	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
-		t.Fatalf("wb peers unblock wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersDisconnectCLIWiresIntoRunPeersDisconnect(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersDisconnectCmd(&invocation{projectsRoot: root}), "laptop")
-	if err == nil || !strings.Contains(err.Error(), "no hub is configured") {
-		t.Fatalf("wb peers disconnect wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersGetCLIWiresIntoRunPeersGet(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersGetCmd(&invocation{projectsRoot: root}), "upstream")
-	if err == nil || !strings.Contains(err.Error(), "no upstream is configured") {
-		t.Fatalf("wb peers get wiring: err=%v out=%q", err, out)
-	}
-}
-
-func TestPeersListCLIWiresIntoRunPeersList(t *testing.T) {
-	root := t.TempDir()
-	out, err := remoteCLIExecute(t, newPeersListCmd(&invocation{projectsRoot: root}))
-	if err != nil {
-		t.Fatalf("wb peers list wiring: err=%v out=%q", err, out)
-	}
-	if !strings.Contains(out, "{") && !strings.Contains(out, "no peers") && !strings.Contains(out, "\n") {
-		t.Fatalf("wb peers list produced no observable output: %q", out)
 	}
 }

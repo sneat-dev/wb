@@ -52,14 +52,17 @@ func WriteBytesImmutableAtInjected(directory *os.File, name string, content []by
 		if beforeRename != nil {
 			beforeRename(directory, name)
 		}
-		if err := RenameNoReplace(int(directory.Fd()), temporary, int(directory.Fd()), name, inj); err != nil {
-			if existing, readErr := ReadAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
+		return publishImmutableTemporaryAt(directory, temporary, name, content, idempotent, inj)
 	})
+}
+
+// immutablePublicationError accepts a competing publication only when its bytes
+// match an idempotent write; otherwise it preserves the publication failure.
+func immutablePublicationError(directory *os.File, name string, content []byte, idempotent bool, err error) (bool, error) {
+	if existing, readErr := ReadAt(directory, name); idempotent && readErr == nil && bytes.Equal(existing, content) {
+		return false, nil
+	}
+	return false, err
 }
 
 // ReadAt reads one non-symlinked entry below an already-open directory.

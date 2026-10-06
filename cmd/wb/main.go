@@ -361,9 +361,6 @@ func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
 			if commandID == "status" {
 				return fmt.Errorf("--%s is not supported by status with repository-path; omit the path to select the --projects-root fleet", flag)
 			}
-			if commandID == "repo status" {
-				return fmt.Errorf("--%s is not supported by repo status; use wb fleet status for the --projects-root fleet", flag)
-			}
 			return fmt.Errorf("--%s requires --fleet for %s; see docs/cli-flag-matrix.md", flag, commandID)
 		}
 	}
@@ -413,9 +410,8 @@ func persistentCommandID(cmd *cobra.Command) string {
 }
 
 // main is deliberately only the process exit edge: every decision it used to
-// make lives in dispatch, so the hidden protocol entry points and the runtime
-// executable handoff are reachable from an in-process test instead of only
-// from a subprocess that no coverage profile can observe.
+// make lives in dispatch, so the hidden protocol entry points and runtime
+// executable handoff can be tested without invoking os.Exit.
 func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

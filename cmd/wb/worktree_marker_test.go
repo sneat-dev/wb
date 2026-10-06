@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
@@ -115,7 +116,7 @@ func TestWorktreeMarkerFleetCoversClonesAndTheirWorktrees(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("fleet marker exited %d: %s%s", code, stdout, stderr)
 	}
-	var outcomes []markerOutcome
+	var outcomes []checkoutsetup.MarkerOutcome
 	if err := json.Unmarshal([]byte(stdout), &outcomes); err != nil {
 		t.Fatalf("fleet output is not JSON: %v\n%s", err, stdout)
 	}

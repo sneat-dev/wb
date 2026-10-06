@@ -25,6 +25,14 @@ func TestE2ECombinedCoverageMeasuresBothTiersAndPublishesOnlySuccess(t *testing.
 	log := filepath.Join(root, "calls")
 	script := fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
+case "$1" in
+ list)
+  if [ "$#" -ne 4 ] || [ "$2" != -f ] || [ "$3" != '{{.ImportPath}}' ] || [ "$4" != './...' ]; then exit 2; fi
+  printf 'example.test/app\n'
+  exit 0;;
+ test) ;;
+ *) exit 2;;
+esac
 profile=''
 native=false
 for argument in "$@"; do
@@ -104,6 +112,15 @@ printf 'mode: %%s\nexample.test/app/app.go:2.1,2.30 1 1\nexample.test/app/app.go
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.HasPrefix(line, "list ") {
+			if line != "list -f {{.ImportPath}} ./..." {
+				t.Fatalf("package resolution differs: %s", line)
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "test ") {
+			t.Fatalf("unexpected Go operation: %s", line)
+		}
 		if !strings.Contains(line, "-coverpkg=./...") {
 			t.Fatalf("instrumentation differs: %s", line)
 		}

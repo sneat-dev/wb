@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
@@ -282,7 +284,7 @@ func TestResolveReviewProofCheckoutFindsARegisteredWorktreeForTheHeadBranch(t *t
 	createMergeSource(t, fixture, "task-review-checkout", "feature/review-checkout", "seam4.txt", "seam4\n")
 
 	options := PullRequestLandOptions{ProjectsRoot: fixture.githubDir, Repository: fixture.repository.Slug}
-	var view PullRequestView
+	var view githubchecks.PullRequestView
 	view.Head.Ref = "feature/review-checkout"
 	view.Base.Ref = "main"
 
@@ -358,7 +360,7 @@ func TestRewriteBranchForKeptCommitsRefusesWhenTheAggregateCherryPickFails(t *te
 	plan := keepPlan{steps: []keepStep{{aggregate: true, sources: []SourceCommit{{SHA: "aaa111", Subject: "a"}}}}}
 
 	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
-		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, PullRequestView{Title: "feat: x"}, nil, "", "", nil)
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, githubchecks.PullRequestView{Title: "feat: x"}, nil, "", "", nil)
 	if err != nil {
 		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
 	}
@@ -379,7 +381,7 @@ func TestRewriteBranchForKeptCommitsRefusesWhenAKeptCommitCherryPickFails(t *tes
 	plan := keepPlan{steps: []keepStep{{sources: []SourceCommit{{SHA: "bbb222", Subject: "b"}}}}}
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
-		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, PullRequestView{Title: "feat: x"}, nil, "", "", nil)
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, githubchecks.PullRequestView{Title: "feat: x"}, nil, "", "", nil)
 	if err != nil {
 		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
 	}
@@ -399,7 +401,7 @@ func TestRewriteBranchForKeptCommitsRefusesWhenTheKeptCommitCannotBuild(t *testi
 	plan := keepPlan{steps: []keepStep{{sources: []SourceCommit{{SHA: "ccc333", Subject: "c"}}}}}
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,
-		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, PullRequestView{Title: "feat: x"}, nil, "", "", nil)
+		"/canonical", "acme/app", "refs/heads/candidate", "basesha", plan, githubchecks.PullRequestView{Title: "feat: x"}, nil, "", "", nil)
 	if err != nil {
 		t.Fatalf("err = %v, want nil (a refusal, not an error)", err)
 	}
@@ -415,7 +417,7 @@ func TestRewriteBranchForKeptCommitsRefusesWhenThePushIsRejected(t *testing.T) {
 	t.Parallel()
 	wantErr := errors.New("boom: stale lease")
 	git := &keptCommitsStubGit{revParseValue: "deadbeef", pushErr: wantErr}
-	view := PullRequestView{Title: "feat: x", Number: 9}
+	view := githubchecks.PullRequestView{Title: "feat: x", Number: 9}
 	view.Head.SHA = "deadbeef"
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), git, nil,

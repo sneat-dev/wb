@@ -32,13 +32,13 @@ version: 1
 # (internal/quality/ratchet_tolerance_test.go): widening it means editing
 # that test in the same pull request.
 timing_tolerance:
-  - package: internal/orchestrate
-    statements: 2
+  - package: internal/githubchecks
+    statements: 1
     functions:
-      # ciwait.go:458, the context.DeadlineExceeded branch of the wait loop.
       - ciwait.go:waitForCommitChecksWith
-      # worktree_merge.go:4168, the fall-through after a validation-cache miss.
+    reason: timing-dependent wait loop deadline branch not yet deterministic under test
+  - package: internal/orchestrate
+    statements: 1
+    functions:
       - worktree_merge.go:verifyWorktreeMergeTargetChecks
-    reason: >-
-      timing-dependent branches not yet deterministic under test: the wait
-      loop's deadline branch and the validation-cache miss fall-through
+    reason: timing-dependent validation-cache miss fall-through not yet deterministic under test

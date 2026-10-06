@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // enablePullRequestAutoMerge asks GitHub to merge this pull request once its
@@ -48,10 +51,7 @@ func enablePullRequestAutoMerge(ctx context.Context, repository, number, mergeMe
 		"-f", "subject="+subject,
 		"-f", "body="+body)
 	if response.ExitCode != 0 {
-		message := strings.TrimSpace(string(response.Stderr))
-		if message == "" {
-			message = strings.TrimSpace(string(response.Stdout))
-		}
+		message := githubobserver.CommandDiagnostic(response)
 		return fmt.Sprintf("enable auto-merge: %s", message)
 	}
 	return ""
@@ -91,7 +91,7 @@ func autoMergeBypassesAGuard(ctx context.Context, options PullRequestLandOptions
 	if options.AllowUnfenced {
 		return ""
 	}
-	_, freshnessAuthority, reason := targetBranchRequiredChecks(ctx, options.Repository, target, true)
+	_, freshnessAuthority, reason := githubchecks.RequiredChecks(ctx, options.Repository, target, true)
 	if reason != "" {
 		return "target policy unreadable: " + reason
 	}

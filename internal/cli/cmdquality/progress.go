@@ -1,0 +1,83 @@
+package cmdquality
+
+import (
+	"fmt"
+	"io"
+	"sync"
+
+	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
+	"github.com/sneat-dev/wb/internal/quality"
+)
+
+type qualityProgress struct {
+	live      *cliprogress.Live
+	operation string
+	total     int
+
+	mu        sync.Mutex
+	completed int
+}
+
+func newQualityProgress(out io.Writer, enabled bool, operation string, total int) *qualityProgress {
+	return &qualityProgress{live: cliprogress.NewLive(out, enabled), operation: operation, total: total}
+}
+
+func (progress *qualityProgress) start() {
+	if progress == nil || progress.total == 0 {
+		return
+	}
+	progress.live.Start(fmt.Sprintf("%s: 0/%d repositories completed", progress.operation, progress.total))
+}
+
+func (progress *qualityProgress) report(event quality.Progress) {
+	if progress == nil || progress.total == 0 {
+		return
+	}
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if event.State == quality.ProgressRepositoryCompleted {
+		progress.completed++
+		progress.live.Update(fmt.Sprintf(
+			"%s: %d/%d repositories completed; %s: %s",
+			progress.operation, progress.completed, progress.total, event.Repository, event.Status,
+		))
+		return
+	}
+	if event.Total > 0 {
+		state := string(event.State)
+		if event.State == quality.ProgressCompleted {
+			state = string(event.Status)
+		}
+		detail := event.Detail
+		if event.Attempts > 0 {
+			detail = fmt.Sprintf("%s (attempt %d)", detail, event.Attempts)
+		}
+		progress.live.Update(fmt.Sprintf(
+			"%s: %d/%d repositories completed; go test jobs %d/%d; %s: %s",
+			progress.operation, progress.completed, progress.total,
+			event.Completed, event.Total, detail, state,
+		))
+		return
+	}
+	module := event.Module
+	if module == "" {
+		module = "."
+	}
+	state := string(event.State)
+	if event.State == quality.ProgressCompleted {
+		state = string(event.Status)
+	}
+	progress.live.Update(fmt.Sprintf(
+		"%s: %d/%d completed; %s %s — %s: %s",
+		progress.operation, progress.completed, progress.total, event.Repository, module, event.Command, state,
+	))
+}
+
+func (progress *qualityProgress) finish() {
+	if progress == nil || progress.total == 0 {
+		return
+	}
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	progress.live.Finish(fmt.Sprintf("%s: completed %d repositories", progress.operation, progress.completed))
+}

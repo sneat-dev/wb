@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func TestE2EBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
@@ -155,7 +157,7 @@ func TestE2ERewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *testing.
 	if refusal != nil {
 		t.Fatal(refusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -197,7 +199,7 @@ func TestE2ERewriteBranchForKeptCommitsRefusesAStaleLease(t *testing.T) {
 	if refusal != nil {
 		t.Fatal(refusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Base.Ref = "candidate", "main"
 	view.Head.SHA = strings.Repeat("b", 40)
 
@@ -231,7 +233,7 @@ func TestE2ERewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranch(t 
 	if plan.steps[0].aggregate || plan.steps[0].sources[0].SHA != commits[0].SHA {
 		t.Fatalf("plan does not lead with the kept commit: %+v", plan)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -265,7 +267,7 @@ func TestE2ERewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing.T) 
 	if planRefusal != nil {
 		t.Fatal(planRefusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -287,7 +289,7 @@ func TestE2ERewriteBranchForKeptCommitsRefusesAKeptCommitThatDoesNotBuild(t *tes
 	if planRefusal != nil {
 		t.Fatal(planRefusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -319,7 +321,7 @@ func TestE2ELandKeepingCommitsRewritesThePublishedBranch(t *testing.T) {
 	if len(commits) != 2 {
 		t.Fatalf("source commits = %+v", commits)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "wb/keep/candidate", head, "main"
 	options := PullRequestLandOptions{
 		Repository: "acme/app", ProjectsRoot: fixture.githubDir,

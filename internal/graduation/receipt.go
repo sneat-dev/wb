@@ -16,8 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/gitremote"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -49,7 +50,7 @@ type VerificationIndex struct {
 type CIWaitReceipt struct {
 	SchemaVersion int       `json:"schema_version"`
 	ObservedAt    time.Time `json:"observed_at"`
-	orchestrate.PullRequestWaitResult
+	githubchecks.PullRequestWaitResult
 }
 
 // RemoteTargetEvidence can only be emitted by `wb verify receipt
@@ -272,7 +273,7 @@ func localCheckRepository(evidence VerificationIndex) string {
 
 func validateCIWait(evidence CIWaitReceipt, repository string) error {
 	result := evidence.PullRequestWaitResult
-	if evidence.SchemaVersion != SchemaVersion || evidence.ObservedAt.IsZero() || result.Status != orchestrate.PullRequestWaitPassed || result.Repository != repository || result.PullRequest != "" || !gitRevision.MatchString(result.Head) || result.ObservedHead != result.Head || result.ObservedTargetHead != result.Head ||
+	if evidence.SchemaVersion != SchemaVersion || evidence.ObservedAt.IsZero() || result.Status != githubchecks.PullRequestWaitPassed || result.Repository != repository || result.PullRequest != "" || !gitRevision.MatchString(result.Head) || result.ObservedHead != result.Head || result.ObservedTargetHead != result.Head ||
 		!result.CandidateContainsTarget || result.StableObservations < 2 || !nonBlank(result.RequiredChecksAuthority) || !nonBlank(result.Target) || len(result.Checks) == 0 {
 		return fmt.Errorf("must be a schema v1 passed wb ci wait JSON receipt for the exact observed head")
 	}

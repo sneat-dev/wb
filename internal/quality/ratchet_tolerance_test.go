@@ -477,7 +477,8 @@ func TestRepositoryRatchetPolicyIsExactlyTheReviewedTolerance(t *testing.T) {
 		got[pkg] = fmt.Sprintf("%d statement(s) in %s", tolerance.Statements, strings.Join(functions, ", "))
 	}
 	want := map[string]string{
-		"internal/orchestrate": "2 statement(s) in internal/orchestrate/ciwait.go:waitForCommitChecksWith, internal/orchestrate/worktree_merge.go:verifyWorktreeMergeTargetChecks",
+		"internal/githubchecks": "1 statement(s) in internal/githubchecks/ciwait.go:waitForCommitChecksWith",
+		"internal/orchestrate":  "1 statement(s) in internal/orchestrate/worktree_merge.go:verifyWorktreeMergeTargetChecks",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("repository tolerance policy = %#v, want exactly the reviewed %#v", got, want)

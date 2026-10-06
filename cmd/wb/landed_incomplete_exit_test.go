@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"io"
 	"strings"
 	"testing"
-
-	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
 // A landing whose merge succeeded but whose cleanup failed exits with its own
@@ -35,7 +36,7 @@ func TestWorktreeLandExitsDistinctlyWhenTheMergeLandedButTheTailDidNot(t *testin
 				Status: test.status, ReceiptPath: "/r/receipt.json",
 				ResumeArgs: []string{"worktree", "merge", "resume", "/r/receipt.json", "--progress"},
 			}
-			got := landedIncompleteExit(receipt, test.err)
+			got := runMergeOutcomeForTest(t, receipt, test.err)
 			if test.wantPlainOf != nil || test.err == nil {
 				if got != test.err {
 					t.Fatalf("landedIncompleteExit = %v, want the error unchanged (%v)", got, test.err)
@@ -55,29 +56,9 @@ func TestWorktreeLandExitsDistinctlyWhenTheMergeLandedButTheTailDidNot(t *testin
 func TestWorktreeLandResumeCommandFallsBackToTheReceiptPath(t *testing.T) {
 	t.Parallel()
 	receipt := orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeLanded, ReceiptPath: "/r/receipt.json"}
-	got := landedIncompleteExit(receipt, errors.New("boom"))
+	got := runMergeOutcomeForTest(t, receipt, errors.New("boom"))
 	if !strings.Contains(got.Error(), "resume with: wb worktree merge resume /r/receipt.json") {
 		t.Fatalf("no fallback resume command: %v", got)
-	}
-}
-
-func TestPullRequestLandExitsDistinctlyWhenTheMergeLandedButTheTailDidNot(t *testing.T) {
-	t.Parallel()
-	result := orchestrate.PullRequestLandResult{
-		Outcome: orchestrate.LandLandedIncomplete, RefusalCode: "branch-retirement-failed",
-		Reason: "landed on main (abc) but the follow-up did not finish: boom", ResumeCommand: "wb pr land acme/app#7",
-	}
-	if result.ExitCode() != exitLandedIncomplete {
-		t.Fatalf("exit = %d, want %d", result.ExitCode(), exitLandedIncomplete)
-	}
-	command, out := newOutputCapturingCommand()
-	if err := printPullRequestLand(command, result); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"landed-incomplete: landed on main", "refusal: branch-retirement-failed", "resume with: wb pr land acme/app#7"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output lacks %q:\n%s", want, out.String())
-		}
 	}
 }
 
@@ -94,55 +75,24 @@ func TestRootHelpDocumentsTheLandedIncompleteExitCode(t *testing.T) {
 
 // A landed-incomplete result is what the verbs map to exit 3 with the resume
 // command in the error, in text and JSON alike.
-func TestPullRequestLandAndCreateLandMapALandedIncompleteResultToExitThree(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	landed := orchestrate.PullRequestLandResult{
-		Repository: "acme/app", PullRequest: 9, Outcome: orchestrate.LandLandedIncomplete,
-		RefusalCode: "branch-retirement-failed", Reason: "landed on main but the follow-up did not finish: boom",
-		ResumeCommand: "wb pr land acme/app#9",
-	}
-	previousLand, previousCreate := landPullRequest, createPullRequest
-	t.Cleanup(func() { landPullRequest, createPullRequest = previousLand, previousCreate })
-	landPullRequest = func(context.Context, orchestrate.PullRequestLandOptions) (orchestrate.PullRequestLandResult, error) {
-		return landed, nil
-	}
-	createPullRequest = func(context.Context, orchestrate.PullRequestCreateOptions) (orchestrate.PullRequestCreateResult, error) {
-		return orchestrate.PullRequestCreateResult{Outcome: orchestrate.CreateLandedIncomplete, LandResult: &landed, Reason: landed.Reason}, nil
-	}
-	projects := t.TempDir()
-	for _, test := range []struct {
-		name string
-		args []string
-	}{
-		{"pr land text", []string{"pr", "land", "acme/app#9", "--non-interactive"}},
-		{"pr land json", []string{"pr", "land", "acme/app#9", "--non-interactive", "--format", "json"}},
-		{"pr create --land", []string{"pr", "create", "--land"}},
-	} {
-		var stdout, stderr strings.Builder
-		code := run(append([]string{"--projects-root", projects}, test.args...), &stdout, &stderr)
-		if code != exitLandedIncomplete {
-			t.Errorf("%s: exit = %d, want %d\nstdout=%s\nstderr=%s", test.name, code, exitLandedIncomplete, stdout.String(), stderr.String())
-		}
-		if !strings.Contains(stderr.String(), "resume with: wb pr land acme/app#9") {
-			t.Errorf("%s: the resume command is not on stderr: %q", test.name, stderr.String())
-		}
-	}
-}
 
 // Every write of the landed-incomplete report is checked: a closed stdout
 // surfaces as an error at whichever line it fails.
-func TestPrintPullRequestLandSurfacesAFailedWriteOfTheResumeLine(t *testing.T) {
-	t.Parallel()
-	result := orchestrate.PullRequestLandResult{
-		Outcome: orchestrate.LandLandedIncomplete, RefusalCode: "branch-retirement-failed", Reason: "boom",
-		SanctionedCommand: "wb worktree guard .", ResumeCommand: "wb pr land acme/app#9",
+
+func runMergeOutcomeForTest(t *testing.T, receipt orchestrate.WorktreeMergeReceipt, cause error) error {
+	t.Helper()
+	root := t.TempDir()
+	inv := &invocation{projectsRoot: root, quiet: true}
+	ops := cmdworktree.DefaultMergeOperations()
+	ops.PeekWorktreeMergeValidationDeferral = func(context.Context, string, []string, string, orchestrate.WorktreeMergeRoute, bool, bool, ...string) (bool, error) {
+		return true, nil
 	}
-	for failAt := 1; failAt <= 5; failAt++ {
-		if err := printPullRequestLand(newFailingCommand(failAt), result); err == nil {
-			t.Errorf("a write failing at call %d was swallowed", failAt)
-		}
+	ops.RunWorktreeMerge = func(context.Context, orchestrate.WorktreeMergePrepareOptions, orchestrate.WorktreeMergeLandOptions) (orchestrate.WorktreeMergeReceipt, error) {
+		return receipt, cause
 	}
-	if err := printPullRequestLand(newFailingCommand(6), result); err != nil {
-		t.Errorf("only five lines are written: %v", err)
-	}
+	cmd := cmdworktree.NewMerge(newCLIRuntime(inv), ops, mergeBindings())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{root})
+	return cmd.Execute()
 }

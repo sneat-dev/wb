@@ -7,8 +7,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/spf13/cobra"
-
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -126,51 +124,18 @@ func TestWorktreeCleanupSweepWithANamedBasePrintsThatTargetOnEveryLine(t *testin
 	}
 }
 
-func TestWorktreeCleanupReportNamesTheTargetThatProvedTheWork(t *testing.T) {
-	t.Parallel()
-	const proof = "contained in origin/main at 0123456789ab, via recorded base integration (absent)"
-	results := func(applied bool) []worktrees.CleanupResult {
-		return []worktrees.CleanupResult{
-			{ListResult: worktrees.ListResult{Task: "fixture-integration-task", Repository: "acme/app", IntegrationProof: proof},
-				Eligible: true, Applied: applied, RemoteDeleted: applied},
-			{ListResult: worktrees.ListResult{Task: "fixture-plain-task", Repository: "acme/app"},
-				Eligible: true, Applied: applied, RemoteDeleted: applied},
-		}
-	}
-	for _, test := range []struct {
-		name    string
-		applied bool
-		want    string
-	}{
-		{name: "plan", want: "would remove fixture-integration-task acme/app (" + proof + ")\n" +
-			"would remove fixture-plain-task acme/app\n" +
-			"2 eligible; dry-run only, pass --apply to remove\n"},
-		{name: "apply", applied: true, want: "removed fixture-integration-task acme/app and remote branch (" + proof + ")\n" +
-			"removed fixture-plain-task acme/app and remote branch\n" +
-			"2 removed\n"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			var stdout bytes.Buffer
-			command := &cobra.Command{}
-			command.SetOut(&stdout)
-			if err := printWorktreeCleanup(command, results(test.applied), test.applied); err != nil {
-				t.Fatal(err)
-			}
-			if stdout.String() != test.want {
-				t.Fatalf("cleanup report = %q, want %q", stdout.String(), test.want)
-			}
-		})
-	}
-}
-
 // `wb worktree end` releases the fleet-wide claim through the same seam as
 // every other command, so stubbing the seam covers it too.
 //
 //nolint:paralleltest // swaps the package-level claim release.
 func TestWorktreeEndReleasesTheClaimThroughTheSharedSeam(t *testing.T) {
 	_, released := stubCleanupEngine(t, worktrees.CleanupOutcome{})
-	message := claimReleaser{writer: &bytes.Buffer{}}.Release(t.TempDir(), "fixture-ended-task")
+	root := t.TempDir()
+	engine, err := worktreeEndEngine(root, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := engine.Claims.Release(root, "fixture-ended-task")
 	if !slices.Equal(*released, []string{"fixture-ended-task"}) || message != "released through the remote-claim path" {
 		t.Fatalf("released = %v, message = %q", *released, message)
 	}

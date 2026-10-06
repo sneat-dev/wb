@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/prmeta"
 	"github.com/sneat-dev/wb/internal/progress"
@@ -259,14 +261,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		if err != nil {
 			return failResult(result, err)
 		}
-		_, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
+		operationWorktree, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
 		if err != nil {
 			return failResult(result, err)
 		}
-		worktree, err = placement.Path(options.Operation, repository.Slug)
-		if err != nil {
-			return failResult(result, err)
-		}
+		worktree = operationWorktree
 		result.WorktreeDir = worktree
 		result.Branch = options.Branch
 		phase("prepare_worktree")
@@ -274,7 +273,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		if err != nil {
 			return failResult(result, err)
 		}
-		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, baseSHA, created != nil && created.BranchCreated, options); err != nil {
 			created.Close()
 			return failResult(result, err)
 		}
@@ -511,243 +510,6 @@ func verifyRemoteRef(ctx context.Context, canonical string, options Options, ref
 	return err
 }
 
-// resolveOriginDefaultBranch determines the repository's actual default
-// branch on origin. It prefers the locally cached origin/HEAD symref, which
-// `git clone` sets automatically; a long-lived canonical clone assembled by
-// `git remote add` + `git fetch` (common across an older fleet) never gets
-// that symref, and a clone's cached symref can also go stale after the
-// remote's default branch is renamed on GitHub — so a missing or unusable
-// symref is refreshed from origin (`git remote set-head origin --auto`,
-// falling back to `git ls-remote --symref`) before giving up.
-func resolveOriginDefaultBranch(ctx context.Context, canonical string, options Options) (string, error) {
-	if ref, err := readOriginHeadSymref(ctx, canonical, options); err == nil && ref != "" {
-		return ref, nil
-	}
-	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "remote", "set-head", "origin", "--auto"); err == nil {
-		if ref, err := readOriginHeadSymref(ctx, canonical, options); err == nil && ref != "" {
-			return ref, nil
-		}
-	}
-	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "ls-remote", "--symref", "origin", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	ref, err := parseLsRemoteSymref(output)
-	if err != nil {
-		return "", err
-	}
-	return ref, nil
-}
-
-func readOriginHeadSymref(ctx context.Context, canonical string, options Options) (string, error) {
-	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
-	if err != nil {
-		return "", err
-	}
-	ref := strings.TrimSpace(output)
-	const prefix = "refs/remotes/origin/"
-	if !strings.HasPrefix(ref, prefix) {
-		return "", fmt.Errorf("unexpected origin/HEAD symref %q", ref)
-	}
-	return strings.TrimPrefix(ref, prefix), nil
-}
-
-// parseLsRemoteSymref extracts the branch name from `git ls-remote --symref
-// origin HEAD` output, which looks like:
-//
-//	ref: refs/heads/master	HEAD
-//	<sha>	HEAD
-func parseLsRemoteSymref(output string) (string, error) {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		rest, ok := strings.CutPrefix(line, "ref: ")
-		if !ok {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			continue
-		}
-		const prefix = "refs/heads/"
-		if ref, ok := strings.CutPrefix(fields[0], prefix); ok {
-			return ref, nil
-		}
-	}
-	return "", fmt.Errorf("origin HEAD symref not found in ls-remote output")
-}
-
-func operationWorktreePath(ctx context.Context, canonical, repository string, options Options, resolvedBase ResolvedBase) (string, worktrees.WorktreePlacement, string, bool, error) {
-	if options.Resume {
-		registered, err := registeredWorktreeForBranch(ctx, canonical, options.Branch, options)
-		if err != nil {
-			return "", worktrees.WorktreePlacement{}, "", false, err
-		}
-		if registered != "" {
-			return registered, worktrees.WorktreePlacement{}, "", true, nil
-		}
-	}
-	baseSHA, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+resolvedBase.Ref+"^{commit}")
-	if err != nil {
-		return "", worktrees.WorktreePlacement{}, "", false, err
-	}
-	baseSHA = strings.TrimSpace(baseSHA)
-	placement, err := worktrees.ResolveWorktreePlacement(ctx, options.GitHubDir, canonical, baseSHA)
-	if err != nil {
-		return "", worktrees.WorktreePlacement{}, "", false, err
-	}
-	worktree, err := placement.Path(options.Operation, repository)
-	if err != nil {
-		return "", worktrees.WorktreePlacement{}, "", false, err
-	}
-	return worktree, placement, baseSHA, false, nil
-}
-
-func registeredWorktreeForBranch(ctx context.Context, canonical, branch string, options Options) (string, error) {
-	output, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "worktree", "list", "--porcelain")
-	if err != nil {
-		return "", err
-	}
-	var path string
-	for _, line := range strings.Split(output, "\n") {
-		if candidate, ok := strings.CutPrefix(line, "worktree "); ok {
-			path = candidate
-			continue
-		}
-		if line == "branch refs/heads/"+branch {
-			physicalPath, resolveErr := filepath.EvalSymlinks(path)
-			if resolveErr == nil && filepath.Clean(physicalPath) == filepath.Clean(canonical) {
-				return "", fmt.Errorf("operation branch %q is checked out in canonical repository %s", branch, canonical)
-			}
-			return filepath.Clean(path), nil
-		}
-	}
-	return "", nil
-}
-
-func prepareWorktree(ctx context.Context, canonical, repository, worktree string, placement worktrees.WorktreePlacement, baseSHA string, registeredResume bool, branch, base string, options Options) (*worktrees.PlacementWorktree, error) {
-	if _, err := os.Stat(worktree); err == nil {
-		if !options.Resume {
-			return nil, fmt.Errorf("operation worktree already exists: %s (use --resume or choose a different operation)", worktree)
-		}
-		current, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "branch", "--show-current")
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(current) != branch {
-			return nil, fmt.Errorf("cannot resume worktree branch %q; want %q", strings.TrimSpace(current), branch)
-		}
-		return nil, nil
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	if registeredResume {
-		return nil, fmt.Errorf("registered resume worktree disappeared: %s", worktree)
-	}
-	if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		if !options.Resume {
-			return nil, fmt.Errorf("operation branch already exists: %s (use --resume)", branch)
-		}
-	}
-	return worktrees.CreateWorktreeAtPlacement(ctx, options.GitHubDir, canonical, placement, options.Operation, repository, branch, strings.TrimPrefix(base, "origin/"), baseSHA)
-}
-
-// recordWorktreeManifest gives every worktree this engine creates the WB
-// manifest and originating-instruction record wb's own commit-admission
-// hook requires (see internal/worktrees.CheckAdmission). Before this, a
-// `wb deps bump`/`wb deps set` wave worktree had neither: wb created the
-// worktree itself, applied a real change, and then its own pre-commit hook
-// rejected the commit with "this worktree has no WB manifest, so nothing
-// records what it is or who asked for it" — even though wb, not an
-// unattended agent working around it, created the worktree. It is
-// idempotent, so a --resume'd worktree that already carries a manifest and
-// prompt from an earlier run is left untouched (a manifest is immutable by
-// design; see worktrees.WriteManifest).
-func recordWorktreeManifest(ctx context.Context, home, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, options Options) error {
-	baseSHA, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
-	if err != nil {
-		return err
-	}
-	owner, name, err := splitRepository(repository.Slug)
-	if err != nil {
-		return err
-	}
-	effortID := worktreeEffortID(options.Operation, owner, name)
-	claimResult := worktrees.CreateResult{
-		Repository: repository.Slug, WorktreeDir: worktree, Branch: options.Branch,
-		Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
-	}
-	claimID := worktrees.WorkLogClaimID(effortID, claimResult)
-	createdAt := time.Now().UTC()
-	manifest := worktrees.Manifest{
-		Version: 1, EffortID: effortID, ParentEffort: worktrees.ParentEffort(effortID),
-		EffortKind: worktrees.EffortKindFor(effortID), Repository: repository.Slug, Worktree: worktree,
-		Branch: options.Branch, Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
-		CreatedAt: createdAt, Initiator: options.Initiator, AgentRuntime: options.AgentRuntime,
-		Model: options.Model, CLI: options.CLI, Provider: options.Provider,
-		DependencyCampaign: options.DependencyCampaign,
-		RunID:              options.Operation, ClaimID: claimID, Provenance: worktrees.ProvenanceCreated,
-	}
-	if err := worktrees.EnsureManifest(worktree, manifest); err != nil {
-		return fmt.Errorf("record worktree manifest: %w", err)
-	}
-	header := worktrees.PromptHeader{
-		At: createdAt, Source: worktrees.PromptSourceAgent, Runtime: options.AgentRuntime,
-		Model: options.Model, CLI: options.CLI, Provider: options.Provider, Slug: "operation",
-	}
-	if err := worktrees.EnsurePrompt(worktree, header, []byte(options.Prompt)); err != nil {
-		return fmt.Errorf("record worktree originating instruction: %w", err)
-	}
-	if _, err := worktrees.EnsureWorkLogClaim(home, worktreeEffortID(options.Operation, owner, name), claimResult, worktrees.WorkLogOptions{
-		EffortID: effortID, RunID: options.Operation, Initiator: options.Initiator,
-		AgentRuntime: options.AgentRuntime, Model: options.Model,
-		CLI: options.CLI, Provider: options.Provider,
-	}); err != nil {
-		return fmt.Errorf("record worktree Work Log claim: %w", err)
-	}
-	return nil
-}
-
-// worktreeEffortID derives a valid worktrees.ValidEffortPath from an
-// operation identity and a repository's owner/name, e.g.
-// "deps-bump-go-c787f43a90d5-wave-01.sneat-co-ext-competios". The operation
-// is the parent (feature-like) effort; each repository's worktree is a task
-// effort beneath it.
-func worktreeEffortID(operation, owner, name string) string {
-	segment := worktreeEffortSegment(owner + "-" + name)
-	if segment == "" {
-		segment = "repository"
-	}
-	return operation + "." + segment
-}
-
-// worktreeEffortSegment sanitizes a value into a single
-// worktrees.ValidEffortPath segment: alphanumeric, '.', '_', and '-' only,
-// starting with an alphanumeric character.
-func worktreeEffortSegment(value string) string {
-	var output strings.Builder
-	for _, character := range value {
-		switch {
-		case character >= 'a' && character <= 'z', character >= 'A' && character <= 'Z', character >= '0' && character <= '9',
-			character == '.', character == '_', character == '-':
-			output.WriteRune(character)
-		default:
-			output.WriteRune('-')
-		}
-	}
-	segment := strings.Trim(output.String(), ".-_")
-	if segment == "" {
-		return ""
-	}
-	if !isASCIIAlphanumeric(segment[0]) {
-		segment = "r" + segment
-	}
-	return segment
-}
-
-func isASCIIAlphanumeric(character byte) bool {
-	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
-}
-
 func changedFiles(ctx context.Context, worktree string, options Options) ([]string, error) {
 	status, err := worktreeStatus(ctx, worktree, options)
 	if err != nil {
@@ -826,30 +588,16 @@ func openPullRequest(ctx context.Context, worktree, branch, base, title, body st
 }
 
 func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]) error {
-	slice := 8 * time.Minute
-	if options.Timeout > 0 && options.Timeout < slice {
-		slice = options.Timeout
-	}
-	interval := githubChecksPollInterval(options)
-	if interval >= slice {
-		return fmt.Errorf("CI poll interval %s must be shorter than bounded merge slice %s", interval, slice)
-	}
-	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
-		Repository:        result.Repository,
-		PullRequest:       result.PR,
-		Target:            result.Ref,
-		Head:              result.Commit,
-		Slice:             slice,
-		CheckPollInterval: interval,
-		OperationProgress: options.Progress,
-	})
+	receipt, err := waitEnginePRCheckReceipt(ctx, options, githubchecks.PullRequestWaitOptions{
+		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
+	}, "merge")
 	if err != nil {
 		return err
 	}
 	result.Checks = receipt.Checks
 	switch receipt.Status {
-	case PullRequestWaitPassed:
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPending:
 		return fmt.Errorf("GitHub CI receipt is pending for %s at %s; resume the orchestrated merge or run wb ci wait with the same exact identity: %s", result.PR, result.Commit, receipt.Reason)
 	default:
 		return fmt.Errorf("GitHub CI receipt failed for %s at %s: %s", result.PR, result.Commit, receipt.Reason)
@@ -871,30 +619,21 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 }
 
 func waitForPRChecks[T any](ctx context.Context, options Options, result *Result[T]) error {
-	slice := 8 * time.Minute
-	if options.Timeout > 0 && options.Timeout < slice {
-		slice = options.Timeout
-	}
-	interval := githubChecksPollInterval(options)
-	if interval >= slice {
-		return fmt.Errorf("CI poll interval %s must be shorter than bounded PR-check slice %s", interval, slice)
-	}
-	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+	receipt, err := waitEnginePRCheckReceipt(ctx, options, githubchecks.PullRequestWaitOptions{
 		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
-		AllowUnfenced: true, Slice: slice, CheckPollInterval: interval,
-		Progress:          reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
-		OperationProgress: options.Progress,
-	})
+		AllowUnfenced: true,
+		Progress:      reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+	}, "PR-check")
 	if err != nil {
 		return err
 	}
 	result.Checks = receipt.Checks
 	switch receipt.Status {
-	case PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPassed:
 		result.Status = "validated"
 		result.Reason = "exact PR-head GitHub checks passed; pull request is awaiting merge"
 		return nil
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPending:
 		result.Status = "awaiting_merge"
 		result.Reason = "exact PR-head GitHub checks remain pending; pull request is awaiting merge: " + receipt.Reason
 		return nil
@@ -903,11 +642,28 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	}
 }
 
+// waitEnginePRCheckReceipt applies the engine's bounded observation window.
+// Callers retain the exact identity, fencing, progress, and receipt interpretation.
+func waitEnginePRCheckReceipt(ctx context.Context, options Options, request githubchecks.PullRequestWaitOptions, sliceLabel string) (githubchecks.PullRequestWaitResult, error) {
+	slice := 8 * time.Minute
+	if options.Timeout > 0 && options.Timeout < slice {
+		slice = options.Timeout
+	}
+	interval := githubChecksPollInterval(options)
+	if interval >= slice {
+		return githubchecks.PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than bounded %s slice %s", interval, sliceLabel, slice)
+	}
+	request.Slice = slice
+	request.CheckPollInterval = interval
+	request.OperationProgress = options.Progress
+	return githubchecks.WaitForCommitChecks(ctx, request)
+}
+
 func githubChecksPollInterval(options Options) time.Duration {
 	if options.CheckPollInterval > 0 {
 		return options.CheckPollInterval
 	}
-	return DefaultCheckPollInterval
+	return githubchecks.DefaultCheckPollInterval
 }
 
 func failResult[T any](result *Result[T], err error) error {
@@ -984,6 +740,12 @@ type OperationLock struct {
 // unheld remnant is reclaimable only by an explicit resume and only when its
 // descriptor proves exact ownership of this operation.
 func AcquireOperationLock(githubDir, operation string, resume bool) (OperationLock, error) {
+	return acquireOperationLockWithMetadataInitializer(githubDir, operation, resume, initializeOperationLockMetadata)
+}
+
+// initialize owns metadata IO only; it must not release or preserve the candidate.
+// Acquisition, interrupted-owner validation, and cleanup retain native lock custody.
+func acquireOperationLockWithMetadataInitializer(githubDir, operation string, resume bool, initialize func(OperationLock, string) error) (OperationLock, error) {
 	home, err := wbhome.EnsureRoot(githubDir)
 	if err != nil {
 		return OperationLock{}, err
@@ -1012,28 +774,40 @@ func AcquireOperationLock(githubDir, operation string, resume bool) (OperationLo
 		}
 		return OperationLock{directory: directory, lock: lock}, nil
 	}
-	file := lock.File()
-	if file == nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, fmt.Errorf("initialize operation %q lock: descriptor is unavailable", operation)
+	candidate := OperationLock{directory: directory, lock: lock}
+	if err := initialize(candidate, operation); err != nil {
+		_ = candidate.Release()
+		return OperationLock{}, err
 	}
+	return candidate, nil
+}
+
+func initializeOperationLockMetadata(candidate OperationLock, operation string) error {
+	file := candidate.lock.File()
+	if file == nil {
+		return fmt.Errorf("initialize operation %q lock: descriptor is unavailable", operation)
+	}
+	return writeOperationLockMetadata(file, operation)
+}
+
+// operationLockMetadataFile describes only initialization IO, not lock ownership.
+type operationLockMetadataFile interface {
+	Truncate(int64) error
+	Seek(int64, int) (int64, error)
+	Write([]byte) (int, error)
+}
+
+func writeOperationLockMetadata(file operationLockMetadataFile, operation string) error {
 	if err := file.Truncate(0); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, fmt.Errorf("initialize operation %q lock: %w", operation, err)
+		return fmt.Errorf("initialize operation %q lock: %w", operation, err)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, err
+		return err
 	}
 	if _, err := fmt.Fprintf(file, "operation=%s\npid=%d\n", operation, os.Getpid()); err != nil {
-		_ = lock.Release()
-		_ = directory.Close()
-		return OperationLock{}, err
+		return err
 	}
-	return OperationLock{directory: directory, lock: lock}, nil
+	return nil
 }
 
 func operationLockAcquisitionError(operation string, err error) error {

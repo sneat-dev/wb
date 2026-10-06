@@ -1,0 +1,347 @@
+package githubchecks
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
+	"github.com/sneat-dev/wb/internal/testenv"
+)
+
+const rereadTestHead = "0123456789012345678901234567890123456789"
+
+// installRereadTestGH puts a fake gh on PATH and pins the observer state dir
+// so conditional-request caching stays hermetic per test.
+func installRereadTestGH(t *testing.T, script string) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(testfixture.WithEmptyActionsRuns(script)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	state := filepath.Join(t.TempDir(), "observations")
+	t.Setenv("WB_CI_REREAD_STATE", state)
+	return state
+}
+
+func rereadTestObservations(t *testing.T, state string) int {
+	t.Helper()
+	contents, err := os.ReadFile(state)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+	if err != nil {
+		t.Fatalf("parse observation counter %q: %v", contents, err)
+	}
+	return count
+}
+
+// checksBearingRereadScript serves a direct target with one terminal check
+// run and an enumerated empty required policy. linkExpression lets the churn
+// test vary the check-run link (and therefore the terminal fingerprint) per
+// observation.
+func checksBearingRereadScript(linkExpression string) string {
+	return `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"` + rereadTestHead + `"}}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  count=0; if [ -f "$WB_CI_REREAD_STATE" ]; then count=$(cat "$WB_CI_REREAD_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CI_REREAD_STATE"
+  link=` + linkExpression + `
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","html_url":"'"$link"'","app":{"id":42}}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+}
+
+func TestWaitForCommitChecksShortensOnlyTheChecksBearingConfirmingReread(t *testing.T) {
+	state := installRereadTestGH(t, checksBearingRereadScript(`https://ci.example/run/1`))
+	var waits []time.Duration
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: rereadTestHead,
+		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
+		StableRereadDelay: 100 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				waits = append(waits, progress.NextPoll)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || result.StableObservations != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if observations := rereadTestObservations(t, state); observations != 2 {
+		t.Fatalf("observed the exact head %d times, want one terminal observation plus one confirming reread", observations)
+	}
+	// Assert the actual timer duration, not total runtime: fake gh subprocesses
+	// can be slow under coverage or a busy machine without changing the cadence.
+	if !slices.Equal(waits, []time.Duration{100 * time.Millisecond}) {
+		t.Fatalf("confirming reread waits = %v, want only the shortened delay", waits)
+	}
+}
+
+func TestWaitForCommitChecksAllowsPlanLimitedPolicyOnlyWhenExplicitlyUnfenced(t *testing.T) {
+	installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		StableRereadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || !result.UnfencedValidation || result.PolicyAuthorityUnavailable == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.PolicyAuthorityUnavailable, "HTTP 403") || !strings.Contains(result.RequiredChecksAuthority, "unavailable") {
+		t.Fatalf("policy receipt = authority %q unavailable %q", result.RequiredChecksAuthority, result.PolicyAuthorityUnavailable)
+	}
+	if !result.CandidateContainsTarget || result.ObservedHead != rereadTestHead || result.ObservedTargetHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || result.StableObservations != 2 {
+		t.Fatalf("exact validation receipt weakened: %+v", result)
+	}
+}
+
+func TestWaitForTargetChecksAllowsPlanLimitedPolicyOnlyWhenExplicitlyUnfenced(t *testing.T) {
+	installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		StableRereadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || !result.UnfencedValidation || result.PolicyAuthorityUnavailable == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if strings.Contains(result.RequiredChecksAuthority, "pr-base-verified") {
+		t.Fatalf("target-only authority falsely claims PR-base verification: %q", result.RequiredChecksAuthority)
+	}
+	if !result.TargetContainsHead || result.ObservedHead != rereadTestHead || result.StableObservations != 2 {
+		t.Fatalf("exact target receipt weakened: %+v", result)
+	}
+}
+
+func TestWaitForCommitChecksKeepsFullCadenceBeforeNoApplicableChecksReread(t *testing.T) {
+	state := installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"`+rereadTestHead+`"}}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/docs/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/docs/rules/branches/main?per_page=100'; then
+  echo '[]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  count=0; if [ -f "$WB_CI_REREAD_STATE" ]; then count=$(cat "$WB_CI_REREAD_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CI_REREAD_STATE"
+  echo '{"total_count":0,"check_runs":[]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	interval := 700 * time.Millisecond
+	var waits []time.Duration
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/docs", Target: "main", Head: rereadTestHead,
+		Slice: 30 * time.Second, CheckPollInterval: interval,
+		// A misapplied shortened delay would confirm in single-digit
+		// milliseconds; the empty no-applicable-checks receipt must instead
+		// wait the full poll interval, because that gap is its only
+		// time-based guard against CI that simply has not registered yet.
+		StableRereadDelay: 5 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				waits = append(waits, progress.NextPoll)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || result.StableObservations != 2 || len(result.Checks) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if observations := rereadTestObservations(t, state); observations != 2 {
+		t.Fatalf("observed the exact head %d times, want exactly two full-cadence observations", observations)
+	}
+	if !slices.Equal(waits, []time.Duration{interval}) {
+		t.Fatalf("no-applicable-checks reread waits = %v, want only the full poll interval %s", waits, interval)
+	}
+}
+
+// A repository that has no CI at all can only ever publish an empty check set.
+// In direct mode that was already an authoritative receipt; for a candidate it
+// used to stay pending forever, because an empty set cannot be told apart from
+// CI that has not registered yet. An explicit --allow-unfenced gives up the
+// freshness fence that justified that caution, so the candidate must publish
+// the same empty receipt instead of polling until its slice deadline.
+func TestWaitForCommitChecksPublishesEmptyReceiptForUnfencedCandidate(t *testing.T) {
+	state := installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/noci"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  count=0; if [ -f "$WB_CI_REREAD_STATE" ]; then count=$(cat "$WB_CI_REREAD_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CI_REREAD_STATE"
+  echo '{"total_count":0,"check_runs":[]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/noci/branches/main' ]; then echo '{"protected":false,"protection":{}}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/noci/rules/branches/main?per_page=100'; then echo '[]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	interval := 500 * time.Millisecond
+	var waits []time.Duration
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/noci", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: interval,
+		// A misapplied shortened delay would confirm in single-digit
+		// milliseconds; the empty receipt must instead wait the full poll
+		// interval, because that gap is its only time-based guard against CI
+		// that simply has not registered yet.
+		StableRereadDelay: 5 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				waits = append(waits, progress.NextPoll)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || !result.UnfencedValidation || result.StableObservations != 2 || len(result.Checks) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.Reason, "enumerated as empty") {
+		t.Fatalf("empty candidate receipt = %q, want the no-applicable-check receipt", result.Reason)
+	}
+	if observations := rereadTestObservations(t, state); observations != 2 {
+		t.Fatalf("observed the exact head %d times, want one terminal observation plus one confirming reread", observations)
+	}
+	if !slices.Equal(waits, []time.Duration{interval}) {
+		t.Fatalf("no-applicable-checks candidate reread waits = %v, want only the full poll interval %s", waits, interval)
+	}
+}
+
+// The originally reported shape: a private repository that exposes neither CI
+// nor branch-policy authority (HTTP 403), landed with --allow-unfenced. Before
+// the fix this polled until the slice deadline and reported checks_pending on
+// every attempt.
+func TestWaitForCommitChecksPublishesEmptyReceiptWhenPolicyAuthorityIsUnavailable(t *testing.T) {
+	installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/noci"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":0,"check_runs":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/noci/branches/main' ]; then echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/noci", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		StableRereadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || !result.UnfencedValidation || result.StableObservations != 2 || len(result.Checks) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.PolicyAuthorityUnavailable == "" {
+		t.Fatalf("plan-limited policy authority was not recorded: %+v", result)
+	}
+}
+
+func TestWaitForCommitChecksFallsBackToPollCadenceOnFingerprintChurn(t *testing.T) {
+	state := installRereadTestGH(t, checksBearingRereadScript(`"https://ci.example/run/$count"`))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interval := 200 * time.Millisecond
+	shortReread := 5 * time.Millisecond
+	var waits []time.Duration
+	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+		Repository: "acme/app", Target: "main", Head: rereadTestHead,
+		// The slice is a watchdog only. The callback owns completion after it
+		// observes the cadence this regression is about.
+		Slice: 30 * time.Second, CheckPollInterval: interval,
+		StableRereadDelay: shortReread,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll == 0 {
+				return
+			}
+			waits = append(waits, progress.NextPoll)
+			if len(waits) == 3 {
+				cancel()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitFailed || !strings.Contains(result.Reason, context.Canceled.Error()) {
+		t.Fatalf("callback-cancelled churn wait = %+v", result)
+	}
+	// One shortened reread is allowed after the first terminal observation.
+	// Once its fingerprint churns, every later wait must be the full cadence.
+	// This observes the scheduler's actual requested waits rather than fitting
+	// subprocess observations into a wall-clock slice under machine load.
+	if !slices.Equal(waits, []time.Duration{shortReread, interval, interval}) {
+		t.Fatalf("churn reread waits = %v, want short then full cadence", waits)
+	}
+	if observations := rereadTestObservations(t, state); observations != 3 {
+		t.Fatalf("observed the exact head %d times, want the three scheduled observations", observations)
+	}
+}

@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 	"io"
 
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -12,77 +12,12 @@ import (
 )
 
 func newWorktreeRetireCmd(inv *invocation) *cobra.Command {
-	var apply, jsonShortcut bool
-	var format, message, preserve string
-	command := &cobra.Command{
-		Use:   "retire <task>",
-		Short: "Preserve a task in retired Git refs and a private Work Log repository",
-		Long: `Plan or apply retirement of one WB-managed worktree. The default is a dry run.
-Apply commits tracked and nonignored untracked source changes on the original
-branch with normal Git hooks, then publishes the exact commit as a retired/*
-branch by default. Pass --preserve=tag to publish refs/tags/retired/* instead.
-It pushes the actual Work Log and checkout
-metadata as plain files to the configured private organization retirement
-repository. Only after both remote receipts verify does it atomically delete
-the old remote ref with an exact lease and create a deletion-proof tag at the
-source commit, then remove the local checkout and branch.
-An open pull request, changed remote ref, competing claim, or unavailable or
-public retirement repository refuses retirement. Retry the same command to
-resume an interrupted apply. A coordinated task with multiple repositories
-must be retired one repository at a time with --filter. The configured remote
-task store must be readable; WB checks claims and machine snapshots before
-planning, again under the task lock, and before deleting the original ref.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			if jsonShortcut {
-				format = "json"
-			}
-			if err := requireOutputFormat(format, "text", "json"); err != nil {
-				return err
-			}
-			_, release, err := requireMutationAdmission(command, apply)
-			if err != nil {
-				return err
-			}
-			defer release()
-			result, err := worktrees.Retire(command.Context(), worktrees.RetireOptions{
-				ProjectsRoot: inv.projectsRoot, Task: args[0], Repository: inv.filterFlag,
-				Message: message, Preserve: preserve, Apply: apply,
-				RemoteOwnership: func(ctx context.Context, task string) error {
-					return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), inv.projectsRoot, task)
-				},
-			})
-			if err != nil {
-				return err
-			}
-			var releaseLeaked bool
-			if apply && result.Phase == "complete" {
-				releaseResult := retireReleaseClaim(command.Context(), inv.projectsRoot, args[0], remoteClaimWriter(command), worktrees.ListWithDiagnostics,
-					func(root, task string, out io.Writer) autoReleaseResult {
-						return releaseRemoteClaim(root, task, out)
-					})
-				releaseLeaked = releaseResult.Leaked()
-			}
-			if format == "json" {
-				if err := json.NewEncoder(command.OutOrStdout()).Encode(result); err != nil {
-					return err
-				}
-			} else {
-				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s -> %s (archive %s, phase %s)\n", result.Task, result.Repository, result.Branch, result.RetiredRef, result.ArchiveRef, result.Phase); err != nil {
-					return err
-				}
-			}
-			if releaseLeaked {
-				return fmt.Errorf("task %q retirement completed but remote claim release failed", args[0])
-			}
-			return nil
-		},
-	}
-	command.Flags().BoolVar(&apply, "apply", false, "apply the verified retirement plan")
-	command.Flags().StringVarP(&message, "message", "m", "", "source commit message when changes remain")
-	command.Flags().StringVar(&preserve, "preserve", "branch", "source preservation ref: branch or tag")
-	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	command.Flags().BoolVar(&jsonShortcut, "json", false, "shorthand for --format=json")
+	command := cmdworktree.NewRetire(newCLIRuntime(inv), cmdworktree.RetireDependencies{Run: worktrees.Retire, Admit: requireMutationAdmission, CheckOwnership: func(ctx context.Context, root, task string) error {
+		return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), root, task)
+	}, ReleaseWhenComplete: func(command *cobra.Command, root, task string) bool {
+		result := retireReleaseClaim(command.Context(), root, task, remoteClaimWriter(command), worktrees.ListWithDiagnostics, func(root, task string, out io.Writer) autoReleaseResult { return releaseRemoteClaim(root, task, out) })
+		return result.Leaked()
+	}})
 	addMutationAdmissionFlags(command)
 	return command
 }

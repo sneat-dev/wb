@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/daemonhost"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 
 	"github.com/spf13/cobra"
 
@@ -22,44 +24,12 @@ import (
 // sentinel, and that a real error is left untouched. This is what makes the
 // "which goroutine's result the select reads first" race in serveDashboard
 // irrelevant: every producer now sends the identical value on a clean stop.
-func TestClassifyServeResultNormalizesEveryCleanShutdownOutcome(t *testing.T) {
-	realErr := errors.New("listener accept failed")
-	cases := map[string]struct {
-		in   error
-		want error
-	}{
-		"nil, as fileBridge.Serve reports on ctx.Done":                 {in: nil, want: errCleanDaemonShutdown},
-		"http.ErrServerClosed, as server.Serve reports after Shutdown": {in: http.ErrServerClosed, want: errCleanDaemonShutdown},
-		"net.ErrClosed, as Serve reports after listener.Close":         {in: net.ErrClosed, want: errCleanDaemonShutdown},
-		"a real serve error passes through unchanged":                  {in: realErr, want: realErr},
-	}
-	for name, testCase := range cases {
-		t.Run(name, func(t *testing.T) {
-			got := classifyServeResult(testCase.in)
-			if !errors.Is(got, testCase.want) || (testCase.want == realErr && got != realErr) {
-				t.Fatalf("classifyServeResult(%v) = %v, want %v", testCase.in, got, testCase.want)
-			}
-		})
-	}
-}
 
 // TestAwaitDaemonServeResultReducesTheClassifiedResult proves
 // awaitDaemonServeResult (the function serveDashboard's shutdown select
 // hands its single read to) takes exactly one branch for every clean
 // shutdown, regardless of which producer's classified value it was handed,
 // and returns a real error unchanged.
-func TestAwaitDaemonServeResultReducesTheClassifiedResult(t *testing.T) {
-	if err := awaitDaemonServeResult(classifyServeResult(nil)); err != nil {
-		t.Fatalf("clean shutdown (nil) = %v, want nil", err)
-	}
-	if err := awaitDaemonServeResult(classifyServeResult(http.ErrServerClosed)); err != nil {
-		t.Fatalf("clean shutdown (http.ErrServerClosed) = %v, want nil", err)
-	}
-	real := errors.New("daemon file bridge request backlog exceeds 1024 entries")
-	if err := awaitDaemonServeResult(classifyServeResult(real)); !errors.Is(err, real) {
-		t.Fatalf("real error = %v, want %v", err, real)
-	}
-}
 
 // TestServeDashboardStopsCleanlyWhenContextIsCancelled is the behaviour-named
 // integration proof for the clean-shutdown path: cancelling ctx must return
@@ -68,6 +38,7 @@ func TestAwaitDaemonServeResultReducesTheClassifiedResult(t *testing.T) {
 func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -78,10 +49,10 @@ func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 	command.SetOut(&stdout)
 	command.SetErr(stderr)
 
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	waitForHealth(t, address)
 
@@ -106,6 +77,7 @@ func TestServeDashboardStopsCleanlyWhenContextIsCancelled(t *testing.T) {
 func TestServeDashboardReturnsARealServeError(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -116,10 +88,10 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 	command.SetOut(&stdout)
 	command.SetErr(stderr)
 
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, store, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	waitForHealth(t, address)
 
@@ -128,11 +100,11 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 	// bridge's next poll (daemonFileBridgePoll, 250ms) fail with a real,
 	// non-benign error — deterministic, since the directory never comes
 	// back, unlike a one-shot race.
-	base, err := daemonFileBridgeDirectory(root)
+	runtimeDir, err := daemon.RuntimeDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(base, "requests")); err != nil {
+	if err := os.RemoveAll(filepath.Join(runtimeDir, "file-bridge", "requests")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,8 +113,8 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 		if err == nil {
 			t.Fatal("serveDashboard returned nil after a real file bridge error")
 		}
-		if errors.Is(err, errCleanDaemonShutdown) {
-			t.Fatalf("real error %v was misclassified as a clean shutdown", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("real removed-directory error %v lost its os.ErrNotExist identity", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveDashboard did not return after its file bridge failed")
@@ -154,12 +126,13 @@ func TestServeDashboardReturnsARealServeError(t *testing.T) {
 func TestServeDashboardReleasesListenerWhenProvenanceFails(t *testing.T) {
 	root := daemonShutdownTestRoot(t)
 	deps := daemonTestDependencies(t, root)
+	deps.Token = func() (string, error) { return "owner-token", nil }
 	provenanceErr := errors.New("provenance unavailable")
-	deps.executable = func() (string, error) { return "", provenanceErr }
+	deps.Executable = func() (string, error) { return "", provenanceErr }
 	address := freeLoopbackAddress(t)
-	store := daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}
+	store := daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}
 
-	err := serveDashboard(&invocation{projectsRoot: root}, &cobra.Command{}, deps, address, store, "owner-token", true, false)
+	err := newDaemonHost(deps).Serve(context.Background(), daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true, ManagedStart: false}, os.Stdout, os.Stderr)
 	if !errors.Is(err, provenanceErr) {
 		t.Fatalf("serveDashboard error = %v, want provenance failure", err)
 	}

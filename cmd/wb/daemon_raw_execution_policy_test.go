@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonhost"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
@@ -40,7 +43,8 @@ func TestServeDashboardRefusesARawCommandWithoutAnAdministratorOptIn(t *testing.
 
 	configPath := memoryHubConfig(t)
 	deps := daemonTestDependencies(t, root)
-	deps.hubConfigPath = func() string { return configPath }
+	deps.Token = func() (string, error) { return "owner-token", nil }
+	deps.HubConfigPath = func() string { return configPath }
 
 	address := freeLoopbackAddress(t)
 	command := &cobra.Command{}
@@ -53,7 +57,7 @@ func TestServeDashboardRefusesARawCommandWithoutAnAdministratorOptIn(t *testing.
 	command.SetErr(stderr)
 	served := make(chan error, 1)
 	go func() {
-		served <- serveDashboard(&invocation{projectsRoot: root}, command, deps, address, daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}, "owner-token", true, false)
+		served <- newDaemonHost(deps).Serve(command.Context(), daemonhost.Request{ProjectsRoot: root, Listen: address, Quiet: true, ManagedStart: false}, command.OutOrStdout(), command.ErrOrStderr())
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -68,19 +72,19 @@ func TestServeDashboardRefusesARawCommandWithoutAnAdministratorOptIn(t *testing.
 	})
 	waitForHealth(t, address)
 
-	state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonStatePath, root)}).Load()
+	state, found, err := (daemon.Store{Path: mustDaemonPath(t, daemonruntime.StatePath, root)}).Load()
 	if err != nil || !found {
 		t.Fatalf("load serveDashboard's own lifecycle state: found=%t err=%v", found, err)
 	}
-	localClient := deps.localClient
+	localClient := deps.LocalClient
 	if localClient == nil {
-		localClient = daemonLocalHTTPClient
+		localClient = daemonruntime.LocalHTTPClient
 	}
 	httpClient, err := localClient(root, state.OwnerToken)
 	if err != nil {
 		t.Fatalf("build local daemon RPC client: %v", err)
 	}
-	client := daemonv1connect.NewDaemonServiceClient(httpClient, daemonRPCBaseURL)
+	client := daemonv1connect.NewDaemonServiceClient(httpClient, daemonruntime.RPCBaseURL)
 
 	work := filepath.Join(root, "work")
 	if err := os.MkdirAll(work, 0o700); err != nil {

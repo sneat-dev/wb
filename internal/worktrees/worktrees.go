@@ -4,6 +4,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -924,9 +925,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		}
 		plan.baseRevision = baseRevision
 		if plan.resumed {
-			mergeBase, mergeErr := ports.git(ctx, plan.canonical, "merge-base", "refs/heads/"+plan.result.Branch, baseRevision)
-			if mergeErr != nil || !isGitObjectID(mergeBase) {
-				return nil, fmt.Errorf("recover legacy worktree base for %s: %w", plan.result.Repository, mergeErr)
+			mergeBase, mergeErr := recoverLegacyWorktreeBase(plan.result.Repository, plan.result.Branch, baseRevision, func(args ...string) (string, error) {
+				return ports.git(ctx, plan.canonical, args...)
+			})
+			if mergeErr != nil {
+				return nil, mergeErr
 			}
 			plan.result.BaseSHA = mergeBase
 			continue
@@ -3011,6 +3014,18 @@ func runSecureStageHelperWithExecutable(ctx context.Context, stageDirectory *os.
 	command := exec.CommandContext(ctx, executable, append([]string{SecureStageGitHelperArgument}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{stageDirectory}
+	if len(args) == 1 && args[0] == secureStagePathArgument {
+		var diagnostic bytes.Buffer
+		command.Stderr = &diagnostic
+		output, err := command.Output()
+		if err != nil {
+			return append(output, diagnostic.Bytes()...), err
+		}
+		if diagnostic.Len() != 0 {
+			_, _ = os.Stderr.Write(diagnostic.Bytes())
+		}
+		return output, nil
+	}
 	return command.CombinedOutput()
 }
 

@@ -1,14 +1,11 @@
 package main
 
 import (
-	"context"
 	"io"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdcatalog"
 	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/console"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // This file holds the shared pieces of --quiet (spec/features/
@@ -19,42 +16,6 @@ import (
 // through tail, which hid the verb's exit status and let a && chain run past a
 // refusal (sneat-dev/wb#813). --quiet is the supported way to get the outcome
 // alone, so the pipe has no reason to exist.
-
-// newLandingProgress is the CI-wait progress sink of a landing verb: live
-// lines on stderr, or none under --quiet. A non-terminal agent still gets the
-// newline-delimited form unless it asks for quiet.
-func newLandingProgress(inv *invocation, command *cobra.Command, nonInteractive bool) *ciWaitProgress {
-	interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
-	return newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), !inv.quiet)
-}
-
-// suggestedClosesToPrint is the issue list `wb pr create` offers as a --closes
-// suggestion. A suggestion is a courtesy, not an outcome, so --quiet offers
-// none and does not read the Work Log for one.
-func suggestedClosesToPrint(inv *invocation, ctx context.Context, worktreeArg string) []int {
-	if inv.quiet {
-		return nil
-	}
-	return suggestedClosesFromWorktreePrompt(inv, ctx, worktreeArg)
-}
-
-// quietArtifacts is the WB-internal artifact list `worktree cleanup` narrates
-// as `info:` lines on stderr. Under --quiet only the artifacts a run actually
-// changed (applied=true) keep their line, because that line is the only one
-// that says a mutation was applied; every other artifact stays in the
-// --format json document only.
-func quietArtifacts(inv *invocation, artifacts []worktrees.LifecycleArtifact) []worktrees.LifecycleArtifact {
-	if !inv.quiet {
-		return artifacts
-	}
-	var applied []worktrees.LifecycleArtifact
-	for _, artifact := range artifacts {
-		if artifact.Applied {
-			applied = append(applied, artifact)
-		}
-	}
-	return applied
-}
 
 // routineClaimNotes are the remote-claim notes that report success. A claim
 // that is held by someone else, skipped, or taken over is not routine and is
@@ -91,6 +52,6 @@ func (filter routineClaimNoteFilter) Write(payload []byte) (int, error) {
 // markQuietVerb makes a quiet-consuming verb findable by `wb commands --search
 // quiet`, next to the discovery terms it already carries.
 func markQuietVerb(command *cobra.Command) {
-	terms := command.Annotations[discoveryTermsAnnotation]
+	terms := command.Annotations[cmdcatalog.DiscoveryTermsAnnotation]
 	setDiscoveryTerms(command, strings.TrimSpace(terms+" quiet outcome only no progress pipe tail"))
 }

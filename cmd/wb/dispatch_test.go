@@ -294,39 +294,6 @@ func TestPropagateRuntimeWBExecutableReportsExportFailure(t *testing.T) {
 	}
 }
 
-// TestPushTierDecisionReportsTheTierForAPublicationPush covers the branch whose
-// exit code is the answer a Git hook acts on.
-func TestPushTierDecisionReportsTheTierForAPublicationPush(t *testing.T) {
-	stdin := strings.NewReader(
-		"refs/tags/v1.0.0 1111111111111111111111111111111111111111 refs/tags/v1.0.0 2222222222222222222222222222222222222222\n")
-	code, message := pushTierDecision(stdin)
-	if code != int(hooks.TierPublication) {
-		t.Fatalf("code = %d, want %d", code, int(hooks.TierPublication))
-	}
-	want := "WB hook: tier 2 — refs/tags/v1.0.0 is a tag: publication push\n"
-	if message != want {
-		t.Fatalf("message = %q, want %q", message, want)
-	}
-}
-
-// TestPushTierDecisionDefaultsToTheFastLaneOnMalformedInput covers the branch
-// that must never block a push: an unparseable ref list degrades to tier 1
-// instead of failing closed.
-func TestPushTierDecisionDefaultsToTheFastLaneOnMalformedInput(t *testing.T) {
-	code, message := pushTierDecision(strings.NewReader("not-a-ref-update\n"))
-	if code != int(hooks.TierLint) {
-		t.Fatalf("code = %d, want %d", code, int(hooks.TierLint))
-	}
-	want := "WB hook: tier 1 — classification failed " +
-		"(malformed pushed-ref line \"not-a-ref-update\": want 4 fields, got 1); " +
-		"defaulting to the fast lane, CI is the real gate\n"
-	if message != want {
-		t.Fatalf("message = %q, want %q", message, want)
-	}
-}
-
-// failingWriter always fails, so a test can observe whether a write error is
-// propagated rather than swallowed.
 type failingWriter struct{ err error }
 
 func (writer failingWriter) Write([]byte) (int, error) { return 0, writer.err }

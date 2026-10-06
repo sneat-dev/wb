@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -26,7 +27,7 @@ func TestTailCovDecodeProducerEnvelopesRoundTripsEveryDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeCIWaitReceipt: %v", err)
 	}
-	if ci.Status != orchestrate.PullRequestWaitPassed || ci.Head != inputs.CIWait.Head || ci.Target != inputs.CIWait.Target || len(ci.Checks) != 1 {
+	if ci.Status != githubchecks.PullRequestWaitPassed || ci.Head != inputs.CIWait.Head || ci.Target != inputs.CIWait.Target || len(ci.Checks) != 1 {
 		t.Fatalf("CI wait round trip = %#v", ci)
 	}
 

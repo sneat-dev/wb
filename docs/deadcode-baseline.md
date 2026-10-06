@@ -25,7 +25,7 @@ left and seven native-test selection analysers arrived from main, for 267.
 4. Scheduled for wiring by a live spec or plan: category A3, and name the task.
 5. Otherwise delete it.
 
-## A1. Test support, by design (157 entries)
+## A1. Test support, by design (164 entries)
 
 * 72: `internal/gitcli/gitclitest`, `internal/runner/runnertest`,
   `internal/sessiontransport/transporttest`, `internal/testenv`,
@@ -34,6 +34,24 @@ left and seven native-test selection analysers arrived from main, for 267.
   guard (`IsolateUserState`, `UserStateViolations`, `globalGitConfigFiles`,
   `goEnvFileValues`, `inheritedUserStateRoot`, `resolvedGoToolVariables`,
   `under`) that were missing from the baseline on main.
+* 7: `internal/githubobserver/testfixture`: `InstallGH`, `State.Answer`,
+  `WithEmptyActionsRuns`, `ScriptState`, `PullRequestView`,
+  `InstallTransientReadGH`, `InstallDirectCIGH`. This package owns the concrete
+  scripted GitHub fixtures shared by `internal/githubchecks` and
+  `internal/orchestrate` tests after the observation-domain extraction. Its
+  callers are test files, including CI observation/parser tests (`ciwait*_test.go`,
+  `github_vendored_coverage_test.go`, `github_check_queries_test.go`,
+  `direct_ci_test.go`), orchestration engine/PR tests
+  (`engine_integration_test.go`, `pr_create_test.go`, `pr_land_coverage_test.go`,
+  `pr_update_test.go`, `ciwait_transient_mutation_test.go`) and worktree checks
+  (`worktree_merge_direct_ci_test.go`, `worktree_merge_tail_coverage_test.go`).
+  `InstallGH` and `InstallTransientReadGH` share `WithEmptyActionsRuns`;
+  `ScriptState` calls `InstallGH`. They retain private fixture files, native
+  executable writing and environment isolation; `State.Answer` updates those
+  files and `PullRequestView` constructs a test receipt. The package's own
+  `fixtures_test.go` verifies real filesystem and JSON failure reporting.
+  No production package imports it. These are A1 test-support identities,
+  rather than exceptions for unreachable production mechanisms.
 * 9: `internal/secureopen.Fake` and `NewFake`.
 * 2: `internal/execfile` (`WriteExecutableFile`, `writeAndChmodTempExecutable`),
   reached only through `testenv.WriteExecutableFile` and `internal/envguard`

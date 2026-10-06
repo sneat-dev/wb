@@ -10,8 +10,10 @@ import (
 // PlacementWorktree retains the published checkout identity until the caller
 // has recorded the journal data that makes its new path recoverable.
 type PlacementWorktree struct {
-	Path        string
-	publication *createdWorktreePublication
+	Path string
+	// BranchCreated reports the secured publication's actual new-branch observation.
+	BranchCreated bool
+	publication   *createdWorktreePublication
 }
 
 // Close releases retained descriptors after the caller has recorded its
@@ -178,5 +180,5 @@ func createWorktreeAtPlacementWith(
 	if publication == nil {
 		return nil, fmt.Errorf("secure worktree creation produced no publication receipt")
 	}
-	return &PlacementWorktree{Path: worktree, publication: publication}, nil
+	return &PlacementWorktree{Path: worktree, BranchCreated: publication.branchCreated, publication: publication}, nil
 }

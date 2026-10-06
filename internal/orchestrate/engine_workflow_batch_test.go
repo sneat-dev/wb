@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -153,7 +155,7 @@ func TestEnginePrepareWorktreeResumeBoundaries(t *testing.T) {
 
 func installEngineWorkflowGH(t *testing.T, fixture engineFixture, script string) {
 	t.Helper()
-	orchCovInstallGH(t, script)
+	testfixture.InstallGH(t, script)
 	t.Setenv("WB_HOLD_REMOTE", fixture.repository.CloneURL)
 	t.Setenv("WB_HOLD_BREACH", filepath.Join(t.TempDir(), "merge-invoked"))
 }

@@ -23,6 +23,7 @@ type goCoverageJob struct {
 	label       string
 	arguments   []string
 	profilePath string
+	environment []string
 }
 
 type goCoverageJobResult struct {
@@ -106,7 +107,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 	if discoveryTimeout <= 0 {
 		discoveryTimeout = shardAttemptTimeout
 	}
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, options.redBase, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, packagePatterns, options.coverPackages)
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(checkCtx, options.redBase, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, discoveryTimeout, shardAttemptTimeout, options.Retry, options.Progress, options.Env, options.configGoShardPackages && !options.ExplicitGoTestSharding, packagePatterns, options.coverPackages)
 	if errors.Is(context.Cause(checkCtx), errLogicalCheckTimeout) {
 		return output, attempts, fmt.Errorf("check timed out after %s", options.CheckTimeout)
 	}
@@ -127,7 +128,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	}
 	if budget > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, budget)
+		ctx, cancel = context.WithTimeoutCause(ctx, budget, errLogicalCheckTimeout)
 		defer cancel()
 	}
 	if err := ctx.Err(); err != nil {
@@ -145,7 +146,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	unitOptions.coverPackages = packages
 	output, attempts, err := runCoverageWithOptions(ctx, unitOptions, module, unitProfile)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return output, attempts, ctxErr
+		return output, attempts, errors.Join(ctxErr, err)
 	}
 	if err != nil {
 		return output, attempts, err
@@ -162,7 +163,7 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 	nativeOutput, _, err := runGoCoverageCommand(ctx, nativeOptions, module, nativeProfile, arguments)
 	output += "\n[native E2E and contract tests]\n" + nativeOutput
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return output, attempts, ctxErr
+		return output, attempts, errors.Join(ctxErr, err)
 	}
 	if err != nil {
 		return output, attempts, err
@@ -174,11 +175,78 @@ func runCombinedCoverageWithOptions(ctx context.Context, options RunOptions, mod
 // A failure is final unless options carries a redBaseRecorder that accepts
 // it, which only a merge-base measurement ever does.
 func runGoCoverageCommand(ctx context.Context, options RunOptions, module, profilePath string, arguments []string) (string, int, error) {
-	output, attempts, err := runWithOptions(ctx, options, module, "go", arguments...)
-	if err != nil && options.redBase.accept(goTestExitCode(err), output, profilePath) {
+	return runGoCoverageCommandWithAttempt(ctx, options, module, profilePath, arguments, nativeCoverageAttempt{run: runWithEnv})
+}
+
+func runGoCoverageCommandWithAttempt(ctx context.Context, options RunOptions, module, profilePath string, arguments []string, attempt nativeCoverageAttempt) (string, int, error) {
+	canonical, err := runCoverageDiscoveryCommand(ctx, options.Timeout, "resolve native coverage scope", func(discoveryCtx context.Context) ([]string, error) {
+		return resolveNativeCoveragePackages(discoveryCtx, module, options.Env, arguments, nil, nil)
+	})
+	if err != nil {
+		if options.CoverageDiagnosticsDir != "" {
+			err = &coverageCommandError{cause: err}
+		}
+		return "", 0, err
+	}
+	environment := nativeCoverageEnvironment(options.Env, canonical)
+	started := time.Now()
+	var timeoutSource string
+	output, attempts, err := runCommandAttempts(ctx, options.Timeout, options.Retry, func(attemptCtx context.Context) (string, error) {
+		output, err := attempt.execute(attemptCtx, module, environment, profilePath, arguments)
+		timeoutSource = coverageCommandTimeoutSource(ctx, attemptCtx, output, err)
+		return output, err
+	})
+	result := goCoverageJobResult{output: output, err: err, attempts: attempts, elapsed: time.Since(started), timeoutSource: timeoutSource}
+	if err != nil && !isNativeCoverageFailure(err) && options.redBase.accept(goTestExitCode(err), output, profilePath) {
 		err = nil
 	}
+	if result.err != nil && options.CoverageDiagnosticsDir != "" {
+		phase := "unsharded"
+		for _, argument := range arguments {
+			if argument == "-tags=e2e" {
+				phase = "native"
+			}
+		}
+		sink := newCoverageDiagnosticsSink(options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, module)
+		sink.stem += "-" + phase
+		manifestPath := filepath.Join(sink.directory, "coverage-diagnostics-"+sink.stem+".yaml")
+		if diagnosticErr := sink.persist(0, goCoverageJob{label: phase + " coverage"}, result); diagnosticErr != nil {
+			err = errors.Join(err, fmt.Errorf("write coverage diagnostics: %w", diagnosticErr))
+			manifestPath = ""
+		}
+		if err != nil {
+			err = &coverageCommandError{cause: err, manifestPath: manifestPath}
+		}
+	}
 	return output, attempts, err
+}
+
+// coverageCommandError binds a failure report to this invocation's manifest.
+// An empty path means publication failed, so stale manifests must not be read.
+type coverageCommandError struct {
+	cause        error
+	manifestPath string
+}
+
+func (failure *coverageCommandError) Error() string { return failure.cause.Error() }
+func (failure *coverageCommandError) Unwrap() error { return failure.cause }
+
+func coverageCommandTimeoutSource(ctx, attemptCtx context.Context, output string, err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(context.Cause(ctx), errLogicalCheckTimeout):
+		return "check"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "caller"
+	case errors.Is(ctx.Err(), context.Canceled):
+		return "caller-cancelled"
+	case errors.Is(attemptCtx.Err(), context.DeadlineExceeded), strings.Contains(output, "panic: test timed out after "):
+		return "attempt"
+	default:
+		return ""
+	}
 }
 
 func appendCoverageInstrumentation(arguments, packages []string) []string {
@@ -212,7 +280,7 @@ func ValidateGoCoveragePackagePatterns(patterns []string) error {
 
 // redBase is nil for every measurement except the merge base of a per-change
 // ratchet: see redBaseRecorder for the only failures it lets a job survive.
-func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, redBase *redBaseRecorder, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), selectedPackagePatterns ...[]string) (string, int, error) {
+func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, redBase *redBaseRecorder, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, discoveryTimeout, shardAttemptTimeout time.Duration, retry int, reporter func(Progress), environment []string, allowConfiguredOutside bool, selectedPackagePatterns ...[]string) (string, int, error) {
 	packagePatterns := []string{"./..."}
 	if len(selectedPackagePatterns) > 0 {
 		packagePatterns = selectedPackagePatterns[0]
@@ -222,20 +290,28 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 		coverPackages = selectedPackagePatterns[1]
 	}
 	allPackages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list selected packages", func(commandCtx context.Context) ([]string, error) {
-		return goCoveragePackages(commandCtx, module, packagePatterns)
+		return goCoveragePackages(commandCtx, module, packagePatterns, environment)
 	})
 	if err != nil {
 		return "", 0, err
 	}
+	canonical, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "resolve native coverage scope", func(discoveryCtx context.Context) ([]string, error) {
+		return resolveNativeCoveragePackages(discoveryCtx, module, environment, appendCoverageInstrumentation(nil, coverPackages), packagePatterns, allPackages)
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	nativeEnvironment := nativeCoverageEnvironment(environment, canonical)
 	shardedPackages := make([]string, 0, len(requestedPackages))
 	shardedSet := map[string]bool{}
+	seenRequestedPackages := map[string]bool{}
 	selectedSet := make(map[string]bool, len(allPackages))
 	for _, packagePath := range allPackages {
 		selectedSet[packagePath] = true
 	}
 	for _, requested := range requestedPackages {
 		packages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list shard package "+requested, func(commandCtx context.Context) ([]string, error) {
-			return goListPackages(commandCtx, module, requested)
+			return goListPackages(commandCtx, module, requested, environment)
 		})
 		if err != nil {
 			return "", 0, err
@@ -243,11 +319,15 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 		if len(packages) != 1 {
 			return "", 0, fmt.Errorf("shard package %q resolved to %d packages; name exactly one package", requested, len(packages))
 		}
-		if !selectedSet[packages[0]] {
-			return "", 0, fmt.Errorf("shard package %q resolves outside selected package scope", requested)
-		}
-		if shardedSet[packages[0]] {
+		if seenRequestedPackages[packages[0]] {
 			return "", 0, fmt.Errorf("duplicate shard package %q", requested)
+		}
+		seenRequestedPackages[packages[0]] = true
+		if !selectedSet[packages[0]] {
+			if allowConfiguredOutside {
+				continue
+			}
+			return "", 0, fmt.Errorf("shard package %q resolves outside selected package scope", requested)
 		}
 		shardedSet[packages[0]] = true
 		shardedPackages = append(shardedPackages, packages[0])
@@ -277,7 +357,7 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 	plannedPackages := make([]plannedGoCoveragePackage, 0, len(shardedPackages))
 	for _, packagePath := range shardedPackages {
 		tests, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "discover tests in "+packagePath, func(commandCtx context.Context) ([]string, error) {
-			return discoverGoTests(commandCtx, module, packagePath)
+			return discoverGoTests(commandCtx, module, packagePath, environment)
 		})
 		if err != nil {
 			return "", 0, err
@@ -307,6 +387,9 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 		}
 	}
 
+	for index := range jobs {
+		jobs[index].environment = nativeEnvironment
+	}
 	var diagnostics *coverageDiagnosticsSink
 	if diagnosticsDir != "" {
 		diagnostics = newCoverageDiagnosticsSink(diagnosticsDir, repository, module)
@@ -332,7 +415,7 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 		if result.diagnosticErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("write coverage diagnostics: %w", result.diagnosticErr))
 		}
-		if result.err != nil && !redBase.accept(goTestExitCode(result.err), result.output, jobs[index].profilePath) {
+		if result.err != nil && (isNativeCoverageFailure(result.err) || !redBase.accept(goTestExitCode(result.err), result.output, jobs[index].profilePath)) {
 			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", jobs[index].label, result.err))
 		} else {
 			if strings.TrimSpace(result.output) != "" {
@@ -370,10 +453,10 @@ func runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx context.Context, r
 	return output.String(), maxAttempts, nil
 }
 
-func goCoveragePackages(ctx context.Context, module string, patterns []string) ([]string, error) {
+func goCoveragePackages(ctx context.Context, module string, patterns []string, environment ...[]string) ([]string, error) {
 	seen := make(map[string]bool)
 	for _, pattern := range patterns {
-		packages, err := goListPackages(ctx, module, pattern)
+		packages, err := goListPackages(ctx, module, pattern, environment...)
 		if err != nil {
 			return nil, err
 		}
@@ -583,7 +666,10 @@ func coverageDiagnosticStem(repository, module string) string {
 }
 
 func coverageDiagnosticFor(directory, repository, module string) *CoverageDiagnostic {
-	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml")
+	return coverageDiagnosticFromPath(filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml"))
+}
+
+func coverageDiagnosticFromPath(manifestPath string) *CoverageDiagnostic {
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil
@@ -592,8 +678,12 @@ func coverageDiagnosticFor(directory, repository, module string) *CoverageDiagno
 	return &CoverageDiagnostic{Manifest: manifestPath, SHA256: hex.EncodeToString(digest[:])}
 }
 
-func goListPackages(ctx context.Context, module, pattern string) ([]string, error) {
-	output, err := runStdout(ctx, module, "go", "list", "-f", "{{.ImportPath}}", pattern)
+func goListPackages(ctx context.Context, module, pattern string, environments ...[]string) ([]string, error) {
+	var environment []string
+	if len(environments) != 0 {
+		environment = environments[0]
+	}
+	output, err := runStdoutWithEnv(ctx, environment, module, "go", "list", "-f", "{{.ImportPath}}", pattern)
 	if err != nil {
 		return nil, fmt.Errorf("go list %s: %w\n%s", pattern, err, strings.TrimSpace(output))
 	}
@@ -609,8 +699,12 @@ func goListPackages(ctx context.Context, module, pattern string) ([]string, erro
 	return packages, nil
 }
 
-func discoverGoTests(ctx context.Context, module, packagePath string) ([]string, error) {
-	output, err := run(ctx, module, "go", "test", packagePath, "-list", "^(Test|Example|Fuzz)")
+func discoverGoTests(ctx context.Context, module, packagePath string, environments ...[]string) ([]string, error) {
+	var environment []string
+	if len(environments) != 0 {
+		environment = environments[0]
+	}
+	output, err := runWithEnv(ctx, environment, module, "go", "test", packagePath, "-list", "^(Test|Example|Fuzz)")
 	if err != nil {
 		return nil, fmt.Errorf("discover tests in %s: %w\n%s", packagePath, err, strings.TrimSpace(output))
 	}
@@ -671,23 +765,23 @@ func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob,
 					if timeout > 0 {
 						jobCtx, cancel = context.WithTimeoutCause(ctx, timeout, errCoverageAttemptTimeout)
 					}
-					output, err = run(jobCtx, module, "go", jobs[index].arguments...)
+					output, err = (nativeCoverageAttempt{run: runWithEnv}).execute(jobCtx, module, jobs[index].environment, jobs[index].profilePath, jobs[index].arguments)
 					cause := context.Cause(jobCtx)
 					cancel()
 					if err != nil {
 						switch {
 						case errors.Is(cause, errLogicalCheckTimeout):
 							timeoutSource = "check"
-							err = fmt.Errorf("logical check deadline exceeded: %w", context.DeadlineExceeded)
+							err = preserveNativeCoverageFailure(err, fmt.Errorf("logical check deadline exceeded: %w", context.DeadlineExceeded))
 						case errors.Is(cause, errCoverageAttemptTimeout):
 							timeoutSource = "attempt"
-							err = fmt.Errorf("shard attempt timed out after %s", timeout)
+							err = preserveNativeCoverageFailure(err, fmt.Errorf("shard attempt timed out after %s", timeout))
 						case errors.Is(cause, context.DeadlineExceeded):
 							timeoutSource = "caller"
-							err = fmt.Errorf("caller deadline exceeded: %w", context.DeadlineExceeded)
+							err = preserveNativeCoverageFailure(err, fmt.Errorf("caller deadline exceeded: %w", context.DeadlineExceeded))
 						case errors.Is(cause, context.Canceled):
 							timeoutSource = "caller-cancelled"
-							err = fmt.Errorf("caller canceled: %w", context.Canceled)
+							err = preserveNativeCoverageFailure(err, fmt.Errorf("caller canceled: %w", context.Canceled))
 						case strings.Contains(output, "panic: test timed out after "):
 							// The Go test binary's own -timeout may win the race with
 							// this process context and emit its stack trace first.

@@ -195,12 +195,12 @@ var PendingMigrationExemptions = map[string]string{
 // TestNotAFileWritePublishExemptionsNeverAlsoCreateAndWriteContent enforces
 // that no entry below also independently creates and writes a file.
 var NotAFileWritePublishExemptions = map[string]string{
-	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":       "renames a queue job's state directory back to pending on recovery; not a file write",
-	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatchWithUnlock": "renames a queue job's state directory to claim it; not a file write",
-	"internal/streams/store.go:Store.archiveLocked":                    "renames a stream's directory into an archive location; not a file write",
-	"internal/locallink/execports.go:ExecNode.unlinkWithObservations":  "renames an existing backup directory back into place; not a temp-file write",
-	"internal/locallink/execports.go:renameInstalledPackageForLink":    "moves the existing installed package aside; not a temp-file write or content publication",
-	"cmd/wb/daemon_file_bridge.go:daemonFileBridgeServer.quarantine":   "renames a request file into a quarantine directory; not a write publish",
+	"internal/lifecyclehooks/queue.go:Dispatcher.recoverRunning":                  "renames a queue job's state directory back to pending on recovery; not a file write",
+	"internal/lifecyclehooks/queue.go:Dispatcher.claimBatchWithUnlock":            "renames a queue job's state directory to claim it; not a file write",
+	"internal/streams/store.go:Store.archiveLocked":                               "renames a stream's directory into an archive location; not a file write",
+	"internal/locallink/execports.go:ExecNode.unlinkWithObservations":             "renames an existing backup directory back into place; not a temp-file write",
+	"internal/locallink/execports.go:renameInstalledPackageForLink":               "moves the existing installed package aside; not a temp-file write or content publication",
+	"internal/daemonruntime/file_bridge.go:FileBridgeServer.quarantineWithStages": "renames a request file into a quarantine directory; not a write publish",
 
 	// The renameNoReplace primitive's own per-OS implementation: a thin
 	// wrapper around Renameat2/RenameatxNp, with no write of its own.

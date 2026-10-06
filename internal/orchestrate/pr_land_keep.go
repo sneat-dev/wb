@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -131,7 +133,7 @@ func rewriteBranchForKeptCommits(
 	run runner.Runner,
 	canonical, repository, headRef, baseSHA string,
 	plan keepPlan,
-	view PullRequestView,
+	view githubchecks.PullRequestView,
 	commits []SourceCommit,
 	approvedBy, reason string,
 	buildCommand []string,
@@ -355,7 +357,7 @@ func locateBranchCheckout(ctx context.Context, projectsRoot, repository, headRef
 func landKeepingCommits(
 	ctx context.Context,
 	options PullRequestLandOptions,
-	view PullRequestView,
+	view githubchecks.PullRequestView,
 	commits []SourceCommit,
 	number, approvedBy string,
 ) ([]LandedCommit, string, *landRefusal, error) {

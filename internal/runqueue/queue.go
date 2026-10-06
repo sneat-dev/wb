@@ -83,6 +83,8 @@ func Classify(argv []string) Kind {
 	tool := strings.ToLower(filepath.Base(argv[0]))
 	arguments := argv[1:]
 	switch tool {
+	case "wb", "wb.exe":
+		return classifyWBCoverage(arguments)
 	case "go":
 		return classifyGo(arguments)
 	case "golangci-lint":

@@ -71,6 +71,7 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 			seen[packagePath] = true
 		}
 		if !base.ExplicitGoTestSharding {
+			base.configGoShardPackages = true
 			base.GoTestShards = config.GoTest.Shards
 			base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
 		}

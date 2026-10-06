@@ -19,7 +19,8 @@
 # == A1. Test-support packages: reachable only from tests, by design ==
 #
 # internal/gitcli/gitclitest, internal/runner/runnertest, internal/sessiontransport/transporttest,
-# internal/testenv and internal/testsweep exist only to be imported by tests. This
+# internal/testenv, internal/testsweep and internal/githubobserver/testfixture exist
+# only to be imported by tests. This
 # analysis is built without test roots, so main-package reachability cannot see
 # their callers. Of the gitclitest.Fake entries, 15 implement the production Git
 # port; RemotePushURL and ConfigRegexpMatches support adapter contract tests.
@@ -50,6 +51,13 @@ github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeAddDetached
 github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.WorktreeRemoveForce
 github.com/sneat-dev/wb/internal/gitcli/gitclitest.Fake.record
 github.com/sneat-dev/wb/internal/gitcli/gitclitest.key
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.InstallDirectCIGH
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.InstallGH
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.InstallTransientReadGH
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.PullRequestView
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.ScriptState
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.State.Answer
+github.com/sneat-dev/wb/internal/githubobserver/testfixture.WithEmptyActionsRuns
 github.com/sneat-dev/wb/internal/runner/runnertest.AllowRealProcess
 github.com/sneat-dev/wb/internal/runner/runnertest.Call.Argv
 github.com/sneat-dev/wb/internal/runner/runnertest.Fake.CallCount

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
@@ -50,11 +53,11 @@ func failWorktreeMergePRLand(receipt WorktreeMergeReceipt, status WorktreeMergeS
 // recorded again and again for a landing that had not actually landed yet.
 // It also replaces any existing finding with this code rather than
 // appending a second one, so a receipt only ever carries one.
-func recordDeferredValidationCheckSkippedFinding(receipt *WorktreeMergeReceipt, waited PullRequestWaitResult) {
+func recordDeferredValidationCheckSkippedFinding(receipt *WorktreeMergeReceipt, waited githubchecks.PullRequestWaitResult) {
 	if receipt.ValidationDeferral == nil {
 		return
 	}
-	skipped := skippedOrNeutralRequiredChecks(waited.Checks, waited.RequiredChecks)
+	skipped := githubchecks.SkippedOrNeutralRequiredChecks(waited.Checks, waited.RequiredChecks)
 	if len(skipped) == 0 {
 		return
 	}
@@ -83,11 +86,11 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	// reason; receipt.PullRequest is the pull request's full HTML URL, so it
 	// must be reduced to the bare number here, once, before it is threaded
 	// through.
-	number, numberErr := PullRequestNumber(receipt.PullRequest)
+	number, numberErr := githubchecks.PullRequestNumber(receipt.PullRequest)
 	if numberErr != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("resolve published pull request number: %w", numberErr))
 	}
-	view, err := ReadPullRequest(ctx, receipt.Repository, number)
+	view, err := githubchecks.ReadPullRequest(ctx, receipt.Repository, number)
 	if err != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("read published pull request: %w", err))
 	}
@@ -133,7 +136,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		// must leave the receipt pending and retryable, not Conflict, the
 		// same way every other transient read in this area (ciwait.go) is
 		// treated as "ask again", not "judged".
-		if IsTransientReadFailure(err) {
+		if githubobserver.IsTransientReadFailure(err) {
 			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
 				fmt.Errorf("%w; resume with wb worktree merge resume %s", err, receipt.ReceiptPath))
 		}
@@ -155,14 +158,14 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	// landing — passed, or GitHub merged it anyway — never while it is
 	// still pending or has failed, so a later resume slice does not record
 	// the same finding again for a landing that has not landed yet.
-	if waited.Status == PullRequestWaitPassed || mergedByGitHub {
+	if waited.Status == githubchecks.PullRequestWaitPassed || mergedByGitHub {
 		recordDeferredValidationCheckSkippedFinding(&receipt, waited)
 	}
-	if waited.Status != PullRequestWaitPassed && !mergedByGitHub {
+	if waited.Status != githubchecks.PullRequestWaitPassed && !mergedByGitHub {
 		status := WorktreeMergeChecksFailed
 		reason := fmt.Errorf("exact-head checks failed: %s", waited.Reason)
 		switch {
-		case waited.Status == PullRequestWaitPending:
+		case waited.Status == githubchecks.PullRequestWaitPending:
 			status = WorktreeMergeChecksPending
 			note := ""
 			if autoMergeArmed {
@@ -182,7 +185,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			// #600: name each failing check and its first error line rather
 			// than leaving the caller to hand-roll the same log scraping WB
 			// already did while observing the checks.
-			if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
+			if summary := githubchecks.SummarizeFailures(waited.FailureDetails); summary != "" {
 				reason = fmt.Errorf("exact-head checks failed: %s; %s", waited.Reason, summary)
 			}
 		}
@@ -203,11 +206,8 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	}
 	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
 	if mergeErr != nil {
-		if IsTransientGitHubFailure(mergeErr) {
-			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
-				fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
-		}
-		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, mergeErr)
+		return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+			fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
 	}
 	if mergeRefusal != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("%s", mergeRefusal.reason))
@@ -349,16 +349,7 @@ func adoptWorktreeMergeUpdateBranchAdvance(ctx context.Context, git Git, run run
 		return fmt.Errorf("update-branch merge commit %s does not prove an ordinary merge of candidate %s and target %s; refusing to adopt it as an advance",
 			shortMergeRevision(updated), shortMergeRevision(previous), receipt.Target)
 	}
-	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
-		RecordedAt:           time.Now().UTC(),
-		PreviousTargetSHA:    receipt.TargetSHA,
-		NewTargetSHA:         newTarget,
-		PreviousCandidateSHA: receipt.Candidate.SHA,
-		NewCandidateSHA:      updated,
-	})
-	receipt.TargetSHA = newTarget
-	receipt.Candidate.SHA = updated
-	receipt.PublishedCandidateSHA = updated
+	recordWorktreeMergeUpdateBranchAdvance(receipt, newTarget, updated)
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(*receipt); err != nil {
 		return fmt.Errorf("persist update-branch advance: %w", err)
@@ -464,11 +455,11 @@ func verifyUpdateBranchMergeProof(ctx context.Context, git Git, run runner.Runne
 			}
 		}
 	}
-	remoteTarget, fetchErr := fetchExactMergeTarget(ctx, worktree, target)
+	remoteTarget, fetchErr := fetchExactMergeTargetWithRunner(ctx, run, worktree, target)
 	if fetchErr != nil {
 		return false, nil
 	}
-	targetAncestor, ancestorErr := isMergeAncestor(ctx, worktree, targetParent, remoteTarget)
+	targetAncestor, ancestorErr := isMergeAncestorWithRunner(ctx, run, worktree, targetParent, remoteTarget)
 	if ancestorErr != nil || !targetAncestor {
 		return false, nil
 	}
@@ -486,7 +477,7 @@ func verifyUpdateBranchMergeProof(ctx context.Context, git Git, run runner.Runne
 	} else {
 		tree, treeErr := commitTreeSHA(ctx, repository, headSHA)
 		if treeErr != nil {
-			if IsTransientReadFailure(treeErr) {
+			if githubobserver.IsTransientReadFailure(treeErr) {
 				return false, treeErr
 			}
 			return false, nil
@@ -540,7 +531,7 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, run runne
 	if receipt == nil || receipt.PullRequest == "" || receipt.LandingSHA != "" || receipt.Candidate.SHA == "" {
 		return false, nil
 	}
-	view, err := ReadPullRequest(ctx, receipt.Repository, receipt.PullRequest)
+	view, err := githubchecks.ReadPullRequest(ctx, receipt.Repository, receipt.PullRequest)
 	if err != nil {
 		return false, nil
 	}
@@ -573,16 +564,7 @@ func adoptServerUpdatedWorktreeMergeHead(ctx context.Context, git Git, run runne
 		// for the ordinary drift/conflict handling to judge.
 		return false, nil
 	}
-	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
-		RecordedAt:           time.Now().UTC(),
-		PreviousTargetSHA:    receipt.TargetSHA,
-		NewTargetSHA:         parents[1],
-		PreviousCandidateSHA: receipt.Candidate.SHA,
-		NewCandidateSHA:      view.Head.SHA,
-	})
-	receipt.TargetSHA = parents[1]
-	receipt.Candidate.SHA = view.Head.SHA
-	receipt.PublishedCandidateSHA = view.Head.SHA
+	recordWorktreeMergeUpdateBranchAdvance(receipt, parents[1], view.Head.SHA)
 	if note := fastForwardWorktreeToUpdatedHead(ctx, git, run, receipt.Candidate.Worktree, receipt.Candidate.Branch, view.Head.SHA); note != "" {
 		receipt.LocalSync = note
 	}
@@ -644,4 +626,19 @@ func worktreeMergeRefreshChainAdvances(refreshes []WorktreeMergeTargetRefresh, f
 		}
 		visited[current] = true
 	}
+}
+
+// recordWorktreeMergeUpdateBranchAdvance records only the shared proven identity
+// transition. Its two owners retain their distinct persistence and time policies.
+func recordWorktreeMergeUpdateBranchAdvance(receipt *WorktreeMergeReceipt, newTarget, newCandidate string) {
+	receipt.TargetRefreshes = append(receipt.TargetRefreshes, WorktreeMergeTargetRefresh{
+		RecordedAt:           time.Now().UTC(),
+		PreviousTargetSHA:    receipt.TargetSHA,
+		NewTargetSHA:         newTarget,
+		PreviousCandidateSHA: receipt.Candidate.SHA,
+		NewCandidateSHA:      newCandidate,
+	})
+	receipt.TargetSHA = newTarget
+	receipt.Candidate.SHA = newCandidate
+	receipt.PublishedCandidateSHA = newCandidate
 }

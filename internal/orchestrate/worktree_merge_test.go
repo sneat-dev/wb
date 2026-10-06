@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
@@ -92,12 +95,12 @@ func TestWorktreeMergeCheckProgressReportsObservableWait(t *testing.T) {
 	t.Parallel()
 	var events []progress.Event
 	reporter := func(event progress.Event) { events = append(events, event) }
-	reportWorktreeMergeCheckProgress(reporter, "candidate_checks")(PullRequestWaitProgress{
+	reportWorktreeMergeCheckProgress(reporter, "candidate_checks")(githubchecks.PullRequestWaitProgress{
 		Observation: 3,
-		Result: PullRequestWaitResult{
-			Status: PullRequestWaitPending,
+		Result: githubchecks.PullRequestWaitResult{
+			Status: githubchecks.PullRequestWaitPending,
 			Reason: "observed GitHub checks are still pending",
-			Checks: []RemoteCheck{{Name: "build", Bucket: "pass"}, {Name: "test", Bucket: "pending"}},
+			Checks: []githubchecks.RemoteCheck{{Name: "build", Bucket: "pass"}, {Name: "test", Bucket: "pending"}},
 		},
 		NextPoll: 30 * time.Second,
 	})
@@ -128,55 +131,6 @@ func TestWorktreeMergeValidationTimeoutsPreserveExplicitPreparePolicy(t *testing
 	check, shard = receiptWorktreeMergeValidationTimeouts(WorktreeMergeReceipt{})
 	if check != 0 || shard != 0 {
 		t.Fatalf("legacy receipt limits = %s/%s, want zero", check, shard)
-	}
-}
-
-func TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate(t *testing.T) {
-	fixture := newEngineFixture(t)
-	canonicalHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	sourceA := createMergeSource(t, fixture, "merge-source-a", "feature/a", "a.txt", "a\n")
-	sourceB := createMergeSource(t, fixture, "merge-source-b", "feature/b", "b.txt", "b\n")
-	sourceAHead := strings.TrimSpace(runEngineGit(t, sourceA.WorktreeDir, "rev-parse", "HEAD"))
-	sourceBHead := strings.TrimSpace(runEngineGit(t, sourceB.WorktreeDir, "rev-parse", "HEAD"))
-
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir,
-		Sources:      []string{sourceA.WorktreeDir, sourceB.WorktreeDir},
-		Target:       "main",
-		Model:        "test-model",
-		AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receipt.Status != WorktreeMergePrepared || receipt.Phase != WorktreeMergePhasePrepare {
-		t.Fatalf("receipt = %+v", receipt)
-	}
-	if receipt.Repository != "acme/app" || receipt.Target != "main" || receipt.TargetSHA != canonicalHead {
-		t.Fatalf("target receipt = %+v, want acme/app main at %s", receipt, canonicalHead)
-	}
-	if receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "main" || receipt.Candidate.SHA == "" {
-		t.Fatalf("candidate = %+v", receipt.Candidate)
-	}
-	if len(receipt.Sources) != 2 || receipt.Sources[0].SHA != sourceAHead || receipt.Sources[1].SHA != sourceBHead {
-		t.Fatalf("sources = %+v", receipt.Sources)
-	}
-	for _, head := range []string{canonicalHead, sourceAHead, sourceBHead} {
-		if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "merge-base", "--is-ancestor", head, receipt.Candidate.SHA)); got != "" {
-			t.Fatalf("unexpected merge-base output for %s: %q", head, got)
-		}
-	}
-	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != canonicalHead {
-		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHead, got)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, sourceA.WorktreeDir, "rev-parse", "HEAD")); got != sourceAHead {
-		t.Fatalf("source A changed from %s to %s", sourceAHead, got)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, sourceB.WorktreeDir, "rev-parse", "HEAD")); got != sourceBHead {
-		t.Fatalf("source B changed from %s to %s", sourceBHead, got)
-	}
-	if _, err := os.Stat(receipt.ReceiptPath); err != nil {
-		t.Fatalf("durable receipt missing: %v", err)
 	}
 }
 
@@ -234,66 +188,6 @@ func TestPrepareWorktreeMergeAllowsUnchangedFailingTargetValidation(t *testing.T
 	}
 }
 
-//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
-func TestValidateWorktreeMergeCandidateStopsBeforeTestsForNewLintFailure(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
-	writeEngineFile(t, filepath.Join(fixture.canonical, ".wb", "quality.yaml"), "version: 1\ngo_lint:\n  commands:\n    - [sh, -c, 'test ! -f lint-fail']\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go", ".wb/quality.yaml")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed passing lint")
-	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	writeEngineFile(t, filepath.Join(fixture.canonical, "lint-fail"), "candidate lint regression\n")
-	writeEngineFile(t, filepath.Join(fixture.canonical, "candidate_test.go"), "package app\nimport (\"os\"; \"testing\")\nfunc TestMain(m *testing.M) { _ = os.WriteFile(os.Getenv(\"WB_TEST_MARKER\"), []byte(\"ran\"), 0600); os.Exit(m.Run()) }\n")
-	runEngineGit(t, fixture.canonical, "add", "lint-fail", "candidate_test.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: introduce lint failure")
-	marker := filepath.Join(t.TempDir(), "candidate-test-ran")
-	t.Setenv("WB_TEST_MARKER", marker)
-	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
-	receipt := WorktreeMergeReceipt{Repository: fixture.repository.Slug, TargetSHA: target}
-	receipt.Candidate.Worktree = fixture.canonical
-	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	err := validateWorktreeMergeCandidate(context.Background(), &receipt, time.Minute, 0, 0, 0, nil)
-	if err == nil || !strings.Contains(err.Error(), "introduced or changed failure") {
-		t.Fatalf("candidate lint regression = %v, report %+v", err, receipt.Validation)
-	}
-	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
-		t.Fatalf("candidate test ran before lint regression was rejected: %v", statErr)
-	}
-	for _, entry := range receipt.Validation.Results {
-		if entry.Check == quality.CheckTest {
-			t.Fatalf("test result recorded after early lint rejection: %+v", receipt.Validation)
-		}
-	}
-}
-
-//nolint:paralleltest // newEngineFixture changes the process environment with t.Setenv
-func TestValidateWorktreeMergeCandidateContinuesAfterInheritedLintFailure(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
-	writeEngineFile(t, filepath.Join(fixture.canonical, ".wb", "quality.yaml"), "version: 1\ngo_lint:\n  commands:\n    - [sh, -c, 'echo inherited-lint-failure; exit 1']\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go", ".wb/quality.yaml")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed failing lint")
-	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	writeEngineFile(t, filepath.Join(fixture.canonical, "candidate_test.go"), "package app\nimport (\"os\"; \"testing\")\nfunc TestMain(m *testing.M) { _ = os.WriteFile(os.Getenv(\"WB_TEST_MARKER\"), []byte(\"ran\"), 0600); os.Exit(m.Run()) }\n")
-	runEngineGit(t, fixture.canonical, "add", "candidate_test.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add candidate test")
-	marker := filepath.Join(t.TempDir(), "candidate-test-ran")
-	t.Setenv("WB_TEST_MARKER", marker)
-	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
-	receipt := WorktreeMergeReceipt{Repository: fixture.repository.Slug, TargetSHA: target}
-	receipt.Candidate.Worktree = fixture.canonical
-	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	if err := validateWorktreeMergeCandidate(context.Background(), &receipt, time.Minute, 0, 0, 0, nil); err != nil {
-		t.Fatalf("inherited lint failure blocked full validation: %v, report %+v", err, receipt.Validation)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("candidate test did not run after inherited lint failure: %v", err)
-	}
-	if receipt.BaselineValidation.Status != quality.StatusFailed || receipt.Validation.Status != quality.StatusFailed {
-		t.Fatalf("full baseline comparison missing: baseline %+v candidate %+v", receipt.BaselineValidation, receipt.Validation)
-	}
-}
-
 func TestWorktreeMergeLintEvidenceIgnoresCachedTestFailure(t *testing.T) {
 	t.Parallel()
 	report := worktreeMergeLintEvidence(quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
@@ -347,470 +241,6 @@ func TestPrepareWorktreeMergeRejectsChangedCandidateFailureBeyondTargetBaseline(
 	if receipt.BaselineValidation.Status != quality.StatusFailed || receipt.Validation.Status != quality.StatusFailed ||
 		!strings.Contains(receipt.Failure, "introduced or changed failure") {
 		t.Fatalf("failed validation receipt = %+v", receipt)
-	}
-}
-
-func TestPrepareWorktreeMergeRefusesValidationFailedReceiptAfterSourceAdvanceWithoutMutation(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "failed-receipt-source", "feature/failed-receipt", "candidate.go", "package app\n\nfunc Candidate() { missingCandidate }\n")
-
-	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err == nil || failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA == "" {
-		t.Fatalf("initial validation failure = receipt %+v err %v", failed, err)
-	}
-	receiptBefore, err := os.ReadFile(failed.ReceiptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidateView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
-		ProjectsRoot: fixture.githubDir, Worktree: failed.Candidate.Worktree,
-	})
-	if err != nil || candidateView.Claim == nil {
-		t.Fatalf("load candidate Work Log: view=%+v err=%v", candidateView, err)
-	}
-	claimBefore, err := os.ReadFile(candidateView.Claim.ClaimPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidateHeadBefore := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "rev-parse", "HEAD"))
-	candidateStatusBefore := runEngineGit(t, failed.Candidate.Worktree, "status", "--porcelain")
-
-	writeEngineFile(t, filepath.Join(source.WorktreeDir, "advance.txt"), "advance\n")
-	runEngineGit(t, source.WorktreeDir, "add", "advance.txt")
-	runEngineGit(t, source.WorktreeDir, "commit", "-m", "test: advance failed source")
-
-	blocked, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err == nil || !strings.Contains(err.Error(), "only an exact preparing receipt may resume") {
-		t.Fatalf("advanced source prepare = receipt %+v err %v", blocked, err)
-	}
-	if current, readErr := os.ReadFile(failed.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
-		t.Fatalf("validation-failed receipt changed after refusal: err=%v", readErr)
-	}
-	if current, readErr := os.ReadFile(candidateView.Claim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBefore) {
-		t.Fatalf("candidate Work Log changed after refusal: err=%v", readErr)
-	}
-	if current := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "rev-parse", "HEAD")); current != candidateHeadBefore {
-		t.Fatalf("candidate head changed from %s to %s", candidateHeadBefore, current)
-	}
-	if current := runEngineGit(t, failed.Candidate.Worktree, "status", "--porcelain"); current != candidateStatusBefore {
-		t.Fatalf("candidate status changed from %q to %q", candidateStatusBefore, current)
-	}
-}
-
-//nolint:paralleltest // t.Setenv confines the validation cache to this real-Go fixture.
-func TestLandWorktreeMergeAllowsUnchangedFailingAdvancedTargetValidation(t *testing.T) {
-	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed passing target validation")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "drift-baseline-source", "feature/drift-baseline", "note.txt", "source is unrelated\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeEngineFile(t, filepath.Join(fixture.canonical, "bad.go"), "package app\n\nfunc Broken() { missingAdvancedTarget }\n")
-	runEngineGit(t, fixture.canonical, "add", "bad.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance failing target validation")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("unchanged failing advanced target validation blocked landing: receipt=%+v err=%v", landed, err)
-	}
-	if landed.Status != WorktreeMergeLanded || landed.Rebase == nil || landed.TargetSHA != advancedTarget ||
-		landed.BaselineValidation.Status != quality.StatusFailed || landed.Validation.Status != quality.StatusFailed ||
-		landed.BaselineValidation.Revision != advancedTarget || landed.Validation.Revision != landed.Candidate.SHA {
-		t.Fatalf("landed validation receipt = %+v", landed)
-	}
-	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if persisted.BaselineValidation.Revision != advancedTarget || persisted.Validation.Revision != landed.Candidate.SHA {
-		t.Fatalf("durable land validation receipt = %+v", persisted)
-	}
-}
-
-func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(t *testing.T) {
-	t.Parallel()
-	failing := func(detail string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test ./...", Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	specFailing := func(detail string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "specscore", Module: ".", Check: quality.CheckSpec, Command: "specscore spec lint", Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	nodeFailing := func(detail string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "node", Module: "frontend", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	for _, test := range []struct {
-		name      string
-		baseline  quality.VerificationReport
-		candidate quality.VerificationReport
-		wantError bool
-	}{
-		{name: "passing target and candidate", baseline: quality.VerificationReport{Status: quality.StatusPassed}, candidate: quality.VerificationReport{Status: quality.StatusPassed}},
-		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
-		{name: "coverage failure subset with changed shard placement", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\n- [unsharded packages] TestRemoved\nWB coverage raw output\nbaseline output"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 6/8] TestStable\nWB coverage raw output\ncandidate output")},
-		{name: "coverage failure introduces test", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\nbaseline output"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 6/8] TestStable\n- [unsharded packages] TestNew\nWB coverage raw output\ncandidate output"), wantError: true},
-		{name: "coverage timeout names an incidental test only on one side", baseline: failing("WB coverage failure index:\n- [unsharded packages] TestModuleArchiveIncludesCmdWBEmbedInputs\n- [github.com/sneat-dev/wb/internal/worktrees shard 4/4] command failed without a named Go test\nWB coverage raw output\n[unsharded packages]\nok  \tgithub.com/sneat-dev/wb/internal/migrate\t29.113s\ntimed out after 8m0s\n[github.com/sneat-dev/wb/internal/worktrees shard 4/4]\n\ntimed out after 8m0s"), candidate: failing("WB coverage failure index:\n- [unsharded packages] command failed without a named Go test\n- [github.com/sneat-dev/wb/internal/worktrees shard 1/4] command failed without a named Go test\nWB coverage raw output\n[unsharded packages]\nok  \tgithub.com/sneat-dev/wb/api/githubapp\t1.494s\ntimed out after 25m0s\n[github.com/sneat-dev/wb/internal/worktrees shard 1/4]\n\ntimed out after 25m0s")},
-		{name: "unnamed timeout is not accepted for a named baseline failure that did not time out", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\n[github.com/sneat-dev/wb/internal/worktrees shard 2/8]\n--- FAIL: TestStable (0.10s)"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 1/4] command failed without a named Go test\nWB coverage raw output\n[github.com/sneat-dev/wb/internal/worktrees shard 1/4]\n\ntimed out after 25m0s"), wantError: true},
-		{name: "same Nx failure at different quoted snapshot paths", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"`)},
-		{name: "different Nx failure remains different", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"; install dependencies first`), wantError: true},
-		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
-		{name: "specscore environment-only baseline extra finding permits candidate", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo\nspec/features/x.md:12 missing-owner: owner is required"), candidate: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo")},
-		{name: "specscore new identity", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo"), candidate: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo\nspec/features/x.md:12 missing-owner: owner is required"), wantError: true},
-		{name: "specscore same identity changed detail", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo"), candidate: specFailing("specscore.yaml:0 studio-toolbar: now requires a configured remote")},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			err := worktreeMergeValidationRegression(test.baseline, test.candidate)
-			if (err != nil) != test.wantError {
-				t.Fatalf("regression error = %v, want error=%t", err, test.wantError)
-			}
-		})
-	}
-}
-
-func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t *testing.T) {
-	t.Parallel()
-	detail := "WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\noutput"
-	entry := func(command string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "go", Module: ".", Check: quality.CheckTest, Command: command, Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	baseline := entry("go test -coverprofile … ./... (8 process-isolated shards for ./internal/worktrees)")
-	candidate := entry("go test -coverprofile … ./... (8 process-isolated shards for ./cmd/wb,./internal/worktrees)")
-	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
-		t.Fatalf("coverage shard package placement changed failure identity: %v", err)
-	}
-	candidate.Results[0].Command = "go test -race ./..."
-	if err := worktreeMergeValidationRegression(baseline, candidate); err == nil {
-		t.Fatal("semantic coverage command change was accepted")
-	}
-}
-
-func TestWorktreeMergeValidationRegressionComparesTimeoutSourceWithoutElapsedTime(t *testing.T) {
-	t.Parallel()
-	const header = "WB coverage failure index:\n"
-	const attempt = "- [unsharded packages] command failed without a named Go test (attempt timeout; elapsed 8m0.254192833s)\n"
-	const named = "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (attempt timeout; elapsed 8m0.254170416s)\n"
-	const raw = "WB coverage raw output:\n[unsharded packages]\ntimed out after 8m0s\n[github.com/sneat-dev/wb/internal/orchestrate shard 1/4]\ntimed out after 8m0s\n"
-	report := func(detail string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test -coverprofile … ./...", Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	baseline := report(header + attempt + named + raw)
-	for _, tc := range []struct {
-		name      string
-		detail    string
-		wantError bool
-	}{
-		{name: "elapsed differs", detail: header + "- [unsharded packages] command failed without a named Go test (attempt timeout; elapsed 8m0.252630334s)\n- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (attempt timeout; elapsed 8m0.252606292s)\n" + raw},
-		{name: "timeout source changes", detail: header + "- [unsharded packages] command failed without a named Go test (check timeout; elapsed 8m0.252630334s)\n" + named + raw, wantError: true},
-		{name: "named timeout source changes", detail: header + attempt + "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestExisting (check timeout; elapsed 8m0.252606292s)\n" + raw, wantError: true},
-		{name: "new named test fails", detail: header + attempt + "- [github.com/sneat-dev/wb/internal/orchestrate shard 1/4] TestNew (attempt timeout; elapsed 8m0.252606292s)\n" + raw, wantError: true},
-		{name: "new job fails", detail: header + attempt + named + "- [github.com/sneat-dev/wb/internal/worktrees shard 2/4] command failed without a named Go test (attempt timeout; elapsed 8m0.1s)\n" + raw, wantError: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			err := worktreeMergeValidationRegression(baseline, report(tc.detail))
-			if (err != nil) != tc.wantError {
-				t.Fatalf("regression error = %v, want error=%t", err, tc.wantError)
-			}
-		})
-	}
-}
-
-func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
-	t.Parallel()
-	nodeFailing := func(detail string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	baseline := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
-03:53:52 [types] Generated 51ms
-03:53:52 [build] output: "static"
-03:53:52 [build] directory: /private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/
-… output truncated; final 750 bytes:
-03:53:53 [vite] ✓ built in 508ms
-03:53:53 ✓ Completed in 13ms.
-03:53:53 [build] ✓ Completed in 540ms.
-03:53:53 [node] 2 page(s) built in 611ms
-$ cd ../frontend && npx nx build contactus-app --base-href=/
-
- NX   Could not find Nx modules at "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-515900289/tree/frontend".
-
-Have you run npm/yarn install?
-
-[ELIFECYCLE] Command failed with exit code 1.`)
-	candidate := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
-03:53:43 [types] Generated 49ms
-03:53:43 [build] output: "static"
-03:53:43 [build] directory: /Users/alex/.wb/worktrees/merge-sneat-co-contactus-main
-… output truncated; final 750 bytes:
-03:53:44 [vite] ✓ built in 505ms
-03:53:44 ✓ Completed in 13ms.
-03:53:44 [build] ✓ Completed in 537ms.
-03:53:44 [node] 2 page(s) built in 606ms
-$ cd ../frontend && npx nx build contactus-app --base-href=/
-
- NX   Could not find Nx modules at "/Users/alex/.wb/worktrees/merge-sneat-co-contactus-main-355e0d554d15-c46e04b0fe6b/sneat-co/contactus/frontend".
-
-Have you run npm/yarn install?
-
-[ELIFECYCLE] Command failed with exit code 1.`)
-	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
-		t.Fatalf("receipt-shaped volatile output should be equivalent: %v", err)
-	}
-}
-
-func TestWorktreeMergeValidationRegressionMatchesExactContactusTruncatedTail(t *testing.T) {
-	t.Parallel()
-	nodeFailing := func(detail string) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
-			Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
-		}}}
-	}
-	baseline := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
-04:56:35 [types] Generated 58ms
-04:56:35 [build] output: "static"
-04:56:35 [build] mode: "static"
-04:56:35 [build] directory: /private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/
-… output truncated; final 750 bytes:
- built in 591ms
-04:56:36 [vite] ✓ built in 8ms
-04:56:36 [build] Rearranging server assets...
-
- generating static routes
-04:56:36   ├─ /en/privacy/index.html (+8ms)
-04:56:36   ├─ /index.html (+4ms)
-04:56:36 ✓ Completed in 21ms.
-
-04:56:36 [build] ✓ Completed in 637ms.
-04:56:36 [@astrojs/sitemap] ` + "\x60" + `sitemap-index.xml` + "\x60" + ` created at ` + "\x60" + `dist` + "\x60" + `
-04:56:36 [build] 2 page(s) built in 719ms
-04:56:36 [build] Complete!
-$ cd ../frontend && npx nx build contactus-app --base-href=/
-
- NX   Could not find Nx modules at "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-3002203795/tree/frontend".
-
-Have you run npm/yarn install?
-
-[ELIFECYCLE] Command failed with exit code 1.
-[ELIFECYCLE] Command failed with exit code 1.`)
-	candidate := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
-04:56:25 [types] Generated 27ms
-04:56:25 [build] output: "static"
-04:56:25 [build] mode: "static"
-04:56:25 [build] directory: /Users/alex/.wb/worktrees/merge-sneat-co-contactus-main
-… output truncated; final 750 bytes:
-ilt in 112ms
-04:56:25 [vite] ✓ built in 9ms
-04:56:25 [build] Rearranging server assets...
-
- generating static routes
-04:56:25   ├─ /en/privacy/index.html (+8ms)
-04:56:25   ├─ /index.html (+4ms)
-04:56:25 ✓ Completed in 20ms.
-
-04:56:25 [build] ✓ Completed in 158ms.
-04:56:25 [@astrojs/sitemap] ` + "\x60" + `sitemap-index.xml` + "\x60" + ` created at ` + "\x60" + `dist` + "\x60" + `
-04:56:25 [build] 2 page(s) built in 215ms
-04:56:25 [build] Complete!
-$ cd ../frontend && npx nx build contactus-app --base-href=/
-
- NX   Could not find Nx modules at "/Users/alex/.wb/worktrees/merge-sneat-co-contactus-main-355e0d554d15-c46e04b0fe6b/sneat-co/contactus/frontend".
-
-Have you run npm/yarn install?
-
-[ELIFECYCLE] Command failed with exit code 1.
-[ELIFECYCLE] Command failed with exit code 1.`)
-	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
-		t.Fatalf("exact Contactus receipt-shaped tail should be equivalent: %v", err)
-	}
-
-	for _, test := range []struct {
-		name   string
-		mutate func(string) string
-	}{
-		{name: "different Nx error text", mutate: func(detail string) string {
-			return strings.Replace(detail, "Could not find Nx modules", "Could not find Nx workspace", 1)
-		}},
-		{name: "different Nx error code", mutate: func(detail string) string {
-			return strings.Replace(detail, "exit code 1", "exit code 2", 1)
-		}},
-		{name: "different Nx error number", mutate: func(detail string) string {
-			return strings.Replace(detail, "2 page(s) built", "3 page(s) built", 1)
-		}},
-		{name: "different truncated timing verb", mutate: func(detail string) string {
-			return strings.Replace(detail, " built in 591ms", "failed in 591ms", 1)
-		}},
-		{name: "extra Nx diagnostic", mutate: func(detail string) string {
-			return detail + "\nNX diagnostic: install dependencies first"
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if sameWorktreeMergeFailure(nodeFailing(baseline.Results[0].Detail).Results[0], nodeFailing(test.mutate(baseline.Results[0].Detail)).Results[0]) {
-				t.Fatalf("normalized comparison erased %s", test.name)
-			}
-		})
-	}
-}
-
-func TestNormalizeWorktreeMergeFailureDetailTruncatedTimingIsFailClosed(t *testing.T) {
-	t.Parallel()
-	const marker = "… output truncated; final 750 bytes:\n"
-	for _, test := range []struct {
-		name string
-		in   string
-		want string
-	}{
-		{name: "partial built", in: marker + "ilt in 112ms", want: strings.TrimSpace(marker) + " built in <duration>"},
-		{name: "partial completed", in: marker + "pleted in 112ms", want: strings.TrimSpace(marker) + " completed in <duration>"},
-		{name: "unknown timing phrase", in: marker + "error in 112ms", want: strings.TrimSpace(marker) + " error in 112ms"},
-		{name: "semantic partial line", in: marker + "or in 112ms", want: strings.TrimSpace(marker) + " or in 112ms"},
-		{name: "marker without tail line", in: marker, want: strings.TrimSpace(marker)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if got := normalizeWorktreeMergeFailureDetail(test.in); got != test.want {
-				t.Fatalf("normalized detail = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestWorktreeMergeValidationRegressionMatchesYardiusEnvironmentFailures(t *testing.T) {
-	t.Parallel()
-	nodeFailing := func(detail string) quality.VerificationEntry {
-		return quality.VerificationEntry{Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail}
-	}
-	specFailing := func(detail string) quality.VerificationEntry {
-		return quality.VerificationEntry{Language: "specscore", Module: "", Check: quality.CheckSpec, Command: "", Status: quality.StatusFailed, Detail: detail}
-	}
-	baseline := quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
-		nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
-03:54:32 [types] Generated 48ms
-03:54:32 [build] directory: /private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/
-… output truncated; final 750 bytes:
-$ cd .. && npx nx build yardius-app --base-href=/
-
- NX   Could not find Nx modules at "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-786210721/tree".
-
-Have you run npm/yarn install?
-
-[ELIFECYCLE] Command failed with exit code 1.`),
-		specFailing(`SpecScore config "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-786210721/tree/specscore.yaml" requires root "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-786210721/tree/spec", but the root is missing`),
-	}}
-	candidate := quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
-		nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
-03:54:25 [types] Generated 46ms
-03:54:25 [build] directory: /Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius
-… output truncated; final 750 bytes:
-$ cd .. && npx nx build yardius-app --base-href=/
-
- NX   Could not find Nx modules at "/Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius".
-
-Have you run npm/yarn install?
-
-[ELIFECYCLE] Command failed with exit code 1.`),
-		specFailing(`SpecScore config "/Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius/specscore.yaml" requires root "/Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius/spec", but the root is missing`),
-	}}
-	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
-		t.Fatalf("receipt-shaped environment failures should be equivalent: %v", err)
-	}
-}
-
-func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(t *testing.T) {
-	t.Parallel()
-	baseline := `03:53:52 [types] Generated 51ms at /private/var/folders/c6/target/tree/frontend".`
-	candidate := `03:53:43 [types] Generated 49ms at /Users/alex/.wb/worktrees/candidate/tree/frontend".`
-	if got, want := normalizeWorktreeMergeFailureDetail(baseline), normalizeWorktreeMergeFailureDetail(candidate); got != want {
-		t.Fatalf("timestamp/duration/path-only difference normalized to %q and %q", got, want)
-	}
-	if got, want := normalizeWorktreeMergeFailureDetail(`Nx modules at "/private/var/folders/c6/target/tree".`), `Nx modules at "<workspace>".`; got != want {
-		t.Fatalf("absolute path terminal punctuation normalization = %q, want %q", got, want)
-	}
-	for _, test := range []struct {
-		name      string
-		baseline  string
-		candidate string
-	}{
-		{name: "semantic duration", baseline: "command timed out after 30s", candidate: "command timed out after 60s"},
-		{name: "embedded timestamp", baseline: "error identity recorded at 03:53:43", candidate: "error identity recorded at 03:53:44"},
-		{name: "line-leading semantic timestamp", baseline: "03:53:43 error identity", candidate: "03:53:44 error identity"},
-		{name: "error code", baseline: "command failed with exit code 1", candidate: "command failed with exit code 2"},
-		{name: "semantic number", baseline: "2 page(s) built", candidate: "3 page(s) built"},
-		{name: "error text", baseline: "Could not find Nx modules", candidate: "Could not find Nx workspace"},
-		{name: "added diagnostic", baseline: "Nx modules missing", candidate: "Nx modules missing; install dependencies first"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if left, right := normalizeWorktreeMergeFailureDetail(test.baseline), normalizeWorktreeMergeFailureDetail(test.candidate); left == right {
-				t.Fatalf("normalized comparison erased %s: %q", test.name, left)
-			}
-		})
-	}
-}
-
-//nolint:paralleltest // t.Setenv confines the validation cache to this real-Go fixture.
-func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testing.T) {
-	t.Setenv("WB_VALIDATION_CACHE", filepath.Join(t.TempDir(), "cache"))
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
-	writeEngineFile(t, filepath.Join(fixture.canonical, "spec", "README.md"), "# Example\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go", "spec/README.md")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: add target baseline fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	wantOrigin := strings.TrimSpace(runEngineGit(t, fixture.canonical, "remote", "get-url", "origin"))
-	observedOrigin := filepath.Join(t.TempDir(), "baseline-origin.txt")
-	bin := t.TempDir()
-	specscore := filepath.Join(bin, "specscore")
-	if err := testenv.WriteExecutableFile(specscore, []byte("#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"spec lint\" ]; then exit 2; fi\ngit remote get-url origin >\"$WB_TEST_BASELINE_ORIGIN\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("WB_TEST_BASELINE_ORIGIN", observedOrigin)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	report, err := verifyWorktreeMergeTarget(context.Background(), fixture.repository.Slug, fixture.canonical, target, 0, 0, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Status != quality.StatusPassed {
-		t.Fatalf("target baseline report = %+v", report)
-	}
-	got, err := os.ReadFile(observedOrigin)
-	if err != nil || strings.TrimSpace(string(got)) != wantOrigin {
-		t.Fatalf("target baseline origin = %q err=%v, want %q", got, err, wantOrigin)
 	}
 }
 
@@ -895,144 +325,6 @@ func TestLandWorktreeMergeDirectWalksExactRemoteJourney(t *testing.T) {
 	}
 }
 
-func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "published-stop-source", "feature/published-stop", "published-stop.txt", "published stop\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receipt.ValidationIdentity == nil || receipt.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA || receipt.ValidationIdentity.TargetSHA != receipt.TargetSHA {
-		t.Fatalf("prepare did not publish exact validation identity: %+v", receipt.ValidationIdentity)
-	}
-	reusable, identityErr := preparedValidationStillValidContext(context.Background(), receipt, worktreeMergeValidationPlan{}, 0, 0, 0)
-	if identityErr != nil || !reusable {
-		t.Fatalf("unchanged prepared validation was not reusable: reusable=%t err=%v", reusable, identityErr)
-	}
-	drifted := receipt
-	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", WBBuild: receipt.ValidationIdentity.WBBuild, WBExecutableSHA: receipt.ValidationIdentity.WBExecutableSHA, Validators: receipt.ValidationIdentity.Validators, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
-	reusable, identityErr = preparedValidationStillValidContext(context.Background(), drifted, worktreeMergeValidationPlan{}, 0, 0, 0)
-	if identityErr != nil || reusable {
-		t.Fatalf("validation identity drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
-	}
-	validatorDrifted := receipt
-	validatorIdentity := *receipt.ValidationIdentity
-	validatorIdentity.Validators = map[string]string{"go": "drifted"}
-	validatorDrifted.ValidationIdentity = &validatorIdentity
-	reusable, identityErr = preparedValidationStillValidContext(context.Background(), validatorDrifted, worktreeMergeValidationPlan{}, 0, 0, 0)
-	if identityErr != nil || reusable {
-		t.Fatalf("validator executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
-	}
-	wbDrifted := receipt
-	wbIdentity := *receipt.ValidationIdentity
-	wbIdentity.WBExecutableSHA = "drifted"
-	wbDrifted.ValidationIdentity = &wbIdentity
-	reusable, identityErr = preparedValidationStillValidContext(context.Background(), wbDrifted, worktreeMergeValidationPlan{}, 0, 0, 0)
-	if identityErr != nil || reusable {
-		t.Fatalf("WB executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
-	}
-	persistedPrepare, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if reusable, identityErr = preparedValidationStillValidContext(context.Background(), persistedPrepare, worktreeMergeValidationPlan{}, 0, 0, 0); identityErr != nil || !reusable {
-		current, _ := worktreeMergeValidationIdentity(persistedPrepare)
-		t.Fatalf("persisted prepared validation was not reusable: reusable=%t err=%v status=%s phase=%s persisted=%+v current=%+v validation=%+v clean=%t", reusable, identityErr, persistedPrepare.Status, persistedPrepare.Phase, persistedPrepare.ValidationIdentity, current, persistedPrepare.Validation, persistedPrepare.Validation.WorkspaceClean)
-	}
-	installWorktreeMergePublishOnlyPRGH(t)
-	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	logPath := filepath.Join(t.TempDir(), "gh.log")
-	t.Setenv("WB_TEST_GH_LOG", logPath)
-	var resumeEvents []progress.Event
-
-	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-		Progress: func(event progress.Event) { resumeEvents = append(resumeEvents, event) },
-	})
-	if err != nil {
-		t.Fatalf("publish-only resume failed: receipt=%+v err=%v", published, err)
-	}
-	if published.Status != WorktreeMergePublished || published.PullRequest != "https://example.test/acme/app/pull/41" ||
-		published.PublishedCandidateSHA != receipt.Candidate.SHA || published.LandingSHA != "" || published.Checks.Status != "" {
-		t.Fatalf("published handoff receipt = %+v", published)
-	}
-	for _, event := range resumeEvents {
-		if event.Phase == "validate_preserved_candidate" && event.State == progress.Started {
-			t.Fatal("exact prepared validation was rerun during unchanged stop-before-merge resume")
-		}
-	}
-	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, receipt.Candidate.SHA+"\t") {
-		t.Fatalf("remote candidate = %q, want exact %s", got, receipt.Candidate.SHA)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != receipt.TargetSHA {
-		t.Fatalf("publish-only handoff changed target from %s to %s", receipt.TargetSHA, got)
-	}
-	logContents, readErr := os.ReadFile(logPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	for _, forbidden := range []string{"pr merge", "check-runs", "/status?"} {
-		if strings.Contains(string(logContents), forbidden) {
-			t.Fatalf("publish-only handoff invoked %q:\n%s", forbidden, logContents)
-		}
-	}
-	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if persisted.Status != WorktreeMergePublished || persisted.Candidate.SHA != receipt.Candidate.SHA || persisted.TargetSHA != receipt.TargetSHA {
-		t.Fatalf("persisted published handoff = %+v", persisted)
-	}
-
-	continued, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err == nil || continued.Status != WorktreeMergeChecksFailed {
-		t.Fatalf("ordinary resume did not continue into the candidate-check boundary: receipt=%+v err=%v", continued, err)
-	}
-	logContents, readErr = os.ReadFile(logPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	// The checks stage is now vendored: it reads the pull request and the head
-	// commit's own check runs through `gh api`, never `gh pr checks --json`,
-	// which the installed 2.45 does not support.
-	if !strings.Contains(string(logContents), "api repos/acme/app/pulls/41") ||
-		!strings.Contains(string(logContents), "/check-runs?per_page=100") ||
-		strings.Contains(string(logContents), "pr merge") {
-		t.Fatalf("ordinary resume did not continue from the published handoff at checks without merging:\n%s", logContents)
-	}
-
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "published-repair.txt"), "repair\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "published-repair.txt")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: advance published candidate after failed checks")
-	descendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-	continued.Status = WorktreeMergeConflict
-	continued.Failure = "older WB rejected recoverable published candidate drift"
-	if err := persistWorktreeMergeReceipt(continued); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("WB_TEST_CANDIDATE_SHA", descendant)
-	advanced, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err == nil || advanced.Status != WorktreeMergeChecksFailed {
-		t.Fatalf("published descendant resume did not reach exact-head checks: receipt=%+v err=%v", advanced, err)
-	}
-	if advanced.Candidate.SHA != descendant || advanced.PublishedCandidateSHA != descendant || advanced.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA {
-		t.Fatalf("published descendant receipt = %+v", advanced)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
-		t.Fatalf("remote descendant = %q, want %s", got, descendant)
-	}
-}
-
 func TestResumeWorktreeMergeAdoptsExistingExactHeadPullRequest(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "existing-pr-source", "feature/existing-pr", "existing-pr.txt", "candidate\n")
@@ -1097,46 +389,6 @@ func TestResumeWorktreeMergeAdoptsExistingExactHeadPullRequest(t *testing.T) {
 	}
 }
 
-func TestAdvancePublishedWorktreeMergeCandidateAcceptsRecordedDescendantChain(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "published-chain-source", "feature/published-chain", "published-chain.txt", "published\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	published := receipt.Candidate.SHA
-	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", published
-
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "recorded.txt"), "recorded\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "recorded.txt")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: record validated descendant")
-	receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "resolved.txt"), "resolved\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "resolved.txt")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: resolve later target conflict")
-	head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-
-	advanced, err := advancePublishedWorktreeMergeCandidate(context.Background(), nil, defaultRunner, &receipt)
-	if err != nil {
-		t.Fatalf("advance exact published ancestry chain: %v", err)
-	}
-	if !advanced || receipt.Candidate.SHA != head {
-		t.Fatalf("advanced=%v candidate=%s, want %s", advanced, receipt.Candidate.SHA, head)
-	}
-
-	receipt.Candidate.SHA = head
-	receipt.PublishedCandidateSHA = strings.Repeat("f", 40)
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "untrusted.txt"), "untrusted\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "untrusted.txt")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: untrusted ancestry probe")
-	if _, err := advancePublishedWorktreeMergeCandidate(context.Background(), nil, defaultRunner, &receipt); err == nil || !strings.Contains(err.Error(), "published candidate predecessor") {
-		t.Fatalf("unrelated published predecessor was not refused: %v", err)
-	}
-}
-
 func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktree(t *testing.T) {
 	t.Parallel()
 	candidate := t.TempDir()
@@ -1153,99 +405,6 @@ func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktr
 	reusable, err := preparedValidationStillValidContext(context.Background(), receipt, worktreeMergeValidationPlan{}, 0, 0, 0)
 	if err != nil || !reusable {
 		t.Fatalf("non-Go passed receipt was not reusable without baseline: reusable=%t err=%v", reusable, err)
-	}
-}
-
-func TestResumeWorktreeMergeStopBeforeMergeRefusesTargetOrSourceDrift(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		drift func(t *testing.T, fixture engineFixture, source worktrees.CreateResult)
-		want  string
-	}{
-		{
-			name: "target",
-			drift: func(t *testing.T, fixture engineFixture, _ worktrees.CreateResult) {
-				writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "target drift\n")
-				runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
-				runEngineGit(t, fixture.canonical, "commit", "-m", "test: target drift")
-				runEngineGit(t, fixture.canonical, "push", "origin", "main")
-			},
-			want: "target drifted",
-		},
-		{
-			name: "source",
-			drift: func(t *testing.T, _ engineFixture, source worktrees.CreateResult) {
-				writeEngineFile(t, filepath.Join(source.WorktreeDir, "source-drift.txt"), "source drift\n")
-				runEngineGit(t, source.WorktreeDir, "add", "source-drift.txt")
-				runEngineGit(t, source.WorktreeDir, "commit", "-m", "test: source drift")
-			},
-			want: "advanced from",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newEngineFixture(t)
-			source := createMergeSource(t, fixture, "published-stop-drift-"+test.name, "feature/published-stop-drift-"+test.name, "drift.txt", "candidate\n")
-			receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-				ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			test.drift(t, fixture, source)
-			failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-				ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-				StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-			})
-			if err == nil || !strings.Contains(err.Error(), test.want) || failed.Status != WorktreeMergeConflict {
-				t.Fatalf("drift=%s receipt=%+v err=%v", test.name, failed, err)
-			}
-			if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); got != receipt.Candidate.SHA {
-				t.Fatalf("preserved candidate changed after %s drift: got %s want %s", test.name, got, receipt.Candidate.SHA)
-			}
-		})
-	}
-}
-
-func TestResumeWorktreeMergeAcceptsPostLandingTargetDescendant(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "post-land-descendant-source", "feature/post-land-descendant", "candidate.txt", "candidate\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
-	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeEngineFile(t, filepath.Join(fixture.canonical, "release.txt"), "automatic release\n")
-	runEngineGit(t, fixture.canonical, "add", "release.txt")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "chore: automatic release")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	descendant := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	landed.Status = WorktreeMergePostTargetCIFailed
-	landed.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: landed.LandingSHA}
-	landed.CanonicalSync = ""
-	if err := persistWorktreeMergeReceipt(landed); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-
-	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resumed.Status != WorktreeMergeLanded || resumed.LandingSHA != landed.LandingSHA || resumed.Checks.ObservedTargetHead != descendant || !resumed.Checks.TargetContainsHead {
-		t.Fatalf("descendant post-land resume = %+v, want landing %s and target %s", resumed, landed.LandingSHA, descendant)
 	}
 }
 
@@ -1271,7 +430,7 @@ func TestResumeWorktreeMergeRefusesPostLandingTargetWithoutLanding(t *testing.T)
 	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", unrelated, landed.LandingSHA)
 	runEngineGit(t, fixture.canonical, "push", "--force", "origin", "main")
 	landed.Status = WorktreeMergePostTargetCIFailed
-	landed.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: landed.LandingSHA}
+	landed.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Head: landed.LandingSHA}
 	landed.CanonicalSync = ""
 	if err := persistWorktreeMergeReceipt(landed); err != nil {
 		t.Fatal(err)
@@ -1284,42 +443,6 @@ func TestResumeWorktreeMergeRefusesPostLandingTargetWithoutLanding(t *testing.T)
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not contain exact landed head") || failed.Status != WorktreeMergePostTargetCIFailed {
 		t.Fatalf("non-descendant post-land resume = %+v err=%v", failed, err)
-	}
-}
-
-func TestWorktreeMergePushRunsExactHookOnceBeforeOpeningPushConnection(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "push-gate-source", "feature/push-gate", "push.txt", "push\n")
-	head := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
-	hooksDir := t.TempDir()
-	logPath := filepath.Join(t.TempDir(), "pre-push.log")
-	hook := filepath.Join(hooksDir, "pre-push")
-	if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\nset -eu\nprintf 'call %s %s\\n' \"$1\" \"$2\" >>\"$WB_TEST_PUSH_LOG\"\ncat >>\"$WB_TEST_PUSH_LOG\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("WB_TEST_PUSH_LOG", logPath)
-	runEngineGit(t, source.WorktreeDir, "config", "core.hooksPath", hooksDir)
-	remoteRef := "refs/heads/gated-candidate"
-	gate, err := runWorktreeMergePrePushGate(context.Background(), source.WorktreeDir, head, remoteRef, 5*time.Second, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pushWorktreeMergeRef(context.Background(), source.WorktreeDir, head, remoteRef, false, 5*time.Second, 0); err != nil {
-		t.Fatal(err)
-	}
-	logContents, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logText := string(logContents)
-	if strings.Count(logText, "call origin ") != 1 || !strings.Contains(logText, "refs/heads/feature/push-gate "+head+" "+remoteRef+" "+strings.Repeat("0", 40)) {
-		t.Fatalf("pre-push hook did not receive one exact update: %q", logText)
-	}
-	if gate.Status != "passed" || gate.LocalSHA != head || gate.RemoteRef != remoteRef || gate.PreviousRemoteSHA != strings.Repeat("0", 40) {
-		t.Fatalf("push gate receipt = %+v", gate)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "ls-remote", "origin", remoteRef)); !strings.HasPrefix(got, head+"\t") {
-		t.Fatalf("no-verify transport did not publish exact gated head: %q", got)
 	}
 }
 
@@ -1461,223 +584,6 @@ func TestLandWorktreeMergeRevalidatesValidationFailedReceiptThenPublishes(t *tes
 	}
 	if stored.Status != WorktreeMergeLanded || stored.ValidationIdentity == nil || stored.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA {
 		t.Fatalf("persisted receipt after revalidated publish = %+v", stored)
-	}
-}
-
-// TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked proves the
-// other half of the guard: when the re-run validation fails again, the
-// receipt stays prepare/validation_failed and nothing reaches the remote —
-// resume must not silently downgrade a still-broken candidate into a push.
-func TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "still-failing-source", "feature/still-failing", "candidate.go", "package app\n\nfunc Candidate() { missingCandidate }\n")
-
-	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err == nil || failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA == "" || failed.Phase != WorktreeMergePhasePrepare {
-		t.Fatalf("initial validation failure = receipt %+v err %v", failed, err)
-	}
-	remoteBefore := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "ls-remote", fixture.repository.CloneURL, "refs/heads/"+failed.Candidate.Branch))
-	if remoteBefore != "" {
-		t.Fatalf("candidate branch already present on origin before resume: %q", remoteBefore)
-	}
-
-	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: failed.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err == nil {
-		t.Fatalf("resume of a still-failing candidate was not refused: receipt=%+v", resumed)
-	}
-	if resumed.Phase != WorktreeMergePhasePrepare || resumed.Status != WorktreeMergeValidationFailed {
-		t.Fatalf("still-failing resume receipt = %+v, want prepare/validation_failed", resumed)
-	}
-	remoteAfter := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "ls-remote", fixture.repository.CloneURL, "refs/heads/"+failed.Candidate.Branch))
-	if remoteAfter != "" {
-		t.Fatalf("still-failing resume pushed the candidate branch: %q", remoteAfter)
-	}
-	stored, readErr := readWorktreeMergeReceipt(failed.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if stored.Phase != WorktreeMergePhasePrepare || stored.Status != WorktreeMergeValidationFailed || stored.PullRequest != "" {
-		t.Fatalf("persisted still-failing receipt = %+v", stored)
-	}
-}
-
-// TestLandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate
-// covers the review finding for the 2026-09-07 incident: a receipt already in
-// the land phase — an open pull request, PublishedCandidateSHA naming that
-// PR's old head — whose candidate had since advanced to a new SHA and
-// recorded validation_failed fell straight through the old
-// requireWorktreeMergePublishedValidation carve-out (it only checked that a
-// PR and a PublishedCandidateSHA existed, never that PublishedCandidateSHA
-// still named the exact current candidate) and pushed the unvalidated,
-// still-failing candidate to the PR branch on an ordinary `resume`. Resume
-// must instead re-validate the exact candidate SHA before any push, and
-// refuse without touching the remote when that re-validation still fails.
-func TestLandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "land-phase-advance-refuse-source", "feature/land-phase-advance-refuse", "candidate.go", "package app\n\nfunc Candidate() {}\n")
-
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil || receipt.Status != WorktreeMergePrepared {
-		t.Fatalf("initial prepared candidate = %+v err=%v", receipt, err)
-	}
-
-	installWorktreeMergePublishOnlyPRGH(t)
-	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
-
-	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		StopBeforeMerge: true, Timeout: 20 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil || published.Status != WorktreeMergePublished || published.PullRequest == "" || published.PublishedCandidateSHA != receipt.Candidate.SHA {
-		t.Fatalf("publish-only handoff = %+v err=%v", published, err)
-	}
-
-	// Advance the candidate past the published head with a change that is
-	// still broken, and mirror the exact incident receipt shape: land phase,
-	// an open PR at the old published head, validation_failed status.
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "candidate.go"), "package app\n\nfunc Candidate() { missingCandidate }\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "candidate.go")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: advance candidate with a still-broken change")
-	brokenDescendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-	advanced := published
-	advanced.Candidate.SHA = brokenDescendant
-	advanced.Status = WorktreeMergeValidationFailed
-	advanced.Failure = "candidate check failed"
-	advanced.Validation.Status = quality.StatusFailed
-	if err := persistWorktreeMergeReceipt(advanced); err != nil {
-		t.Fatal(err)
-	}
-	remoteBefore := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch))
-	if !strings.HasPrefix(remoteBefore, receipt.Candidate.SHA+"\t") {
-		t.Fatalf("candidate branch remote before resume = %q, want the original published head %s", remoteBefore, receipt.Candidate.SHA)
-	}
-
-	t.Setenv("WB_TEST_CANDIDATE_SHA", brokenDescendant)
-	refused, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: advanced.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 20 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err == nil {
-		t.Fatalf("resume of an advanced, still-failing land-phase candidate was not refused: receipt=%+v", refused)
-	}
-	if refused.Phase != WorktreeMergePhaseLand || refused.Status != WorktreeMergeValidationFailed ||
-		refused.PullRequest != published.PullRequest || refused.PublishedCandidateSHA != published.PublishedCandidateSHA ||
-		refused.Candidate.SHA != brokenDescendant {
-		t.Fatalf("refused land-phase receipt = %+v", refused)
-	}
-	remoteAfter := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch))
-	if remoteAfter != remoteBefore {
-		t.Fatalf("resume pushed the still-failing advanced candidate: before=%q after=%q", remoteBefore, remoteAfter)
-	}
-	stored, readErr := readWorktreeMergeReceipt(advanced.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if stored.Phase != WorktreeMergePhaseLand || stored.Status != WorktreeMergeValidationFailed || stored.PullRequest != published.PullRequest {
-		t.Fatalf("persisted refused land-phase receipt = %+v", stored)
-	}
-}
-
-// TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes
-// is the pass-case counterpart to the refusal test above: once the advanced
-// candidate SHA re-validates clean, resume must push it to the already-open
-// PR branch rather than refusing, or reusing the stale failed validation
-// recorded against the old, already-published head.
-func TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "land-phase-advance-pass-source", "feature/land-phase-advance-pass", "candidate.go", "package app\n\nfunc Candidate() {}\n")
-
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil || receipt.Status != WorktreeMergePrepared {
-		t.Fatalf("initial prepared candidate = %+v err=%v", receipt, err)
-	}
-
-	installWorktreeMergePublishOnlyPRGH(t)
-	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
-
-	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		StopBeforeMerge: true, Timeout: 20 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil || published.Status != WorktreeMergePublished || published.PullRequest == "" || published.PublishedCandidateSHA != receipt.Candidate.SHA {
-		t.Fatalf("publish-only handoff = %+v err=%v", published, err)
-	}
-
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "candidate.go"), "package app\n\nfunc Candidate() {}\n\nfunc CandidateAdvanced() {}\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "candidate.go")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "feat: advance candidate with a clean change")
-	descendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-	advanced := published
-	advanced.Candidate.SHA = descendant
-	advanced.Status = WorktreeMergeValidationFailed
-	advanced.Failure = "candidate check failed"
-	advanced.Validation.Status = quality.StatusFailed
-	if err := persistWorktreeMergeReceipt(advanced); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("WB_TEST_CANDIDATE_SHA", descendant)
-	var events []progress.Event
-	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: advanced.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 20 * time.Second, CheckPollInterval: time.Millisecond,
-		Progress: func(event progress.Event) { events = append(events, event) },
-	})
-	// The mocked PR exposes zero check-runs, which never resolves to a merge,
-	// so the flow legitimately stops at the exact-head checks boundary (the
-	// same boundary TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff
-	// exercises for an ordinary, non-StopBeforeMerge resume). What is under
-	// test here is that re-validation ran and pushed the fixed descendant
-	// before that boundary, not that the mocked remote CI ever completes.
-	if err == nil || resumed.Status != WorktreeMergeChecksFailed {
-		t.Fatalf("advanced candidate resume did not reach the exact-head checks boundary: receipt=%+v err=%v", resumed, err)
-	}
-	if resumed.Candidate.SHA != descendant || resumed.PublishedCandidateSHA != descendant {
-		t.Fatalf("advanced candidate was not published at its exact descendant SHA: %+v", resumed)
-	}
-	foundRevalidate := false
-	for _, event := range events {
-		if event.Phase == "revalidate_candidate" && event.State == progress.Completed {
-			foundRevalidate = true
-		}
-	}
-	if !foundRevalidate {
-		t.Fatalf("resume did not report re-validating the advanced candidate before publishing: %+v", events)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
-		t.Fatalf("descendant was not pushed to the PR branch: %q, want prefix %s", got, descendant)
-	}
-	stored, readErr := readWorktreeMergeReceipt(advanced.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if stored.Status == WorktreeMergeValidationFailed {
-		t.Fatalf("persisted receipt still shows validation_failed after a passing re-validation: %+v", stored)
 	}
 }
 
@@ -2276,19 +1182,227 @@ func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *test
 			},
 		},
 	}
+	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	type fileSnapshot struct {
+		contents []byte
+		mode     os.FileMode
+	}
+	snapshots := map[string]fileSnapshot{}
+	for _, claim := range claims {
+		for _, path := range []string{claim, terminalWorkLogPath(claim), sealedTerminalOutboxPath(claim)} {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshots[path] = fileSnapshot{contents: contents, mode: info.Mode().Perm()}
+		}
+	}
+	receiptBytes, err := os.ReadFile(landed.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptInfo, err := os.Stat(landed.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectations, err := terminalWorkLogExpectations(landed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalHead := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	remoteTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "ls-remote", "--heads", "origin", "refs/heads/"+landed.Target))
+	verifyAuthority := func(ctx context.Context, affected string, localPresent, remotePresent bool) error {
+		for path, snapshot := range snapshots {
+			if path == affected {
+				continue
+			}
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(contents, snapshot.contents) || info.Mode().Perm() != snapshot.mode {
+				return fmt.Errorf("unaffected native custody changed: %s", path)
+			}
+		}
+		head, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(head) != canonicalHead {
+			return fmt.Errorf("canonical target changed: %s", head)
+		}
+		remote, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+landed.Target)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(remote) != remoteTarget {
+			return fmt.Errorf("remote target changed: %s", remote)
+		}
+		for _, expectation := range expectations {
+			if _, err := os.Lstat(expectation.Worktree); !os.IsNotExist(err) {
+				return fmt.Errorf("terminal worktree no longer absent: %s: %v", expectation.Worktree, err)
+			}
+			local, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
+			if err != nil {
+				return err
+			}
+			wantLocal := ""
+			if localPresent && expectation.Task == landed.Candidate.Task {
+				wantLocal = expectation.Branch
+			}
+			if strings.TrimSpace(local) != wantLocal {
+				return fmt.Errorf("unexpected local cleanup ref %s: %s", expectation.Branch, local)
+			}
+			remote, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
+			if err != nil {
+				return err
+			}
+			wantRemote := ""
+			if remotePresent && expectation.Task == landed.Candidate.Task {
+				wantRemote = landed.Candidate.SHA + "\trefs/heads/" + expectation.Branch
+			}
+			if strings.TrimSpace(remote) != wantRemote {
+				return fmt.Errorf("unexpected remote cleanup ref %s: %s", expectation.Branch, remote)
+			}
+		}
+		return nil
+	}
+	verifyBaseline := func(ctx context.Context) error {
+		if err := verifyAuthority(ctx, "", false, false); err != nil {
+			return err
+		}
+		contents, err := os.ReadFile(landed.ReceiptPath)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(landed.ReceiptPath)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(contents, receiptBytes) || info.Mode().Perm() != receiptInfo.Mode().Perm() {
+			return fmt.Errorf("full native receipt baseline changed")
+		}
+		if err := worktrees.ValidateRemovedTerminalWorkLogs(fixture.githubDir, expectations); err != nil {
+			return err
+		}
+		if err := requireTerminalCleanupBranchesAbsent(ctx, fixture.githubDir, landed, expectations, 0, 0); err != nil {
+			return err
+		}
+		lock, err := AcquireOperationLock(fixture.githubDir, landed.Lane, true)
+		if err != nil {
+			return fmt.Errorf("resume did not release native operation lock: %w", err)
+		}
+		return lock.Release()
+	}
+	if err := verifyBaseline(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture, _, landed, claims := landedTerminalCleanupFixture(t)
-			externallyTerminalizeMergeCleanup(t, fixture, &landed)
+		restored := false
+		ok := t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := verifyBaseline(ctx); err != nil {
+				t.Fatal(err)
+			}
+			affected := ""
+			switch test.name {
+			case "missing terminal", "mismatched terminal":
+				affected = terminalWorkLogPath(claims[landed.Candidate.Task])
+			case "tampered immutable claim digest":
+				affected = claims[landed.Candidate.Task]
+			case "missing sealed outbox", "mismatched sealed outbox":
+				affected = sealedTerminalOutboxPath(claims[landed.Candidate.Task])
+			}
+			localRef := test.name == "local branch remains"
+			remoteRef := test.name == "remote branch remains"
+			restore := func(ctx context.Context) error {
+				if affected != "" {
+					snapshot := snapshots[affected]
+					if err := os.WriteFile(affected, snapshot.contents, snapshot.mode); err != nil {
+						return err
+					}
+					if err := os.Chmod(affected, snapshot.mode); err != nil {
+						return err
+					}
+				}
+				if localRef {
+					current, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "for-each-ref", "--format=%(objectname)", "refs/heads/"+landed.Candidate.Branch)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(current) != "" && strings.TrimSpace(current) != landed.Candidate.SHA {
+						return fmt.Errorf("refuse restoring unexpected local row ref: %s", current)
+					}
+					if _, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "update-ref", "-d", "refs/heads/"+landed.Candidate.Branch); err != nil {
+						return err
+					}
+				}
+				if remoteRef {
+					current, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+landed.Candidate.Branch)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(current) != "" {
+						if strings.TrimSpace(current) != landed.Candidate.SHA+"\trefs/heads/"+landed.Candidate.Branch {
+							return fmt.Errorf("refuse restoring unexpected remote row ref: %s", current)
+						}
+						if _, _, err := runCommand(ctx, defaultRunner, 0, 0, fixture.canonical, "git", "push", "origin", ":refs/heads/"+landed.Candidate.Branch); err != nil {
+							return err
+						}
+					}
+				}
+				if err := os.WriteFile(landed.ReceiptPath, receiptBytes, receiptInfo.Mode().Perm()); err != nil {
+					return err
+				}
+				if err := os.Chmod(landed.ReceiptPath, receiptInfo.Mode().Perm()); err != nil {
+					return err
+				}
+				if err := verifyBaseline(ctx); err != nil {
+					return err
+				}
+				restored = true
+				return nil
+			}
+			t.Cleanup(func() {
+				if restored {
+					return
+				}
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cleanupCancel()
+				if err := restore(cleanupCtx); err != nil {
+					t.Errorf("restore owned native baseline: %v", err)
+				}
+			})
+			// Every original row recipe and refusal predicate below stays intact.
 			test.breakEvidence(t, fixture, landed, claims)
 			failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 				ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
 				Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
 			})
+			unaffectedErr := verifyAuthority(ctx, affected, localRef, remoteRef)
+			if restoreErr := restore(ctx); restoreErr != nil {
+				t.Fatalf("restore shared native fixture: %v", restoreErr)
+			}
+			if unaffectedErr != nil {
+				t.Fatalf("refusal changed unaffected authority before restoration: %v", unaffectedErr)
+			}
 			if err == nil || !strings.Contains(err.Error(), test.want) || failed.Status == WorktreeMergeComplete {
 				t.Fatalf("terminal cleanup refusal = %+v err=%v, want %q", failed, err, test.want)
 			}
 		})
+		if !ok || !restored {
+			t.Fatal("stop shared native baseline after failed row or incomplete restoration")
+		}
 	}
 }
 
@@ -2446,421 +1560,6 @@ func squashLandedMergeReceipt(t *testing.T) (engineFixture, worktrees.CreateResu
 	return fixture, source, receipt, landing
 }
 
-func TestLandWorktreeMergeRebasesUnpublishedCandidateOntoAdvancedTarget(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "rebase-source", "feature/rebase", "feature.txt", "feature\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	preparedCandidate := receipt.Candidate.SHA
-	writeEngineFile(t, filepath.Join(fixture.canonical, "target.txt"), "target advanced\n")
-	runEngineGit(t, fixture.canonical, "add", "target.txt")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: advance target")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Cleanup: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if landed.Rebase == nil || landed.Rebase.CandidateBefore != preparedCandidate || landed.Rebase.TargetBefore != receipt.TargetSHA ||
-		landed.Rebase.TargetAfter != advancedTarget || landed.Rebase.CandidateAfter != landed.Candidate.SHA {
-		t.Fatalf("rebase receipt = %+v, landing = %+v", landed.Rebase, landed)
-	}
-	if landed.Candidate.SHA == preparedCandidate {
-		t.Fatal("candidate SHA did not change after target rebase")
-	}
-	if landed.Status != WorktreeMergeComplete {
-		t.Fatalf("rebased landing did not complete cleanup: %+v", landed)
-	}
-	for _, name := range []string{"feature.txt", "target.txt"} {
-		if _, err := os.Stat(filepath.Join(fixture.canonical, name)); err != nil {
-			t.Fatalf("landed canonical target lacks %s: %v", name, err)
-		}
-	}
-	if _, statErr := os.Stat(source.WorktreeDir); !os.IsNotExist(statErr) {
-		t.Fatalf("rebased source worktree remains after cleanup: %v", statErr)
-	}
-}
-
-func TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges(t *testing.T) {
-	fixture := newEngineFixture(t)
-	before := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	updater := filepath.Join(t.TempDir(), "updater")
-	runEngineGit(t, filepath.Dir(updater), "clone", fixture.repository.CloneURL, updater)
-	runEngineGit(t, updater, "config", "user.name", "WB Test")
-	runEngineGit(t, updater, "config", "user.email", "wb@example.test")
-	writeEngineFile(t, filepath.Join(updater, "updated.txt"), "updated\n")
-	runEngineGit(t, updater, "add", "updated.txt")
-	runEngineGit(t, updater, "commit", "-m", "update target")
-	runEngineGit(t, updater, "push", "origin", "main")
-	after := strings.TrimSpace(runEngineGit(t, updater, "rev-parse", "HEAD"))
-
-	var updates []CheckoutUpdate
-	notify := func(_ context.Context, update CheckoutUpdate) {
-		updates = append(updates, update)
-	}
-	status, err := syncCanonicalMergeTarget(context.Background(), fixture.canonical, "main", after, 5*time.Second, 0, notify)
-	if err != nil || status != "fast_forwarded" {
-		t.Fatalf("sync status=%q err=%v", status, err)
-	}
-	if len(updates) != 1 || updates[0].OldSHA != before || updates[0].NewSHA != after || updates[0].Cause != "merge-land" {
-		t.Fatalf("updates=%+v", updates)
-	}
-	status, err = syncCanonicalMergeTarget(context.Background(), fixture.canonical, "main", after, 5*time.Second, 0, notify)
-	if err != nil || status != "fast_forwarded" || len(updates) != 1 {
-		t.Fatalf("unchanged sync status=%q err=%v updates=%+v", status, err, updates)
-	}
-}
-
-func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "rebase-conflict-source", "feature/rebase-conflict", "shared.txt", "source\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourceHead := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
-	writeEngineFile(t, filepath.Join(fixture.canonical, "shared.txt"), "target\n")
-	runEngineGit(t, fixture.canonical, "add", "shared.txt")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: conflicting target advance")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-
-	failed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteDirect,
-		Cleanup: true, OnFailure: "revert", AllowUnfenced: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond, ProgressRequested: true,
-	})
-	if err == nil || !strings.Contains(err.Error(), "conflicts while rebasing") || failed.Status != WorktreeMergeConflict {
-		t.Fatalf("rebase conflict receipt=%+v err=%v", failed, err)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); got != receipt.Candidate.SHA {
-		t.Fatalf("candidate changed after aborted rebase: got %s want %s", got, receipt.Candidate.SHA)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD")); got != sourceHead {
-		t.Fatalf("source changed after aborted rebase: got %s want %s", got, sourceHead)
-	}
-	if status := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "status", "--porcelain")); status != "" {
-		t.Fatalf("candidate retained rebase conflict state: %q", status)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main")); !strings.HasPrefix(got, advancedTarget+"\t") {
-		t.Fatalf("remote target changed during failed rebase: %q", got)
-	}
-	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if !failed.Cleanup || !persisted.Cleanup || persisted.Route.Requested != WorktreeMergeRouteDirect || persisted.OnFailure != "revert" || !persisted.AllowUnfenced {
-		t.Fatalf("landing intent was not durable across interruption: returned=%+v persisted=%+v", failed, persisted)
-	}
-	resume := strings.Join(persisted.ResumeArgs, " ")
-	for _, required := range []string{"--route direct", "--cleanup", "--progress", "--on-failure revert", "--allow-unfenced"} {
-		if !strings.Contains(resume, required) {
-			t.Fatalf("resume args %q lost %q", resume, required)
-		}
-	}
-	bareResume := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, OnFailure: "stop"}
-	if retainWorktreeMergeLandIntent(&persisted, &bareResume) {
-		t.Fatal("bare resume unexpectedly changed already-durable landing intent")
-	}
-	if bareResume.Route != WorktreeMergeRouteDirect || !bareResume.Cleanup || bareResume.OnFailure != "revert" || !bareResume.ProgressRequested || !bareResume.AllowUnfenced {
-		t.Fatalf("bare resume did not restore durable landing intent: %+v", bareResume)
-	}
-}
-
-// TestLandWorktreeMergeRefreshesPublishedCandidateForTargetDrift covers
-// evidence receipt merge-sneat-dev-wb-main-1cbbf49dd60f-e69e39368098.json
-// (2026-09-07): a published candidate whose target advanced used to make WB
-// refuse to rewrite the published branch, stranding the receipt in
-// prepare/conflict with the PR still recorded. WB now refreshes the
-// candidate in place instead: it merges the new target into the published
-// head, records a target_refreshes entry, re-validates the exact new
-// candidate, and fast-forward pushes the same PR branch. See
-// TestLandWorktreeMergeRefreshedTargetConflictReportsPathsWithoutPushing,
-// TestLandWorktreeMergeRefreshAfterAdvancedSourceMergesOnTopOfDescendant,
-// TestLandWorktreeMergeRefreshValidationFailureLeavesNothingPushed, and
-// TestLandWorktreeMergeRefreshIsNoOpWithoutTargetAdvance in
-// worktree_merge_target_refresh_test.go for the remaining refresh contract.
-func TestLandWorktreeMergeRefreshesPublishedCandidateForTargetDrift(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "published-drift-source", "feature/published-drift", "published.txt", "candidate\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+receipt.Candidate.Branch)
-	receipt.Phase, receipt.Status = WorktreeMergePhaseLand, WorktreeMergePublished
-	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", receipt.Candidate.SHA
-	receipt.Route.Requested = WorktreeMergeRoutePullRequest
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		t.Fatal(err)
-	}
-	originalCandidate := receipt.Candidate.SHA
-	writeEngineFile(t, filepath.Join(fixture.canonical, "advanced.txt"), "target\n")
-	runEngineGit(t, fixture.canonical, "add", "advanced.txt")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: advance published target")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	installWorktreeMergePublishOnlyPRGH(t)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
-	logPath := filepath.Join(t.TempDir(), "gh.log")
-	t.Setenv("WB_TEST_GH_LOG", logPath)
-
-	refreshed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-		Progress: func(event progress.Event) {
-			if event.Phase == "refresh_published_candidate" && event.State == progress.Completed {
-				sha := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-				t.Setenv("WB_TEST_CANDIDATE_SHA", sha)
-			}
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected the exact-head checks boundary past the refresh, got receipt=%+v", refreshed)
-	}
-	if strings.Contains(err.Error(), "refusing to rewrite the published branch without force-push") {
-		t.Fatalf("target drift under a published candidate was refused instead of refreshed: %v", err)
-	}
-	if refreshed.TargetSHA != advancedTarget {
-		t.Fatalf("target_sha = %s, want refreshed %s", refreshed.TargetSHA, advancedTarget)
-	}
-	if refreshed.Candidate.SHA == originalCandidate {
-		t.Fatal("candidate SHA did not change after target refresh")
-	}
-	if contains, ancestorErr := isMergeAncestor(context.Background(), receipt.Candidate.Worktree, originalCandidate, refreshed.Candidate.SHA); ancestorErr != nil || !contains {
-		t.Fatalf("refreshed candidate %s is not a descendant of published candidate %s: %v", refreshed.Candidate.SHA, originalCandidate, ancestorErr)
-	}
-	if len(refreshed.TargetRefreshes) != 1 {
-		t.Fatalf("target_refreshes = %+v, want exactly one entry", refreshed.TargetRefreshes)
-	}
-	entry := refreshed.TargetRefreshes[0]
-	if entry.PreviousTargetSHA != receipt.TargetSHA || entry.NewTargetSHA != advancedTarget ||
-		entry.PreviousCandidateSHA != originalCandidate || entry.NewCandidateSHA != refreshed.Candidate.SHA {
-		t.Fatalf("target refresh entry = %+v", entry)
-	}
-	if refreshed.ValidationIdentity == nil || refreshed.ValidationIdentity.CandidateSHA != refreshed.Candidate.SHA {
-		t.Fatalf("refreshed candidate was not re-validated at its exact new SHA: %+v", refreshed.ValidationIdentity)
-	}
-	if refreshed.PublishedCandidateSHA != refreshed.Candidate.SHA {
-		t.Fatalf("published_candidate_sha = %s, want the fast-forwarded %s", refreshed.PublishedCandidateSHA, refreshed.Candidate.SHA)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, refreshed.Candidate.SHA+"\t") {
-		t.Fatalf("PR branch was not fast-forwarded: %q, want head %s", got, refreshed.Candidate.SHA)
-	}
-}
-
-func TestLandWorktreeMergeResumesAfterSquashPRMergedBeforeReceiptPersisted(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "squash-resume-source", "feature/squash-resume", "squash.txt", "squash\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tree := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", receipt.Candidate.SHA+"^{tree}"))
-	serverLanding := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-p", receipt.TargetSHA, "-m", "squash candidate"))
-	runEngineGit(t, fixture.canonical, "push", "origin", serverLanding+":refs/heads/main")
-	receipt.PullRequest = "https://example.test/acme/app/pull/17"
-	receipt.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
-	receipt.PreviousTargetSHA = receipt.TargetSHA
-	receipt.Checks = PullRequestWaitResult{Status: PullRequestWaitPassed, PullRequest: receipt.PullRequest, Head: receipt.Candidate.SHA}
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		t.Fatal(err)
-	}
-	installWorktreeMergeMergedPRGH(t)
-	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
-	t.Setenv("WB_TEST_TARGET_SHA", serverLanding)
-	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if landed.Status != WorktreeMergeLanded || landed.LandingSHA != serverLanding || landed.PreviousTargetSHA != receipt.TargetSHA {
-		t.Fatalf("resumed squash receipt = %+v", landed)
-	}
-	if landed.Checks.Status != PullRequestWaitPassed || landed.Checks.PullRequest != "" || landed.Checks.ObservedTargetHead != serverLanding {
-		t.Fatalf("resumed squash receipt did not replace candidate checks with target checks: %+v", landed.Checks)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != serverLanding {
-		t.Fatalf("canonical target = %s, want resumed server landing %s", got, serverLanding)
-	}
-}
-
-func TestPrepareWorktreeMergeConflictPreservesEverySource(t *testing.T) {
-	fixture := newEngineFixture(t)
-	sourceA := createMergeSource(t, fixture, "conflict-source-a", "feature/a", "shared.txt", "a\n")
-	sourceB := createMergeSource(t, fixture, "conflict-source-b", "feature/b", "shared.txt", "b\n")
-	sourceAHead := strings.TrimSpace(runEngineGit(t, sourceA.WorktreeDir, "rev-parse", "HEAD"))
-	sourceBHead := strings.TrimSpace(runEngineGit(t, sourceB.WorktreeDir, "rev-parse", "HEAD"))
-
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir,
-		Sources:      []string{sourceA.WorktreeDir, sourceB.WorktreeDir},
-		Target:       "main",
-		Model:        "test-model",
-		AgentRuntime: "test",
-	})
-	if err == nil || !strings.Contains(err.Error(), "conflict") {
-		t.Fatalf("conflicting prepare error = %v, receipt=%+v", err, receipt)
-	}
-	if receipt.Status != WorktreeMergeConflict || receipt.ResumeArgs == nil {
-		t.Fatalf("conflict receipt = %+v", receipt)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, sourceA.WorktreeDir, "rev-parse", "HEAD")); got != sourceAHead {
-		t.Fatalf("source A changed from %s to %s", sourceAHead, got)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, sourceB.WorktreeDir, "rev-parse", "HEAD")); got != sourceBHead {
-		t.Fatalf("source B changed from %s to %s", sourceBHead, got)
-	}
-	status := runEngineGit(t, receipt.Candidate.Worktree, "status", "--porcelain")
-	if strings.TrimSpace(status) != "" {
-		t.Fatalf("candidate retained conflict state: %q", status)
-	}
-}
-
-func TestResumeWorktreeMergeRecoversResolvedConflictWithEmptyCandidateSHA(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "empty-candidate-source", "feature/empty-candidate", "TECH-STACK.md", "source\n")
-	writeEngineFile(t, filepath.Join(fixture.canonical, "TECH-STACK.md"), "target\n")
-	runEngineGit(t, fixture.canonical, "add", "TECH-STACK.md")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "advance target into add/add conflict")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err == nil || receipt.Status != WorktreeMergeConflict || receipt.Candidate.SHA != "" {
-		t.Fatalf("conflicting prepare receipt=%+v err=%v", receipt, err)
-	}
-
-	merge := exec.Command("git", "merge", "--no-commit", receipt.Sources[0].SHA)
-	merge.Dir = receipt.Candidate.Worktree
-	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
-		t.Fatalf("manual conflict reproduction unexpectedly merged: %s", output)
-	}
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "TECH-STACK.md"), "resolved\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "TECH-STACK.md")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "resolve receipted add/add conflict")
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "recovery_failure.go"), "package app\n\nfunc RecoveryFailure() { missingRecoverySymbol }\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "recovery_failure.go")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: make recovered candidate fail validation")
-	if _, validationErr := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath}); validationErr == nil {
-		t.Fatal("recovered candidate validation unexpectedly passed")
-	}
-	failed, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA != "" {
-		t.Fatalf("failed recovered receipt = %+v", failed)
-	}
-	runEngineGit(t, receipt.Candidate.Worktree, "rm", "recovery_failure.go")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: repair recovered candidate validation")
-	resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_TARGET_SHA", resolved)
-	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved || landed.LandingSHA != resolved {
-		t.Fatalf("resumed receipt = %+v, want recovered candidate %s", landed, resolved)
-	}
-	persisted, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if persisted.Candidate.SHA != resolved || persisted.Failure != "" {
-		t.Fatalf("persisted recovered receipt = %+v", persisted)
-	}
-}
-
-func TestResumeWorktreeMergeAdvancesResolvedConflictCandidateDescendant(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	first := createMergeSource(t, fixture, "resolved-descendant-first", "feature/resolved-descendant-first", "shared.txt", "first\n")
-	second := createMergeSource(t, fixture, "resolved-descendant-second", "feature/resolved-descendant-second", "shared.txt", "second\n")
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err == nil || receipt.Status != WorktreeMergeConflict || receipt.Candidate.SHA == "" {
-		t.Fatalf("initial prepare = %+v err=%v, want conflict with recorded candidate", receipt, err)
-	}
-	receiptedCandidate := receipt.Candidate.SHA
-	merge := exec.Command("git", "merge", "--no-commit", receipt.Sources[1].SHA)
-	merge.Dir = receipt.Candidate.Worktree
-	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
-		t.Fatalf("manual conflict reproduction unexpectedly merged: %s", output)
-	}
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "shared.txt"), "resolved\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "shared.txt")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: resolve receipted conflict")
-	resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-
-	// Simulate a crash after the append-only evidence is durable and before the
-	// mutable receipt is rewritten. A normal resume must consume that exact
-	// evidence and validate before it can publish.
-	inMemory := receipt
-	advanced, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(context.Background(), fixture.githubDir, &inMemory, 5*time.Second, 0)
-	if advanceErr != nil || !advanced || inMemory.Candidate.SHA != resolved {
-		t.Fatalf("advance conflict candidate = %+v advanced=%t err=%v", inMemory, advanced, advanceErr)
-	}
-	ack, err := readConflictCandidateAdvance(conflictCandidateAdvancePath(receipt.ReceiptPath))
-	if err != nil || ack.OriginalCandidate.SHA != receiptedCandidate || ack.AdvancedCandidateSHA != resolved || ack.CurrentTargetSHA != receipt.TargetSHA {
-		t.Fatalf("persisted conflict advance = %+v err=%v", ack, err)
-	}
-	unchanged, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if err != nil || unchanged.Candidate.SHA != receiptedCandidate || unchanged.Status != WorktreeMergeConflict {
-		t.Fatalf("crash-window receipt = %+v err=%v", unchanged, err)
-	}
-
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_TARGET_SHA", resolved)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil || landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved || landed.LandingSHA != resolved || landed.Validation.Revision != resolved {
-		t.Fatalf("resume resolved conflict descendant = %+v err=%v", landed, err)
-	}
-	retried, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil || retried.Status != WorktreeMergeLanded || retried.Candidate.SHA != resolved || retried.LandingSHA != resolved {
-		t.Fatalf("idempotent resume = %+v err=%v", retried, err)
-	}
-}
-
 // TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates
 // proves red-team finding M-B: the earlier M2 fix only tolerated a SINGLE
 // recorded server-side update-branch advance between a conflict-candidate
@@ -2941,175 +1640,6 @@ func TestConflictCandidateAdvanceNeedsValidationToleratesTwoChainedUpdates(t *te
 	}
 	if !needsValidation {
 		t.Fatalf("a still-preparing receipt with a matching acknowledgement should still need validation")
-	}
-}
-
-func TestAdvanceResolvedConflictCandidateRefusesUnsafeEvidence(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt)
-		want   string
-	}{
-		{
-			name: "dirty candidate",
-			mutate: func(t *testing.T, _ engineFixture, receipt *WorktreeMergeReceipt) {
-				writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "uncommitted.txt"), "dirty\n")
-			},
-			want: "dirty",
-		},
-		{
-			name: "unrelated candidate head",
-			mutate: func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt) {
-				unrelated := createMergeSource(t, fixture, "unrelated-resolved-candidate", "feature/unrelated-resolved-candidate", "unrelated.txt", "unrelated\n")
-				receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, unrelated.WorktreeDir, "rev-parse", "HEAD"))
-				if err := persistWorktreeMergeReceipt(*receipt); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "is not a descendant",
-		},
-		{
-			name: "missing receipted source",
-			mutate: func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt) {
-				const task = "missing-resolved-source"
-				missing := createMergeSource(t, fixture, task, "feature/missing-resolved-source", "missing.txt", "missing\n")
-				receipt.Sources = append(receipt.Sources, WorktreeMergeSource{Task: task, Worktree: missing.WorktreeDir, Branch: missing.Branch, SHA: strings.TrimSpace(runEngineGit(t, missing.WorktreeDir, "rev-parse", "HEAD"))})
-				if err := persistWorktreeMergeReceipt(*receipt); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "does not contain required immutable root",
-		},
-		{
-			name: "target drift",
-			mutate: func(t *testing.T, fixture engineFixture, _ *WorktreeMergeReceipt) {
-				writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "drift\n")
-				runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
-				runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance target after conflict")
-				runEngineGit(t, fixture.canonical, "push", "origin", "main")
-			},
-			want: "target drifted",
-		},
-		{
-			name: "inconsistent published predecessor",
-			mutate: func(t *testing.T, _ engineFixture, receipt *WorktreeMergeReceipt) {
-				runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", receipt.Candidate.Branch)
-			},
-			want: "published without a consistent published predecessor",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newEngineFixture(t)
-			first := createMergeSource(t, fixture, "unsafe-resolved-first-"+strings.ReplaceAll(test.name, " ", "-"), "feature/unsafe-resolved-first-"+strings.ReplaceAll(test.name, " ", "-"), "shared.txt", "first\n")
-			second := createMergeSource(t, fixture, "unsafe-resolved-second-"+strings.ReplaceAll(test.name, " ", "-"), "feature/unsafe-resolved-second-"+strings.ReplaceAll(test.name, " ", "-"), "shared.txt", "second\n")
-			receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
-			if err == nil || receipt.Status != WorktreeMergeConflict || receipt.Candidate.SHA == "" {
-				t.Fatalf("prepare = %+v err=%v", receipt, err)
-			}
-			merge := exec.Command("git", "merge", "--no-commit", receipt.Sources[1].SHA)
-			merge.Dir = receipt.Candidate.Worktree
-			if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
-				t.Fatalf("fixture merge unexpectedly succeeded: %s", output)
-			}
-			writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "shared.txt"), "resolved\n")
-			runEngineGit(t, receipt.Candidate.Worktree, "add", "shared.txt")
-			runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: resolve conflict before refusal")
-			test.mutate(t, fixture, &receipt)
-			if _, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(context.Background(), fixture.githubDir, &receipt, 5*time.Second, 0); advanceErr == nil || !strings.Contains(advanceErr.Error(), test.want) {
-				t.Fatalf("advance error = %v, want %q", advanceErr, test.want)
-			}
-		})
-	}
-}
-
-// A candidate may be created from one immutable base, then have a target-drift
-// conflict resolved manually. The receipt records the newer target snapshot,
-// but the Work Log must retain its original claim base. Resume may normalize
-// that proven state without replaying the already-integrated source.
-func TestResumeWorktreeMergeRecoversResolvedTargetDriftConflictWithHistoricalClaimBase(t *testing.T) {
-	fixture := newEngineFixture(t)
-	writeEngineGoModule(t, fixture.canonical, "package app\n")
-	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	source := createMergeSource(t, fixture, "historical-claim-base-source", "feature/historical-claim-base", "TECH-STACK.md", "source\n")
-
-	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil || receipt.Status != WorktreeMergePrepared {
-		t.Fatalf("initial candidate = %+v err=%v", receipt, err)
-	}
-	claimBefore, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
-		ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree,
-	})
-	if err != nil || claimBefore.Claim == nil {
-		t.Fatalf("candidate Work Log = %+v err=%v", claimBefore, err)
-	}
-	originalClaimBase := claimBefore.Claim.BaseSHA
-	if originalClaimBase != receipt.TargetSHA {
-		t.Fatalf("initial Work Log base = %s, receipt target = %s", originalClaimBase, receipt.TargetSHA)
-	}
-
-	writeEngineFile(t, filepath.Join(fixture.canonical, "TECH-STACK.md"), "target\n")
-	runEngineGit(t, fixture.canonical, "add", "TECH-STACK.md")
-	runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance target into target-drift conflict")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	currentTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-
-	merge := exec.Command("git", "merge", "--no-edit", currentTarget)
-	merge.Dir = receipt.Candidate.Worktree
-	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
-		t.Fatalf("target-drift reproduction unexpectedly merged cleanly: %s", output)
-	}
-	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "TECH-STACK.md"), "resolved\n")
-	runEngineGit(t, receipt.Candidate.Worktree, "add", "TECH-STACK.md")
-	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "resolve target-drift conflict")
-	resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
-	if status := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "status", "--porcelain")); status != "" {
-		t.Fatalf("resolved candidate remains dirty: %q", status)
-	}
-
-	// This models the durable historical receipt state: the target snapshot has
-	// advanced, the human resolution is clean, but the immutable Work Log claim
-	// remains bound to the candidate's original base.
-	receipt.TargetSHA = currentTarget
-	receipt.Candidate.SHA = ""
-	receipt.Status = WorktreeMergeConflict
-	receipt.Failure = "target drift conflict required resolution"
-	if err := persistWorktreeMergeReceipt(receipt); err != nil {
-		t.Fatal(err)
-	}
-
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_TARGET_SHA", resolved)
-	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
-	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved || landed.LandingSHA != resolved {
-		t.Fatalf("normalized target-drift recovery = %+v, want exact resolved head %s", landed, resolved)
-	}
-	claimAfter, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
-		ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree,
-	})
-	if err != nil || claimAfter.Claim == nil || claimAfter.Claim.BaseSHA != originalClaimBase {
-		t.Fatalf("recovery rewrote immutable Work Log claim: %+v err=%v", claimAfter.Claim, err)
-	}
-	persisted, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if persisted.TargetSHA != currentTarget || persisted.Candidate.SHA != resolved {
-		t.Fatalf("recovery did not retain the historical target snapshot and resolved candidate: %+v", persisted)
-	}
-	containsSource, sourceErr := isMergeAncestor(context.Background(), receipt.Candidate.Worktree, receipt.Sources[0].SHA, resolved)
-	if sourceErr != nil || !containsSource {
-		t.Fatalf("resolved candidate lost receipted source: contains=%t err=%v", containsSource, sourceErr)
 	}
 }
 
@@ -3278,81 +1808,6 @@ func TestPrepareWorktreeMergeRefreshesUnpublishedCandidateWhenSourceAdvances(t *
 	}
 	if _, err := os.Stat(filepath.Join(refreshed.Candidate.Worktree, "second.txt")); err != nil {
 		t.Fatalf("refreshed candidate lacks advanced source content: %v", err)
-	}
-}
-
-func TestPrepareWorktreeMergeRebatchesPreparedReceiptAdditivelyAndPreservesOldEvidence(t *testing.T) {
-	fixture := newEngineFixture(t)
-	firstSource := createMergeSource(t, fixture, "rebatch-first", "feature/rebatch-first", "first.txt", "first\n")
-	secondSource := createMergeSource(t, fixture, "rebatch-second", "feature/rebatch-second", "second.txt", "second\n")
-	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	originalReceipt, err := os.ReadFile(first.ReceiptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeEngineFile(t, filepath.Join(firstSource.WorktreeDir, "advance.txt"), "advance\n")
-	runEngineGit(t, firstSource.WorktreeDir, "add", "advance.txt")
-	runEngineGit(t, firstSource.WorktreeDir, "commit", "-m", "feat: advance first rebatch source")
-	advancedFirst := strings.TrimSpace(runEngineGit(t, firstSource.WorktreeDir, "rev-parse", "HEAD"))
-	if contains, err := isMergeAncestor(context.Background(), firstSource.WorktreeDir, first.Candidate.SHA, advancedFirst); err != nil || contains {
-		t.Fatalf("fixture did not create a non-ancestor original candidate DAG: contains=%t err=%v", contains, err)
-	}
-	thirdSource := createMergeSource(t, fixture, "rebatch-third", "feature/rebatch-third", "third.txt", "third\n")
-
-	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir, thirdSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replacement.ReceiptPath == first.ReceiptPath || replacement.RebatchOf != first.ReceiptPath || len(replacement.Sources) != 3 || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != first.Candidate {
-		t.Fatalf("replacement receipt = %+v", replacement)
-	}
-	if contains, err := isMergeAncestor(context.Background(), replacement.Candidate.Worktree, first.Candidate.SHA, replacement.Candidate.SHA); err != nil || !contains {
-		t.Fatalf("replacement does not retain original candidate DAG: contains=%t err=%v", contains, err)
-	}
-	if current, err := os.ReadFile(first.ReceiptPath); err != nil || !bytes.Equal(current, originalReceipt) {
-		t.Fatalf("original receipt changed: err=%v\nwant=%s\ngot=%s", err, originalReceipt, current)
-	}
-	ack, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first)
-	if err != nil || ack.ReplacementReceiptPath != replacement.ReceiptPath || ack.Replacement != replacement.Candidate {
-		t.Fatalf("rebatch acknowledgement = %+v err=%v", ack, err)
-	}
-	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(first.ReceiptPath), first.Lane)
-	if err != nil || active == nil || active.ReceiptPath != replacement.ReceiptPath {
-		t.Fatalf("active lane after rebatch = %+v err=%v", active, err)
-	}
-	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: first.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "rebatched") {
-		t.Fatalf("old receipt replay = %v, want rebatched refusal", err)
-	}
-	if err := validateRebatchedWorktreeMergeCleanup(context.Background(), fixture.githubDir, replacement); err == nil || !strings.Contains(err.Error(), "no remote landing") {
-		t.Fatalf("pre-landing old-candidate cleanup eligibility = %v", err)
-	}
-	runEngineGit(t, fixture.canonical, "merge", "--no-ff", "--no-edit", replacement.Candidate.SHA)
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	replacement.LandingSHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	if err := persistWorktreeMergeReceipt(replacement); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateRebatchedWorktreeMergeCleanup(context.Background(), fixture.githubDir, replacement); err != nil {
-		t.Fatalf("post-landing old-candidate cleanup eligibility = %v", err)
-	}
-	// The original candidate is deliberately not an ancestor of the advanced
-	// first source. The replacement candidate carries the original candidate in
-	// its DAG, so WB cleanup can prove absorption at the replacement landing.
-	installWorktreeMergeDirectGH(t)
-	t.Setenv("WB_TEST_TARGET_SHA", replacement.LandingSHA)
-	oldCandidateCleanup, err := worktrees.Cleanup(context.Background(), worktrees.CleanupOptions{
-		ProjectsRoot: fixture.githubDir, Task: first.Candidate.Task, Base: replacement.Target, ExactRepository: replacement.Repository,
-		AbsorbedBy: replacement.LandingSHA, Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
-	})
-	if err != nil || len(oldCandidateCleanup.Results) != 1 || !oldCandidateCleanup.Results[0].Applied {
-		t.Fatalf("old non-ancestor candidate cleanup = %+v err=%v", oldCandidateCleanup, err)
 	}
 }
 
@@ -3630,67 +2085,6 @@ func TestPrepareWorktreeMergeRefusesMalformedPreparedReceipt(t *testing.T) {
 	}
 }
 
-func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		prState     string
-		merged      bool
-		driftRemote bool
-		driftTarget bool
-		badReceipt  bool
-		status      WorktreeMergeStatus
-	}{
-		{name: "closed pull request", prState: "closed"},
-		{name: "merged pull request", prState: "closed", merged: true},
-		{name: "candidate ref drift", driftRemote: true},
-		{name: "target divergence", driftTarget: true},
-		{name: "receipt candidate mismatch", badReceipt: true},
-		{name: "published pending candidate ref drift", status: WorktreeMergePublished, driftRemote: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newEngineFixture(t)
-			firstSource := createMergeSource(t, fixture, "refuse-first", "feature/refuse-first", "first.txt", "first\n")
-			secondSource := createMergeSource(t, fixture, "refuse-second", "feature/refuse-second", "second.txt", "second\n")
-			first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
-			status := test.status
-			if status == "" {
-				status = WorktreeMergeChecksFailed
-			}
-			first.Phase, first.Status, first.PullRequest, first.PublishedCandidateSHA = WorktreeMergePhaseLand, status, "41", first.Candidate.SHA
-			if test.badReceipt {
-				first.PublishedCandidateSHA = first.TargetSHA
-			}
-			if err := persistWorktreeMergeReceipt(first); err != nil {
-				t.Fatal(err)
-			}
-			installWorktreeMergeDirectGH(t)
-			t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
-			if test.prState != "" {
-				t.Setenv("WB_TEST_PR_STATE", test.prState)
-			}
-			if test.merged {
-				t.Setenv("WB_TEST_PR_MERGED", "true")
-			}
-			if test.driftRemote {
-				secondHead := strings.TrimSpace(runEngineGit(t, secondSource.WorktreeDir, "rev-parse", "HEAD"))
-				runEngineGit(t, first.Candidate.Worktree, "push", "--force", "origin", secondHead+":refs/heads/"+first.Candidate.Branch)
-			}
-			if test.driftTarget {
-				diverged := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", "HEAD^{tree}", "-m", "test: unrelated target root"))
-				runEngineGit(t, fixture.canonical, "push", "--force", "origin", diverged+":refs/heads/main")
-			}
-			_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath})
-			if err == nil {
-				t.Fatal("unsafe checks-failed rebatch was accepted")
-			}
-		})
-	}
-}
-
 func TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar(t *testing.T) {
 	fixture := newEngineFixture(t)
 	staleSource := createMergeSource(t, fixture, "stale-sidecar-source", "feature/stale-sidecar", "stale.txt", "stale\n")
@@ -3747,51 +2141,7 @@ func TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar(t *testing.T) {
 // isolates the rebatched-sidecar reason from every other reason
 // activeWorktreeMergeLaneReceipt might otherwise skip a receipt for.
 func TestActiveLaneReceiptSkipsValidPreparedRebatchSidecar(t *testing.T) {
-	fixture := newEngineFixture(t)
-	original := createMergeSource(t, fixture, "rebatch-skip-original", "feature/rebatch-skip-original", "original.txt", "original\n")
-	old, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{original.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	extra := createMergeSource(t, fixture, "rebatch-skip-extra", "feature/rebatch-skip-extra", "extra.txt", "extra\n")
-	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{original.WorktreeDir, extra.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-		RebatchReceipt: old.ReceiptPath,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replacement.ReceiptPath == old.ReceiptPath {
-		t.Fatalf("rebatch reused the original receipt path %s", old.ReceiptPath)
-	}
-	reread, err := readWorktreeMergeReceipt(old.ReceiptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(reread); rebatchErr != nil || !rebatched {
-		t.Fatalf("hasPreparedWorktreeMergeRebatch(original) = %t, %v; want a valid, authenticated sidecar", rebatched, rebatchErr)
-	}
-	// Excluding the replacement forces the scan to consider only the
-	// rebatched original, deterministically reaching (and covering) the
-	// `if rebatched { continue }` branch regardless of directory order.
-	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(old.ReceiptPath), old.Lane, replacement.ReceiptPath)
-	if err != nil {
-		t.Fatalf("lane scan aborted on the valid rebatch sidecar: %v", err)
-	}
-	if active != nil {
-		t.Fatalf("active lane after excluding the replacement = %+v, want nil (the rebatched original must be skipped)", active)
-	}
-	// Without excluding anything, the lane's one live receipt is the
-	// replacement, whichever order the scan visits the two files in.
-	active, err = activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(old.ReceiptPath), old.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if active == nil || active.ReceiptPath != replacement.ReceiptPath {
-		t.Fatalf("active lane = %+v, want the replacement %s", active, replacement.ReceiptPath)
-	}
+	mergeLaneRebatchJourney(t, nil, nil)
 }
 
 func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvidence(t *testing.T) {
@@ -3914,143 +2264,6 @@ func TestPrepareWorktreeMergeRebatchRetryCompletesAcknowledgementAfterPostReceip
 	}
 }
 
-func TestPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "published-refresh-source", "feature/published-refresh", "first.txt", "first\n")
-	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runEngineGit(t, first.Candidate.Worktree, "push", "origin", first.Candidate.SHA+":refs/heads/"+first.Candidate.Branch)
-	first.Status = WorktreeMergeChecksFailed
-	first.Phase = WorktreeMergePhaseLand
-	first.PullRequest = "https://example.test/acme/app/pull/29"
-	first.PublishedCandidateSHA = first.Candidate.SHA
-	first.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
-	first.PreviousTargetSHA = first.TargetSHA
-	first.Cleanup = true
-	first.OnFailure = "revert"
-	if err := persistWorktreeMergeReceipt(first); err != nil {
-		t.Fatal(err)
-	}
-
-	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")
-	runEngineGit(t, source.WorktreeDir, "add", "repair.txt")
-	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: repair failed checks")
-	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
-
-	refreshed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if refreshed.ID != first.ID || refreshed.PullRequest != first.PullRequest || refreshed.PublishedCandidateSHA != first.Candidate.SHA {
-		t.Fatalf("published refresh lost lane or PR identity: first=%+v refreshed=%+v", first, refreshed)
-	}
-	if refreshed.Sources[0].SHA != advancedSource || refreshed.Candidate.SHA == first.Candidate.SHA {
-		t.Fatalf("published refresh did not advance exact source/candidate: %+v", refreshed)
-	}
-	if refreshed.Route != first.Route || refreshed.PreviousTargetSHA != first.PreviousTargetSHA || !refreshed.Cleanup || refreshed.OnFailure != "revert" {
-		t.Fatalf("published refresh lost landing intent: %+v", refreshed)
-	}
-	if got := strings.TrimSpace(runEngineGit(t, refreshed.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+refreshed.Candidate.Branch)); !strings.HasPrefix(got, first.Candidate.SHA+"\t") {
-		t.Fatalf("prepare rewrote published branch instead of retaining old exact head: %q", got)
-	}
-	installWorktreeMergePublishedRepairGH(t)
-	t.Setenv("WB_TEST_PUBLISHED_SHA", first.Candidate.SHA)
-	if landing, merged, err := pullRequestLandingReceipt(context.Background(), refreshed, WorktreeMergeLandOptions{Timeout: time.Second}); err != nil || merged || landing != "" {
-		t.Fatalf("open PR at recorded predecessor was not accepted for additive repair: landing=%q merged=%t err=%v", landing, merged, err)
-	}
-	refreshed.Status = WorktreeMergeValidationFailed
-	if err := persistWorktreeMergeReceipt(refreshed); err != nil {
-		t.Fatal(err)
-	}
-	retried, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if retried.Candidate.SHA != refreshed.Candidate.SHA || retried.PullRequest != refreshed.PullRequest || retried.PublishedCandidateSHA != refreshed.PublishedCandidateSHA {
-		t.Fatalf("same-source validation retry lost exact candidate or published PR identity: refreshed=%+v retried=%+v", refreshed, retried)
-	}
-}
-
-func TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *testing.T) {
-	fixture := newEngineFixture(t)
-	source := createMergeSource(t, fixture, "post-target-repair-source", "feature/post-target-repair", "first.txt", "first\n")
-	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runEngineGit(t, first.Candidate.Worktree, "push", "origin", first.Candidate.SHA+":refs/heads/"+first.Candidate.Branch)
-	runEngineGit(t, fixture.canonical, "merge", "--squash", first.Candidate.SHA)
-	runEngineGit(t, fixture.canonical, "commit", "-m", "squash first candidate")
-	runEngineGit(t, fixture.canonical, "push", "origin", "main")
-	landing := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
-	containsCandidate, ancestorErr := isMergeAncestor(context.Background(), fixture.canonical, first.Candidate.SHA, landing)
-	if ancestorErr != nil || containsCandidate {
-		t.Fatalf("squash fixture unexpectedly contains candidate %s: contains=%t err=%v", first.Candidate.SHA, containsCandidate, ancestorErr)
-	}
-
-	first.Phase = WorktreeMergePhaseLand
-	first.Status = WorktreeMergePostTargetCIFailed
-	first.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
-	first.PullRequest = "https://example.test/acme/app/pull/29"
-	first.PublishedCandidateSHA = first.Candidate.SHA
-	first.PreviousTargetSHA = first.TargetSHA
-	first.LandingSHA = landing
-	first.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Repository: "acme/app", Target: "main", Head: landing, Reason: "target test failed"}
-	first.Failure = "required target check failed"
-	first.Cleanup = true
-	mismatchedLanding := first
-	mismatchedLanding.LandingSHA = first.TargetSHA
-	absorbed, graphContained, absorptionErr := worktreeMergeCandidateAbsorbed(context.Background(), first.Candidate.Worktree, mismatchedLanding, landing)
-	if absorptionErr != nil || absorbed || graphContained {
-		t.Fatalf("tree-mismatched PR receipt accepted candidate absorption: absorbed=%t graph=%t err=%v", absorbed, graphContained, absorptionErr)
-	}
-	if err := persistWorktreeMergeReceipt(first); err != nil {
-		t.Fatal(err)
-	}
-
-	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")
-	runEngineGit(t, source.WorktreeDir, "add", "repair.txt")
-	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: repair target CI")
-	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
-
-	repaired, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
-		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repaired.ID != first.ID || repaired.ReceiptPath != first.ReceiptPath || repaired.Candidate.Worktree != first.Candidate.Worktree {
-		t.Fatalf("forward repair abandoned its retained lane: first=%+v repaired=%+v", first, repaired)
-	}
-	if len(repaired.ForwardRepairs) != 1 || repaired.ForwardRepairs[0].Status != WorktreeMergePostTargetCIFailed ||
-		repaired.ForwardRepairs[0].LandingSHA != landing || repaired.ForwardRepairs[0].CandidateSHA != first.Candidate.SHA ||
-		repaired.ForwardRepairs[0].PullRequest != first.PullRequest || repaired.ForwardRepairs[0].Failure != first.Failure {
-		t.Fatalf("forward repair audit = %+v, want exact failed landing %+v", repaired.ForwardRepairs, first)
-	}
-	if repaired.PullRequest != "" || repaired.PublishedCandidateSHA != "" || repaired.LandingSHA != "" || repaired.PreviousTargetSHA != "" {
-		t.Fatalf("forward repair inherited completed landing identity: %+v", repaired)
-	}
-	if repaired.TargetSHA != landing || repaired.Sources[0].SHA != advancedSource || !repaired.Cleanup {
-		t.Fatalf("forward repair exact target/source/intent = %+v", repaired)
-	}
-	for _, ancestor := range []string{landing, advancedSource} {
-		contains, ancestorErr := isMergeAncestor(context.Background(), repaired.Candidate.Worktree, ancestor, repaired.Candidate.SHA)
-		if ancestorErr != nil || !contains {
-			t.Fatalf("repair candidate %s does not contain %s: %v", repaired.Candidate.SHA, ancestor, ancestorErr)
-		}
-	}
-}
-
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -4125,7 +2338,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
@@ -4209,38 +2422,12 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("WB_TEST_PR_STATE_FILE", filepath.Join(t.TempDir(), "pr-state"))
 	t.Setenv("WB_TEST_PR_MERGED_FILE", filepath.Join(t.TempDir(), "pr-merged"))
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func installWorktreeMergeMergedPRGH(t *testing.T) {
-	t.Helper()
-	bin := t.TempDir()
-	script := filepath.Join(bin, "gh")
-	body := `#!/bin/sh
-set -eu
-case "$*" in
-  'pr view https://example.test/acme/app/pull/17 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
-    printf '{"state":"MERGED","mergedAt":"2026-08-27T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$WB_TEST_CANDIDATE_SHA" "$WB_TEST_TARGET_SHA" ;;
-  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
-  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
-  'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main') printf '{"object":{"sha":"%s"}}\n' "$WB_TEST_TARGET_SHA" ;;
-  'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
-    printf '{"number":41,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
-  *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
-  *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
-  *) echo "unexpected gh command: $*" >&2; exit 2 ;;
-esac
-`
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -4289,26 +2476,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func installWorktreeMergePublishedRepairGH(t *testing.T) {
-	t.Helper()
-	bin := t.TempDir()
-	script := filepath.Join(bin, "gh")
-	body := `#!/bin/sh
-set -eu
-case "$*" in
-  'pr view https://example.test/acme/app/pull/29 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
-    printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_PUBLISHED_SHA" ;;
-  *) echo "unexpected gh command: $*" >&2; exit 2 ;;
-esac
-`
-	if err := testenv.WriteExecutableFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

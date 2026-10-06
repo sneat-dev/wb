@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // TestE2ELandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate is required test
@@ -112,7 +114,7 @@ func TestE2EAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureA
 	if adoptErr == nil {
 		t.Fatal("want an error once the proof's own GitHub read fails transiently on every attempt")
 	}
-	if !IsTransientReadFailure(adoptErr) {
+	if !githubobserver.IsTransientReadFailure(adoptErr) {
 		t.Fatalf("error = %v, want IsTransientReadFailure to recognize it as retryable, not a definitive refusal", adoptErr)
 	}
 	if receipt.Candidate.SHA != originalCandidateSHA || len(receipt.TargetRefreshes) != 0 {

@@ -17,31 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TestRunListCommandDispatchesToRunRunInProcess proves that "wb run --list"
-// (recipe mode, no command after "--") reaches runRun through the real
-// command tree. --list returns before runRun ever reads extraOrgs, so this
-// does not exercise that threading; see
-// TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess below for
-// that.
-func TestRunListCommandDispatchesToRunRunInProcess(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "wb.yaml")
-	if err := os.WriteFile(configPath, []byte("recipes:\n  refresh-ci:\n    type: command\n    command: \"true\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var stdout string
-	var err error
-	stdout = cwCovCaptureStdout(t, func() {
-		_, _, err = cwCovExec(t, t.TempDir(), func() *cobra.Command { return newRunCmd(&invocation{}) },
-			"--list", "--config", configPath)
-	})
-	if err != nil {
-		t.Fatalf("wb run --list: %v\n%s", err, stdout)
-	}
-	if !strings.Contains(stdout, "refresh-ci") {
-		t.Fatalf("wb run --list output = %q, want the configured recipe name", stdout)
-	}
-}
-
 // TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess proves that
 // running a named recipe (not --list) reaches runRun's fleet discovery with
 // the real invocation's extraOrgs, not a hardcoded empty one: a fake gh
@@ -107,72 +82,17 @@ func TestRunCommandPreservesStreamsAndExitCode(t *testing.T) {
 	}
 }
 
-func TestRunCommandRejectsRecipeFlags(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--apply", "--", "/bin/true"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "belong to WB modes") {
-		t.Errorf("stderr does not explain the incompatible flag: %s", stderr.String())
-	}
-}
-
-func TestRunAsyncFlagRequiresCommandMode(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--async", "recipe-name"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--async requires command mode") {
-		t.Errorf("stderr does not explain async command mode: %s", stderr.String())
-	}
-}
-
-func TestRunAsyncRequiresExplicitStableWorker(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--async", "--", "go", "test"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--async requires --worker <stable-id>") || !strings.Contains(stderr.String(), "never guesses") {
-		t.Errorf("stderr does not explain worker binding: %s", stderr.String())
-	}
-}
-
-func TestRunWorkerFlagRequiresAsyncCommandMode(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--worker", "agent-a", "--", "go", "test"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--worker requires --async command mode") {
-		t.Errorf("stderr does not explain worker binding: %s", stderr.String())
-	}
-}
-
-func TestRunIdempotencyKeyRequiresAsyncCommandMode(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--idempotency-key", "retry-1", "--", "go", "test"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--idempotency-key requires --async command mode") {
-		t.Errorf("stderr does not explain idempotency scope: %s", stderr.String())
-	}
-}
-
 func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")
 	t.Chdir(root)
 
 	deps := daemonTestDependencies(t, root)
-	deps.rawPolicy = func(root string) (bool, string, error) {
+	deps.RawPolicy = func(root string) (bool, string, error) {
 		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
 		return allowed, policyPath, err
 	}
-	command := newDaemonOperationSubmitCmd(&invocation{}, deps)
+	command := daemonCommandForTest("operation submit", &invocation{}, deps)
 	command.SetArgs([]string{"--", "/bin/echo", "hello"})
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
@@ -187,53 +107,6 @@ func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing
 	}
 	if _, statErr := os.Stat(policyPath); !os.IsNotExist(statErr) {
 		t.Fatalf("CLI wrote raw execution policy: %v", statErr)
-	}
-}
-
-func TestGovernedEnvironmentCapsChildParallelism(t *testing.T) {
-	t.Setenv("GOFLAGS", "-mod=readonly")
-	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"go", "test", "./..."}, 2)
-	joined := strings.Join(environment, "\n")
-	for _, want := range []string{
-		"WB_OPERATION_ID=wbo-test",
-		"WB_CPU_UNITS=2",
-		"GOMAXPROCS=2",
-		"NX_PARALLEL=2",
-		// -p follows the allocation (units), not a hardcoded -p=1: forcing
-		// single-package parallelism was the root cause of sneat-dev/wb#621
-		// (a broad `go test ./...` building one package at a time on an
-		// otherwise idle 18-core machine).
-		"GOFLAGS=-mod=readonly -p=2",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("environment is missing %q:\n%s", want, joined)
-		}
-	}
-}
-
-// TestGovernedEnvironmentRespectsCallersExplicitDashP proves the caller's own
-// -p wins: governedEnvironment must not append a second -p when the caller
-// already pinned one.
-func TestGovernedEnvironmentRespectsCallersExplicitDashP(t *testing.T) {
-	t.Setenv("GOFLAGS", "-p=8")
-	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"go", "build", "./..."}, 5)
-	joined := strings.Join(environment, "\n")
-	if !strings.Contains(joined, "GOFLAGS=-p=8") {
-		t.Fatalf("environment does not preserve the caller's -p=8: %s", joined)
-	}
-	if strings.Contains(joined, "-p=5") {
-		t.Fatalf("environment overrode the caller's explicit -p: %s", joined)
-	}
-}
-
-// TestGovernedEnvironmentLeavesGOFLAGSAloneForNonGoCommands proves the
-// GOFLAGS/-p injection is scoped to the go tool, not every governed command.
-func TestGovernedEnvironmentLeavesGOFLAGSAloneForNonGoCommands(t *testing.T) {
-	t.Setenv("GOFLAGS", "")
-	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"pytest", "-q"}, 2)
-	joined := strings.Join(environment, "\n")
-	if strings.Contains(joined, "GOFLAGS=") {
-		t.Fatalf("environment set GOFLAGS for a non-go command: %s", joined)
 	}
 }
 

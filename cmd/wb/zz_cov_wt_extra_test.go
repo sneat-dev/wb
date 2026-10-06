@@ -115,6 +115,26 @@ func TestCwWtWorktreeAbortFilteredRepositories(t *testing.T) {
 	if !strings.Contains(out.String(), `"excluded": true`) {
 		t.Fatalf("abort excluded json = %q", out.String())
 	}
+
+	// Applied cleanup must keep the claim when a filter leaves the task's
+	// checkout untouched, and report why it skipped automatic release.
+	out.Reset()
+	errOut.Reset()
+	command = newWorktreeAbortCmd(&invocation{projectsRoot: projects, filterFlag: "no-such-repository"})
+	command.SilenceUsage = true
+	command.SilenceErrors = true
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+	command.SetArgs([]string{"gc-cli", "--disposition", "discarded", "--apply", "--remote"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("applied abort with an excluding filter: %v (stderr=%s)", err, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "1 repositories excluded by --filter still remain") {
+		t.Fatalf("skipped release reason = %q", errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(projects, "acme", "app", ".worktrees", "gc-cli")); err != nil {
+		t.Fatalf("excluded checkout must remain: %v", err)
+	}
 }
 
 func TestCwWtWorktreeCreateDerivesRepositoryFromOrigin(t *testing.T) {

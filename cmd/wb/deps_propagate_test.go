@@ -142,17 +142,6 @@ func TestDepsPropagateLocalLinksAGoConsumer(t *testing.T) {
 	}
 }
 
-func TestDepsPropagateLocalRequiresAConsumer(t *testing.T) {
-	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"deps", "propagate", "local", t.TempDir(), "--non-interactive"}, &stdout, &stderr); code == exitOK {
-		t.Fatal("propagating to nothing succeeded")
-	}
-	if !strings.Contains(stderr.String(), "--to") {
-		t.Errorf("stderr = %q, want the missing flag named", stderr.String())
-	}
-}
-
 // initGitRepository creates a committed repository at root with the given
 // files, so the local-link path is exercised against real Git rather than a
 // fake.

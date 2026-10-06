@@ -1,0 +1,322 @@
+package cmdci
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/ciaudit"
+	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/spf13/cobra"
+)
+
+func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "ci",
+		Short: "Inspect and validate CI/CD policy",
+	}
+	cmd.AddCommand(newAuditCmd(runtime, deps))
+	cmd.AddCommand(newWaitCmd(runtime, deps))
+	return cmd
+}
+
+type Dependencies struct {
+	WaitChecks     func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error)
+	Audit          func(ciaudit.BatchOptions) ([]ciaudit.Report, error)
+	ValidateBranch func(string) error
+	Now            func() time.Time
+}
+
+func NewChecks(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	command := newWaitCmd(runtime, deps)
+	command.Use = strings.Replace(command.Use, "wait ", "checks ", 1)
+	command.Short = "Wait one bounded slice for checks on an exact head (was: wb ci wait)"
+	command.Aliases = append(command.Aliases, "ci")
+	return command
+}
+
+type WaitOutput struct {
+	SchemaVersion int       `json:"schema_version"`
+	ObservedAt    time.Time `json:"observed_at"`
+	githubchecks.PullRequestWaitResult
+	ResumeArgs []string `json:"resume_args,omitempty"`
+}
+
+// newCIWaitCmd provides a terminating foreground observation slice. It never
+// creates a daemon or background process: pending is a first-class finding
+// whose exact identity can be passed unchanged to the next invocation.
+func newWaitCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	var repository, pullRequest, target, head string
+	var slice, interval time.Duration
+	var jsonOut bool
+	var format string
+	command := &cobra.Command{
+		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>]",
+		Short: "Wait one bounded foreground slice for checks on an exact head",
+		Long: `Observe all GitHub checks for exactly one pull-request or direct-push head.
+
+Every invocation is bounded (eight minutes by default, never ten), foreground,
+and terminating. A pending result exits 1 with exact resume arguments; invoke
+those again until checks pass or fail. In every mode WB reads the exact head's
+GitHub check runs and commit statuses, preserving each check-run producer App.
+With --pr it also re-reads that PR's head and target and corroborates GitHub's
+PR check views. A direct target whose fully enumerated policy is empty and
+whose complete check-run and status receipts remain empty may pass after the
+same stable reread. PR mode fetches the exact target SHA, proves that SHA is an
+ancestor of the candidate, and requires a server-enforced strict policy with at
+least one required check. It never waits for current target CI to turn green;
+the candidate may fix a red target. A same-named PR summary or legacy status
+cannot satisfy a required context pinned to another GitHub App. A pass requires
+GitHub's authoritative required-check policy plus a terminal reread that is
+unchanged, so the first green snapshot cannot become sole merger evidence while
+suites are still registering. A target advance rejects the receipt. Merge-group
+observation is not implemented, so merge-queue PRs fail closed. The reread
+proves bounded observed-set quiescence, not that a future optional workflow can
+never appear; collect separate release evidence where the repository requires
+it. This command never starts a detached watcher or background loop.`,
+		Args: func(command *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(command, args); err != nil {
+				return err
+			}
+			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval, deps.ValidateBranch)
+		},
+		RunE: func(command *cobra.Command, args []string) error {
+			machineOutput := jsonOut || format == "json"
+			interactive := console.Interactive(command.ErrOrStderr(), runtime.Flags().NonInteractive)
+			progress := cliprogress.NewChecks(cliprogress.Output(command.ErrOrStderr(), interactive), true)
+			progress.Start(repository, pullRequest, target, head)
+			result, err := deps.WaitChecks(command.Context(), githubchecks.PullRequestWaitOptions{
+				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
+				Slice: slice, CheckPollInterval: interval, Progress: progress.Report, OperationProgress: progress.OperationReporter("ci wait"),
+			})
+			if err != nil {
+				progress.Fail(err)
+				return err
+			}
+			progress.Finish(result)
+			output := WaitOutput{SchemaVersion: 1, ObservedAt: deps.Now().UTC(), PullRequestWaitResult: result}
+			if result.Status == githubchecks.PullRequestWaitPending {
+				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, machineOutput)
+			}
+			if machineOutput {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(output); err != nil {
+					return err
+				}
+			} else if err := printCIWait(command, output); err != nil {
+				return err
+			}
+			if result.Status != githubchecks.PullRequestWaitPassed {
+				return runtime.ExitError(shared.ExitFindings, "CI wait "+string(result.Status)+": "+result.Reason)
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&repository, "repo", "", "GitHub owner/repository containing the target")
+	command.Flags().StringVar(&pullRequest, "pr", "", "optional pull request number or URL to corroborate before waiting")
+	command.Flags().StringVar(&target, "target", "", "required target branch containing the exact direct-push head, or the PR base")
+	command.Flags().StringVar(&head, "head", "", "required exact 40- or 64-hex Git head SHA")
+	command.Flags().DurationVar(&slice, "slice", shared.DefaultCIWaitSlice, "maximum foreground observation slice (must be at most 9m)")
+	command.Flags().DurationVar(&interval, "interval", githubchecks.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
+	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
+	return command
+}
+
+func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration, validateBranch func(string) error) error {
+	owner, name, validRepository := strings.Cut(strings.TrimSpace(repository), "/")
+	if !validRepository || owner == "" || name == "" || strings.Contains(name, "/") {
+		return fmt.Errorf("--repo must be owner/repository")
+	}
+	if strings.TrimSpace(target) == "" || strings.TrimSpace(target) != target {
+		return fmt.Errorf("--target is required and must not have surrounding whitespace")
+	}
+	if err := validateBranch(target); err != nil {
+		return err
+	}
+	if !shared.ExactGitObjectID.MatchString(head) {
+		return fmt.Errorf("--head must be an exact 40- or 64-hex Git SHA")
+	}
+	if slice <= 0 || slice > githubchecks.MaxForegroundCheckWaitSlice {
+		return fmt.Errorf("--slice must be positive and at most %s", githubchecks.MaxForegroundCheckWaitSlice)
+	}
+	if interval <= 0 {
+		return fmt.Errorf("--interval must be positive")
+	}
+	if interval >= slice {
+		return fmt.Errorf("--interval must be shorter than --slice so WB can confirm a stable terminal reread")
+	}
+	return nil
+}
+
+func ciWaitResumeArgs(repository, pullRequest, target, head string, slice, interval time.Duration, jsonOut bool) []string {
+	args := []string{"wb", "ci", "wait", "--repo", repository, "--target", target, "--head", head, "--slice", slice.String(), "--interval", interval.String()}
+	if pullRequest != "" {
+		args = append(args, "--pr", pullRequest)
+	}
+	if jsonOut {
+		args = append(args, "--json")
+	}
+	return args
+}
+
+func printCIWait(command *cobra.Command, output WaitOutput) error {
+	identity := output.Target + "@" + output.Head
+	if output.PullRequest != "" {
+		identity = "PR " + output.PullRequest + " -> " + identity
+	}
+	if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s: %s\n", output.Status, output.Repository, identity, output.Reason); err != nil {
+		return err
+	}
+	if len(output.ResumeArgs) > 0 {
+		quoted := make([]string, 0, len(output.ResumeArgs))
+		for _, argument := range output.ResumeArgs {
+			quoted = append(quoted, shared.ShellQuoteArg(argument))
+		}
+		_, err := fmt.Fprintf(command.OutOrStdout(), "resume: %s\n", strings.Join(quoted, " "))
+		return err
+	}
+	for _, detail := range output.FailureDetails {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "failed %s\n", detail.Check); err != nil {
+			return err
+		}
+		if detail.RunURL != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "run: %s\n", detail.RunURL); err != nil {
+				return err
+			}
+		}
+		if detail.JobURL != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "job: %s\n", detail.JobURL); err != nil {
+				return err
+			}
+		}
+		for _, annotation := range detail.Annotations {
+			location := fmt.Sprintf("%s:%d", annotation.Path, annotation.StartLine)
+			if annotation.EndLine > annotation.StartLine {
+				location += fmt.Sprintf("-%d", annotation.EndLine)
+			}
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "annotation: %s: %s\n", location, annotation.Message); err != nil {
+				return err
+			}
+		}
+		if detail.Excerpt != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "failed-step tail:\n%s\n", detail.Excerpt); err != nil {
+				return err
+			}
+		}
+		if detail.Reason != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "diagnostic: %s\n", detail.Reason); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func newAuditCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	var (
+		fleetMode bool
+		strict    bool
+		jsonOut   bool
+		target    string
+	)
+	cmd := &cobra.Command{
+		Use:   "audit [repository-path]",
+		Short: "Check coverage gates and build-artifact promotion",
+		Long: `Check coverage gates and build-artifact promotion.
+
+Pass --target <branch> to additionally compare every numeric
+min_test_coverage_percent against the same workflow file on the fetched
+target branch (lesson l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit):
+a threshold lower here than on the target is a coverage-floor-lowered
+finding. It also compares internal/quality/testdata/unit_tier.pending's
+grand total against the target's committed copy (spec/plans/coverage-to-100
+task-24): a rise is a unit-tier-pending-total-rose finding unless this PR
+shrinks other entries by at least as much. Both comparisons are a no-op when
+the current branch already equals --target, and fetch origin/<target> (the
+one place this command is not read-only).`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			flags := runtime.Flags()
+			reports, err := deps.Audit(ciaudit.BatchOptions{Path: path, ProjectsRoot: flags.ProjectsRoot, Filter: flags.Filter, Target: target, Fleet: fleetMode})
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(reports); err != nil {
+					return err
+				}
+			} else if err := printCIAudit(cmd.OutOrStdout(), reports); err != nil {
+				return err
+			}
+			findings := 0
+			for _, report := range reports {
+				findings += len(report.Findings)
+			}
+			if strict && findings > 0 {
+				return runtime.ExitError(shared.ExitFindings, "CI policy findings reported above; fix them or drop --strict to report without failing")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&fleetMode, "fleet", false, "audit every local repository under --projects-root")
+	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when policy findings exist")
+	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors and the unit-tier pending total against this fetched target branch")
+	shared.AddJSONFormatFlags(cmd, &jsonOut)
+	return cmd
+}
+
+func printCIAudit(out io.Writer, reports []ciaudit.Report) error {
+	for _, report := range reports {
+		if _, err := fmt.Fprintln(out, report.Path); err != nil {
+			return err
+		}
+		if !report.HasGo && !report.HasFrontend && !report.HasDeploy {
+			if _, err := fmt.Fprintln(out, "  – no Go/frontend/deploy CI policy applies"); err != nil {
+				return err
+			}
+			continue
+		}
+		if report.HasGo && report.GoCoverageThreshold {
+			if _, err := fmt.Fprintln(out, "  ✓ Go coverage threshold"); err != nil {
+				return err
+			}
+		}
+		if report.HasFrontend && report.FrontendCoverageThreshold {
+			if _, err := fmt.Fprintln(out, "  ✓ frontend coverage threshold"); err != nil {
+				return err
+			}
+		}
+		if report.HasDeploy && report.ArtifactPromotion {
+			if _, err := fmt.Fprintln(out, "  ✓ deploys promote verified build artifacts"); err != nil {
+				return err
+			}
+		}
+		for _, finding := range report.Findings {
+			where := ""
+			if finding.File != "" {
+				where = " (" + finding.File + ")"
+			}
+			if _, err := fmt.Fprintf(out, "  ✗ %s: %s%s\n", finding.Code, finding.Message, where); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

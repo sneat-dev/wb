@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"connectrpc.com/connect"
 
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
@@ -32,7 +34,7 @@ func TestWorkerConnectLeasesAndExecutesARealQueuedOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := daemonOperationClient(context.Background(), deps, root, &bytes.Buffer{})
+	client, err := daemonruntime.OperationClient(context.Background(), deps.Dependencies, root, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("daemon operation client: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestWorkerConnectLeasesAndExecutesARealQueuedOperation(t *testing.T) {
 
 	fetchOperation := func() (daemonOperationResult, error) {
 		var out bytes.Buffer
-		get := newDaemonOperationGetCmd(&invocation{projectsRoot: root}, deps)
+		get := daemonCommandForTest("operation get", &invocation{projectsRoot: root}, deps)
 		get.SilenceUsage, get.SilenceErrors = true, true
 		get.SetOut(&out)
 		get.SetErr(&bytes.Buffer{})
@@ -89,7 +91,7 @@ func TestWorkerConnectLeasesAndExecutesARealQueuedOperation(t *testing.T) {
 		}
 	}()
 
-	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, deps)
+	command := workerConnectForTest(&invocation{projectsRoot: root}, deps)
 	command.SilenceUsage, command.SilenceErrors = true, true
 	command.SetContext(ctx)
 	var stdout, stderr bytes.Buffer
