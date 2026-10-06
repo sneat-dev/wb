@@ -1062,7 +1062,11 @@ func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remote
 // its own Injector to reach the scratch input file's create/chmod/write/
 // close failure branches deterministically.
 func runWorktreeMergePrePushGateInjected(ctx context.Context, worktree, localSHA, remoteRef string, timeout time.Duration, retry int, inj *filewrite.Injector) (*WorktreeMergePushGateReceipt, error) {
-	remoteOutput, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "ls-remote", "--heads", "origin", remoteRef)
+	return runWorktreeMergePrePushGateWithRunner(ctx, defaultRunner, worktree, localSHA, remoteRef, timeout, retry, inj)
+}
+
+func runWorktreeMergePrePushGateWithRunner(ctx context.Context, run runner.Runner, worktree, localSHA, remoteRef string, timeout time.Duration, retry int, inj *filewrite.Injector) (*WorktreeMergePushGateReceipt, error) {
+	remoteOutput, _, err := runCommand(ctx, run, timeout, retry, worktree, "git", "ls-remote", "--heads", "origin", remoteRef)
 	if err != nil {
 		return nil, fmt.Errorf("inspect exact remote ref before pre-push gate: %w", err)
 	}
@@ -1070,11 +1074,11 @@ func runWorktreeMergePrePushGateInjected(ctx context.Context, worktree, localSHA
 	if fields := strings.Fields(remoteOutput); len(fields) > 0 {
 		previousRemoteSHA = fields[0]
 	}
-	remoteURL, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "remote", "get-url", "--push", "origin")
+	remoteURL, _, err := runCommand(ctx, run, timeout, retry, worktree, "git", "remote", "get-url", "--push", "origin")
 	if err != nil {
 		return nil, fmt.Errorf("resolve push remote for pre-push gate: %w", err)
 	}
-	localRef, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "symbolic-ref", "-q", "HEAD")
+	localRef, _, err := runCommand(ctx, run, timeout, retry, worktree, "git", "symbolic-ref", "-q", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("resolve local branch for pre-push gate: %w", err)
 	}
@@ -1086,7 +1090,7 @@ func runWorktreeMergePrePushGateInjected(ctx context.Context, worktree, localSHA
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", "hook", "run", "--ignore-missing", "--to-stdin", inputPath,
+	if _, _, err := runCommand(ctx, run, timeout, retry, worktree, "git", "hook", "run", "--ignore-missing", "--to-stdin", inputPath,
 		"pre-push", "--", "origin", strings.TrimSpace(remoteURL)); err != nil {
 		return nil, fmt.Errorf("managed pre-push gate failed before opening the push connection: %w", err)
 	}
@@ -1810,9 +1814,6 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return regressionErr
 	}
 	receipt.ImportedMainDeadcode = parentEvidence
-	if err := mergevalidation.RegressionWithImportedMain(baseline, receipt.Validation, parentEvidence); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -1887,10 +1888,7 @@ func requireWorktreeMergePublishedValidationContext(ctx context.Context, receipt
 		}
 	}
 	if receipt.Route.Route == WorktreeMergeRouteDirect && plan.Defer && plan.DirectCI != nil {
-		if deferral := receipt.ValidationDeferral; deferral != nil && deferral.Route == WorktreeMergeRouteDirect &&
-			deferral.CandidateSHA == receipt.Candidate.SHA && deferral.DirectCIPullRequest == plan.DirectCI.PullRequest && deferral.DirectCIPullRequestNumber == plan.DirectCI.PullRequestNumber &&
-			deferral.DirectCIBase == plan.DirectCI.Base && deferral.DirectCIWorkflowID == plan.DirectCI.WorkflowID &&
-			receipt.Validation.Status == quality.StatusSkipped && receipt.Validation.Revision == receipt.Candidate.SHA {
+		if matchesWorktreeMergeDirectCIDeferral(receipt, *plan.DirectCI) {
 			return nil
 		}
 	}
@@ -1923,11 +1921,8 @@ func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMe
 		receipt.Validation.Revision == receipt.Candidate.SHA {
 		return true, nil
 	}
-	if deferral := receipt.ValidationDeferral; plan.Defer && plan.DirectCI != nil && receipt.Status == WorktreeMergePrepared && deferral != nil &&
-		(receipt.Route.Route == "" || receipt.Route.Route == WorktreeMergeRouteDirect) && deferral.Route == WorktreeMergeRouteDirect &&
-		deferral.CandidateSHA == receipt.Candidate.SHA && deferral.DirectCIPullRequest == plan.DirectCI.PullRequest && deferral.DirectCIPullRequestNumber == plan.DirectCI.PullRequestNumber &&
-		deferral.DirectCIBase == plan.DirectCI.Base && deferral.DirectCIWorkflowID == plan.DirectCI.WorkflowID &&
-		receipt.Validation.Status == quality.StatusSkipped && receipt.Validation.Revision == receipt.Candidate.SHA {
+	if plan.Defer && plan.DirectCI != nil && receipt.Status == WorktreeMergePrepared &&
+		(receipt.Route.Route == "" || receipt.Route.Route == WorktreeMergeRouteDirect) && matchesWorktreeMergeDirectCIDeferral(receipt, *plan.DirectCI) {
 		return true, nil
 	}
 	if receipt.Status != WorktreeMergePrepared || (receipt.Validation.Status != quality.StatusPassed && receipt.Validation.Status != quality.StatusFailed) ||
@@ -1944,6 +1939,17 @@ func preparedValidationStillValidContext(ctx context.Context, receipt WorktreeMe
 	}
 	identity, fingerprintable := worktreeMergeValidationIdentity(receipt)
 	return fingerprintable && reflect.DeepEqual(*receipt.ValidationIdentity, identity), nil
+}
+
+// matchesWorktreeMergeDirectCIDeferral compares the recorded exact validation
+// identity. Each caller retains its own freshly resolved route and status gates.
+func matchesWorktreeMergeDirectCIDeferral(receipt WorktreeMergeReceipt, contract worktreeMergeDirectCIContract) bool {
+	deferral := receipt.ValidationDeferral
+	return deferral != nil && deferral.Route == WorktreeMergeRouteDirect &&
+		deferral.CandidateSHA == receipt.Candidate.SHA && deferral.DirectCIPullRequest == contract.PullRequest &&
+		deferral.DirectCIPullRequestNumber == contract.PullRequestNumber && deferral.DirectCIBase == contract.Base &&
+		deferral.DirectCIWorkflowID == contract.WorkflowID && receipt.Validation.Status == quality.StatusSkipped &&
+		receipt.Validation.Revision == receipt.Candidate.SHA
 }
 
 func activeRuleCount(pages [][]githubchecks.ActiveBranchRule) int {
