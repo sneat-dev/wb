@@ -37,8 +37,3 @@ timing_tolerance:
     functions:
       - ciwait.go:waitForCommitChecksWith
     reason: timing-dependent wait loop deadline branch not yet deterministic under test
-  - package: internal/orchestrate
-    statements: 1
-    functions:
-      - worktree_merge.go:verifyWorktreeMergeTargetChecks
-    reason: timing-dependent validation-cache miss fall-through not yet deterministic under test

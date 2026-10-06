@@ -3,7 +3,6 @@ package orchestrate
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -138,7 +137,22 @@ func rewriteBranchForKeptCommits(
 	approvedBy, reason string,
 	buildCommand []string,
 ) ([]LandedCommit, string, *landRefusal, error) {
-	scratch, err := os.MkdirTemp("", "wb-pr-land-")
+	return rewriteBranchForKeptCommitsInTempDir(ctx, "", git, run, canonical, repository, headRef, baseSHA, plan, view, commits, approvedBy, reason, buildCommand)
+}
+
+func rewriteBranchForKeptCommitsInTempDir(
+	ctx context.Context,
+	tempDir string,
+	git Git,
+	run runner.Runner,
+	canonical, repository, headRef, baseSHA string,
+	plan keepPlan,
+	view githubchecks.PullRequestView,
+	commits []SourceCommit,
+	approvedBy, reason string,
+	buildCommand []string,
+) ([]LandedCommit, string, *landRefusal, error) {
+	scratch, err := os.MkdirTemp(tempDir, "wb-pr-land-")
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create landing scratch directory: %w", err)
 	}
@@ -314,11 +328,7 @@ func runGitPushDeleteWithLease(ctx context.Context, run runner.Runner, dir, remo
 // injected runner as the push, without exposing the remote URL to argv.
 func unusedTemporaryGitRemoteName(ctx context.Context, run runner.Runner, dir string) (string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
-		entropy := make([]byte, 16)
-		if _, err := rand.Read(entropy); err != nil {
-			return "", fmt.Errorf("generate temporary Git remote name: %w", err)
-		}
-		name := "wb-landing-" + hex.EncodeToString(entropy)
+		name := "wb-landing-" + rand.Text()
 		result, err := run.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true},
 			"git", "config", "--get-regexp", "^remote\\."+name+"\\.")
 		output := result.CombinedOutput

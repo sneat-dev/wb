@@ -196,6 +196,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check strict coverage profile gate
+        run: python3 .github/scripts/test-coverage-strict.py
       - name: go vet
         run: go vet ./...
       - name: go build
@@ -283,9 +285,17 @@ jobs:
           fi
           go run ./cmd/wb coverage . \
             --changed --affected-packages --target "$target" \
-            --baseline-timeout 15m --timeout 20m --include-e2e \
+            --baseline-timeout 20m --timeout 20m --include-e2e \
             --coverage-profile profile.cov --report-dir coverage-diagnostics \
             --format json --non-interactive
+      - name: Require zero uncovered statements in the selected coverage scope
+        if: ${{ success() || failure() }}
+        run: |
+          set -euo pipefail
+          mkdir -p coverage-diagnostics
+          python3 .github/scripts/coverage-strict.py profile.cov --scope selected \
+            --ratchet coverage-diagnostics/coverage-ratchet.json --head "$(git rev-parse HEAD)" \
+            | tee coverage-diagnostics/coverage-strict.json
       - name: wb ci audit --strict against the PR base branch
         if: ${{ (success() || failure()) && github.event_name == 'pull_request' }}
         env:
