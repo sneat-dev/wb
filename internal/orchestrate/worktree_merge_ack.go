@@ -402,20 +402,25 @@ func hasReceiptCollisionAcknowledgement(receipt WorktreeMergeReceipt) (bool, err
 // identity and its live immutable-claim digest before rebatch or cleanup can
 // rely on the historically corrupted preparing receipt.
 func validateReceiptCollisionAcknowledgement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
+	return validateReceiptCollisionAcknowledgementWithRunner(ctx, defaultRunner, worktreeMergeReceiptSHA256, projectsRoot, receipt)
+}
+
+// Collision replay keeps custody native and re-reads the immutable claim bytes
+// after custody validation. The hash boundary is shared with the initial
+// acknowledgement operation; a late read failure cannot reuse earlier bytes.
+func validateReceiptCollisionAcknowledgementWithRunner(ctx context.Context, run runner.Runner, hash func(string) (string, error), projectsRoot string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
 	ack, err := readReceiptCollisionAcknowledgement(receiptCollisionAcknowledgementPath(receipt.ReceiptPath), receipt)
 	if err != nil {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
 	}
-	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
+	claim, err := validateMergeAcknowledgementCandidateWithRunner(ctx, run, projectsRoot, receipt, receipt.Candidate)
 	if err != nil {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("validate collision acknowledgement candidate: %w", err)
 	}
-	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	claimHash, err := hash(claim.ClaimPath)
 	if err != nil {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("read collision acknowledgement immutable claim: %w", err)
 	}
-	digest := sha256.Sum256(claimBytes)
-	claimHash := hex.EncodeToString(digest[:])
 	if claimHash != ack.ImmutableClaimSHA256 || claim.BaseSHA != ack.ClaimBaseSHA {
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, errors.New("collision acknowledgement immutable claim SHA256 or base no longer matches recorded evidence")
 	}
