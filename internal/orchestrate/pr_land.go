@@ -749,11 +749,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// guards. autoMergeArmed is always false here — arming has not happened
 	// yet — so the refusal never claims an armed state it has not reached.
 	if !result.Mechanical && reviewedHead != "" && reviewedHead != view.Head.SHA {
-		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, false, number); refusal != nil {
+		if refusal := applyPullRequestLandReviewBinding(ctx, options, view, reviewedHead, view.Head.SHA, false, number, &result); refusal != nil {
 			return mergeRefusal(result, *refusal), nil
-		} else if note != "" {
-			result.ReviewBound = boolPtr(false)
-			result.Evidence["review"] = "review-unverified: " + note
 		}
 	}
 
@@ -879,11 +876,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// auto-merge, performs the merge write below — so refusing here still
 	// prevents it.
 	if !result.Mechanical && !mergedByGitHub && reviewedHead != "" {
-		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number); refusal != nil {
+		if refusal := applyPullRequestLandReviewBinding(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number, &result); refusal != nil {
 			return mergeRefusal(result, *refusal), nil
-		} else if note != "" {
-			result.ReviewBound = boolPtr(false)
-			result.Evidence["review"] = "review-unverified: " + note
 		}
 	}
 	// mergedByGitHub means GitHub's armed auto-merge already landed the

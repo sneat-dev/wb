@@ -325,3 +325,18 @@ func reviewStaleRefusal(ctx context.Context, options PullRequestLandOptions, vie
 		command: "review the current head, then: wb pr land " + options.Repository + "#" + number + " --approved-by <fresh review>",
 	}, ""
 }
+
+// applyPullRequestLandReviewBinding records the same proof decision before
+// arming and after waiting. The caller owns phase eligibility and supplies the
+// exact armed state; proof and refusal policy remain in reviewStaleRefusal.
+func applyPullRequestLandReviewBinding(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, reviewedHead, currentHead string, autoMergeArmed bool, number string, result *PullRequestLandResult) *landRefusal {
+	refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, currentHead, autoMergeArmed, number)
+	if refusal != nil {
+		return refusal
+	}
+	if note != "" {
+		result.ReviewBound = boolPtr(false)
+		result.Evidence["review"] = "review-unverified: " + note
+	}
+	return nil
+}
