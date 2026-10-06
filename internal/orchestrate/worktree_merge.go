@@ -2130,18 +2130,11 @@ func activeWorktreeMergeLaneReceiptWithRunner(ctx context.Context, projectsRoot,
 					return nil, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
 				}
 			}
-			acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt)
-			if ackErr != nil {
-				return nil, ackErr
+			released, releaseErr := mergeReceiptReleasedByFailureEvidence(ctx, projectsRoot, receipt)
+			if releaseErr != nil {
+				return nil, releaseErr
 			}
-			if acknowledged {
-				continue
-			}
-			superseded, supersessionErr := hasValidationFailureSupersession(ctx, projectsRoot, receipt)
-			if supersessionErr != nil {
-				return nil, supersessionErr
-			}
-			if superseded {
+			if released {
 				continue
 			}
 			rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt)

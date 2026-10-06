@@ -81,18 +81,11 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 		if !worktreeMergeReceiptClaimsBranch(receipt, branch) {
 			continue
 		}
-		acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt)
-		if ackErr != nil {
-			return nil, ackErr
+		released, releaseErr := mergeReceiptReleasedByFailureEvidence(context.Background(), projectsRoot, receipt)
+		if releaseErr != nil {
+			return nil, releaseErr
 		}
-		if acknowledged {
-			continue
-		}
-		superseded, supersessionErr := hasValidationFailureSupersession(context.Background(), projectsRoot, receipt)
-		if supersessionErr != nil {
-			return nil, supersessionErr
-		}
-		if superseded {
+		if released {
 			continue
 		}
 		rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt)
@@ -109,6 +102,20 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 		return &MergeLaneClaim{Lane: lane, Target: receipt.Target, Status: string(receipt.Status), ReceiptPath: path}, nil
 	}
 	return nil, nil
+}
+
+// mergeReceiptReleasedByFailureEvidence shares the ordered failure-release
+// decision between lane and branch scans. Each scan rereads the authenticated
+// acknowledgement before supersession; neither caller caches custody evidence.
+func mergeReceiptReleasedByFailureEvidence(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (bool, error) {
+	acknowledged, err := hasLandedFailureAcknowledgement(receipt)
+	if err != nil {
+		return false, err
+	}
+	if acknowledged {
+		return true, nil
+	}
+	return hasValidationFailureSupersession(ctx, projectsRoot, receipt)
 }
 
 // worktreeMergeReceiptClaimsBranch reports whether branch is one of the
