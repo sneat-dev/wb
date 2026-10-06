@@ -588,23 +588,9 @@ func openPullRequest(ctx context.Context, worktree, branch, base, title, body st
 }
 
 func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]) error {
-	slice := 8 * time.Minute
-	if options.Timeout > 0 && options.Timeout < slice {
-		slice = options.Timeout
-	}
-	interval := githubChecksPollInterval(options)
-	if interval >= slice {
-		return fmt.Errorf("CI poll interval %s must be shorter than bounded merge slice %s", interval, slice)
-	}
-	receipt, err := githubchecks.WaitForCommitChecks(ctx, githubchecks.PullRequestWaitOptions{
-		Repository:        result.Repository,
-		PullRequest:       result.PR,
-		Target:            result.Ref,
-		Head:              result.Commit,
-		Slice:             slice,
-		CheckPollInterval: interval,
-		OperationProgress: options.Progress,
-	})
+	receipt, err := waitEnginePRCheckReceipt(ctx, options, githubchecks.PullRequestWaitOptions{
+		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
+	}, "merge")
 	if err != nil {
 		return err
 	}
@@ -633,20 +619,11 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 }
 
 func waitForPRChecks[T any](ctx context.Context, options Options, result *Result[T]) error {
-	slice := 8 * time.Minute
-	if options.Timeout > 0 && options.Timeout < slice {
-		slice = options.Timeout
-	}
-	interval := githubChecksPollInterval(options)
-	if interval >= slice {
-		return fmt.Errorf("CI poll interval %s must be shorter than bounded PR-check slice %s", interval, slice)
-	}
-	receipt, err := githubchecks.WaitForCommitChecks(ctx, githubchecks.PullRequestWaitOptions{
+	receipt, err := waitEnginePRCheckReceipt(ctx, options, githubchecks.PullRequestWaitOptions{
 		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
-		AllowUnfenced: true, Slice: slice, CheckPollInterval: interval,
-		Progress:          reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
-		OperationProgress: options.Progress,
-	})
+		AllowUnfenced: true,
+		Progress:      reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+	}, "PR-check")
 	if err != nil {
 		return err
 	}
@@ -663,6 +640,23 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	default:
 		return fmt.Errorf("GitHub CI receipt failed for %s at %s: %s", result.PR, result.Commit, receipt.Reason)
 	}
+}
+
+// waitEnginePRCheckReceipt applies the engine's bounded observation window.
+// Callers retain the exact identity, fencing, progress, and receipt interpretation.
+func waitEnginePRCheckReceipt(ctx context.Context, options Options, request githubchecks.PullRequestWaitOptions, sliceLabel string) (githubchecks.PullRequestWaitResult, error) {
+	slice := 8 * time.Minute
+	if options.Timeout > 0 && options.Timeout < slice {
+		slice = options.Timeout
+	}
+	interval := githubChecksPollInterval(options)
+	if interval >= slice {
+		return githubchecks.PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than bounded %s slice %s", interval, sliceLabel, slice)
+	}
+	request.Slice = slice
+	request.CheckPollInterval = interval
+	request.OperationProgress = options.Progress
+	return githubchecks.WaitForCommitChecks(ctx, request)
 }
 
 func githubChecksPollInterval(options Options) time.Duration {
