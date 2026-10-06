@@ -888,6 +888,10 @@ func validatePreservedLandedFailureAcknowledgementSourceWithHead(ctx context.Con
 }
 
 func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string, allowAnyDescendant bool, validatedHead ...*string) error {
+	return validateLandedFailureAcknowledgementSourceHeadWithRunner(ctx, defaultRunner, projectsRoot, receipt, source, allowedDescendantSHA, allowAnyDescendant, validatedHead...)
+}
+
+func validateLandedFailureAcknowledgementSourceHeadWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string, allowAnyDescendant bool, validatedHead ...*string) error {
 	if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 		return errors.New("receipt contains an incomplete source identity")
 	}
@@ -898,15 +902,15 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 	if guard.Kind != "linked" || guard.Transient || guard.Branch != source.Branch || filepath.Clean(guard.Path) != filepath.Clean(source.Worktree) {
 		return fmt.Errorf("receipted source %s no longer has its exact linked-worktree identity", source.Worktree)
 	}
-	if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
+	if err := requireCleanMergeWorktreeWithRunner(ctx, run, source.Worktree); err != nil {
 		return fmt.Errorf("receipted source %s is not clean: %w", source.Worktree, err)
 	}
-	head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, run, source.Worktree, "HEAD")
 	if err != nil {
 		return fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}
 	if allowAnyDescendant {
-		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, source.Worktree, source.SHA, head)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("current HEAD %s does not descend from receipted SHA %s", head, source.SHA)
@@ -917,7 +921,7 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 		if allowedDescendantSHA == "" || head != allowedDescendantSHA {
 			return fmt.Errorf("receipted source %s HEAD %s does not match %s", source.Worktree, head, source.SHA)
 		}
-		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, source.Worktree, source.SHA, head)
 		if ancestorErr != nil {
 			return fmt.Errorf("verify receipted source descendant ancestry: %w", ancestorErr)
 		}
@@ -929,8 +933,7 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 	if err != nil {
 		return fmt.Errorf("load receipted source Work Log %s: %w", source.Worktree, err)
 	}
-	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Repository != receipt.Repository || view.Claim.Task != source.Task ||
-		filepath.Clean(view.Claim.Worktree) != filepath.Clean(source.Worktree) || view.Claim.Branch != source.Branch {
+	if !mergeClaimMatchesIdentity(view.Claim, receipt.Repository, source.Task, source.Worktree, source.Branch) {
 		return fmt.Errorf("receipted source %s has no matching active Work Log claim", source.Worktree)
 	}
 	if len(validatedHead) > 0 && validatedHead[0] != nil {

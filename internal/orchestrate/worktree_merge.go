@@ -2213,6 +2213,10 @@ func activeWorktreeMergeLaneReceiptWithRunner(ctx context.Context, projectsRoot,
 // recorded forward-repair shape only after every immutable ancestry root is
 // re-read from the exact clean candidate.
 func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
+	return isExactPublishedValidationFailureReplayWithRunner(ctx, defaultRunner, projectsRoot, receipt, sources)
+}
+
+func isExactPublishedValidationFailureReplayWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
 	if receipt.Status != WorktreeMergeValidationFailed || receipt.PullRequest == "" ||
 		receipt.PublishedCandidateSHA == "" || receipt.Candidate.SHA == "" ||
 		!sameWorktreeMergeSources(receipt.Sources, sources) {
@@ -2224,14 +2228,14 @@ func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot s
 	if len(receipt.SourceRefreshes) == 0 {
 		return false, nil
 	}
-	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
+	claim, err := validateMergeAcknowledgementCandidateWithRunner(ctx, run, projectsRoot, receipt, receipt.Candidate)
 	if err != nil {
 		return false, err
 	}
-	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
+	if err := recheckWorktreeMergeSourcesWithRunner(ctx, run, receipt.Sources); err != nil {
 		return false, err
 	}
-	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	currentTarget, err := fetchExactMergeTargetWithRunner(ctx, run, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil {
 		return false, err
 	}
@@ -2248,7 +2252,7 @@ func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot s
 		if root == "" {
 			return false, errors.New("published repair replay has an incomplete immutable ancestry root")
 		}
-		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, root, receipt.Candidate.SHA)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, receipt.Candidate.Worktree, root, receipt.Candidate.SHA)
 		if ancestorErr != nil {
 			return false, ancestorErr
 		}
@@ -2256,7 +2260,7 @@ func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot s
 			return false, fmt.Errorf("candidate %s does not contain immutable replay root %s", receipt.Candidate.SHA, root)
 		}
 	}
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, run, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return false, err
 	}
@@ -2383,10 +2387,6 @@ func failWorktreeMergeReceipt(receipt WorktreeMergeReceipt, status WorktreeMerge
 
 func requireCleanMergeWorktree(ctx context.Context, path string) error {
 	return requireCleanMergeWorktreeWithRunner(ctx, defaultRunner, path)
-}
-
-func recheckWorktreeMergeSources(ctx context.Context, sources []WorktreeMergeSource) error {
-	return recheckWorktreeMergeSourcesWithRunner(ctx, defaultRunner, sources)
 }
 
 // mergeRevision resolves revision to a commit SHA in path. Unlike the Git
