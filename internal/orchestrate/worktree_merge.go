@@ -1642,8 +1642,7 @@ func validateRebatchedWorktreeMergeCleanup(ctx context.Context, projectsRoot str
 	if err != nil {
 		return fmt.Errorf("validate rebatched receipt before cleanup: %w", err)
 	}
-	if rebatch.ReplacementReceiptPath != receipt.ReceiptPath || rebatch.Replacement != receipt.Candidate ||
-		!sameWorktreeMergeSources(rebatch.Sources, receipt.Sources) || len(receipt.RebatchedCandidates) != 1 ||
+	if !preparedRebatchReplacementMatches(rebatch, receipt) || len(receipt.RebatchedCandidates) != 1 ||
 		receipt.RebatchedCandidates[0] != original.Candidate {
 		return errors.New("replacement receipt does not carry the exact append-only rebatch cleanup proof")
 	}
