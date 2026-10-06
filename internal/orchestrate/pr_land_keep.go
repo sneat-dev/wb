@@ -137,7 +137,22 @@ func rewriteBranchForKeptCommits(
 	approvedBy, reason string,
 	buildCommand []string,
 ) ([]LandedCommit, string, *landRefusal, error) {
-	scratch, err := os.MkdirTemp("", "wb-pr-land-")
+	return rewriteBranchForKeptCommitsInTempDir(ctx, "", git, run, canonical, repository, headRef, baseSHA, plan, view, commits, approvedBy, reason, buildCommand)
+}
+
+func rewriteBranchForKeptCommitsInTempDir(
+	ctx context.Context,
+	tempDir string,
+	git Git,
+	run runner.Runner,
+	canonical, repository, headRef, baseSHA string,
+	plan keepPlan,
+	view githubchecks.PullRequestView,
+	commits []SourceCommit,
+	approvedBy, reason string,
+	buildCommand []string,
+) ([]LandedCommit, string, *landRefusal, error) {
+	scratch, err := os.MkdirTemp(tempDir, "wb-pr-land-")
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create landing scratch directory: %w", err)
 	}
