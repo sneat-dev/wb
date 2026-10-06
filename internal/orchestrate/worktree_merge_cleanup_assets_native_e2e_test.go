@@ -15,8 +15,8 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+//nolint:paralleltest // landedTerminalCleanupFixture changes process-wide PATH and environment for hosted protocol scripts.
 func TestE2ECleanupAssetsCheckpointFailureRecoversNativeTerminalEvidence(t *testing.T) {
-	// This fixture uses Setenv and hosted protocol scripts; keep it serial.
 	fixture, _, receipt, claims := landedTerminalCleanupFixture(t)
 	receipt.Cleanup = true
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
