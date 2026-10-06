@@ -1284,11 +1284,15 @@ func isWorktreeMergeReportSidecar(name string) bool {
 }
 
 func resolveWorktreeMergeReceiptPath(projectsRoot, input string) (string, error) {
+	return resolveWorktreeMergeReceiptPathWithAbs(projectsRoot, input, filepath.Abs)
+}
+
+func resolveWorktreeMergeReceiptPathWithAbs(projectsRoot, input string, abs func(string) (string, error)) (string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return "", fmt.Errorf("candidate worktree or receipt is required")
 	}
-	absolute, err := filepath.Abs(input)
+	absolute, err := abs(input)
 	if err != nil {
 		return "", err
 	}
