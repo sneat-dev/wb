@@ -2419,22 +2419,26 @@ func mergeTreeRevision(ctx context.Context, run runner.Runner, path, revision st
 }
 
 func worktreeMergeCandidateAbsorbed(ctx context.Context, path string, prior WorktreeMergeReceipt, remoteTarget string) (absorbed, graphContained bool, err error) {
-	containsCandidate, err := isMergeAncestor(ctx, path, prior.Candidate.SHA, remoteTarget)
+	return worktreeMergeCandidateAbsorbedWithRunner(ctx, defaultRunner, path, prior, remoteTarget)
+}
+
+func worktreeMergeCandidateAbsorbedWithRunner(ctx context.Context, run runner.Runner, path string, prior WorktreeMergeReceipt, remoteTarget string) (absorbed, graphContained bool, err error) {
+	containsCandidate, err := isMergeAncestorWithRunner(ctx, run, path, prior.Candidate.SHA, remoteTarget)
 	if err != nil || containsCandidate {
 		return containsCandidate, containsCandidate, err
 	}
 	if prior.PullRequest == "" || prior.PublishedCandidateSHA == "" || prior.PublishedCandidateSHA != prior.Candidate.SHA || prior.LandingSHA == "" {
 		return false, false, nil
 	}
-	containsLanding, err := isMergeAncestor(ctx, path, prior.LandingSHA, remoteTarget)
+	containsLanding, err := isMergeAncestorWithRunner(ctx, run, path, prior.LandingSHA, remoteTarget)
 	if err != nil || !containsLanding {
 		return false, false, err
 	}
-	candidateTree, err := mergeTreeRevision(ctx, defaultRunner, path, prior.Candidate.SHA)
+	candidateTree, err := mergeTreeRevision(ctx, run, path, prior.Candidate.SHA)
 	if err != nil {
 		return false, false, fmt.Errorf("resolve prior candidate tree %s: %w", prior.Candidate.SHA, err)
 	}
-	landingTree, err := mergeTreeRevision(ctx, defaultRunner, path, prior.LandingSHA)
+	landingTree, err := mergeTreeRevision(ctx, run, path, prior.LandingSHA)
 	if err != nil {
 		return false, false, fmt.Errorf("resolve prior landing tree %s: %w", prior.LandingSHA, err)
 	}
