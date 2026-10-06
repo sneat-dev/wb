@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/githubchecks"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -247,6 +248,10 @@ func validatePullRequestUpdateView(view githubchecks.PullRequestView, repository
 }
 
 func newPullRequestUpdateReceiptPath(options PullRequestUpdateOptions) (string, error) {
+	return newPullRequestUpdateReceiptPathInjected(options, nil)
+}
+
+func newPullRequestUpdateReceiptPathInjected(options PullRequestUpdateOptions, injection *filewrite.Injector) (string, error) {
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
 		return "", err
@@ -255,11 +260,11 @@ func newPullRequestUpdateReceiptPath(options PullRequestUpdateOptions) (string, 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	file, err := filewrite.CreateTemp(dir, "update-*.json", nil)
+	file, err := filewrite.CreateTemp(dir, "update-*.json", injection)
 	if err != nil {
 		return "", err
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, file.Name(), injection); err != nil {
 		return "", err
 	}
 	return file.Name(), nil
@@ -277,11 +282,15 @@ func persistPullRequestUpdateReceipt(result PullRequestUpdateResult) error {
 }
 
 func syncOwnedPullRequestUpdateWorktree(ctx context.Context, options PullRequestUpdateOptions, branch, head string) string {
+	return syncOwnedPullRequestUpdateWorktreeWithRunner(ctx, options, branch, head, defaultRunner)
+}
+
+func syncOwnedPullRequestUpdateWorktreeWithRunner(ctx context.Context, options PullRequestUpdateOptions, branch, head string, run runner.Runner) string {
 	canonical, err := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, options.Repository)
 	if err != nil {
 		return "local sync skipped: canonical checkout lookup failed: " + err.Error()
 	}
-	path, err := registeredWorktreeForBranch(ctx, canonical, branch, Options{})
+	path, err := registeredWorktreeForBranch(ctx, canonical, branch, Options{run: run})
 	if err != nil {
 		return "local sync skipped: worktree lookup failed: " + err.Error()
 	}
@@ -296,5 +305,5 @@ func syncOwnedPullRequestUpdateWorktree(ctx context.Context, options PullRequest
 	if err != nil || guard.Kind != "linked" || guard.Branch != branch {
 		return "local sync skipped: checkout did not pass WB guard"
 	}
-	return fastForwardWorktreeToUpdatedHead(ctx, defaultGit, defaultRunner, path, branch, head)
+	return fastForwardWorktreeToUpdatedHead(ctx, defaultGit, run, path, branch, head)
 }
