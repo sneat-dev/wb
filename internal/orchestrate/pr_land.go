@@ -334,9 +334,6 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 	ctx = githubobserver.WithRetryTelemetry(ctx, telemetry)
 	defer func() {
 		if telemetry.Count > 0 {
-			if result.Evidence == nil {
-				result.Evidence = map[string]string{}
-			}
 			result.Evidence["github_read_retries"] = fmt.Sprintf("%d (last: %s)", telemetry.Count, telemetry.LastReason)
 		}
 		// A single transient GitHub read failure recovers in-process (see
