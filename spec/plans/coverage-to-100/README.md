@@ -1600,3 +1600,7 @@ The [research report](_research/REPORT.md) and its evidence are in `spec/plans/c
 
 ---
 *This document follows the https://specscore.md/plan-specification*
+
+## Coverage result recorded 2026-10-06
+
+See [the source-bound result and proposed follow-up](RESULTS-2026-10-06.md). The measured Linux source scope reached 103,279/103,279 statements with zero uncovered positive-statement blocks. The report distinguishes that full-module result from the subsequent native fixture repair and its fresh main checks. This result does not close every historical process or architecture task in this plan; their statuses remain unchanged. Final release and task closure evidence belongs in the delivery receipts and WB Work Log.
