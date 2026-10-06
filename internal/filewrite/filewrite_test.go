@@ -14,10 +14,12 @@ import (
 
 func openTestDir(t *testing.T) *os.File {
 	t.Helper()
-	dir, err := os.Open(t.TempDir())
+	path := t.TempDir()
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := os.NewFile(uintptr(fd), path)
 	t.Cleanup(func() { _ = dir.Close() })
 	return dir
 }
