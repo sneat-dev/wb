@@ -155,7 +155,8 @@ func TestE2EOwnerWorkerPublicationFailureCancelsAndReapsUnrecordedTree(t *testin
 sleep 600 &
 child=$!
 trap 'kill "$child" 2>/dev/null; wait "$child"; exit 0' TERM
-printf '%s\n' "$child" > child.pid
+printf '%s\n' "$child" > child.pid.pending
+mv child.pid.pending child.pid
 wait "$child"
 `
 	if err := testenv.WriteExecutableFile(path, []byte(script), 0700); err != nil {
