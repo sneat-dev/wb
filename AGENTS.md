@@ -88,7 +88,10 @@ public WB repository as a fleet tracker or mirror upstream issues.
   (spec/plans/coverage-to-100/README.md, approved 2026-10-02 scope update).
   CI invokes `wb coverage --changed --affected-packages --target <base>`:
   changed statements require 100% coverage, and a changed package's uncovered
-  statement count must never rise. Unchanged packages only warn on a rise.
+  statement count must never rise. The same measured selected profile must also
+  have zero uncovered positive statement blocks. A current, revision-bound
+  no-work ratchet result is reported as no measured scope, never as global100%.
+  Unchanged packages only warn on a rise.
   As a stopgap, `.wb/coverage-ratchet.yaml` (read from the head checkout)
   lets a listed package exceed its baseline by a few timing-dependent
   statements, only inside the functions the entry names and only on lines the
@@ -101,8 +104,10 @@ public WB repository as a fleet tracker or mirror upstream issues.
   full module. Selected runs measure their own baseline, ignore full-module
   artifacts, reject a global minimum, and never publish repository totals.
   Main may reuse an exact trusted PR receipt. Daily nightly coverage and manual
-  nightly dispatch from main measure all packages with `--minimum=94` and
-  publish the full-module baseline and standard summary artifacts. Do not
+  nightly dispatch measure all packages with `--minimum=100`, require a valid
+  nonempty profile with zero uncovered positive statement blocks using exact
+  integer counts, and publish full-module baseline/summary artifacts on success.
+  Failed runs retain raw profiles and diagnostics; rounded percentages cannot pass. Do not
   reduce approved scope to satisfy either ratchet or the nightly floor.
 - Every public command leaf needs a matching row in `ai/capabilities.json` and
   a line in `docs/cli-flag-matrix.md`; `cmd/wb/skills_test.go` enforces both.

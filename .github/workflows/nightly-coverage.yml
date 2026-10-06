@@ -50,10 +50,18 @@ jobs:
           --include-e2e
           --coverage-profile profile.cov
           --report-dir coverage-diagnostics
-          --minimum=94
+          --minimum=100
           --format json
           --non-interactive
           --timeout 35m
+
+      - name: Require nonempty full-module coverage with zero uncovered statements
+        if: ${{ success() || failure() }}
+        run: |
+          set -euo pipefail
+          mkdir -p coverage-diagnostics
+          python3 .github/scripts/coverage-strict.py profile.cov --scope full-module \
+            | tee coverage-diagnostics/coverage-strict.json
 
       - name: Upload coverage diagnostics on failure
         if: ${{ failure() }}
@@ -65,6 +73,7 @@ jobs:
           retention-days: 14
 
       - name: Upload coverage profile
+        if: ${{ success() || failure() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-nightly-go-coverage
