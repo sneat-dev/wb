@@ -265,7 +265,7 @@ func mergeOrAdoptAutoMerge(
 		// Armed auto-merge can win the race to the same green head; a
 		// refusal then means GitHub merged it, which is a landing.
 		merged, readErr := githubchecks.ReadPullRequest(ctx, options.Repository, number)
-		if !autoMergeArmed || readErr != nil || !merged.Merged {
+		if !autoMergeArmed || readErr != nil || !merged.Merged || merged.Head.SHA != head {
 			return "", mergeRefused, nil
 		}
 		if evidence != nil {
