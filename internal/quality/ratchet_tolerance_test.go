@@ -478,7 +478,6 @@ func TestRepositoryRatchetPolicyIsExactlyTheReviewedTolerance(t *testing.T) {
 	}
 	want := map[string]string{
 		"internal/githubchecks": "1 statement(s) in internal/githubchecks/ciwait.go:waitForCommitChecksWith",
-		"internal/orchestrate":  "1 statement(s) in internal/orchestrate/worktree_merge.go:verifyWorktreeMergeTargetChecks",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("repository tolerance policy = %#v, want exactly the reviewed %#v", got, want)
