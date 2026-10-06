@@ -3,7 +3,6 @@ package orchestrate
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -314,11 +313,7 @@ func runGitPushDeleteWithLease(ctx context.Context, run runner.Runner, dir, remo
 // injected runner as the push, without exposing the remote URL to argv.
 func unusedTemporaryGitRemoteName(ctx context.Context, run runner.Runner, dir string) (string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
-		entropy := make([]byte, 16)
-		if _, err := rand.Read(entropy); err != nil {
-			return "", fmt.Errorf("generate temporary Git remote name: %w", err)
-		}
-		name := "wb-landing-" + hex.EncodeToString(entropy)
+		name := "wb-landing-" + rand.Text()
 		result, err := run.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true},
 			"git", "config", "--get-regexp", "^remote\\."+name+"\\.")
 		output := result.CombinedOutput
