@@ -1189,15 +1189,14 @@ func waitForPullRequestLandChecksWith(
 	}
 	var waited githubchecks.PullRequestWaitResult
 	for remaining := options.Slice; remaining > 0; {
-		slice, err := pullRequestLandWaitSlice(remaining)
-		if err != nil {
-			return githubchecks.PullRequestWaitResult{}, err
-		}
+		// The loop guarantees a positive budget, the helper's only precondition.
+		slice, _ := pullRequestLandWaitSlice(remaining)
 		current := options
 		current.Slice = slice
 		if current.CheckPollInterval >= slice {
 			return githubchecks.PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the total foreground timeout")
 		}
+		var err error
 		waited, err = wait(ctx, current)
 		if err != nil || waited.Status != githubchecks.PullRequestWaitPending {
 			return waited, err
