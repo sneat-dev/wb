@@ -114,10 +114,14 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 // Normalize validates lifecycle settings and applies cumulative publication
 // implications shared by every orchestrated command.
 func Normalize(options Options) (Options, error) {
+	return normalizeWithAbs(options, filepath.Abs)
+}
+
+func normalizeWithAbs(options Options, abs func(string) (string, error)) (Options, error) {
 	if strings.TrimSpace(options.GitHubDir) == "" {
 		return Options{}, fmt.Errorf("GitHub directory is required")
 	}
-	absolute, err := filepath.Abs(options.GitHubDir)
+	absolute, err := abs(options.GitHubDir)
 	if err != nil {
 		return Options{}, err
 	}
@@ -398,10 +402,14 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 // relationship with the expected canonical repository before this caller can
 // fetch from or mutate either checkout.
 func managedInputWorktree(ctx context.Context, path, repository string, options Options) (*worktrees.GuardResult, error) {
+	return managedInputWorktreeWithLstat(ctx, path, repository, options, os.Lstat)
+}
+
+func managedInputWorktreeWithLstat(ctx context.Context, path, repository string, options Options, lstat func(string) (os.FileInfo, error)) (*worktrees.GuardResult, error) {
 	if path == "" {
 		return nil, nil
 	}
-	root, err := os.Lstat(path)
+	root, err := lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil // Preserve EnsureCanonical's clone-on-missing behavior.
 	}
@@ -411,7 +419,7 @@ func managedInputWorktree(ctx context.Context, path, repository string, options 
 	if root.Mode()&os.ModeSymlink != 0 || !root.IsDir() {
 		return nil, fmt.Errorf("supplied repository path %s must be a non-symlink directory", path)
 	}
-	gitEntry, err := os.Lstat(filepath.Join(path, ".git"))
+	gitEntry, err := lstat(filepath.Join(path, ".git"))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -469,8 +477,12 @@ type ResolvedBase struct {
 // which neither ref resolves still fails loudly — this is a fallback to a
 // known-good alternative, never a silent skip.
 func EnsureCanonical(ctx context.Context, repository Repository, canonical string, options Options) (ResolvedBase, error) {
+	return ensureCanonicalWithMkdirAll(ctx, repository, canonical, options, os.MkdirAll)
+}
+
+func ensureCanonicalWithMkdirAll(ctx context.Context, repository Repository, canonical string, options Options, mkdirAll func(string, os.FileMode) error) (ResolvedBase, error) {
 	if _, err := os.Stat(canonical); os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		if err := mkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 			return ResolvedBase{}, err
 		}
 		cloneURL := cloneURLFor(repository)
