@@ -443,11 +443,8 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 		}
 		collisionAcknowledged = true
 	}
-	preparedOrAcknowledgedCollision := receipt.Phase == WorktreeMergePhasePrepare && receipt.PullRequest == "" &&
-		receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" &&
-		(receipt.Status == WorktreeMergePrepared || (collisionAcknowledged && receipt.Status == WorktreeMergePreparing))
 	publishedUnlanded := worktreeMergeReceiptPublishedUnlanded(receipt)
-	if (!preparedOrAcknowledgedCollision && !publishedUnlanded) || receipt.LandingSHA != "" ||
+	if !preparedRebatchOriginalEligible(receipt, collisionAcknowledged) || receipt.LandingSHA != "" ||
 		receipt.Repository != repository || receipt.Target != target ||
 		receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || len(receipt.Sources) == 0 {
 		return nil, fmt.Errorf("rebatch receipt %s is not an unlanded prepared candidate with complete immutable identity", receiptPath)
@@ -592,6 +589,20 @@ func worktreeMergeReplacementRecordsSupersession(projectsRoot, repository, targe
 	return replacement.SupersededPullRequest != "" && replacement.SupersededPullRequest == pullRequest, nil
 }
 
+// preparedRebatchOriginalEligible compares the original receipt shape only.
+// Collision authentication remains the responsibility of each physical reader.
+func preparedRebatchOriginalEligible(receipt WorktreeMergeReceipt, collisionAcknowledged bool) bool {
+	prepared := receipt.Phase == WorktreeMergePhasePrepare && receipt.PullRequest == "" &&
+		receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" &&
+		(receipt.Status == WorktreeMergePrepared || (collisionAcknowledged && receipt.Status == WorktreeMergePreparing))
+	return prepared || worktreeMergeReceiptPublishedUnlanded(receipt)
+}
+
+func preparedRebatchReplacementMatches(rebatch WorktreeMergePreparedRebatch, replacement WorktreeMergeReceipt) bool {
+	return rebatch.ReplacementReceiptPath == replacement.ReceiptPath && rebatch.Replacement == replacement.Candidate &&
+		sameWorktreeMergeSources(rebatch.Sources, replacement.Sources)
+}
+
 func completePreparedWorktreeMergeRebatch(rebatch WorktreeMergePreparedRebatch, replacement WorktreeMergeReceipt) WorktreeMergePreparedRebatch {
 	rebatch.ReplacementReceiptPath = replacement.ReceiptPath
 	rebatch.Replacement = replacement.Candidate
@@ -728,7 +739,7 @@ func ensurePreparedWorktreeMergeRebatch(ctx context.Context, rebatch *WorktreeMe
 		return err
 	}
 	if existing, err := readPreparedWorktreeMergeRebatch(path, original); err == nil {
-		if existing.ReplacementReceiptPath != replacement.ReceiptPath || existing.Replacement != replacement.Candidate || !sameWorktreeMergeSources(existing.Sources, replacement.Sources) {
+		if !preparedRebatchReplacementMatches(existing, *replacement) {
 			return fmt.Errorf("prepared rebatch acknowledgement %s binds different replacement evidence", path)
 		}
 		if existing.ClosedPullRequest != "" && replacement.SupersededPullRequest != existing.ClosedPullRequest {
@@ -785,18 +796,15 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 	if collisionErr != nil {
 		return WorktreeMergePreparedRebatch{}, collisionErr
 	}
-	preparedOrAcknowledgedCollision := receipt.Phase == WorktreeMergePhasePrepare && receipt.PullRequest == "" &&
-		receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" &&
-		(receipt.Status == WorktreeMergePrepared || (collisionAcknowledged && receipt.Status == WorktreeMergePreparing))
 	publishedUnlanded := worktreeMergeReceiptPublishedUnlanded(receipt)
 	if rebatch.SchemaVersion != worktreeMergePreparedRebatchSchemaVersion || rebatch.Status != "prepared_rebatched" ||
 		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
-		rebatch.ReceiptSHA256 != receiptHash || (!preparedOrAcknowledgedCollision && !publishedUnlanded) || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
+		rebatch.ReceiptSHA256 != receiptHash || !preparedRebatchOriginalEligible(receipt, collisionAcknowledged) || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
 		rebatch.Repository != receipt.Repository || rebatch.Target != receipt.Target || rebatch.ReceiptTargetSHA != receipt.TargetSHA ||
 		rebatch.CurrentTargetSHA == "" || (!publishedUnlanded && rebatch.CurrentTargetSHA != receipt.TargetSHA) || rebatch.OriginalCandidate != receipt.Candidate ||
 		!sameWorktreeMergeSources(rebatch.OriginalSources, receipt.Sources) || rebatch.ReplacementReceiptPath == receipt.ReceiptPath ||
 		replacement.RebatchOf != receipt.ReceiptPath || replacement.Repository != receipt.Repository || replacement.Target != receipt.Target ||
-		replacement.TargetSHA != rebatch.CurrentTargetSHA || replacement.Candidate != rebatch.Replacement || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != receipt.Candidate || !sameWorktreeMergeSources(replacement.Sources, rebatch.Sources) ||
+		replacement.TargetSHA != rebatch.CurrentTargetSHA || !preparedRebatchReplacementMatches(rebatch, replacement) || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != receipt.Candidate ||
 		len(rebatch.Sources) <= len(rebatch.OriginalSources) || rebatch.RecordedAt.IsZero() || rebatch.ID != preparedRebatchID(rebatch) {
 		return WorktreeMergePreparedRebatch{}, fmt.Errorf("prepared rebatch %s has invalid immutable identity", path)
 	}
