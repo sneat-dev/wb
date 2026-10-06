@@ -97,8 +97,8 @@ func prepareWorktree(ctx context.Context, canonical, repository, worktree string
 // idempotent, so a --resume'd worktree that already carries a manifest and
 // prompt from an earlier run is left untouched (a manifest is immutable by
 // design; see worktrees.WriteManifest).
-func recordWorktreeManifest(ctx context.Context, home, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, options Options) error {
-	baseSHA, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
+func recordWorktreeManifest(ctx context.Context, home, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, creationBaseSHA string, branchCreated bool, options Options) error {
+	_, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
 	if err != nil {
 		return err
 	}
@@ -109,20 +109,48 @@ func recordWorktreeManifest(ctx context.Context, home, canonical, worktree strin
 	effortID := worktreeEffortID(options.Operation, owner, name)
 	claimResult := worktrees.CreateResult{
 		Repository: repository.Slug, WorktreeDir: worktree, Branch: options.Branch,
-		Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
+		Base: resolvedBase.Ref, BaseSHA: creationBaseSHA,
+	}
+	claimOptions := worktrees.WorkLogOptions{
+		EffortID: effortID, RunID: options.Operation, Initiator: options.Initiator,
+		AgentRuntime: options.AgentRuntime, Model: options.Model,
+		CLI: options.CLI, Provider: options.Provider,
+	}
+	if !branchCreated {
+		baseSHA, present, err := worktrees.OperationWorkLogBase(home, effortID, claimResult, claimOptions)
+		if err != nil {
+			return fmt.Errorf("record worktree Work Log claim: %w", err)
+		}
+		if !present {
+			currentBase, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+resolvedBase.Ref+"^{commit}")
+			if err != nil {
+				return err
+			}
+			recoveryCtx := ctx
+			cancel := func() {}
+			if options.Timeout > 0 {
+				recoveryCtx, cancel = context.WithTimeout(ctx, options.Timeout)
+			}
+			baseSHA, err = worktrees.RecoverLegacyWorktreeBase(recoveryCtx, canonical, repository.Slug, options.Branch, strings.TrimSpace(currentBase))
+			cancel()
+			if err != nil {
+				return fmt.Errorf("record worktree Work Log claim: %w", err)
+			}
+		}
+		claimResult.BaseSHA = baseSHA
 	}
 	claimID := worktrees.WorkLogClaimID(effortID, claimResult)
 	createdAt := time.Now().UTC()
 	manifest := worktrees.Manifest{
 		Version: 1, EffortID: effortID, ParentEffort: worktrees.ParentEffort(effortID),
 		EffortKind: worktrees.EffortKindFor(effortID), Repository: repository.Slug, Worktree: worktree,
-		Branch: options.Branch, Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
+		Branch: options.Branch, Base: resolvedBase.Ref, BaseSHA: claimResult.BaseSHA,
 		CreatedAt: createdAt, Initiator: options.Initiator, AgentRuntime: options.AgentRuntime,
 		Model: options.Model, CLI: options.CLI, Provider: options.Provider,
 		DependencyCampaign: options.DependencyCampaign,
 		RunID:              options.Operation, ClaimID: claimID, Provenance: worktrees.ProvenanceCreated,
 	}
-	if err := worktrees.EnsureManifest(worktree, manifest); err != nil {
+	if err := worktrees.EnsureOperationManifest(worktree, manifest); err != nil {
 		return fmt.Errorf("record worktree manifest: %w", err)
 	}
 	header := worktrees.PromptHeader{
@@ -132,11 +160,7 @@ func recordWorktreeManifest(ctx context.Context, home, canonical, worktree strin
 	if err := worktrees.EnsurePrompt(worktree, header, []byte(options.Prompt)); err != nil {
 		return fmt.Errorf("record worktree originating instruction: %w", err)
 	}
-	if _, err := worktrees.EnsureWorkLogClaim(home, effortID, claimResult, worktrees.WorkLogOptions{
-		EffortID: effortID, RunID: options.Operation, Initiator: options.Initiator,
-		AgentRuntime: options.AgentRuntime, Model: options.Model,
-		CLI: options.CLI, Provider: options.Provider,
-	}); err != nil {
+	if _, err := worktrees.EnsureWorkLogClaim(home, effortID, claimResult, claimOptions); err != nil {
 		return fmt.Errorf("record worktree Work Log claim: %w", err)
 	}
 	return nil

@@ -87,7 +87,7 @@ func TestE2EEngineMaterializationJournalFaultsPreserveCheckoutAndRetry(t *testin
 					}
 				}
 			})
-			err = recordWorktreeManifest(context.Background(), home, f.canonical, path, f.repository, ResolvedBase{Ref: "main"}, options)
+			err = recordWorktreeManifest(context.Background(), home, f.canonical, path, f.repository, ResolvedBase{Ref: "main"}, baseSHA, created.BranchCreated, options)
 			if err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("wrong native journal refusal stage: %v, want prefix %q", err, want)
 			}
@@ -113,7 +113,7 @@ func TestE2EEngineMaterializationJournalFaultsPreserveCheckoutAndRetry(t *testin
 				t.Fatal(err)
 			}
 			armed = false
-			if err := recordWorktreeManifest(context.Background(), home, f.canonical, path, f.repository, ResolvedBase{Ref: "main"}, options); err != nil {
+			if err := recordWorktreeManifest(context.Background(), home, f.canonical, path, f.repository, ResolvedBase{Ref: "main"}, baseSHA, created.BranchCreated, options); err != nil {
 				t.Fatalf("native journal retry: %v", err)
 			}
 			manifest, err := worktrees.ReadManifest(path)

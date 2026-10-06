@@ -925,9 +925,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		}
 		plan.baseRevision = baseRevision
 		if plan.resumed {
-			mergeBase, mergeErr := ports.git(ctx, plan.canonical, "merge-base", "refs/heads/"+plan.result.Branch, baseRevision)
-			if mergeErr != nil || !isGitObjectID(mergeBase) {
-				return nil, fmt.Errorf("recover legacy worktree base for %s: %w", plan.result.Repository, mergeErr)
+			mergeBase, mergeErr := recoverLegacyWorktreeBase(plan.result.Repository, plan.result.Branch, baseRevision, func(args ...string) (string, error) {
+				return ports.git(ctx, plan.canonical, args...)
+			})
+			if mergeErr != nil {
+				return nil, mergeErr
 			}
 			plan.result.BaseSHA = mergeBase
 			continue

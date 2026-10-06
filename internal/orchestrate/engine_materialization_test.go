@@ -58,7 +58,7 @@ func TestWorktreeManifestRejectsInvalidRepositoryAfterBaseObservation(t *testing
 	fake := runnertest.New(t)
 	fake.ExpectArgv([]string{"git", "rev-parse", "origin/main"}, runner.Result{Stdout: "observed-base\n"}, nil)
 	root := t.TempDir()
-	err := recordWorktreeManifest(context.Background(), root, root, root, Repository{Slug: "invalid"}, ResolvedBase{Ref: "main"}, Options{run: fake, Timeout: time.Second})
+	err := recordWorktreeManifest(context.Background(), root, root, root, Repository{Slug: "invalid"}, ResolvedBase{Ref: "main"}, "", false, Options{run: fake, Timeout: time.Second})
 	if err == nil || !strings.Contains(err.Error(), "invalid repository") {
 		t.Fatalf("repository validation after base read: %v", err)
 	}

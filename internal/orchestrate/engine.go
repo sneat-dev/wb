@@ -273,7 +273,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		if err != nil {
 			return failResult(result, err)
 		}
-		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+		if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, baseSHA, created != nil && created.BranchCreated, options); err != nil {
 			created.Close()
 			return failResult(result, err)
 		}

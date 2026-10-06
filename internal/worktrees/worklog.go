@@ -397,21 +397,8 @@ func recordWorkLog(home, task string, result CreateResult, options WorkLogOption
 // deterministic identity.
 func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogOptions) (WorkLogPublicationOutcome, error) {
 	if claim, _, claimPath, err := activeWorkLogClaim(home, result.WorktreeDir); err == nil {
-		effort, run, normalizeErr := normalizeWorkLogOptions(task, options, time.Now().UTC())
-		if normalizeErr != nil {
-			return WorkLogPublicationOutcome{}, normalizeErr
-		}
-		want := workLogClaimID(effort, result)
-		if claim.EffortID != effort || claim.RunID != run || claim.Task != task || claim.Repository != result.Repository ||
-			filepath.Clean(claim.Worktree) != filepath.Clean(result.WorktreeDir) || claim.Branch != result.Branch ||
-			claim.Base != result.Base || claim.BaseSHA != result.BaseSHA || claim.ClaimID != want {
-			return WorkLogPublicationOutcome{}, fmt.Errorf("existing active Work Log claim does not match the operation checkout identity")
-		}
-		// NormalizeOptions already validated this pure summary; only its
-		// whitespace normalization is needed for the comparison.
-		requestedSummary := strings.TrimSpace(options.TaskSummary)
-		if requestedSummary != "" && claim.TaskSummary != requestedSummary {
-			return WorkLogPublicationOutcome{}, errors.New("existing active Work Log claim has a different immutable task summary")
+		if err := validateOperationWorkLogClaim(claim, task, result, options); err != nil {
+			return WorkLogPublicationOutcome{}, err
 		}
 		return WorkLogPublicationOutcome{ClaimPath: claimPath, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, ClaimWritten: true, ProjectionWritten: true, OutboxWritten: true}, nil
 	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
