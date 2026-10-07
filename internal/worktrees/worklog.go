@@ -1734,6 +1734,16 @@ func (p cleanupSealPorts) sealWorkLogForCleanup(home, worktree, finalCommit stri
 		if advancedErr := p.acceptAdvanced(home, worktree, finalCommit, projection); advancedErr == nil {
 			return nil
 		}
+		// A staged review handoff can finalize failure at the original base,
+		// then be committed and landed by the reviewer. Only cleanup's fresh
+		// landing proof may authorize that continuation; abort cannot use it.
+		if worktreeclaims.ValidLandedEvidence(landed) {
+			ports := defaultAdvancedCleanupPorts()
+			ports.allowFailedFinalize = true
+			if continuationErr := ports.acceptAdvancedCleanupTerminal(home, worktree, finalCommit, projection); continuationErr == nil {
+				return nil
+			}
+		}
 		return acceptErr
 	}
 	return p.sealRemoval(home, worktree, finalCommit, landed)
@@ -1849,7 +1859,9 @@ func (p existingCleanupPorts) acceptExistingCleanupTerminal(home, worktree, fina
 // acceptAdvancedCleanupTerminal authorizes cleanup of a worktree whose claim
 // was already finalized "landed" before its branch earned more commits — a
 // rebase or merge onto main, or a follow-up push, that then landed on the
-// target as a merge commit. finalize's terminal is exclusive and immutable,
+// target as a merge commit. Cleanup may also explicitly authorize a failed
+// finalize at the original base after independently proving its continuation
+// landed. finalize's terminal is exclusive and immutable,
 // so this never rewrites or reseals it; acceptExistingCleanupTerminal stays
 // the only writer of the terminal record, and continues to be tried first.
 //
@@ -1864,14 +1876,15 @@ func (p existingCleanupPorts) acceptExistingCleanupTerminal(home, worktree, fina
 // composes safely and a later audit can see both the original landing and
 // the wider final commit that cleanup actually removed.
 type advancedCleanupPorts struct {
-	openClaim       func(string, string, workLogProjection) (*lockedWorkLogRun, workLogClaim, error)
-	openChild       func(*os.File, string, bool) (*os.File, error)
-	readJSON        func(*os.File, string, any) error
-	isAncestor      func(context.Context, string, string, string) (bool, error)
-	patchEquivalent func(context.Context, string, string, string) (bool, error)
-	now             func() time.Time
-	writeImmutable  func(*os.File, string, any, bool) error
-	openOutbox      func(string, string, bool) (*os.File, error)
+	allowFailedFinalize bool
+	openClaim           func(string, string, workLogProjection) (*lockedWorkLogRun, workLogClaim, error)
+	openChild           func(*os.File, string, bool) (*os.File, error)
+	readJSON            func(*os.File, string, any) error
+	isAncestor          func(context.Context, string, string, string) (bool, error)
+	patchEquivalent     func(context.Context, string, string, string) (bool, error)
+	now                 func() time.Time
+	writeImmutable      func(*os.File, string, any, bool) error
+	openOutbox          func(string, string, bool) (*os.File, error)
 }
 
 func defaultAdvancedCleanupPorts() advancedCleanupPorts {
@@ -1906,24 +1919,47 @@ func (p advancedCleanupPorts) acceptAdvancedCleanupTerminal(home, worktree, fina
 	}
 	expectedClaim := claim
 	expectedClaim.Lifecycle = "terminal"
-	// Every field except FinalCommit must match the exact-match check above;
-	// only a successful, ordinary "landed" terminal without any successor or
-	// exotic evidence is eligible to be advanced. A not_landed/failure,
-	// handoff, orphaned, dirty-capture, or superseded terminal never is —
-	// those already have their own, deliberately narrower resolution paths.
+	// Failed finalize is eligible only when cleanup supplied fresh landing
+	// evidence, and finalize sealed the unchanged original base. The original
+	// failure stays immutable; neither a handoff nor another terminal qualifies.
+	failedFinalize := p.allowFailedFinalize && terminal.Disposition == "not_landed" &&
+		terminal.FinalCommit == claim.BaseSHA && terminal.Landed == nil &&
+		terminal.FinalizeReport != nil && terminal.FinalizeReport.Result == "failure" && terminal.FinalizeReport.ReportPath != ""
 	if !reflect.DeepEqual(terminal.Claim, expectedClaim) || terminal.SealedAt.IsZero() ||
-		terminal.Disposition != "landed" || terminal.SuccessorClaimID != "" || terminal.SuccessorAgentID != "" ||
+		(terminal.Disposition != "landed" && !failedFinalize) || terminal.SuccessorClaimID != "" || terminal.SuccessorAgentID != "" ||
 		terminal.ExternalHandoff != nil || terminal.Orphaned != nil || terminal.DirtyCapture != nil || terminal.Supersession != nil {
 		return fmt.Errorf("immutable terminal does not authorize cleanup of an advanced claim")
 	}
 	if terminal.FinalCommit == finalCommit {
 		return fmt.Errorf("advanced cleanup requires a head that has moved past the sealed final commit")
 	}
+	if failedFinalize {
+		outbox, err := p.openOutbox(home, claim.EffortID, false)
+		if err != nil {
+			return fmt.Errorf("open immutable terminal outbox: %w", err)
+		}
+		var event workLogPublicEvent
+		readErr := p.readJSON(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", &event)
+		_ = outbox.Close()
+		if readErr != nil {
+			return fmt.Errorf("read immutable terminal outbox: %w", readErr)
+		}
+		expected := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
+			EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
+			Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
+			Lifecycle: "terminal", Disposition: terminal.Disposition, FinalizeReport: terminal.FinalizeReport}
+		if !reflect.DeepEqual(event, expected) {
+			return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
+		}
+	}
 	descended, err := p.isAncestor(context.Background(), worktree, terminal.FinalCommit, finalCommit)
 	if err != nil {
 		return fmt.Errorf("check whether %s remains descended from the sealed final commit %s: %w", finalCommit, terminal.FinalCommit, err)
 	}
 	if !descended {
+		if failedFinalize {
+			return fmt.Errorf("failed finalized continuation must descend from the original base")
+		}
 		// Plain Git ancestry cannot see past a rebase (or an equivalent
 		// history rewrite that replays the same changes as new commits):
 		// force-pushing the sealed branch onto a moved target (S63) produces
