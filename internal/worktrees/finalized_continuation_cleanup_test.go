@@ -134,7 +134,7 @@ func TestFailedFinalizeCleanupRequiresExactAuthorityAndStrictDescendance(t *test
 			t.Parallel()
 			projection, claim, terminal, event := testTerminalCleanupAuthority(t)
 			claim.BaseSHA = terminal.FinalCommit
-			terminal.Claim.BaseSHA = claim.BaseSHA
+			terminal.BaseSHA = claim.BaseSHA
 			terminal.Disposition = "not_landed"
 			terminal.FinalizeReport = &worktreeclaims.FinalizeReport{Result: "failure", ReportPath: "private-report.md"}
 			event.BaseSHA, event.Disposition, event.FinalizeReport = claim.BaseSHA, terminal.Disposition, terminal.FinalizeReport
