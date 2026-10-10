@@ -133,6 +133,7 @@ var valueFlags = setOf(
 	"--session-freshness", "--sha", "--shard-attempt-timeout", "--stale", "--subject", "--successor",
 	"--summary", "--superseded-by", "--target", "--task", "--task-file", "--timeout", "--title",
 	"--to", "--ttl", "--undo", "--use-worktree", "--validation", "--version", "--via",
+	"--waive-check", "--waive-reason",
 	"--wb-session-id", "--workers", "-j", "-m", "-o",
 )
 
