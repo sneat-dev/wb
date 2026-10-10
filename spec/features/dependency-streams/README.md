@@ -1445,6 +1445,31 @@ behaviour such as `--slurp`. A verb that breaks on the installed client forces
 operators back to raw `gh pr merge`, which is exactly how the cleanup path was
 bypassed.
 
+#### REQ: landing-allows-waiving-non-required-checks-failing-on-target-tip
+
+`wb pr land` MUST allow landing past one or more failing or cancelled checks via
+repeatable `--waive-check <name>` flags with a mandatory `--waive-reason <text>`,
+provided that for every named check, all of the following hold:
+1. the check failed or was cancelled on the pull request's head;
+2. the target branch's server-enforced policy does not require it;
+3. the check has the same failing conclusion on the target branch's current tip
+   commit at an authoritative, exact SHA.
+
+A named check that is required by the target branch, is green on the target tip,
+is absent on the target tip, has a different conclusion on the target tip, or is
+not failed on the pull request head MUST be refused with a specific refusal code
+naming the check and the target SHA compared.
+A target branch with no server-enforced required checks cannot use waivers.
+Any failed check on the pull request head that is not explicitly waived MUST still
+cause `wb pr land` to refuse with `checks-failed`.
+When `checks-failed` is reported, wb MUST indicate for each failed check whether it
+is required by target policy and whether it also fails on the target's tip SHA,
+and when every failed check qualifies for a waiver, the refusal MUST print the
+exact `wb pr land ... --waive-check ... --waive-reason ...` command.
+The landing receipt MUST record each waived check's name, head conclusion, target
+SHA, and the waiver reason.
+
+
 #### REQ: reviews-use-a-tracked-review-checkout
 
 `wb worktree review <owner/repo#N>` MUST create a **tracked, claimed,
@@ -2343,7 +2368,25 @@ and `--family` overrides the selection.
 to its lesson id, and a `--dispute` round's brief carries both positions and asks
 for a ruling rather than a re-verification.
 
+### AC: land-past-failed-non-required-check-failing-on-target-tip
+
+**Requirements:** dependency-streams#req:landing-allows-waiving-non-required-checks-failing-on-target-tip, dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** a pull request whose head has a failed check that is not required by the
+target branch policy and is also failing with the same conclusion on the target branch's current tip commit
+**When** the operator runs `wb pr land` without a waiver
+**Then** the command refuses with `checks-failed`, indicates that the check is not
+required and fails on the target tip with its SHA, and suggests the exact sanctioned
+`wb pr land <repo#pr> --waive-check <name> --waive-reason <reason>` command.
+**When** the operator runs `wb pr land` with `--waive-check <name> --waive-reason <reason>`
+**Then** the waiver is verified against the target tip SHA, the pull request lands,
+and the landing receipt records the waived check and reason in text and JSON.
+**When** the operator attempts to waive a check that is required, green on target,
+absent on target, or on a target branch with no server-enforced required checks
+**Then** the command refuses with the corresponding specific refusal code.
+
 ## Rehearse Integration
+
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, or process
 surface. Pending scenario stubs live under `_tests/` and are intended to use

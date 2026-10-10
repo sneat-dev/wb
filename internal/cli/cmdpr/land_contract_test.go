@@ -100,3 +100,29 @@ func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 		t.Fatalf("splitCommaSeparated = %v, want %v", got, want)
 	}
 }
+
+func TestPRLandRejectsWaiveCheckWithoutReason(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	command := NewLand(testRuntime(), deps)
+	if err := command.Flags().Set("waive-check", "ci"); err != nil {
+		t.Fatal(err)
+	}
+	err := command.RunE(command, []string{"acme/app#7"})
+	if err == nil || !strings.Contains(err.Error(), "--waive-check requires a non-empty --waive-reason") {
+		t.Fatalf("error = %v, want missing waive-reason usage error", err)
+	}
+}
+
+func TestPRLandRejectsWaiveReasonWithoutCheck(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	command := NewLand(testRuntime(), deps)
+	if err := command.Flags().Set("waive-reason", "some reason"); err != nil {
+		t.Fatal(err)
+	}
+	err := command.RunE(command, []string{"acme/app#7"})
+	if err == nil || !strings.Contains(err.Error(), "--waive-reason was given without any --waive-check") {
+		t.Fatalf("error = %v, want waive-reason without waive-check usage error", err)
+	}
+}

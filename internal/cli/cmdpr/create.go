@@ -16,10 +16,10 @@ import (
 )
 
 func NewCreate(runtime shared.Runtime, deps Dependencies) *cobra.Command {
-	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile string
+	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile, waiveReason string
 	var draft, autoMerge, allowUnfenced, commitStaged, commitAll, land, keep bool
 	var timeout time.Duration
-	var add, closes []string
+	var add, closes, waiveChecks []string
 	command := &cobra.Command{
 		Use:   "create [<worktree|task>]",
 		Short: "Push a worktree's branch and open or adopt its pull request",
@@ -157,6 +157,15 @@ wb pr create --format json`,
 				return runtime.ExitError(shared.ExitUsage, "--review-comment/--review-comment-file are only meaningful with --land; "+
 					"--auto-merge alone never posts the review comment, so it would be silently ignored")
 			}
+			if !land && (command.Flags().Changed("waive-check") || command.Flags().Changed("waive-reason")) {
+				return runtime.ExitError(shared.ExitUsage, "--waive-check/--waive-reason are only meaningful with --land")
+			}
+			if len(splitCommaSeparated(waiveChecks)) > 0 && strings.TrimSpace(waiveReason) == "" {
+				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason")
+			}
+			if strings.TrimSpace(waiveReason) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
+				return runtime.ExitError(shared.ExitUsage, "--waive-reason was given without any --waive-check")
+			}
 			closesIssues, closesErr := parseIssueNumbers(splitCommaSeparated(closes))
 			if closesErr != nil {
 				return runtime.ExitError(shared.ExitUsage, closesErr.Error())
@@ -183,6 +192,8 @@ wb pr create --format json`,
 					ReviewCommentFile: reviewCommentFile,
 					MergeMethod:       mergeMethod,
 					AllowUnfenced:     allowUnfenced,
+					WaiveChecks:       splitCommaSeparated(waiveChecks),
+					WaiveReason:       waiveReason,
 					Slice:             timeout,
 					CheckPollInterval: githubchecks.DefaultCheckPollInterval,
 					Progress:          progress.Report,
@@ -201,6 +212,7 @@ wb pr create --format json`,
 				Add: add, CommitStaged: commitStaged, CommitAll: commitAll, Message: message, Closes: closesIssues,
 				AutoMerge: autoMerge, ApprovedBy: approvedBy, AllowUnfenced: allowUnfenced, MergeMethod: mergeMethod, Lane: lane,
 				Land: land, LandOptions: landOptions,
+				WaiveChecks: splitCommaSeparated(waiveChecks), WaiveReason: waiveReason,
 				LinkPreflight: func(repository string) error { return deps.CheckRepository(runtime.Flags().ProjectsRoot, repository) },
 				// The repository is not known until the worktree's manifest is
 				// read inside CreatePullRequest itself, unlike `wb pr land`,
@@ -262,6 +274,8 @@ wb pr create --format json`,
 	command.Flags().StringVar(&reviewCommentFile, "review-comment-file", "", "with --land: path to the review text for a reviewer-identity --approved-by; mutually exclusive with --review-comment")
 	command.Flags().StringSliceVar(&closes, "closes", nil, "issue number(s) this pull request closes (repeatable, or comma-separated); writes one 'Closes #N' line per issue at the top of the body")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "with --auto-merge/--land: arm on a target with no server-enforced strict up-to-date policy")
+	command.Flags().StringSliceVar(&waiveChecks, "waive-check", nil, "with --land: GitHub check name whose failure to waive when it is not required by target policy and fails on target tip with the same conclusion (repeatable)")
+	command.Flags().StringVar(&waiveReason, "waive-reason", "", "with --land: why the waived checks are safe to ignore; required with --waive-check")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "with --auto-merge/--land: merge (default), squash, or rebase")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	discovery(command, "open create pull request pr push branch worktree adopt draft auto merge cheap fast no build no test commit land")

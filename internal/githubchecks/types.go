@@ -80,7 +80,10 @@ type PullRequestWaitOptions struct {
 	// AllowUnfenced permits a validation-only PR check receipt when the target
 	// branch has no server-enforced strict freshness fence. Merge callers leave
 	// this false; it is an explicit opt-in for wait-only validation.
-	AllowUnfenced     bool
+	AllowUnfenced bool
+	// WaiveChecks names checks whose failed/cancelled conclusion on the PR head
+	// will not fail the wait loop, allowing required checks to finish.
+	WaiveChecks       []string
 	Slice             time.Duration
 	CheckPollInterval time.Duration
 	// StableRereadDelay overrides the shortened wait before the confirming

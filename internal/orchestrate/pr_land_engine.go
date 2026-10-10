@@ -167,6 +167,7 @@ func awaitLandablePullRequest(
 			Target:            updatedView.Base.Ref,
 			Head:              updatedView.Head.SHA,
 			AllowUnfenced:     options.AllowUnfenced,
+			WaiveChecks:       options.WaiveChecks,
 			Slice:             remaining,
 			CheckPollInterval: options.CheckPollInterval,
 			Progress:          options.Progress,

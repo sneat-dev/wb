@@ -89,6 +89,8 @@ type PullRequestCreateOptions struct {
 	AutoMerge     bool
 	ApprovedBy    string
 	AllowUnfenced bool
+	WaiveChecks   []string
+	WaiveReason   string
 	MergeMethod   string
 	// Lane optionally names the acquiring WB session for the same
 	// landing-lane guard `wb pr land` acquires around arming; see
@@ -575,7 +577,12 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 			return result, err
 		}
 	}
-	landOptions := PullRequestLandOptions{Repository: repository, AllowUnfenced: options.AllowUnfenced}
+	landOptions := PullRequestLandOptions{
+		Repository:    repository,
+		AllowUnfenced: options.AllowUnfenced,
+		WaiveChecks:   options.WaiveChecks,
+		WaiveReason:   options.WaiveReason,
+	}
 	if reason := autoMergeBypassesAGuard(ctx, landOptions, result.BaseRef); reason != "" {
 		result.AutoMergeReason = reason
 		result.Outcome = CreateFindings

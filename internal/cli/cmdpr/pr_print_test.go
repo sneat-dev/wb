@@ -68,6 +68,9 @@ func TestPrintPullRequestLandRendersASuccessfulLanding(t *testing.T) {
 			{SourceSHA: "abcdef012345", Subject: "kept commit", Kept: true},
 			{SourceSHA: "fedcba012345", Subject: "squashed away", Kept: false},
 		},
+		WaivedChecks: []orchestrate.WaivedCheck{
+			{Name: "Workers Builds: specscore-md", Conclusion: "failure", TargetSHA: "c784a53132030a5e060740d1d36e12f560e66555", Reason: "Cloudflare build broken on main"},
+		},
 	}
 
 	if err := printPullRequestLand(command, result); err != nil {
@@ -84,6 +87,7 @@ func TestPrintPullRequestLandRendersASuccessfulLanding(t *testing.T) {
 		"finding: no findings",
 		"Closes #7",
 		"kept commit abcdef012345 kept commit",
+		`waived check "Workers Builds: specscore-md" (conclusion "failure", target SHA c784a5313203): Cloudflare build broken on main`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("output missing %q: %q", want, rendered)
@@ -246,10 +250,12 @@ func TestPrintPullRequestLandPropagatesAWriteFailureAtEveryPrintInSuccess(t *tes
 		Evidence:     map[string]string{"review": "no findings", "closes": "Closes #7"},
 		Closes:       []int{7},
 		Commits:      []orchestrate.LandedCommit{{SourceSHA: "abc", Subject: "kept", Kept: true}},
+		WaivedChecks: []orchestrate.WaivedCheck{{Name: "waived-chk", Conclusion: "failure", TargetSHA: "abc", Reason: "reason"}},
 	}
 	// call order: 1 header, 2 landed, 3 retired origin, 4 retired task,
-	// 5 kept worktree, 6 reviewer, 7 finding, 8 closes, 9 kept commit.
-	for callIndex := 2; callIndex <= 9; callIndex++ {
+	// 5 kept worktree, 6 reviewer, 7 finding, 8 closes, 9 kept commit,
+	// 10 waived check.
+	for callIndex := 2; callIndex <= 10; callIndex++ {
 		callIndex := callIndex
 		t.Run(fmt.Sprintf("call-%d", callIndex), func(t *testing.T) {
 			t.Parallel()

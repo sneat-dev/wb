@@ -224,7 +224,7 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 		// this observation WB may still need branch-policy or freshness receipts;
 		// publishing this event keeps a slow authority lookup from looking hung.
 		reportPullRequestWaitProgress(options, observations, result, 0)
-		if options.ExpectedActionChecks == nil && failedObservedChecks(checks, &pending) {
+		if options.ExpectedActionChecks == nil && failedObservedChecks(checks, &pending, options.WaiveChecks...) {
 			failedResult := failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled")
 			failedResult.FailureDetails = ops.failureDetails(sliceCtx, options.Repository, checks)
 			reportPullRequestWaitProgress(options, observations, failedResult, 0)
@@ -246,7 +246,7 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 			checks = relevantExpectedActionChecks(checks, options.ExpectedActionChecks, requiredChecks)
 			result.Checks = checks
 			pending = false
-			if failedObservedChecks(checks, &pending) {
+			if failedObservedChecks(checks, &pending, options.WaiveChecks...) {
 				failedResult := failedCommitWaitResult(result, "observed required or expected GitHub checks failed or were cancelled")
 				failedResult.FailureDetails = ops.failureDetails(sliceCtx, options.Repository, checks)
 				reportPullRequestWaitProgress(options, observations, failedResult, 0)
@@ -492,6 +492,11 @@ func failedCommitWaitResult(result PullRequestWaitResult, reason string) PullReq
 	return result
 }
 
+// CommitChecks inspects the check runs and commit statuses for an exact head.
+func CommitChecks(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+	return commitChecks(ctx, options)
+}
+
 func commitChecks(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
 	checks := make([]RemoteCheck, 0)
 	pending := false
@@ -603,18 +608,39 @@ func remoteCheckExecuted(check RemoteCheck) bool {
 // sneat-dev/wb#591's red-team follow-up reverted the round-2 strict mode,
 // which broke on real-world skip patterns — see remoteCheckExecuted's own
 // comment for what replaced it).
-func failedObservedChecks(checks []RemoteCheck, pending *bool) bool {
+func failedObservedChecks(checks []RemoteCheck, pending *bool, waived ...string) bool {
 	failed := false
 	for _, check := range checks {
 		switch check.Bucket {
 		case "pass", "skipping":
 		case "fail", "cancel":
+			if checkIsWaived(check.Name, waived) {
+				continue
+			}
 			failed = true
 		default:
 			*pending = true
 		}
 	}
 	return failed
+}
+
+func checkIsWaived(checkName string, waived []string) bool {
+	normalized := NormalizeCheckName(checkName)
+	for _, w := range waived {
+		if NormalizeCheckName(w) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+// NormalizeCheckName strips leading check-run: and status: prefixes and trims whitespace.
+func NormalizeCheckName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimPrefix(name, "check-run:")
+	name = strings.TrimPrefix(name, "status:")
+	return strings.TrimSpace(name)
 }
 
 // Explicit direct-CI deferral waits on its named PR run and checks actually
