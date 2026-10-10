@@ -114,6 +114,67 @@ func TestPRCreateAllowsApprovedByAndAllowUnfencedWithLand(t *testing.T) {
 	}
 }
 
+func TestPRCreateRejectsWaiveCheckWithoutLand(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	command := NewCreate(testRuntime(), deps)
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--waive-check", "ci", "--waive-reason", "broken"})
+	err := command.Execute()
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+	if !strings.Contains(exit.message, "--waive-check") || !strings.Contains(exit.message, "--land") {
+		t.Fatalf("message = %q, want it to name --waive-check and --land", exit.message)
+	}
+}
+
+func TestPRCreateRejectsWaiveReasonWithoutCheck(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	command := NewCreate(testRuntime(), deps)
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--land", "--approved-by", "review.md", "--waive-reason", "broken"})
+	err := command.Execute()
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+	if !strings.Contains(exit.message, "--waive-reason was given without any --waive-check") {
+		t.Fatalf("message = %q, want it to mention waive-reason without waive-check", exit.message)
+	}
+}
+
+func TestPRCreateRejectsWaiveCheckWithoutReason(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	command := NewCreate(testRuntime(), deps)
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--land", "--approved-by", "review.md", "--waive-check", "ci"})
+	err := command.Execute()
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+	if !strings.Contains(exit.message, "--waive-check requires a non-empty --waive-reason") {
+		t.Fatalf("message = %q, want it to mention missing waive-reason", exit.message)
+	}
+}
+
+func TestPRCreateAllowsWaiveCheckWithLand(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	command := NewCreate(testRuntime(), deps)
+	command.SilenceUsage = true
+	command.SetArgs([]string{"--land", "--approved-by", "review.md", "--waive-check", "ci", "--waive-reason", "broken on main"})
+	err := command.Execute()
+	var exit *exitError
+	if errors.As(err, &exit) && exit.code == exitUsage {
+		t.Fatalf("--land --waive-check --waive-reason must not be a usage error: %v", exit)
+	}
+}
+
 // TestPRCreateAutoMergeAloneBuildsItsOwnLandingLaneRequest proves the
 // --auto-merge-without---land branch that builds a dedicated landing-lane
 // guard request (pr_create.go:197) is reached: every other test in this file

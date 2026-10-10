@@ -28,6 +28,7 @@ import (
 	"context"
 
 	"github.com/sneat-dev/wb/internal/gitcli"
+	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
@@ -94,3 +95,26 @@ var defaultGit Git = gitcli.New(runner.New())
 var defaultRunner runner.Runner = runner.New()
 
 var _ Git = gitcli.Client{}
+
+// ChecksPolicyInspector inspects target branch policies, target heads, and commit checks.
+type ChecksPolicyInspector interface {
+	RequiredChecks(ctx context.Context, repository, target string, requireServerFreshness bool) ([]githubchecks.RequiredRemoteCheck, string, string)
+	TargetHead(ctx context.Context, repository, target string) (string, string)
+	CommitChecks(ctx context.Context, options githubchecks.PullRequestWaitOptions) ([]githubchecks.RemoteCheck, bool, string)
+}
+
+type defaultChecksPolicyInspector struct{}
+
+func (defaultChecksPolicyInspector) RequiredChecks(ctx context.Context, repository, target string, requireServerFreshness bool) ([]githubchecks.RequiredRemoteCheck, string, string) {
+	return githubchecks.RequiredChecks(ctx, repository, target, requireServerFreshness)
+}
+
+func (defaultChecksPolicyInspector) TargetHead(ctx context.Context, repository, target string) (string, string) {
+	return githubchecks.TargetHead(ctx, repository, target)
+}
+
+func (defaultChecksPolicyInspector) CommitChecks(ctx context.Context, options githubchecks.PullRequestWaitOptions) ([]githubchecks.RemoteCheck, bool, string) {
+	return githubchecks.CommitChecks(ctx, options)
+}
+
+var defaultChecksPolicyInspectorInstance ChecksPolicyInspector = defaultChecksPolicyInspector{}

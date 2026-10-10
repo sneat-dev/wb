@@ -281,7 +281,11 @@ case "$*" in
         printf 'closed' >"$S/pr-state"
       fi
     fi
-    printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")" ;;
+    if [ -f "$S/check-runs" ]; then
+      cat "$S/check-runs"
+    else
+      printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")"
+    fi ;;
   'api --method PUT repos/acme/app/pulls/7/merge')
     echo "merge called with no arguments" >&2; exit 2 ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;

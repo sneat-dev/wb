@@ -66,8 +66,8 @@ merges the pull request into its target, or cleans up the worktree.`,
 }
 
 func NewLand(runtime shared.Runtime, deps Dependencies) *cobra.Command {
-	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile string
-	var keepCommits []string
+	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile, waiveReason string
+	var keepCommits, waiveChecks []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
 	var pollInterval, totalTimeout time.Duration
 	var noUpdateBranch, noAutoMerge bool
@@ -141,6 +141,14 @@ and the receipt). A session whose registry entry is gone is taken over
 automatically with a printed note; a live session is never taken over
 implicitly, no matter how old its heartbeat looks.
 
+WAIVING CHECKS ALREADY FAILING ON TARGET. When a check fails or was cancelled
+on the candidate, is not required by the target branch's server-enforced policy,
+and fails with the exact same conclusion on the target branch's current tip,
+it may be waived with --waive-check <name> (repeatable) and a mandatory
+--waive-reason "<text>". Both the check and the target branch tip SHA are
+verified authoritatively before landing, and recorded on the receipt. A target
+with no server-enforced required checks cannot use waivers.
+
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
 retirement, cleanup) did not finish: the change is on the base branch, and the
@@ -155,6 +163,10 @@ wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
 wb pr land sneat-co/sneat-go#1041 --approved-by review.md \
   --merge-method squash --keep-commits 4f2a1c9 \
   --reason "the migration must be revertable on its own"
+
+# Land past a non-required check that also fails on the target branch tip
+wb pr land specscore/specscore#63 --waive-check "Workers Builds: specscore-md" \
+  --waive-reason "Cloudflare build fails on target tip and is not required by main"
 
 # Machine-readable envelope
 wb pr land sneat-co/sneat-go#1041 --format json`,
@@ -171,6 +183,12 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			}
 			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
 				return runtime.ExitError(shared.ExitUsage, "--review-comment and --review-comment-file are mutually exclusive")
+			}
+			if len(splitCommaSeparated(waiveChecks)) > 0 && strings.TrimSpace(waiveReason) == "" {
+				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason")
+			}
+			if strings.TrimSpace(waiveReason) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
+				return runtime.ExitError(shared.ExitUsage, "--waive-reason was given without any --waive-check")
 			}
 			repository, number, err := prselector.Parse(args[0])
 			if err != nil {
@@ -204,6 +222,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				KeepCommits:         splitCommaSeparated(keepCommits),
 				Reason:              reason,
 				AllowUnfenced:       allowUnfenced,
+				WaiveChecks:         splitCommaSeparated(waiveChecks),
+				WaiveReason:         waiveReason,
 				Slice:               totalTimeout,
 				NoUpdateBranch:      noUpdateBranch,
 				NoAutoMerge:         noAutoMerge,
@@ -260,6 +280,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().BoolVar(&noUpdateBranch, "no-update-branch", false, "refuse a candidate that is behind the target instead of bringing it up to date")
 	command.Flags().BoolVar(&noAutoMerge, "no-auto-merge", false, "do not arm GitHub auto-merge; a wait that runs out of budget leaves the pull request for someone to land later")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
+	command.Flags().StringSliceVar(&waiveChecks, "waive-check", nil, "GitHub check name whose failure to waive when it is not required by target policy and fails on target tip with the same conclusion (repeatable)")
+	command.Flags().StringVar(&waiveReason, "waive-reason", "", "why the waived checks are safe to ignore; required with --waive-check")
 	command.Flags().DurationVar(&pollInterval, "poll-interval", githubchecks.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", shared.DefaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -332,6 +354,11 @@ func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequest
 				continue
 			}
 			if _, err := fmt.Fprintf(out, "kept commit %s %s\n", shortSHAForDisplay(commit.SourceSHA), commit.Subject); err != nil {
+				return err
+			}
+		}
+		for _, waived := range result.WaivedChecks {
+			if _, err := fmt.Fprintf(out, "waived check %q (conclusion %q, target SHA %s): %s\n", waived.Name, waived.Conclusion, shortSHAForDisplay(waived.TargetSHA), waived.Reason); err != nil {
 				return err
 			}
 		}

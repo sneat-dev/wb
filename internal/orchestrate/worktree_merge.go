@@ -275,6 +275,7 @@ type WorktreeMergeReceipt struct {
 	// the explicit approval to rely on observed exact-head checks when the
 	// target has no server-enforced strict up-to-date fence.
 	AllowUnfenced      bool                                           `json:"allow_unfenced,omitempty"`
+	WaivedChecks       []WaivedCheck                                  `json:"waived_checks,omitempty"`
 	OnFailure          string                                         `json:"on_failure,omitempty"`
 	CleanupReports     []string                                       `json:"cleanup_reports,omitempty"`
 	CleanedTasks       []string                                       `json:"cleaned_tasks,omitempty"`

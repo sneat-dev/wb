@@ -29,6 +29,10 @@ wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
 wb pr land sneat-co/sneat-go#1041 --approved-by opus@codex@run-42 \
   --review-comment "the diff is scoped to go.mod/go.sum only"
 
+# Land past a non-required check that is already red on target tip.
+wb pr land specscore/specscore#63 --waive-check "Workers Builds: specscore-md" \
+  --waive-reason "fails on target tip and is not required by main"
+
 # Machine-readable envelope for an agent.
 wb pr land sneat-co/sneat-go#1041 --format json
 ```
@@ -273,6 +277,23 @@ never from the title, author or labels:
 A pull request titled as a Renovate bump whose diff also edits a `.go` or `.ts`
 file is not mechanical, and is refused until a review is recorded.
 
+## Waiving non-required checks already failing on target
+
+When an external build or optional check fails on a pull request, is **not required** by the target branch's server-enforced policy, and **fails with the exact same conclusion on the target branch's current tip**, `wb pr land` permits landing past it via:
+
+```sh
+wb pr land <owner/repo#n> --waive-check "<name>" --waive-reason "<why safe>"
+```
+
+`--waive-check` is repeatable. Every named check is verified authoritatively against exact commit SHAs:
+- The check failed or was cancelled on the PR head.
+- The target branch server-enforced protection policy does not require it.
+- The target branch current tip commit has the check with the same failing conclusion.
+
+If any named check is required by target policy, passed on target tip, was absent on target tip, had a different conclusion, or was not failing on the head, `wb pr land` refuses. A target with no server-enforced required checks cannot use waivers (`waived-check-target-unfenced`).
+
+The receipt records each waived check's name, head conclusion, target tip SHA, and reason in both text and JSON output.
+
 ## Refusals and what resolves each
 
 | Refusal code | What it means | Sanctioned next step |
@@ -287,6 +308,13 @@ file is not mechanical, and is refused until a review is recorded.
 | `not-mergeable` | GitHub reports a conflict | `wb worktree merge <task> --route auto` |
 | `head-moved` | the branch moved after its checks were observed | rerun `wb pr land …`; the head SHA is sent as a lease, so a race cannot land an unverified head |
 | `target-has-no-strict-fence` | the target branch has no server-enforced strict up-to-date policy, so green checks prove the head was green, not that it still is | `wb pr land … --allow-unfenced`, recorded on the receipt |
+| `waived-check-required` | a waived check is required by target branch server-enforced policy | fix the failure or change target policy; waivers cannot bypass required checks |
+| `waived-check-green-on-target` | a waived check passed on target tip SHA | investigate the failure on the PR head; the failure is not pre-existing on the target |
+| `waived-check-absent-on-target` | a waived check is not found on target tip SHA | run or observe the check on target tip, or fix the PR failure |
+| `waived-check-conclusion-mismatch` | a waived check failed on target tip but with a different conclusion | investigate the differing failure on the PR head |
+| `waived-check-not-failed` | a waived check did not fail or cancel on the PR head | omit the unnecessary waiver flag |
+| `waived-check-target-unfenced` | the target branch has no server-enforced required checks, so non-required checks cannot be waived | `wb pr land … --allow-unfenced` |
+| `waive-reason-empty` | `--waive-check` passed without a non-empty `--waive-reason` (or `--waive-reason` given without `--waive-check`) | add `--waive-reason "<text>"` explaining why the waiver is safe |
 | `keep-commits-without-reason` | `--keep-commits` with no justification | add `--reason "<why these commits stand alone>"` |
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |

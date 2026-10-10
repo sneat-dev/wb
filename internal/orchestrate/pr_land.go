@@ -61,6 +61,27 @@ const (
 	// LandRefusalBranchRetirement marks a merged pull request whose source
 	// branch could not be retired on origin.
 	LandRefusalBranchRetirement = "branch-retirement-failed"
+	// LandRefusalWaiveReasonEmpty reports that --waive-check was passed with an
+	// empty --waive-reason, or --waive-reason without any --waive-check.
+	LandRefusalWaiveReasonEmpty = "waive-reason-empty"
+	// LandRefusalWaivedCheckRequired reports that a check named in --waive-check
+	// is required by the target branch policy.
+	LandRefusalWaivedCheckRequired = "waived-check-required"
+	// LandRefusalWaivedCheckGreen reports that a check named in --waive-check
+	// passed on the target branch tip.
+	LandRefusalWaivedCheckGreen = "waived-check-green-on-target"
+	// LandRefusalWaivedCheckAbsent reports that a check named in --waive-check
+	// was not observed on the target branch tip.
+	LandRefusalWaivedCheckAbsent = "waived-check-absent-on-target"
+	// LandRefusalWaivedCheckMismatch reports that a check named in --waive-check
+	// failed on the target branch tip with a different conclusion.
+	LandRefusalWaivedCheckMismatch = "waived-check-conclusion-mismatch"
+	// LandRefusalWaivedCheckNotFailed reports that a check named in --waive-check
+	// did not fail or cancel on the pull request head.
+	LandRefusalWaivedCheckNotFailed = "waived-check-not-failed"
+	// LandRefusalWaivedCheckTargetUnfenced reports that the target branch has no
+	// server-enforced required checks, so non-required waivers cannot be judged.
+	LandRefusalWaivedCheckTargetUnfenced = "waived-check-target-unfenced"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
@@ -162,6 +183,8 @@ type PullRequestLandOptions struct {
 	// where it runs on every push and nobody can decline to re-request it —
 	// not in an approval recorded once against a head that no longer exists.
 	NoAutoMerge bool
+	WaiveChecks []string
+	WaiveReason string
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -188,6 +211,10 @@ type PullRequestLandOptions struct {
 	// uses defaultRunner. A unit test sets this to a runnertest.Fake for the
 	// same reason as git above.
 	run runner.Runner
+	// Inspector overrides the check policy and check inspection seam. Nil
+	// uses defaultChecksPolicyInspectorInstance.
+	Inspector ChecksPolicyInspector
+	inspector ChecksPolicyInspector
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -207,6 +234,16 @@ func (options PullRequestLandOptions) resolveRunner() runner.Runner {
 		return options.run
 	}
 	return defaultRunner
+}
+
+func (options PullRequestLandOptions) resolveInspector() ChecksPolicyInspector {
+	if options.Inspector != nil {
+		return options.Inspector
+	}
+	if options.inspector != nil {
+		return options.inspector
+	}
+	return defaultChecksPolicyInspectorInstance
 }
 
 // PullRequestLandResult is the receipt, and the JSON envelope.
@@ -268,7 +305,8 @@ type PullRequestLandResult struct {
 	// "no linked issue" finding in Evidence["closes"], never a refusal.
 	Closes []int `json:"closes,omitempty"`
 
-	Checks *githubchecks.PullRequestWaitResult `json:"checks,omitempty"`
+	Checks       *githubchecks.PullRequestWaitResult `json:"checks,omitempty"`
+	WaivedChecks []WaivedCheck                       `json:"waived_checks,omitempty" yaml:"waived_checks,omitempty"`
 
 	BranchDeleted bool   `json:"branch_deleted"`
 	LandingOnBase bool   `json:"landing_on_base"`
@@ -319,6 +357,14 @@ func (result PullRequestLandResult) ExitCode() int {
 	default:
 		return 1
 	}
+}
+
+// WaivedCheck records one GitHub check whose failure was waived against target tip.
+type WaivedCheck struct {
+	Name       string `json:"name" yaml:"name"`
+	Conclusion string `json:"conclusion" yaml:"conclusion"`
+	TargetSHA  string `json:"target_sha" yaml:"target_sha"`
+	Reason     string `json:"reason" yaml:"reason"`
 }
 
 // perCallTokenOverhead is the estimated prompt-and-response cost of one tool
@@ -438,6 +484,12 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 	if options.AllowUnfenced {
 		parts = append(parts, "--allow-unfenced")
 	}
+	for _, waive := range options.WaiveChecks {
+		parts = append(parts, "--waive-check", shellSingleQuote(waive))
+	}
+	if strings.TrimSpace(options.WaiveReason) != "" {
+		parts = append(parts, "--waive-reason", shellSingleQuote(options.WaiveReason))
+	}
 	if len(options.KeepCommits) > 0 {
 		parts = append(parts, "--keep-commits", strings.Join(options.KeepCommits, ","))
 	}
@@ -456,6 +508,29 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 		parts = append(parts, reviewCommentFilePlaceholder)
 	}
 	return strings.Join(parts, " ")
+}
+
+func pullRequestLandWaiveCommand(options PullRequestLandOptions, number string, waivableChecks []string, targetBranch, targetSHA string) string {
+	opts := options
+	merged := append([]string(nil), opts.WaiveChecks...)
+	for _, wc := range waivableChecks {
+		normalized := githubchecks.NormalizeCheckName(wc)
+		found := false
+		for _, existing := range merged {
+			if githubchecks.NormalizeCheckName(existing) == normalized {
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged = append(merged, normalized)
+		}
+	}
+	opts.WaiveChecks = merged
+	if strings.TrimSpace(opts.WaiveReason) == "" {
+		opts.WaiveReason = fmt.Sprintf("fails on %s tip (%s)", targetBranch, shortMergeRevision(targetSHA))
+	}
+	return pullRequestLandResumeCommand(opts, number, "")
 }
 
 func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullRequestLandResult, error) {
@@ -496,6 +571,21 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			"gh api --method DELETE repos/" + options.Repository + "/git/refs/heads/…",
 			"wb worktree cleanup <task> --apply",
 		},
+	}
+
+	if len(options.WaiveChecks) > 0 && strings.TrimSpace(options.WaiveReason) == "" {
+		return mergeRefusal(result, landRefusal{
+			code:    LandRefusalWaiveReasonEmpty,
+			reason:  "--waive-check requires a non-empty --waive-reason",
+			command: "wb pr land " + options.Repository + "#" + number + " --waive-reason \"<reason>\"",
+		}), nil
+	}
+	if strings.TrimSpace(options.WaiveReason) != "" && len(options.WaiveChecks) == 0 {
+		return mergeRefusal(result, landRefusal{
+			code:    LandRefusalWaiveReasonEmpty,
+			reason:  "--waive-reason was given without any --waive-check",
+			command: "wb pr land " + options.Repository + "#" + number + " --waive-check <name>",
+		}), nil
 	}
 
 	// Re-read the pull request now. A value read at session start is a
@@ -805,6 +895,16 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		waited.Status = githubchecks.PullRequestWaitPassed
 		result.Evidence["merged_by"] = "github auto-merge"
 	}
+	if len(options.WaiveChecks) > 0 {
+		waivedChecks, waiverRefusal, waiverErr := verifyWaivedChecks(ctx, options, number, view.Base.Ref, waited.Checks)
+		if waiverErr != nil {
+			return result, waiverErr
+		}
+		if waiverRefusal != nil {
+			return mergeRefusal(result, *waiverRefusal), nil
+		}
+		result.WaivedChecks = waivedChecks
+	}
 	switch waited.Status {
 	case githubchecks.PullRequestWaitPassed:
 	case githubchecks.PullRequestWaitPending:
@@ -827,10 +927,6 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksFailed
 		result.Reason = waited.Reason
-		// #600: point at the failing job directly rather than the PR page,
-		// which names nothing and makes the caller re-derive which check and
-		// which job actually failed.
-		result.SanctionedCommand = checksFailedSanctionedCommand(waited.FailureDetails, options.Repository, number)
 		// Auto-merge stays armed through a red result. CI is the gate: whoever
 		// pushes a fix is responsible for it, the required checks re-run
 		// against what they pushed, and the merge happens only if they pass.
@@ -846,11 +942,87 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			// checks were not the problem.
 			result.RefusalCode = LandRefusalUnfencedTarget
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number + " --allow-unfenced"
-		} else if summary := githubchecks.SummarizeFailures(waited.FailureDetails); summary != "" {
-			// #600: name each failing check and its first error line rather
-			// than leaving the caller to hand-roll the same log scraping WB
-			// already did while observing the checks.
-			result.Reason += "; " + summary
+		} else {
+			inspector := options.resolveInspector()
+			required, _, _ := inspector.RequiredChecks(ctx, options.Repository, view.Base.Ref, false)
+			targetSHA, _ := inspector.TargetHead(ctx, options.Repository, view.Base.Ref)
+			var targetChecks []githubchecks.RemoteCheck
+			if targetSHA != "" {
+				targetChecks, _, _ = inspector.CommitChecks(ctx, githubchecks.PullRequestWaitOptions{
+					Repository: options.Repository,
+					Head:       targetSHA,
+				})
+			}
+			targetFenced := len(required) > 0
+
+			var (
+				failedDescriptions []string
+				waivableChecks     []string
+				allFailedWaivable  = targetFenced
+				failedCount        = 0
+			)
+			for _, check := range waited.Checks {
+				if check.Bucket != "fail" && check.Bucket != "cancel" {
+					continue
+				}
+				if checkIsAlreadyWaived(check.Name, result.WaivedChecks) {
+					continue
+				}
+				failedCount++
+				normalized := githubchecks.NormalizeCheckName(check.Name)
+				isRequired := isCheckRequiredByPolicy(normalized, check.AppID, required)
+				var targetCheck *githubchecks.RemoteCheck
+				for i := range targetChecks {
+					if githubchecks.NormalizeCheckName(targetChecks[i].Name) == normalized {
+						targetCheck = &targetChecks[i]
+						break
+					}
+				}
+				var desc string
+				if isRequired {
+					desc = fmt.Sprintf("%q (required by %s)", check.Name, view.Base.Ref)
+					allFailedWaivable = false
+				} else if targetCheck == nil {
+					desc = fmt.Sprintf("%q (not required by %s; absent on %s tip %s)", check.Name, view.Base.Ref, view.Base.Ref, shortMergeRevision(targetSHA))
+					allFailedWaivable = false
+				} else if targetCheck.Bucket == "pass" || targetCheck.Bucket == "skipping" {
+					desc = fmt.Sprintf("%q (not required by %s; green on %s tip %s)", check.Name, view.Base.Ref, view.Base.Ref, shortMergeRevision(targetSHA))
+					allFailedWaivable = false
+				} else {
+					headConc := check.Conclusion
+					if headConc == "" {
+						headConc = check.Bucket
+					}
+					targetConc := targetCheck.Conclusion
+					if targetConc == "" {
+						targetConc = targetCheck.Bucket
+					}
+					if headConc == targetConc {
+						desc = fmt.Sprintf("%q (not required by %s; fails on %s tip %s with conclusion %q)", check.Name, view.Base.Ref, view.Base.Ref, shortMergeRevision(targetSHA), headConc)
+						waivableChecks = append(waivableChecks, check.Name)
+					} else {
+						desc = fmt.Sprintf("%q (not required by %s; conclusion %q on head vs %q on %s tip %s)", check.Name, view.Base.Ref, headConc, targetConc, view.Base.Ref, shortMergeRevision(targetSHA))
+						allFailedWaivable = false
+					}
+				}
+				failedDescriptions = append(failedDescriptions, desc)
+			}
+			if failedCount == 0 {
+				allFailedWaivable = false
+			}
+
+			if allFailedWaivable && len(waivableChecks) > 0 {
+				result.SanctionedCommand = pullRequestLandWaiveCommand(options, number, waivableChecks, view.Base.Ref, targetSHA)
+			} else {
+				result.SanctionedCommand = checksFailedSanctionedCommand(waited.FailureDetails, options.Repository, number)
+			}
+
+			if len(failedDescriptions) > 0 {
+				result.Reason = waited.Reason + "; " + strings.Join(failedDescriptions, ", ")
+			}
+			if summary := githubchecks.SummarizeFailures(waited.FailureDetails); summary != "" {
+				result.Reason += "; " + summary
+			}
 		}
 		return withSavings(result), nil
 	}
@@ -920,6 +1092,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			PullRequest:       number,
 			Target:            view.Base.Ref,
 			AllowUnfenced:     options.AllowUnfenced,
+			WaiveChecks:       options.WaiveChecks,
 			Slice:             remainingWaitBudget(options, waitDeadline(options)),
 			CheckPollInterval: options.CheckPollInterval,
 			Progress:          options.Progress,
@@ -932,6 +1105,16 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}
 		result.Checks = &reobserved
 		result.AbsorbedPolls += reobserved.StableObservations
+		if len(options.WaiveChecks) > 0 {
+			waivedChecks, waiverRefusal, waiverErr := verifyWaivedChecks(ctx, options, number, view.Base.Ref, reobserved.Checks)
+			if waiverErr != nil {
+				return result, waiverErr
+			}
+			if waiverRefusal != nil {
+				return mergeRefusal(result, *waiverRefusal), nil
+			}
+			result.WaivedChecks = waivedChecks
+		}
 		if reobserved.Status != githubchecks.PullRequestWaitPassed {
 			result.Outcome = LandFindings
 			result.RefusalCode = LandRefusalChecksPending
@@ -1689,6 +1872,140 @@ func isCommitTrailer(line string) bool {
 func targetHasRequiredChecks(ctx context.Context, repository, target string) bool {
 	checks, _, reason := githubchecks.RequiredChecks(ctx, repository, target, false)
 	return reason == "" && len(checks) > 0
+}
+
+func verifyWaivedChecks(
+	ctx context.Context,
+	options PullRequestLandOptions,
+	number string,
+	target string,
+	headChecks []githubchecks.RemoteCheck,
+) ([]WaivedCheck, *landRefusal, error) {
+	if len(options.WaiveChecks) == 0 {
+		return nil, nil, nil
+	}
+	inspector := options.resolveInspector()
+	required, _, reqReason := inspector.RequiredChecks(ctx, options.Repository, target, false)
+	if reqReason != "" || len(required) == 0 {
+		return nil, &landRefusal{
+			code:    LandRefusalWaivedCheckTargetUnfenced,
+			reason:  fmt.Sprintf("target branch %s has no server-enforced required status checks; check waivers cannot be evaluated", target),
+			command: "wb pr land " + options.Repository + "#" + number + " --allow-unfenced",
+		}, nil
+	}
+
+	targetSHA, targetShaReason := inspector.TargetHead(ctx, options.Repository, target)
+	if targetShaReason != "" {
+		return nil, nil, fmt.Errorf("read target head for %s: %s", target, targetShaReason)
+	}
+	targetChecks, _, targetChecksReason := inspector.CommitChecks(ctx, githubchecks.PullRequestWaitOptions{
+		Repository: options.Repository,
+		Head:       targetSHA,
+	})
+	if targetChecksReason != "" {
+		return nil, nil, fmt.Errorf("read target checks for %s (%s): %s", target, targetSHA, targetChecksReason)
+	}
+
+	waived := make([]WaivedCheck, 0, len(options.WaiveChecks))
+	for _, waiveName := range options.WaiveChecks {
+		normalized := githubchecks.NormalizeCheckName(waiveName)
+		// 1. Must have failed or been cancelled on PR head
+		var headCheck *githubchecks.RemoteCheck
+		for i := range headChecks {
+			if githubchecks.NormalizeCheckName(headChecks[i].Name) == normalized {
+				headCheck = &headChecks[i]
+				break
+			}
+		}
+		if headCheck == nil || (headCheck.Bucket != "fail" && headCheck.Bucket != "cancel") {
+			status := "absent"
+			if headCheck != nil {
+				status = headCheck.Conclusion
+				if status == "" {
+					status = headCheck.Bucket
+				}
+			}
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckNotFailed,
+				reason:  fmt.Sprintf("waived check %q did not fail or cancel on pull request head (status: %s)", waiveName, status),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+
+		// 2. Target server-enforced policy must not require it
+		if isCheckRequiredByPolicy(normalized, headCheck.AppID, required) {
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckRequired,
+				reason:  fmt.Sprintf("waived check %q is required by target branch %s policy (target SHA %s)", waiveName, target, shortMergeRevision(targetSHA)),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+
+		// 3. Must be present on target branch tip and have the same failing conclusion
+		var targetCheck *githubchecks.RemoteCheck
+		for i := range targetChecks {
+			if githubchecks.NormalizeCheckName(targetChecks[i].Name) == normalized {
+				targetCheck = &targetChecks[i]
+				break
+			}
+		}
+		if targetCheck == nil {
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckAbsent,
+				reason:  fmt.Sprintf("waived check %q was not observed on target branch %s tip (target SHA %s)", waiveName, target, shortMergeRevision(targetSHA)),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+		if targetCheck.Bucket == "pass" || targetCheck.Bucket == "skipping" {
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckGreen,
+				reason:  fmt.Sprintf("waived check %q is green on target branch %s tip (target SHA %s, conclusion %q)", waiveName, target, shortMergeRevision(targetSHA), targetCheck.Conclusion),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+		headConclusion := headCheck.Conclusion
+		if headConclusion == "" {
+			headConclusion = headCheck.Bucket
+		}
+		targetConclusion := targetCheck.Conclusion
+		if targetConclusion == "" {
+			targetConclusion = targetCheck.Bucket
+		}
+		if headConclusion != targetConclusion {
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckMismatch,
+				reason:  fmt.Sprintf("waived check %q conclusion %q on pull request head does not match conclusion %q on target branch %s tip (target SHA %s)", waiveName, headConclusion, targetConclusion, target, shortMergeRevision(targetSHA)),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+
+		waived = append(waived, WaivedCheck{
+			Name:       githubchecks.NormalizeCheckName(headCheck.Name),
+			Conclusion: headConclusion,
+			TargetSHA:  targetSHA,
+			Reason:     options.WaiveReason,
+		})
+	}
+	return waived, nil, nil
+}
+
+func isCheckRequiredByPolicy(normalizedName string, appID int64, required []githubchecks.RequiredRemoteCheck) bool {
+	for _, req := range required {
+		if githubchecks.NormalizeCheckName(req.Name) == normalizedName && (req.IntegrationID == 0 || appID == 0 || appID == req.IntegrationID) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkIsAlreadyWaived(name string, waived []WaivedCheck) bool {
+	normalized := githubchecks.NormalizeCheckName(name)
+	for _, w := range waived {
+		if githubchecks.NormalizeCheckName(w.Name) == normalized {
+			return true
+		}
+	}
+	return false
 }
 
 // appendLandEvent records one invocation. It never fails the landing: an event

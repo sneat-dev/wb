@@ -7934,7 +7934,9 @@
                 "--review-comment",
                 "--review-comment-file",
                 "--timeout",
-                "--title"
+                "--title",
+                "--waive-check",
+                "--waive-reason"
               ],
               "modes": [
                 "Addressed by worktree path or task name, defaulting to the current directory; a canonical clone is refused, naming wb worktree create, and a dirty worktree is refused by listing the uncommitted paths unless a commit mode is given",
@@ -8068,7 +8070,9 @@
                 "--review-comment-file",
                 "--subject",
                 "--take-over-lane",
-                "--timeout"
+                "--timeout",
+                "--waive-check",
+                "--waive-reason"
               ],
               "modes": [
                 "Cleanup is the default: the task's worktree is retired and its claim released unless --keep is passed, because the measured failure was an opt-in cleanup that was never passed",

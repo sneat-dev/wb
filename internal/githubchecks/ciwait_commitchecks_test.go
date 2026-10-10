@@ -155,3 +155,43 @@ echo "unexpected gh args: $*" >&2; exit 30
 		t.Fatalf("reason = %q, want the Actions-runs read failure propagated", reason)
 	}
 }
+
+func TestNormalizeCheckName(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"check-run:Workers Builds: specscore-md", "Workers Builds: specscore-md"},
+		{"status:ci/test", "ci/test"},
+		{"  check-run:lint  ", "lint"},
+		{"lint", "lint"},
+	}
+	for _, tc := range cases {
+		if got := NormalizeCheckName(tc.input); got != tc.want {
+			t.Errorf("NormalizeCheckName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestFailedObservedChecksWithWaivers(t *testing.T) {
+	checks := []RemoteCheck{
+		{Name: "check-run:CI", Bucket: "pass"},
+		{Name: "check-run:Workers Builds: specscore-md", Bucket: "fail"},
+	}
+
+	var pending bool
+	// Without waiver, fails
+	if !failedObservedChecks(checks, &pending) {
+		t.Errorf("failedObservedChecks without waiver returned false, want true")
+	}
+
+	// With waiver, does not fail
+	if failedObservedChecks(checks, &pending, "Workers Builds: specscore-md") {
+		t.Errorf("failedObservedChecks with waiver returned true, want false")
+	}
+
+	// With check-run: prefix in waiver, also matches
+	if failedObservedChecks(checks, &pending, "check-run:Workers Builds: specscore-md") {
+		t.Errorf("failedObservedChecks with prefixed waiver returned true, want false")
+	}
+}
