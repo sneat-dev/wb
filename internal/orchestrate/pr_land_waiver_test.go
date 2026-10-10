@@ -650,10 +650,11 @@ func TestLandWaiverConclusionFallbackAndNotFailedBucket(t *testing.T) {
 	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
 
 	t.Run("head-not-failed-empty-conclusion-falls-back-to-bucket", func(t *testing.T) {
-		fixture.writeState(t, "check-runs", `{
+		fixture.writeState(t, "check-runs", `{"total_count": 0, "check_runs": []}`)
+		fixture.writeState(t, "statuses", `{
 			"total_count": 1,
-			"check_runs": [
-				{"name": "build", "status": "completed", "conclusion": "success", "app": {"id": 10}}
+			"statuses": [
+				{"context": "build", "state": "success"}
 			]
 		}`)
 		inspector := &testChecksPolicyInspector{
@@ -661,12 +662,12 @@ func TestLandWaiverConclusionFallbackAndNotFailedBucket(t *testing.T) {
 			reqAuthority: "server",
 			targetSHA:    fixture.baseSHA,
 			commitChecks: []githubchecks.RemoteCheck{
-				{Name: "build", Conclusion: "success", Bucket: "pass", AppID: 10},
+				{Name: "status:build", Conclusion: "", Bucket: "pass"},
 			},
 		}
 		opts := landOptions(fixture)
 		opts.Inspector = inspector
-		opts.WaiveChecks = []string{"build"}
+		opts.WaiveChecks = []string{"status:build"}
 		opts.WaiveReason = "testing"
 
 		result, err := LandPullRequest(context.Background(), opts)
@@ -675,6 +676,9 @@ func TestLandWaiverConclusionFallbackAndNotFailedBucket(t *testing.T) {
 		}
 		if result.RefusalCode != LandRefusalWaivedCheckNotFailed {
 			t.Fatalf("refusal = %s, want %s", result.RefusalCode, LandRefusalWaivedCheckNotFailed)
+		}
+		if !strings.Contains(result.Reason, "(status: pass)") {
+			t.Fatalf("expected '(status: pass)' in refusal reason, got %q", result.Reason)
 		}
 	})
 
