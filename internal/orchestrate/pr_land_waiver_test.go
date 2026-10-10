@@ -523,3 +523,197 @@ func TestLandChecksFailedOffersSanctionedWaiveCommand(t *testing.T) {
 		t.Errorf("sanctioned command %q missing --waive-reason placeholder", result.SanctionedCommand)
 	}
 }
+
+func TestPullRequestLandWaiveCommandDeduplicatesExisting(t *testing.T) {
+	opts := PullRequestLandOptions{
+		Repository:  "acme/app",
+		WaiveChecks: []string{"Workers Builds: specscore-md"},
+	}
+	cmd := pullRequestLandWaiveCommand(opts, "7", []string{"Workers Builds: specscore-md"}, "main", "1234567890abcdef")
+	count := strings.Count(cmd, "Workers Builds: specscore-md")
+	if count != 1 {
+		t.Errorf("waive command duplicated existing waive-check: count=%d, cmd=%s", count, cmd)
+	}
+}
+
+func TestLandChecksFailedDiagnosticsVariations(t *testing.T) {
+	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
+
+	// Head checks:
+	// - "ci/pass": passes
+	// - "absent-check": fails, absent on target
+	// - "green-on-target": fails on head, passes on target
+	// - "mismatch-check": fails on head with "failure", target has "cancelled"
+	// - "empty-conc-check": commit status with state failure (empty conclusion)
+	fixture.writeState(t, "check-runs", `{
+		"total_count": 4,
+		"check_runs": [
+			{"name": "ci/pass", "status": "completed", "conclusion": "success", "app": {"id": 1}},
+			{"name": "absent-check", "status": "completed", "conclusion": "failure", "app": {"id": 2}},
+			{"name": "green-on-target", "status": "completed", "conclusion": "failure", "app": {"id": 3}},
+			{"name": "mismatch-check", "status": "completed", "conclusion": "failure", "app": {"id": 4}}
+		]
+	}`)
+	fixture.writeState(t, "statuses", `{
+		"total_count": 1,
+		"statuses": [
+			{"context": "empty-conc-check", "state": "failure"}
+		]
+	}`)
+
+	inspector := &testChecksPolicyInspector{
+		required: []githubchecks.RequiredRemoteCheck{
+			{Name: "ci/pass", IntegrationID: 1},
+		},
+		reqAuthority: "server",
+		targetSHA:    fixture.baseSHA,
+		commitChecks: []githubchecks.RemoteCheck{
+			{Name: "ci/pass", Conclusion: "success", Bucket: "pass", AppID: 1},
+			// absent-check is omitted on target
+			{Name: "green-on-target", Conclusion: "success", Bucket: "pass", AppID: 3},
+			{Name: "mismatch-check", Conclusion: "cancelled", Bucket: "cancel", AppID: 4},
+			{Name: "status:empty-conc-check", Conclusion: "", Bucket: "fail"},
+		},
+	}
+
+	opts := landOptions(fixture)
+	opts.Inspector = inspector
+
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Outcome != LandFindings {
+		t.Fatalf("outcome = %s, want %s", result.Outcome, LandFindings)
+	}
+
+	if !strings.Contains(result.Reason, "absent on main tip") {
+		t.Errorf("reason %q missing absent check diagnostic", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "green on main tip") {
+		t.Errorf("reason %q missing green check diagnostic", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "conclusion \"failure\" on head vs \"cancelled\" on main tip") {
+		t.Errorf("reason %q missing mismatch check diagnostic", result.Reason)
+	}
+	if !strings.Contains(result.Reason, "empty-conc-check") {
+		t.Errorf("reason %q missing empty-conc-check diagnostic", result.Reason)
+	}
+}
+
+func TestLandWaiverInspectorErrors(t *testing.T) {
+	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
+	fixture.writeState(t, "check-runs", `{
+		"total_count": 1,
+		"check_runs": [
+			{"name": "Workers Builds", "status": "completed", "conclusion": "failure", "app": {"id": 100}}
+		]
+	}`)
+
+	t.Run("target-head-error", func(t *testing.T) {
+		inspector := &testChecksPolicyInspector{
+			required:     []githubchecks.RequiredRemoteCheck{{Name: "CI", IntegrationID: 42}},
+			reqAuthority: "server",
+			targetReason: "failed to resolve ref",
+		}
+		opts := landOptions(fixture)
+		opts.Inspector = inspector
+		opts.WaiveChecks = []string{"Workers Builds"}
+		opts.WaiveReason = "testing"
+
+		_, err := LandPullRequest(context.Background(), opts)
+		if err == nil || !strings.Contains(err.Error(), "read target head for main") {
+			t.Fatalf("expected read target head error, got: %v", err)
+		}
+	})
+
+	t.Run("commit-checks-error", func(t *testing.T) {
+		inspector := &testChecksPolicyInspector{
+			required:     []githubchecks.RequiredRemoteCheck{{Name: "CI", IntegrationID: 42}},
+			reqAuthority: "server",
+			targetSHA:    fixture.baseSHA,
+			commitReason: "git api error",
+		}
+		opts := landOptions(fixture)
+		opts.Inspector = inspector
+		opts.WaiveChecks = []string{"Workers Builds"}
+		opts.WaiveReason = "testing"
+
+		_, err := LandPullRequest(context.Background(), opts)
+		if err == nil || !strings.Contains(err.Error(), "read target checks for main") {
+			t.Fatalf("expected read target checks error, got: %v", err)
+		}
+	})
+}
+
+func TestLandWaiverConclusionFallbackAndNotFailedBucket(t *testing.T) {
+	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
+
+	t.Run("head-not-failed-empty-conclusion-falls-back-to-bucket", func(t *testing.T) {
+		fixture.writeState(t, "check-runs", `{
+			"total_count": 1,
+			"check_runs": [
+				{"name": "build", "status": "completed", "conclusion": "success", "app": {"id": 10}}
+			]
+		}`)
+		inspector := &testChecksPolicyInspector{
+			required:     []githubchecks.RequiredRemoteCheck{{Name: "CI", IntegrationID: 42}},
+			reqAuthority: "server",
+			targetSHA:    fixture.baseSHA,
+			commitChecks: []githubchecks.RemoteCheck{
+				{Name: "build", Conclusion: "success", Bucket: "pass", AppID: 10},
+			},
+		}
+		opts := landOptions(fixture)
+		opts.Inspector = inspector
+		opts.WaiveChecks = []string{"build"}
+		opts.WaiveReason = "testing"
+
+		result, err := LandPullRequest(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.RefusalCode != LandRefusalWaivedCheckNotFailed {
+			t.Fatalf("refusal = %s, want %s", result.RefusalCode, LandRefusalWaivedCheckNotFailed)
+		}
+	})
+
+	t.Run("waiver-accepted-with-empty-conclusions-matching-buckets", func(t *testing.T) {
+		fixture.writeState(t, "check-runs", `{
+			"total_count": 1,
+			"check_runs": [
+				{"name": "CI", "status": "completed", "conclusion": "success", "app": {"id": 42}}
+			]
+		}`)
+		fixture.writeState(t, "statuses", `{
+			"total_count": 1,
+			"statuses": [
+				{"context": "broken-status", "state": "failure"}
+			]
+		}`)
+		inspector := &testChecksPolicyInspector{
+			required:     []githubchecks.RequiredRemoteCheck{{Name: "CI", IntegrationID: 42}},
+			reqAuthority: "server",
+			targetSHA:    fixture.baseSHA,
+			commitChecks: []githubchecks.RemoteCheck{
+				{Name: "CI", Conclusion: "success", Bucket: "pass", AppID: 42},
+				{Name: "status:broken-status", Conclusion: "", Bucket: "fail"},
+			},
+		}
+		opts := landOptions(fixture)
+		opts.Inspector = inspector
+		opts.WaiveChecks = []string{"status:broken-status"}
+		opts.WaiveReason = "consistently fails"
+
+		result, err := LandPullRequest(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Outcome != LandSuccess {
+			t.Fatalf("outcome = %s, want %s (reason: %s)", result.Outcome, LandSuccess, result.Reason)
+		}
+		if len(result.WaivedChecks) != 1 || result.WaivedChecks[0].Name != "broken-status" || result.WaivedChecks[0].Conclusion != "fail" {
+			t.Fatalf("unexpected waived checks: %+v", result.WaivedChecks)
+		}
+	})
+}

@@ -214,7 +214,6 @@ type PullRequestLandOptions struct {
 	// Inspector overrides the check policy and check inspection seam. Nil
 	// uses defaultChecksPolicyInspectorInstance.
 	Inspector ChecksPolicyInspector
-	inspector ChecksPolicyInspector
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -239,9 +238,6 @@ func (options PullRequestLandOptions) resolveRunner() runner.Runner {
 func (options PullRequestLandOptions) resolveInspector() ChecksPolicyInspector {
 	if options.Inspector != nil {
 		return options.Inspector
-	}
-	if options.inspector != nil {
-		return options.inspector
 	}
 	return defaultChecksPolicyInspectorInstance
 }
@@ -1105,16 +1101,6 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}
 		result.Checks = &reobserved
 		result.AbsorbedPolls += reobserved.StableObservations
-		if len(options.WaiveChecks) > 0 {
-			waivedChecks, waiverRefusal, waiverErr := verifyWaivedChecks(ctx, options, number, view.Base.Ref, reobserved.Checks)
-			if waiverErr != nil {
-				return result, waiverErr
-			}
-			if waiverRefusal != nil {
-				return mergeRefusal(result, *waiverRefusal), nil
-			}
-			result.WaivedChecks = waivedChecks
-		}
 		if reobserved.Status != githubchecks.PullRequestWaitPassed {
 			result.Outcome = LandFindings
 			result.RefusalCode = LandRefusalChecksPending
@@ -1881,9 +1867,6 @@ func verifyWaivedChecks(
 	target string,
 	headChecks []githubchecks.RemoteCheck,
 ) ([]WaivedCheck, *landRefusal, error) {
-	if len(options.WaiveChecks) == 0 {
-		return nil, nil, nil
-	}
 	inspector := options.resolveInspector()
 	required, _, reqReason := inspector.RequiredChecks(ctx, options.Repository, target, false)
 	if reqReason != "" || len(required) == 0 {
