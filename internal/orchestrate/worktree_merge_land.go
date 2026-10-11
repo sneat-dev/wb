@@ -13,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -459,6 +460,13 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 	}
 	reportWorktreeMergeProgress(options.Progress, "refresh_target", progress.Completed, receipt.Target+"@"+shortMergeRevision(remoteTarget))
+	alreadyContained, containedErr := worktreeMergeAlreadyContainedInTargetWithRunner(ctx, options.resolveRunner(), receipt.Candidate.Worktree, receipt.Candidate.SHA, receipt.Sources, receipt.RebatchedCandidates, remoteTarget)
+	if containedErr != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, containedErr, save)
+	}
+	if alreadyContained {
+		return retireAlreadyLandedWorktreeMerge(ctx, options, &receipt, remoteTarget, lock, &locked, save)
+	}
 	if options.StopBeforeMerge && remoteTarget != receipt.TargetSHA {
 		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("target drifted from recorded %s to %s; refusing to republish preserved candidate %s", receipt.TargetSHA, remoteTarget, receipt.Candidate.SHA), save)
 	}
@@ -531,6 +539,13 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift: %w", validationErr), save)
 			}
 		}
+	}
+	alreadyContainedAfterRebase, containedErr := worktreeMergeAlreadyContainedInTargetWithRunner(ctx, options.resolveRunner(), receipt.Candidate.Worktree, receipt.Candidate.SHA, receipt.Sources, receipt.RebatchedCandidates, remoteTarget)
+	if containedErr != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, containedErr, save)
+	}
+	if alreadyContainedAfterRebase {
+		return retireAlreadyLandedWorktreeMerge(ctx, options, &receipt, remoteTarget, lock, &locked, save)
 	}
 	if options.StopBeforeMerge {
 		// StopBeforeMerge requires the pull-request route (checked at the top
@@ -912,4 +927,88 @@ func failWorktreeMergeReceiptWithSave(receipt WorktreeMergeReceipt, status Workt
 		return receipt, fmt.Errorf("%w; persist failure receipt: %v", failure, persistErr)
 	}
 	return receipt, failure
+}
+
+// worktreeMergeAlreadyContainedInTargetWithRunner verifies whether the prepared
+// candidate HEAD, every source HEAD, and any rebatched candidate HEAD are already
+// ancestors of (or equal to) the remote target branch tip. When all are contained,
+// the integration candidate has no unmerged commits relative to the remote target.
+func worktreeMergeAlreadyContainedInTargetWithRunner(
+	ctx context.Context,
+	run runner.Runner,
+	worktree string,
+	candidateSHA string,
+	sources []WorktreeMergeSource,
+	rebatched []WorktreeMergeCandidate,
+	remoteTarget string,
+) (bool, error) {
+	if candidateSHA == "" || remoteTarget == "" || len(sources) == 0 {
+		return false, nil
+	}
+	candidateContained, err := isMergeAncestorWithRunner(ctx, run, worktree, candidateSHA, remoteTarget)
+	if err != nil || !candidateContained {
+		return false, err
+	}
+	for _, source := range sources {
+		if source.SHA == "" {
+			return false, nil
+		}
+		sourceContained, err := isMergeAncestorWithRunner(ctx, run, worktree, source.SHA, remoteTarget)
+		if err != nil || !sourceContained {
+			return false, err
+		}
+	}
+	for _, original := range rebatched {
+		if original.SHA == "" {
+			continue
+		}
+		originalContained, err := isMergeAncestorWithRunner(ctx, run, worktree, original.SHA, remoteTarget)
+		if err != nil || !originalContained {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// operationLockReleaser captures the subset of OperationLock needed to release the lock early.
+type operationLockReleaser interface {
+	Release() error
+}
+
+// retireAlreadyLandedWorktreeMerge advances a receipt whose candidate and source
+// heads are proved already contained in the remote target directly to the landed phase.
+// It skips pushing an empty integration branch or opening a zero-commit PR, records
+// LandingSHA as the remote target, and recurses into the post-target checks, canonical
+// sync, and cleanup journey.
+func retireAlreadyLandedWorktreeMerge(
+	ctx context.Context,
+	options WorktreeMergeLandOptions,
+	receipt *WorktreeMergeReceipt,
+	remoteTarget string,
+	lock operationLockReleaser,
+	locked *bool,
+	save func(WorktreeMergeReceipt) error,
+) (WorktreeMergeReceipt, error) {
+	if options.StopBeforeMerge {
+		return failWorktreeMergeReceiptWithSave(*receipt, WorktreeMergeConflict, fmt.Errorf("candidate %s and all source heads are already contained in target %s; cannot publish pull request", receipt.Candidate.SHA, remoteTarget), save)
+	}
+	reportWorktreeMergeProgress(options.Progress, "already_landed", progress.Completed, receipt.Target+"@"+shortMergeRevision(remoteTarget))
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.TargetSHA = remoteTarget
+	if receipt.PreviousTargetSHA == "" {
+		receipt.PreviousTargetSHA = remoteTarget
+	}
+	receipt.LandingSHA = remoteTarget
+	receipt.Checks = githubchecks.PullRequestWaitResult{}
+	receipt.Status = WorktreeMergeLanded
+	receipt.Cleanup = receipt.Cleanup || options.Cleanup
+	receipt.UpdatedAt = time.Now().UTC()
+	if persistErr := save(*receipt); persistErr != nil {
+		return *receipt, persistErr
+	}
+	if releaseErr := lock.Release(); releaseErr != nil {
+		return *receipt, releaseErr
+	}
+	*locked = false
+	return landWorktreeMerge(ctx, options, save)
 }
