@@ -138,6 +138,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree merge`, `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-prepare-candidate`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
+| `worktree adopt` | yes | yes | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `count` | yes | yes | yes; exact owner of locally discovered canonical clones only | yes |

@@ -271,6 +271,18 @@ func TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories(t *testing.T) 
 	}
 }
 
+func TestAdoptExternalFleetSelectorsReachEmptySweep(t *testing.T) {
+	projectsRoot := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"--projects-root", projectsRoot, "--filter", "acme/", "worktree", "adopt", "--all-external", "--format", "json"}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s, stderr=%s", args, code, stdout.String(), stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "[]" {
+		t.Fatalf("stdout = %q, want an empty JSON result for the isolated projects root", got)
+	}
+}
+
 // TestPersistentFlagMatrix exercises every advertised root flag against every
 // leaf command without running the command. A supported cell must reach RunE;
 // every other cell must fail in PersistentPreRunE rather than be ignored.
