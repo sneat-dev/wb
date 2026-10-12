@@ -231,6 +231,7 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 		{name: "filter-version", args: []string{"--filter", "acme", "version"}, want: "--filter is not supported by version"},
 		{name: "filter-ci-direct", args: []string{"--filter", "acme", "ci", "audit"}, want: "--filter requires --fleet for ci audit"},
 		{name: "filter-hooks-direct", args: []string{"--filter", "acme", "hooks", "check"}, want: "--filter requires --fleet for hooks check"},
+		{name: "filter-adopt-path", args: []string{"--filter", "acme/", "worktree", "adopt", "/not-a-worktree"}, want: "--filter requires --all-external for worktree adopt"},
 		{name: "filter-coverage-direct", args: []string{"--filter", "acme", "coverage"}, want: "--filter requires --fleet for coverage"},
 		{name: "root-verify-direct", args: []string{"--projects-root", t.TempDir(), "verify"}, want: "--projects-root requires --fleet for verify"},
 		{name: "root-ci-direct", args: []string{"--projects-root", t.TempDir(), "ci", "audit"}, want: "--projects-root requires --fleet for ci audit"},
@@ -283,6 +284,13 @@ func TestAdoptExternalFleetSelectorsReachEmptySweep(t *testing.T) {
 	}
 }
 
+func TestSkillCommandExampleRejectsAdoptFilterWithNamedPath(t *testing.T) {
+	err := parseSkillCommandExample("wb --filter acme/ worktree adopt /not-a-worktree")
+	if err == nil || !strings.Contains(err.Error(), "--filter requires --all-external for worktree adopt") {
+		t.Fatalf("parseSkillCommandExample() error = %v, want the adopt fleet-mode guard", err)
+	}
+}
+
 // TestPersistentFlagMatrix exercises every advertised root flag against every
 // leaf command without running the command. A supported cell must reach RunE;
 // every other cell must fail in PersistentPreRunE rather than be ignored.
@@ -312,6 +320,11 @@ func TestPersistentFlagMatrix(t *testing.T) {
 						if err := command.Flags().Set("fleet", "true"); err != nil {
 							t.Fatal(err)
 						}
+					}
+				}
+				if supported && flag == "filter" && commandID == "worktree adopt" {
+					if err := command.Flags().Set("all-external", "true"); err != nil {
+						t.Fatal(err)
 					}
 				}
 				rejectErr := rejectIgnoredPersistentFlags(command, nil)

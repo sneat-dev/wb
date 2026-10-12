@@ -353,6 +353,12 @@ func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
 		if !supported[commandID] && !supported["*"] {
 			return fmt.Errorf("--%s is not supported by %s; see docs/cli-flag-matrix.md", flag, commandID)
 		}
+		if flag == "filter" && commandID == "worktree adopt" {
+			allExternal := cmd.Flags().Lookup("all-external")
+			if allExternal == nil || allExternal.Value.String() != "true" {
+				return fmt.Errorf("--filter requires --all-external for worktree adopt; see docs/cli-flag-matrix.md")
+			}
+		}
 		// Some leaves have both direct and fleet modes. A root selector cannot
 		// truthfully affect a named path, so accept it only when the invocation
 		// selected the fleet. Status is fleet-by-default when no path is given;
