@@ -298,7 +298,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree land": true, "land": true,
 		"pr land": true, "pr create": true, "pr update": true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge acknowledge-retired-prepare-candidate": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
-		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
+		"worktree orphans": true, "worktree backfill": true, "worktree adopt": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
@@ -321,7 +321,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"coverage":                 true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
 		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree retire": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
-		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true,
+		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true, "worktree adopt": true,
 		"branch list": true, "branch count": true, "branch cleanup": true, "branch quarantine": true,
 		"archive clean": true,
 	},
@@ -352,6 +352,12 @@ func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
 		}
 		if !supported[commandID] && !supported["*"] {
 			return fmt.Errorf("--%s is not supported by %s; see docs/cli-flag-matrix.md", flag, commandID)
+		}
+		if flag == "filter" && commandID == "worktree adopt" {
+			allExternal := cmd.Flags().Lookup("all-external")
+			if allExternal == nil || allExternal.Value.String() != "true" {
+				return fmt.Errorf("--filter requires --all-external for worktree adopt; see docs/cli-flag-matrix.md")
+			}
 		}
 		// Some leaves have both direct and fleet modes. A root selector cannot
 		// truthfully affect a named path, so accept it only when the invocation

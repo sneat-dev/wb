@@ -196,19 +196,20 @@ Four traps decide whether a sweep finds anything at all:
    A squash-merged or cherry-picked branch whose patches are all upstream by
    patch-id is **not** a candidate, and `git cherry` emptiness is not evidence
    WB accepts — it cannot tell landed from landed-then-reverted.
-3. **`--base` defaults to `main`.** A task branched from a feature branch stays
-   `awaiting_push` until you pass `--base <feature-branch>`.
-4. **Dry run is the default.** `--apply` is required to act. For a named task
-   `--apply` refuses without `--remote` *while the origin branch still exists*
-   — a task whose origin branch is already gone has nothing left to retire and
-   cleans without it.
+3. **The recorded base is the target.** Cleanup uses each worktree’s recorded
+   base. If that branch is gone, or has itself landed in the repository default,
+   cleanup falls back to the freshly fetched default branch. An explicit
+   `--base <branch>` selects exactly that origin branch; it does not fall back.
+4. **Dry run is the default.** `--apply` is required to act. For a named task,
+   `--apply` requires `--remote` only while its origin branch still exists; an
+   already deleted remote branch needs no further retirement.
 
-Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--parallel`,
-`--verbose`, `--apply`,
-`--remote`, `--older-than`, `--report-dir`, `--absorbed-by`,
-`--resume-interrupted`, `--format`, plus root `--filter` and
-`--projects-root`. Apply writes durable audit evidence below
-`<projects-root>/.wb/reports/worktree-cleanup/`.
+Cleanup flags: `--base`, `--all-merged`, `--apply`, `--remote`,
+`--older-than`, `--parallel`, `--report-dir`, `--absorbed-by`,
+`--superseded-by`, `--resume-interrupted`, `--recover-stages`,
+`--retire-shells`, `--format`, and `--verbose` (`-v`). Root flags also include
+`--filter`, `--projects-root`, `--quiet`, and `--non-interactive`. Apply writes
+durable audit evidence below `<projects-root>/.wb/reports/worktree-cleanup/`.
 
 Never delete a branch or worktree WB refused. A skip is preserved evidence —
 `awaiting push`, an open PR, local changes, or a blocked coordinated sibling —

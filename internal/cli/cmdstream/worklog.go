@@ -23,7 +23,7 @@ func addStreamWorkLogFlags(command *cobra.Command, mode, effortID, runID, initia
 	command.Flags().StringVar(initiator, "initiator", "", "human who asked for this work (required by --mode manual)")
 	command.Flags().StringVar(agentID, "agent", "", "agent identifier recorded in the Work Log")
 	command.Flags().StringVar(agentRuntime, "agent-runtime", "", "agent harness recorded in the Work Log")
-	command.Flags().StringVar(model, "model", "", "exact child model, or the explicit value unknown")
+	command.Flags().StringVar(model, "model", "", "exact child model, or the explicit value unknown (required)")
 	command.Flags().StringVar(cli, "cli", "", "CLI recorded in the Work Log")
 	command.Flags().StringVar(provider, "provider", "", "routing or billing provider identity, never a credential")
 	command.Flags().StringVar(originalPrompt, "original-prompt-file", "", "file holding the exact task request, or - for stdin (required)")

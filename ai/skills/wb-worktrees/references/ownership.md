@@ -16,7 +16,7 @@ its identity, so it declares it.
 Once per session, through the environment — every later WB command picks it up:
 
 ```sh
-export WB_AGENT_PID=$$ WB_AGENT_RUNTIME=claude-code
+export WB_AGENT_PID=$PPID WB_AGENT_RUNTIME=claude-code
 export WB_AGENT_MODEL=<model> WB_AGENT_ID=<session-id>
 ```
 
@@ -63,7 +63,8 @@ preallocated identity and lineage explicitly:
 
 ```sh
 wb session register --pid 12345 --wb-session-id wbs-successor \
-  --machine hetzner-vm1 --runtime codex --native-harness-id native-123 \
+  --machine hetzner-vm1 --runtime codex --model unknown \
+  --native-harness-id native-123 \
   --tmux-name wb-session-wbs-successor \
   --predecessor-wb-session-id wbs-source --handoff-id handoff-123
 ```
