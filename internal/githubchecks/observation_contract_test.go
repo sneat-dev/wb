@@ -106,6 +106,21 @@ func TestCommitCheckRunsRequiresChecksFromEveryCoLatestRun(t *testing.T) {
 	}
 }
 
+func TestCommitCheckRunsRetainsPendingCoLatestRunWithoutCheckRuns(t *testing.T) {
+	t.Parallel()
+	ctx := contractReadContext(t, map[string]string{
+		"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push","status":"completed","conclusion":"success"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push","status":"in_progress"}]}`,
+		"repos/acme/app/commits/head/check-runs?per_page=100":    `{"total_count":1,"check_runs":[{"id":1001,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"check_suite":{"id":11}}]}`,
+	}, nil)
+	checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"})
+	if reason != "" || !pending || len(checks) != 2 {
+		t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+	}
+	if checks[0].CheckRunID != 1001 || checks[0].Bucket != "pass" || checks[1].Name != "workflow-run:300:push" || checks[1].Bucket != "pending" {
+		t.Fatalf("co-latest checks=%+v; pending run without check-runs must remain visible", checks)
+	}
+}
+
 func TestActionsReceiptSortsDistinctEventsOfOneWorkflow(t *testing.T) {
 	t.Parallel()
 	ctx := contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"pull_request"}]}`}, nil)
