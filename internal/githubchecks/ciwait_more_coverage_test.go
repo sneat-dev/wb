@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
@@ -199,21 +198,6 @@ func TestOrchCovSortRemoteAndRequiredChecksAreDeterministic(t *testing.T) {
 	sortRequiredChecks(required)
 	if required[0].Name != "a" || required[1].IntegrationID != 1 || required[2].IntegrationID != 2 {
 		t.Fatalf("sorted required checks = %+v", required)
-	}
-}
-
-func TestOrchCovLatestActionsRunMatchesTheExactIdentity(t *testing.T) {
-	t.Parallel()
-	runs := []ActionsRun{
-		{ID: 1, WorkflowID: 10, Event: "pull_request", CheckSuiteID: 100, CreatedAt: time.Now()},
-		{ID: 2, WorkflowID: 20, Event: "push", CheckSuiteID: 200, CreatedAt: time.Now()},
-	}
-	identity := githubActionsRunIdentity{WorkflowID: 20, Event: "push"}
-	if got := latestActionsRun(runs, identity); got.ID != 2 {
-		t.Fatalf("latestActionsRun = %+v", got)
-	}
-	if got := latestActionsRun(runs, githubActionsRunIdentity{WorkflowID: 99, Event: "push"}); got.ID != 0 {
-		t.Fatalf("unmatched identity returned %+v", got)
 	}
 }
 

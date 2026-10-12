@@ -77,16 +77,47 @@ func TestRequiredPolicyRejectsIncompleteAuthority(t *testing.T) {
 	}
 }
 
-func TestActionsReceiptRejectsAmbiguousChronologyAndMissingSuite(t *testing.T) {
+func TestActionsReceiptRetainsCoLatestRunsAndRejectsMissingSuite(t *testing.T) {
 	t.Parallel()
 	ctx := contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push"}]}`}, nil)
 	options := PullRequestWaitOptions{Repository: "acme/app", Head: "head"}
-	if _, _, reason := ActionsRunsForHead(ctx, options); !strings.Contains(reason, "ambiguous same-time") {
-		t.Fatalf("ambiguity=%q", reason)
+	bySuite, runs, reason := ActionsRunsForHead(ctx, options)
+	if reason != "" || len(bySuite) != 2 || len(runs) != 2 || runs[0].ID != 1 || runs[1].ID != 2 {
+		t.Fatalf("co-latest runs: suites=%v runs=%v reason=%q", bySuite, runs, reason)
 	}
 	ctx = contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":0,"workflow_runs":[]}`, "repos/acme/app/commits/head/check-runs?per_page=100": `{"total_count":1,"check_runs":[{"id":1,"name":"build","app":{"slug":"github-actions"},"check_suite":{"id":11}}]}`}, nil)
 	if _, _, reason := commitCheckRuns(ctx, options); !strings.Contains(reason, "exact-head workflow-run receipt omitted") {
 		t.Fatalf("missing suite=%q", reason)
+	}
+}
+
+func TestCommitCheckRunsRequiresChecksFromEveryCoLatestRun(t *testing.T) {
+	t.Parallel()
+	ctx := contractReadContext(t, map[string]string{
+		"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":3,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":10,"created_at":"2026-09-27T08:59:59Z","event":"push","status":"completed","conclusion":"failure"},{"id":2,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push","status":"completed","conclusion":"success"},{"id":3,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push","status":"completed","conclusion":"success"}]}`,
+		"repos/acme/app/commits/head/check-runs?per_page=100":    `{"total_count":3,"check_runs":[{"id":1001,"name":"build","status":"completed","conclusion":"failure","app":{"slug":"github-actions"},"check_suite":{"id":10}},{"id":1002,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"check_suite":{"id":11}},{"id":1003,"name":"build","status":"completed","conclusion":"failure","app":{"slug":"github-actions"},"check_suite":{"id":12}}]}`,
+	}, nil)
+	checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"})
+	if reason != "" || pending || len(checks) != 2 {
+		t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+	}
+	if checks[0].CheckRunID != 1002 || checks[0].Conclusion != "success" || checks[1].CheckRunID != 1003 || checks[1].Conclusion != "failure" {
+		t.Fatalf("co-latest checks=%+v; older run should be excluded and both newest runs must be retained", checks)
+	}
+}
+
+func TestCommitCheckRunsRetainsPendingCoLatestRunWithoutCheckRuns(t *testing.T) {
+	t.Parallel()
+	ctx := contractReadContext(t, map[string]string{
+		"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push","status":"completed","conclusion":"success"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push","status":"in_progress"}]}`,
+		"repos/acme/app/commits/head/check-runs?per_page=100":    `{"total_count":1,"check_runs":[{"id":1001,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"check_suite":{"id":11}}]}`,
+	}, nil)
+	checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"})
+	if reason != "" || !pending || len(checks) != 2 {
+		t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+	}
+	if checks[0].CheckRunID != 1001 || checks[0].Bucket != "pass" || checks[1].Name != "workflow-run:300:push" || checks[1].Bucket != "pending" {
+		t.Fatalf("co-latest checks=%+v; pending run without check-runs must remain visible", checks)
 	}
 }
 
