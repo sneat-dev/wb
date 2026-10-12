@@ -1038,7 +1038,11 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	// and created_at chronology needed to distinguish a replacement execution
 	// from another workflow. Third-party check apps have no equivalent workflow
 	// identity here, so retain all their observations rather than guessing.
-	observedActionsRuns := make(map[githubActionsRunIdentity]int, len(latestActionsRuns))
+	latestActionRunIDs := make(map[int64]bool, len(latestActionsRuns))
+	for _, run := range latestActionsRuns {
+		latestActionRunIDs[run.ID] = true
+	}
+	observedActionsRuns := make(map[int64]int, len(latestActionsRuns))
 	checks := make([]RemoteCheck, 0, len(response.CheckRuns)+len(latestActionsRuns))
 	pending := false
 	for _, check := range response.CheckRuns {
@@ -1054,13 +1058,11 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 				}
 				return nil, false, fmt.Sprintf("GitHub Actions check run %q names suite %d, which the exact-head workflow-run receipt omitted", check.Name, check.CheckSuite.ID)
 			}
-			identity := run.identity()
-			latest := latestActionsRun(latestActionsRuns, identity)
-			if run.ID != latest.ID {
+			if !latestActionRunIDs[run.ID] {
 				continue
 			}
 			actionsRun = run
-			observedActionsRuns[identity]++
+			observedActionsRuns[run.ID]++
 		}
 		bucket := checkRunBucket(check.Status, check.Conclusion)
 		observed := RemoteCheck{Name: "check-run:" + check.Name, Bucket: bucket, Conclusion: check.Conclusion, Link: check.HTMLURL, AppID: check.App.ID, CheckRunID: check.ID}
@@ -1077,7 +1079,7 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	}
 	for _, run := range latestActionsRuns {
 		bucket := checkRunBucket(run.Status, run.Conclusion)
-		if observedActionsRuns[run.identity()] > 0 && (bucket == "pass" || bucket == "skipping" || bucket == "fail" || bucket == "cancel") {
+		if observedActionsRuns[run.ID] > 0 && (bucket == "pass" || bucket == "skipping" || bucket == "fail" || bucket == "cancel") {
 			continue
 		}
 		observed := RemoteCheck{
@@ -1112,7 +1114,7 @@ func ActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions) (ma
 		return nil, nil, fmt.Sprintf("GitHub returned only %d of %d Actions runs for %s; refusing an incomplete CI receipt", len(response.WorkflowRuns), response.TotalCount, options.Head)
 	}
 	bySuite := make(map[int64]ActionsRun, len(response.WorkflowRuns))
-	latest := make(map[githubActionsRunIdentity]ActionsRun, len(response.WorkflowRuns))
+	latest := make(map[githubActionsRunIdentity][]ActionsRun, len(response.WorkflowRuns))
 	for _, run := range response.WorkflowRuns {
 		if run.ID <= 0 || run.WorkflowID <= 0 || run.CheckSuiteID <= 0 || run.CreatedAt.IsZero() || strings.TrimSpace(run.Event) == "" {
 			return nil, nil, fmt.Sprintf("GitHub Actions returned a malformed exact-head workflow-run identity for %s", options.Head)
@@ -1127,34 +1129,28 @@ func ActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions) (ma
 		bySuite[run.CheckSuiteID] = run
 		identity := run.identity()
 		previous, ok := latest[identity]
-		if !ok || run.CreatedAt.After(previous.CreatedAt) {
-			latest[identity] = run
+		if !ok || run.CreatedAt.After(previous[0].CreatedAt) {
+			latest[identity] = []ActionsRun{run}
 			continue
 		}
-		if run.CreatedAt.Equal(previous.CreatedAt) && run.ID != previous.ID {
-			return nil, nil, fmt.Sprintf("GitHub Actions workflow %d event %q has ambiguous same-time runs %d and %d", run.WorkflowID, run.Event, previous.ID, run.ID)
+		if run.CreatedAt.Equal(previous[0].CreatedAt) {
+			latest[identity] = append(previous, run)
 		}
 	}
 	latestRuns := make([]ActionsRun, 0, len(latest))
-	for _, run := range latest {
-		latestRuns = append(latestRuns, run)
+	for _, runs := range latest {
+		latestRuns = append(latestRuns, runs...)
 	}
 	sort.Slice(latestRuns, func(i, j int) bool {
 		if latestRuns[i].WorkflowID == latestRuns[j].WorkflowID {
+			if latestRuns[i].Event == latestRuns[j].Event {
+				return latestRuns[i].ID < latestRuns[j].ID
+			}
 			return latestRuns[i].Event < latestRuns[j].Event
 		}
 		return latestRuns[i].WorkflowID < latestRuns[j].WorkflowID
 	})
 	return bySuite, latestRuns, ""
-}
-
-func latestActionsRun(runs []ActionsRun, identity githubActionsRunIdentity) ActionsRun {
-	for _, run := range runs {
-		if run.identity() == identity {
-			return run
-		}
-	}
-	return ActionsRun{}
 }
 
 func commitStatuses(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {

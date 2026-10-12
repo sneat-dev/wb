@@ -202,18 +202,25 @@ func TestOrchCovSortRemoteAndRequiredChecksAreDeterministic(t *testing.T) {
 	}
 }
 
-func TestOrchCovLatestActionsRunMatchesTheExactIdentity(t *testing.T) {
+func TestOrchCovLatestActionsRunsCanRetainTheExactIdentity(t *testing.T) {
 	t.Parallel()
 	runs := []ActionsRun{
 		{ID: 1, WorkflowID: 10, Event: "pull_request", CheckSuiteID: 100, CreatedAt: time.Now()},
 		{ID: 2, WorkflowID: 20, Event: "push", CheckSuiteID: 200, CreatedAt: time.Now()},
 	}
 	identity := githubActionsRunIdentity{WorkflowID: 20, Event: "push"}
-	if got := latestActionsRun(runs, identity); got.ID != 2 {
-		t.Fatalf("latestActionsRun = %+v", got)
+	var matches []int64
+	for _, run := range runs {
+		if run.identity() == identity {
+			matches = append(matches, run.ID)
+		}
 	}
-	if got := latestActionsRun(runs, githubActionsRunIdentity{WorkflowID: 99, Event: "push"}); got.ID != 0 {
-		t.Fatalf("unmatched identity returned %+v", got)
+	if len(matches) != 1 || matches[0] != 2 {
+		t.Fatalf("exact identity matches = %v", matches)
+	}
+	other := githubActionsRunIdentity{WorkflowID: 99, Event: "push"}
+	if other == identity {
+		t.Fatal("unexpected workflow/event identity match")
 	}
 }
 
