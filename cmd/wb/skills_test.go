@@ -719,6 +719,9 @@ func parseSkillCommandExample(example string) error {
 			return err
 		}
 	}
+	if err := rejectIgnoredPersistentFlags(command, command.Flags().Args()); err != nil {
+		return err
+	}
 	return validateSkillExampleRequiredFlags(command)
 }
 
