@@ -2219,6 +2219,12 @@ func defaultPreflightSealPorts() preflightSealPorts {
 		readReadOnly:   readWorkLogProjectionForReadOnlyClaim,
 		corroborate:    corroborateWorkLogProjection,
 		legacy: func(ctx context.Context, home, projectsRoot string, entry ListResult) (bool, error) {
+			if entry.OpenPullRequest != nil {
+				return false, fmt.Errorf("cannot recover legacy Work Log while the branch has an open pull request: %s", entry.OpenPullRequest.URL)
+			}
+			if _, missing, err := planCleanupMissingHistory(ctx, home, entry); missing || err != nil {
+				return missing, err
+			}
 			return legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, false, nil)
 		},
 	}

@@ -225,27 +225,28 @@ func productionCleanupBacklogPorts() cleanupBacklogPorts {
 // invokes existing secure/claim/journal services through these exact ports;
 // it never substitutes path-only operations for retained descriptors.
 type cleanupApplyMemberPorts struct {
-	OpenWorktree      func(*cleanupTaskHandle, CleanupResult) (*cleanupWorktreeHandle, error)
-	CloseWorktree     func(*cleanupWorktreeHandle)
-	Recheck           func(context.Context, cleanupMemberRecheck, *cleanupWorktreeHandle) (ListResult, error)
-	OpenCanonical     func(string) (*canonicalRepository, error)
-	CloseCanonical    func(*canonicalRepository)
-	ValidateCanonical func(*canonicalRepository) error
-	ValidateWorktree  func(*cleanupWorktreeHandle) error
-	PreflightWorkLog  func(string, string, string) error
-	RecoverLegacy     func(context.Context, string, string, ListResult, func() error) error
-	SealSupersession  func(string, string, string, *SupersessionReceipt) error
-	SealCleanup       func(string, string, string, *worktreeclaims.LandedEvidence) error
-	NewBacklog        func(string, ListResult, string) lifecycleBacklogRecord
-	Persist           func(string, *lifecycleBacklogRecord, string) error
-	ValidateRecovered func(bool, *cleanupTaskHandle) error
-	WorktreeGit       func(context.Context, *canonicalRepository, *cleanupWorktreeHandle, string, ...string) error
-	CanonicalGit      func(context.Context, *canonicalRepository, ...string) error
-	Residue           func(context.Context, *canonicalRepository, string) (bool, error)
-	RemoveResidue     func(*cleanupWorktreeHandle, string) (bool, error)
-	ValidateTask      func(*cleanupTaskHandle) error
-	RemoveParent      func(*cleanupWorktreeHandle, func(string), func(string)) error
-	RemoveAdopted     func(*cleanupTaskHandle, string, string) error
+	OpenWorktree         func(*cleanupTaskHandle, CleanupResult) (*cleanupWorktreeHandle, error)
+	CloseWorktree        func(*cleanupWorktreeHandle)
+	Recheck              func(context.Context, cleanupMemberRecheck, *cleanupWorktreeHandle) (ListResult, error)
+	OpenCanonical        func(string) (*canonicalRepository, error)
+	CloseCanonical       func(*canonicalRepository)
+	ValidateCanonical    func(*canonicalRepository) error
+	ValidateWorktree     func(*cleanupWorktreeHandle) error
+	RetireMissingHistory func(context.Context, string, ListResult) (bool, func(), error)
+	PreflightWorkLog     func(string, string, string) error
+	RecoverLegacy        func(context.Context, string, string, ListResult, func() error) error
+	SealSupersession     func(string, string, string, *SupersessionReceipt) error
+	SealCleanup          func(string, string, string, *worktreeclaims.LandedEvidence) error
+	NewBacklog           func(string, ListResult, string) lifecycleBacklogRecord
+	Persist              func(string, *lifecycleBacklogRecord, string) error
+	ValidateRecovered    func(bool, *cleanupTaskHandle) error
+	WorktreeGit          func(context.Context, *canonicalRepository, *cleanupWorktreeHandle, string, ...string) error
+	CanonicalGit         func(context.Context, *canonicalRepository, ...string) error
+	Residue              func(context.Context, *canonicalRepository, string) (bool, error)
+	RemoveResidue        func(*cleanupWorktreeHandle, string) (bool, error)
+	ValidateTask         func(*cleanupTaskHandle) error
+	RemoveParent         func(*cleanupWorktreeHandle, func(string), func(string)) error
+	RemoveAdopted        func(*cleanupTaskHandle, string, string) error
 }
 
 func productionCleanupApplyMemberPorts() cleanupApplyMemberPorts {
@@ -255,17 +256,18 @@ func productionCleanupApplyMemberPorts() cleanupApplyMemberPorts {
 		Recheck: func(ctx context.Context, request cleanupMemberRecheck, worktree *cleanupWorktreeHandle) (ListResult, error) {
 			return recheckCleanupMember(ctx, request, productionCleanupMemberRecheckPorts(worktree))
 		},
-		OpenCanonical:     openCanonicalRepository,
-		CloseCanonical:    (*canonicalRepository).close,
-		ValidateCanonical: (*canonicalRepository).validate,
-		ValidateWorktree:  (*cleanupWorktreeHandle).validate,
-		PreflightWorkLog:  preflightWorkLogSeal,
-		RecoverLegacy:     recordLegacyRepositoryRelocationForCleanup,
-		SealSupersession:  sealWorkLogForSupersession,
-		SealCleanup:       sealWorkLogForCleanup,
-		NewBacklog:        newLifecycleBacklogRecord,
-		Persist:           persistLifecycleBacklog,
-		ValidateRecovered: validateRecoveredCleanupLock,
+		OpenCanonical:        openCanonicalRepository,
+		CloseCanonical:       (*canonicalRepository).close,
+		ValidateCanonical:    (*canonicalRepository).validate,
+		ValidateWorktree:     (*cleanupWorktreeHandle).validate,
+		RetireMissingHistory: retireCleanupMissingHistory,
+		PreflightWorkLog:     preflightWorkLogSeal,
+		RecoverLegacy:        recordLegacyRepositoryRelocationForCleanup,
+		SealSupersession:     sealWorkLogForSupersession,
+		SealCleanup:          sealWorkLogForCleanup,
+		NewBacklog:           newLifecycleBacklogRecord,
+		Persist:              persistLifecycleBacklog,
+		ValidateRecovered:    validateRecoveredCleanupLock,
 		WorktreeGit: func(ctx context.Context, canonical *canonicalRepository, worktree *cleanupWorktreeHandle, path string, args ...string) error {
 			return runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, path, args...)
 		},

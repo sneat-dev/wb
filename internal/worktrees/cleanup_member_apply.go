@@ -41,22 +41,29 @@ func (run *cleanupRun) applyCleanupMemberWithPorts(task *cleanupTaskHandle, inde
 	if err := ports.ValidateWorktree(worktree); err != nil {
 		return err
 	}
-	if err := ports.PreflightWorkLog(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
-		if recoveryErr := ports.RecoverLegacy(run.ctx, run.resolution.Write.Home, run.normalized.ProjectsRoot, refreshed, run.normalized.beforeLegacyRelocationReceipt); recoveryErr != nil {
-			return fmt.Errorf("recover legacy Work Log repository relocation before removing %s: %w", refreshed.WorktreeDir, recoveryErr)
+	missingHistory, releaseClaim, err := ports.RetireMissingHistory(run.ctx, run.resolution.Write.Home, refreshed)
+	if err != nil {
+		return fmt.Errorf("attest missing historical Work Log before removing %s: %w", refreshed.WorktreeDir, err)
+	}
+	defer releaseClaim()
+	if !missingHistory {
+		if err := ports.PreflightWorkLog(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
+			if recoveryErr := ports.RecoverLegacy(run.ctx, run.resolution.Write.Home, run.normalized.ProjectsRoot, refreshed, run.normalized.beforeLegacyRelocationReceipt); recoveryErr != nil {
+				return fmt.Errorf("recover legacy Work Log repository relocation before removing %s: %w", refreshed.WorktreeDir, recoveryErr)
+			}
 		}
-	}
-	// Archive the recoverable run record while every Git asset still
-	// exists. Remote branch deletion is destructive too, so it must never
-	// precede the durable terminal/outbox record.
-	var sealErr error
-	if refreshed.SupersededAtOrigin && refreshed.supersessionReceipt != nil {
-		sealErr = ports.SealSupersession(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, refreshed.supersessionReceipt)
-	} else {
-		sealErr = ports.SealCleanup(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, cleanupLandedEvidence(refreshed))
-	}
-	if sealErr != nil {
-		return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, sealErr)
+		// Archive the recoverable run record while every Git asset still
+		// exists. Remote branch deletion is destructive too, so it must never
+		// precede the durable terminal/outbox record.
+		var sealErr error
+		if refreshed.SupersededAtOrigin && refreshed.supersessionReceipt != nil {
+			sealErr = ports.SealSupersession(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, refreshed.supersessionReceipt)
+		} else {
+			sealErr = ports.SealCleanup(run.resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, cleanupLandedEvidence(refreshed))
+		}
+		if sealErr != nil {
+			return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, sealErr)
+		}
 	}
 	backlogRecord := ports.NewBacklog(run.normalized.ProjectsRoot, refreshed, "removed")
 	if err := ports.Persist(run.resolution.Write.Home, &backlogRecord, lifecycleStageSealed); err != nil {
