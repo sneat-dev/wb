@@ -63,9 +63,10 @@ wb worktree summary <task> --github
 
 ## Trap 1: cleanup only sees WB-managed tasks
 
-`wb worktree cleanup`/`abort` inventory `<projects-root>/.worktrees/<task>/...`. A
-linked worktree created by `git worktree add`, or by an older tool, is not a
-candidate at all — it is silently outside the sweep, not skipped with a
+`wb worktree cleanup`/`abort` discover tasks in the configured shared store and
+in existing repository-local `.worktrees/<task>` stores. A linked worktree
+created outside those WB task stores, such as a plain `git worktree add`, is not
+a candidate at all — it is silently outside the sweep, not skipped with a
 reason. This is the single most common reason a fleet-wide sweep reports far
 fewer eligible tasks than `orphans` reports removable worktrees.
 
@@ -254,23 +255,52 @@ wb worktree cleanup --all-merged --format json
 wb --filter acme worktree cleanup --all-merged
 ```
 
-`cleanup` requires one or more named tasks or `--all-merged`; the two cannot
-be combined. Named tasks default to immediate eligibility
-(`--older-than 0`) because that is its terminalization journey; `--all-merged`
+`cleanup` normally requires one or more named tasks or `--all-merged`; the two
+cannot be combined. `--retire-shells` is a separate sweep that takes no task
+arguments and cannot be combined with `--all-merged`. Named tasks default to
+immediate eligibility (`--older-than 0`) because that is its terminalization
+journey; `--all-merged`
 keeps a 24-hour merged-PR grace window unless `--older-than` overrides it.
 
-For named tasks, `--apply` **refuses without `--remote`**: definition of done
-includes retiring the source remote branch, not only the local worktree and
-branch.
+For named tasks, `--apply` requires `--remote` only while the source branch
+still exists on origin. If the remote branch is already gone, cleanup can retire
+the local worktree and branch without it.
 
 ```sh
 wb worktree cleanup <task> --apply --remote --older-than 0
 wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
 ```
 
-Full flag surface: `--base`, `--all-merged`, `--apply`, `--remote`,
-`--older-than`, `--report-dir`, `--absorbed-by`, `--superseded-by`, `--resume-interrupted`,
-`--format`, plus the root `--filter` and `--projects-root`.
+Command flags: `--base`, `--all-merged`, `--apply`, `--remote`,
+`--older-than`, `--parallel`, `--report-dir`, `--absorbed-by`,
+`--superseded-by`, `--resume-interrupted`, `--recover-stages`,
+`--retire-shells`, `--format`, and `--verbose` (`-v`). Inherited root flags:
+`--filter`, `--projects-root`, `--quiet`, and `--non-interactive`; `-h`/`--help`
+is also available.
+
+`--recover-stages` is named-task-only and cannot be combined with
+`--all-merged` or `--retire-shells`. It inventories exact non-empty retired
+stages; `--apply` archives them and writes a private receipt. Run
+ordinary cleanup again after recovery. `--retire-shells` only removes proven
+empty task directories or retired locks: preview it first, then use
+`wb worktree cleanup --retire-shells --apply` to act.
+
+### Legacy task with missing Work Log history
+
+An older repository-local task can still be cleaned up when its private Work Log
+claim is missing, but only through a narrow recovery path. Cleanup requires a
+consistent immutable created manifest and projection, their deterministic claim
+ID, a clean attached checkout whose exact base-to-head-to-fetched-target
+ancestry verifies, and the existing open-PR preflight to pass. Unverifiable or
+changed evidence remains blocked. No new flag enables this path; ordinary
+`cleanup` and `gc` safety checks still apply.
+
+Before destructive apply, WB writes an immutable
+`legacy_missing_history_retirement` receipt under
+`<projects-root>/.wb/reports/worktree-cleanup/backlog/missing-history/`. It
+records that original history is unavailable; it does not invent the original
+claim, terminal, or prompt archive. The normal cleanup backlog handles an
+interrupted apply.
 
 `--report-dir` overrides the audit directory, which defaults to
 `<projects-root>/.wb/reports/worktree-cleanup/<timestamp>`. A plan is read-only even when
@@ -328,16 +358,18 @@ source branch with force-with-lease, then remove a clean unlocked worktree and
 its exact local branch. See [lifecycle.md](lifecycle.md) for the full
 disposition contract, and for `wb worktree rename` recycling.
 
-Cleanup itself seals one of two dispositions, from what it proved and not from
-the verb that called it. A worktree whose branch has commits of its own that
-cleanup proved are on the target is sealed `landed`, with a `landed` object in
+For tasks with an available original claim, cleanup seals one of two
+dispositions based on what it proved. A worktree whose branch has commits of
+its own that cleanup proved are on the target is sealed `landed`, with a
+`landed` object in
 the terminal record and its outbox receipt: `target`, `landed_sha`, `proof`
 (`contained`, `merged_pull_request`, `rebase_merged` or `absorbed`) and the
 `pull_request` number when known. Everything else it removes (a worktree that
 never committed, a detached review checkout, a `wb/integration/` merge
 candidate) is sealed `removed`. A claim `wb worktree log finalize --apply`
 already sealed keeps that terminal. Records sealed by an older `wb` are not
-rewritten.
+rewritten. The missing-history path above records its retirement receipt without
+synthesizing a terminal.
 
 ## Finish the sweep
 

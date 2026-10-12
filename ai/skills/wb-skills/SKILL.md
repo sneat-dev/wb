@@ -26,7 +26,11 @@ sync is offline and reads no source checkout. The shared
 `strongo/cli-helpers/skillsync` engine verifies the embedded digest, locks each
 target, records plugin-scoped ownership, and applies replacements crash-safely.
 
-Known harnesses:
+Supported `--harness` values are `claude`, `cursor`, `codex`, `deepseek`,
+`agents`, `copilot`, `gemini`, `antigravity`, `opencode`, `cline`, `roo`,
+`kiro`, `windsurf`, `junie`, and `all`. `all` selects every known harness.
+The shared `agents` directory is `~/.agents/skills`; several harnesses also
+read it.
 
 | Harness | Skills directory |
 |---|---|
@@ -41,6 +45,7 @@ harnesses explicitly to set one up that is not installed yet:
 ```sh
 wb skills sync --harness cursor
 wb skills sync --harness codex
+wb skills sync --harness deepseek --harness agents
 wb skills sync --harness all
 ```
 
@@ -53,6 +58,11 @@ wb skills sync --newer-compatible
 
 That mode queries release metadata and still verifies the selected immutable
 descriptor and bundle digest before writing. It is never selected implicitly.
+
+`--harness` is repeatable. Use `--dir <path>` for one explicit skills
+directory; it cannot be combined with `--harness`. `--dry-run` previews changes
+without writing, and `--format text|json` selects the report format. The shared
+`--non-interactive` flag prevents terminal prompts.
 
 It is idempotent: run it whenever in doubt. The first shared-engine run
 verifies and imports WB's older `.wb-skills-sync.json` ownership marker rather
