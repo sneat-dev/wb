@@ -17,6 +17,8 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 		want  string
 	}{
 		{fault: "success"},
+		{fault: "missing history success"},
+		{fault: "missing history error", want: "attest missing historical Work Log before removing /worktree: denied"},
 		{fault: "open", want: "denied"},
 		{fault: "recheck", want: "denied"},
 		{fault: "canonical open", want: "open cleanup canonical repository /repo: denied"},
@@ -110,7 +112,18 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 			var stages []string
 			var gitCalls int
 			var validates, recovered int
+			fenceHeld, fenceReleased := false, false
 			ports := cleanupApplyMemberPorts{
+				RetireMissingHistory: func(context.Context, string, ListResult) (bool, func(), error) {
+					if tc.fault == "missing history error" {
+						return false, func() {}, denied
+					}
+					if tc.fault == "missing history success" {
+						fenceHeld = true
+						return true, func() { fenceHeld, fenceReleased = false, true }, nil
+					}
+					return false, func() {}, nil
+				},
 				OpenWorktree: func(*cleanupTaskHandle, CleanupResult) (*cleanupWorktreeHandle, error) {
 					if tc.fault == "open" {
 						return nil, denied
@@ -145,6 +158,9 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 					return nil
 				},
 				PreflightWorkLog: func(string, string, string) error {
+					if tc.fault == "missing history success" {
+						t.Fatal("missing history used ordinary claim corroboration")
+					}
 					if strings.HasPrefix(tc.fault, "work log recovery") {
 						return denied
 					}
@@ -163,6 +179,9 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 					return nil
 				},
 				SealCleanup: func(_, worktree, head string, landed *worktreeclaims.LandedEvidence) error {
+					if tc.fault == "missing history success" {
+						t.Fatal("missing history synthesized ordinary terminal")
+					}
 					if worktree != "/worktree" || head != "abc" || !worktreeclaims.SameLandedEvidence(landed, wantLanded) {
 						t.Errorf("seal of %s at %s was handed %#v, want %#v", worktree, head, landed, wantLanded)
 					}
@@ -173,6 +192,9 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 				},
 				NewBacklog: func(string, ListResult, string) lifecycleBacklogRecord { return lifecycleBacklogRecord{ID: "backlog"} },
 				Persist: func(_ string, _ *lifecycleBacklogRecord, stage string) error {
+					if tc.fault == "missing history success" && !fenceHeld {
+						t.Fatal("claim fence released before cleanup phases completed")
+					}
 					stages = append(stages, stage)
 					if tc.fault == "persist "+stage {
 						return denied
@@ -236,6 +258,9 @@ func TestCleanupMemberApplyPhaseFaultMatrix(t *testing.T) {
 			}
 			pending := 0
 			err := run.applyCleanupMemberWithPorts(&cleanupTaskHandle{}, 0, nil, false, &pending, ports)
+			if tc.fault == "missing history success" && (!fenceReleased || fenceHeld) {
+				t.Fatal("cleanup did not release claim fence")
+			}
 			if tc.want == "" {
 				if err != nil || !run.outcome.Results[0].Applied || pending != 0 {
 					t.Fatalf("apply err=%v pending=%d result=%#v", err, pending, run.outcome.Results[0])

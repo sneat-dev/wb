@@ -2219,6 +2219,9 @@ func defaultPreflightSealPorts() preflightSealPorts {
 		readReadOnly:   readWorkLogProjectionForReadOnlyClaim,
 		corroborate:    corroborateWorkLogProjection,
 		legacy: func(ctx context.Context, home, projectsRoot string, entry ListResult) (bool, error) {
+			if _, missing, err := planCleanupMissingHistory(ctx, home, entry); missing || err != nil {
+				return missing, err
+			}
 			return legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, false, nil)
 		},
 	}
