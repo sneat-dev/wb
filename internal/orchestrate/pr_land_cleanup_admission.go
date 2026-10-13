@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/locallink"
@@ -186,11 +187,19 @@ func landingRegisteredDirectoryRelation(artifactIdentity os.FileInfo, path strin
 func landingDiagnosticIsUnrelated(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, diagnostic worktrees.ListDiagnostic, sourceCanonical string) bool {
 	identity, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, diagnostic.Path, "git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD")
 	lines := strings.Split(strings.TrimSpace(identity), "\n")
-	if err != nil || len(lines) != 3 || filepath.Clean(lines[0]) != filepath.Clean(diagnostic.Path) || lines[2] == "" || lines[2] == "HEAD" {
+	if err != nil || len(lines) != 3 || lines[2] == "" {
 		return false
 	}
-	if lines[2] != view.Head.Ref {
+	rootIdentity, rootErr := os.Stat(lines[0])
+	pathIdentity, pathErr := os.Stat(diagnostic.Path)
+	if rootErr != nil || pathErr != nil || !rootIdentity.IsDir() || !os.SameFile(rootIdentity, pathIdentity) {
+		return false
+	}
+	if lines[2] != "HEAD" && lines[2] != view.Head.Ref {
 		return true
+	}
+	if lines[2] == "HEAD" && sourceCanonical == "" {
+		return false
 	}
 	if sourceCanonical == "" {
 		sourceCanonical, err = worktrees.CanonicalRepositoryPath(options.ProjectsRoot, view.Head.Repo.FullName)
@@ -202,9 +211,93 @@ func landingDiagnosticIsUnrelated(ctx context.Context, options PullRequestLandOp
 	if err != nil || strings.TrimSpace(common) == "" {
 		return false
 	}
-	candidateCommon, candidateErr := filepath.EvalSymlinks(lines[1])
-	sourceCommon, sourceErr := filepath.EvalSymlinks(strings.TrimSpace(common))
-	return candidateErr == nil && sourceErr == nil && candidateCommon != sourceCommon
+	candidateCommon, candidateErr := os.Stat(lines[1])
+	sourceCommon, sourceErr := os.Stat(strings.TrimSpace(common))
+	if candidateErr != nil || sourceErr != nil || !candidateCommon.IsDir() || !sourceCommon.IsDir() {
+		return false
+	}
+	if lines[2] == "HEAD" {
+		return os.SameFile(candidateCommon, sourceCommon) && landingDetachedDiagnosticIsUnrelated(ctx, options, view, diagnostic.Path, sourceCanonical, rootIdentity, candidateCommon)
+	}
+	return !os.SameFile(candidateCommon, sourceCommon)
+}
+
+// A clean detached checkout at another exact commit cannot be the reviewed
+// PR producer. Missing claims alone prove nothing: bind readable local Git
+// identity and status to the canonical registry, then re-observe the checkout.
+func landingDetachedDiagnosticIsUnrelated(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, path, canonical string, rootIdentity, commonIdentity os.FileInfo) bool {
+	if len(view.Head.SHA) != 40 {
+		return false
+	}
+	if _, err := hex.DecodeString(view.Head.SHA); err != nil {
+		return false
+	}
+	args := []string{"git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "HEAD", "--abbrev-ref", "HEAD"}
+	identity, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, path, args[0], args[1:]...)
+	fields := strings.Split(strings.TrimSpace(identity), "\n")
+	if err != nil || len(fields) != 4 || fields[3] != "HEAD" || len(fields[2]) != 40 || strings.EqualFold(fields[2], view.Head.SHA) {
+		return false
+	}
+	if _, err := hex.DecodeString(fields[2]); err != nil {
+		return false
+	}
+	root, rootErr := os.Stat(fields[0])
+	common, commonErr := os.Stat(fields[1])
+	canonicalIdentity, canonicalErr := os.Stat(canonical)
+	if rootErr != nil || commonErr != nil || canonicalErr != nil || !os.SameFile(rootIdentity, root) || !os.SameFile(commonIdentity, common) {
+		return false
+	}
+	status, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, path, "git", "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil || status != "" {
+		return false
+	}
+	registry, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, canonical, "git", "worktree", "list", "--porcelain", "-z")
+	if err != nil || !strings.HasSuffix(registry, "\x00\x00") {
+		return false
+	}
+	canonicalFound, detachedFound := false, false
+	for _, record := range strings.Split(strings.TrimSuffix(registry, "\x00\x00"), "\x00\x00") {
+		recordFields := strings.Split(record, "\x00")
+		registeredPath, known := strings.CutPrefix(recordFields[0], "worktree ")
+		registeredIdentity, statErr := os.Stat(registeredPath)
+		if !known || !filepath.IsAbs(registeredPath) || statErr != nil || !registeredIdentity.IsDir() {
+			return false
+		}
+		canonicalFound = canonicalFound || os.SameFile(canonicalIdentity, registeredIdentity)
+		if !os.SameFile(rootIdentity, registeredIdentity) {
+			continue
+		}
+		detachedCount, headCount := 0, 0
+		for _, field := range recordFields[1:] {
+			if strings.HasPrefix(field, "branch ") {
+				return false
+			}
+			if field == "detached" {
+				detachedCount++
+			}
+			if head, known := strings.CutPrefix(field, "HEAD "); known {
+				headCount++
+				if head != fields[2] {
+					return false
+				}
+			}
+		}
+		if detachedFound || detachedCount != 1 || headCount != 1 {
+			return false
+		}
+		detachedFound = true
+	}
+	if !canonicalFound || !detachedFound {
+		return false
+	}
+	after, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, path, args[0], args[1:]...)
+	if err != nil || after != identity {
+		return false
+	}
+	status, _, err = runCommand(ctx, options.resolveRunner(), 0, 0, path, "git", "status", "--porcelain=v1", "--untracked-files=all")
+	currentRoot, currentRootErr := os.Stat(path)
+	currentCommon, currentCommonErr := os.Stat(fields[1])
+	return err == nil && status == "" && currentRootErr == nil && currentCommonErr == nil && os.SameFile(rootIdentity, currentRoot) && os.SameFile(commonIdentity, currentCommon)
 }
 
 // refuseLinkedWorktree refuses a checkout that still holds a live local

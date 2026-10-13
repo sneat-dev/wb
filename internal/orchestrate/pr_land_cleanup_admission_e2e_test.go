@@ -5,6 +5,7 @@ package orchestrate
 import (
 	"context"
 	"flag"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestE2ELandingCleanupAdmissionRefusesBeforeMergeAndPreservesCheckout(t *testing.T) {
@@ -429,7 +431,85 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", true); refusal != nil {
 		t.Fatalf("unrelated retirement stopped passing after alias checks: %+v", refusal)
 	}
+	// Reproduce a foreign tool's clean detached checkout with a retained local
+	// manifest but no WB projection/claim. The manifest cannot grant ownership;
+	// exact Git commit, status, and physical registry evidence may exclude it.
+	foreign := filepath.Join(fixture.canonical, ".claude", "worktrees", "foreign-detached")
+	runEngineGit(t, fixture.canonical, "worktree", "add", "-b", "claude/foreign-review", foreign, "main")
+	if err := worktrees.WriteManifest(foreign, worktrees.Manifest{Version: 1, EffortID: "foreign-detached", EffortKind: "task", Repository: "acme/app", Worktree: foreign, Branch: "claude/foreign-review", Base: "main", BaseSHA: fixture.baseSHA, CreatedAt: time.Now().UTC(), Provenance: "reconstructed", InferredFields: []string{"base_sha"}}); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, foreign, "checkout", "--detach", fixture.baseSHA)
+	view.Head.SHA = fixture.headSHA
+	listed, err = worktrees.ListWithDiagnostics(t.Context(), worktrees.ListOptions{ProjectsRoot: fixture.projects, Filter: "acme/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundForeign := false
+	for _, diagnostic := range listed.Diagnostics {
+		foundForeign = foundForeign || diagnostic.Path == foreign && strings.Contains(diagnostic.Message, "work-log projection not found")
+	}
+	if !foundForeign {
+		t.Fatalf("fixture did not reproduce uncorroborated foreign manifest: %+v", listed.Diagnostics)
+	}
+	for _, keep := range []bool{false, true} {
+		if refusal := preflightLandingCleanup(t.Context(), options, view, "7", keep); refusal != nil {
+			t.Fatalf("clean detached other commit blocked source (keep=%t): %+v", keep, refusal)
+		}
+	}
+	runEngineGit(t, foreign, "checkout", "--detach", fixture.headSHA)
+	assertRefused("detached checkout at exact reviewed source head", false)
+	runEngineGit(t, foreign, "checkout", "--detach", fixture.baseSHA)
+	untracked := filepath.Join(foreign, "untracked-source.go")
+	writeEngineFile(t, untracked, "dirty untracked source\n")
+	assertRefused("detached checkout with untracked changes", false)
+	if err := os.Remove(untracked); err != nil {
+		t.Fatal(err)
+	}
+	tracked := strings.Split(runEngineGit(t, foreign, "ls-files", "-z"), "\x00")[0]
+	trackedPath := filepath.Join(foreign, tracked)
+	originalTracked, err := os.ReadFile(trackedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trackedPath, append(append([]byte{}, originalTracked...), []byte("\nchanged tracked fixture\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertRefused("detached checkout with tracked changes", false)
+	if err := os.WriteFile(trackedPath, originalTracked, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", true); refusal != nil {
+		t.Fatalf("restored detached other commit stopped passing: %+v", refusal)
+	}
+	mismatch := &landingRegistryMismatchRunner{Runner: defaultRunner, path: foreign, before: fixture.baseSHA, after: fixture.headSHA}
+	options.run = mismatch
+	assertRefused("detached checkout with contradictory canonical registration", false)
+	if !mismatch.exercised {
+		t.Fatal("contradictory registration fault was not exercised")
+	}
+	options.run = nil
 	if raw, err := os.ReadFile(payload); err != nil || string(raw) != "retained legacy recovery evidence\n" {
 		t.Fatalf("retired artifact evidence changed: %q %v", raw, err)
 	}
+}
+
+// Preserve real Git and all native admission calls while contradicting only
+// the detached checkout's canonical registry HEAD; no Git files are edited.
+type landingRegistryMismatchRunner struct {
+	runner.Runner
+	path, before, after string
+	exercised           bool
+}
+
+func (r *landingRegistryMismatchRunner) RunOpts(ctx context.Context, dir string, options runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	result, err := r.Runner.RunOpts(ctx, dir, options, name, args...)
+	if err == nil && name == "git" && strings.Join(args, " ") == "worktree list --porcelain -z" {
+		before := "worktree " + r.path + "\x00HEAD " + r.before + "\x00detached"
+		after := "worktree " + r.path + "\x00HEAD " + r.after + "\x00detached"
+		r.exercised = r.exercised || strings.Contains(result.CombinedOutput+result.Stdout, before)
+		result.CombinedOutput = strings.ReplaceAll(result.CombinedOutput, before, after)
+		result.Stdout = strings.ReplaceAll(result.Stdout, before, after)
+	}
+	return result, err
 }

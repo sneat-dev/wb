@@ -310,3 +310,121 @@ func TestLandingCleanupRequiresAuthoritativeSourceIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestLandingDetachedDiagnosticRequiresConsistentCleanOtherHead(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"clean other head", "unknown source head", "malformed source head", "same head", "malformed local head", "malformed identity", "attached", "wrong root", "wrong common", "identity error", "dirty tracked", "dirty untracked", "status error", "registry error", "malformed registry", "missing registration", "missing canonical", "missing registered path", "mismatched registry head", "attached registry", "unknown registry state", "duplicate head", "duplicate registration", "changed head", "changed branch", "final read error", "replaced root", "replaced common", "changed tracked status", "changed untracked status", "final status error"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			path, common, canonical, other := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+			rootIdentity, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commonIdentity, err := os.Stat(common)
+			if err != nil {
+				t.Fatal(err)
+			}
+			localHead, sourceHead := strings.Repeat("b", 40), strings.Repeat("a", 40)
+			identity := path + "\n" + common + "\n" + localHead + "\nHEAD\n"
+			status := ""
+			registry := "worktree " + canonical + "\x00HEAD " + sourceHead + "\x00branch refs/heads/main\x00\x00"
+			registration := "worktree " + path + "\x00HEAD " + localHead + "\x00detached\x00\x00"
+			registry += registration
+			after := identity
+			var identityErr, statusErr, registryErr, finalErr error
+			switch kind {
+			case "unknown source head":
+				sourceHead = ""
+			case "malformed source head":
+				sourceHead = strings.Repeat("x", 40)
+			case "same head":
+				sourceHead = localHead
+			case "malformed local head":
+				identity = strings.ReplaceAll(identity, localHead, strings.Repeat("x", 40))
+			case "malformed identity":
+				identity = "partial\n"
+			case "attached":
+				identity = strings.TrimSuffix(identity, "HEAD\n") + "candidate\n"
+			case "wrong root":
+				identity = strings.ReplaceAll(identity, path, other)
+			case "wrong common":
+				identity = strings.ReplaceAll(identity, common, other)
+			case "identity error":
+				identityErr = errors.New("identity unavailable")
+			case "dirty tracked":
+				status = " M source.go\n"
+			case "dirty untracked":
+				status = "?? new-source.go\n"
+			case "status error":
+				statusErr = errors.New("status unavailable")
+			case "registry error":
+				registryErr = errors.New("registry unavailable")
+			case "malformed registry":
+				registry = "partial"
+			case "missing registration":
+				registry = strings.TrimSuffix(registry, registration)
+			case "missing canonical":
+				registry = registration
+			case "missing registered path":
+				registry += "worktree " + filepath.Join(other, "missing") + "\x00HEAD " + localHead + "\x00detached\x00\x00"
+			case "mismatched registry head":
+				registry = strings.ReplaceAll(registry, localHead, strings.Repeat("c", 40))
+			case "attached registry":
+				registry = strings.ReplaceAll(registry, "detached", "branch refs/heads/candidate")
+			case "unknown registry state":
+				registry = strings.ReplaceAll(registry, "detached\x00", "")
+			case "duplicate head":
+				registry = strings.ReplaceAll(registry, "detached", "HEAD "+strings.Repeat("c", 40)+"\x00detached")
+			case "duplicate registration":
+				registry += registration
+			case "changed head":
+				after = strings.ReplaceAll(after, localHead, strings.Repeat("c", 40))
+			case "changed branch":
+				after = strings.TrimSuffix(after, "HEAD\n") + "candidate\n"
+			case "final read error":
+				finalErr = errors.New("final identity unavailable")
+			}
+			fake := runnertest.New(t)
+			args := []string{"git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "HEAD", "--abbrev-ref", "HEAD"}
+			fake.ExpectArgv(args, runner.Result{Stdout: identity}, identityErr)
+			fake.ExpectArgv([]string{"git", "status", "--porcelain=v1", "--untracked-files=all"}, runner.Result{Stdout: status}, statusErr)
+			fake.ExpectArgv([]string{"git", "worktree", "list", "--porcelain", "-z"}, runner.Result{Stdout: registry}, registryErr)
+			fake.Expect(func(call runnertest.Call) bool {
+				if strings.Join(call.Argv(), "\x00") != strings.Join(args, "\x00") {
+					return false
+				}
+				if kind == "replaced root" || kind == "replaced common" {
+					replaced := path
+					if kind == "replaced common" {
+						replaced = common
+					}
+					if err := os.Rename(replaced, replaced+"-retained"); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = os.RemoveAll(replaced + "-retained") })
+					if err := os.Mkdir(replaced, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return true
+			}, runner.Result{Stdout: after}, finalErr)
+			finalStatus := ""
+			var finalStatusErr error
+			switch kind {
+			case "changed tracked status":
+				finalStatus = " M source.go\n"
+			case "changed untracked status":
+				finalStatus = "?? source.go\n"
+			case "final status error":
+				finalStatusErr = errors.New("final status unavailable")
+			}
+			fake.ExpectArgv([]string{"git", "status", "--porcelain=v1", "--untracked-files=all"}, runner.Result{Stdout: finalStatus}, finalStatusErr)
+			view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","sha":"`+sourceHead+`","repo":{"full_name":"acme/app"}}}`)
+			got := landingDetachedDiagnosticIsUnrelated(t.Context(), PullRequestLandOptions{run: fake}, view, path, canonical, rootIdentity, commonIdentity)
+			if got != (kind == "clean other head") {
+				t.Fatalf("detached diagnostic exclusion=%t", got)
+			}
+		})
+	}
+}

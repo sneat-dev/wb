@@ -824,6 +824,13 @@ case aliases and symbolic parent aliases; unavailable ancestry evidence refuses.
 The recovery artifact MUST remain untouched. Missing provenance, unreadable registry
 evidence, and registered source producers inside an artifact MUST still refuse.
 
+A missing work-log claim on a detached checkout MUST NOT block an unrelated
+PR only when its physical repository and directory identity, actual Git HEAD,
+and canonical worktree registration agree, its tracked and untracked status
+is clean, and its full commit differs from the authoritative PR head SHA.
+Same-head, dirty, missing, unreadable, malformed, or contradictory evidence
+MUST refuse; this distinction grants no cleanup authority over that checkout.
+
 #### REQ: verification-prints-its-active-links
 
 Every verification run against a linked consumer MUST print the links in effect,
@@ -2009,6 +2016,14 @@ a live link or malformed `go.work`
 **Then** the unrelated worktree does not block admission and is preserved;
 moving either a recorded link or a hand-written unpublished workspace to the
 actual PR source refuses before auto-merge or merge, even with `--keep`.
+
+**Given** an uncorroborated manifest on a real detached checkout registered in
+the source repository at a different commit from the PR head
+**When** `wb pr land` preflights with or without `--keep`
+**Then** a clean checkout with consistent physical and Git evidence is left
+untouched and does not block admission; the same-head checkout, tracked or
+untracked changes, and inconsistent or unreadable evidence refuse before any
+auto-merge or merge.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 
