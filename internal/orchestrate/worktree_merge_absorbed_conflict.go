@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -48,8 +49,8 @@ type WorktreeMergeAbsorbedConflictAcknowledgementOptions struct {
 	DerivedPaths []string
 }
 
-// AcknowledgeAbsorbedConflict proves, for every receipted source of a
-// prepare-phase conflict receipt whose source worktrees are all gone, that
+// AcknowledgeAbsorbedConflict proves, for every receipted source of an
+// eligible conflict receipt whose source worktrees are all gone, that
 // the source's changes are safely represented on the freshly fetched
 // current remote target -- either because the source SHA is a graph ancestor
 // of that target, or because every path it changed relative to its
@@ -80,6 +81,14 @@ func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if err := validateAbsorbedConflictReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
+	zeroDelta := isZeroDeltaPublicationConflict(receipt)
+	var initialReceiptHash string
+	if zeroDelta {
+		initialReceiptHash, err = hashReceipt(receiptPath)
+		if err != nil {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+		}
+	}
 	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
 	}
@@ -103,6 +112,21 @@ func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if receipt.Lane != lockID {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipt %s changed lane while acquiring ownership: held %s, reread %s", receiptPath, lockID, receipt.Lane)
 	}
+	if zeroDelta != isZeroDeltaPublicationConflict(receipt) {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipt %s changed recovery shape while acquiring ownership", receiptPath)
+	}
+	if zeroDelta {
+		lockedHash, hashErr := hashReceipt(receiptPath)
+		if hashErr != nil {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, hashErr
+		}
+		if lockedHash != initialReceiptHash {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipt %s changed immutable evidence while acquiring ownership", receiptPath)
+		}
+		if len(options.DerivedPaths) != 0 {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, errors.New("zero-delta publication recovery does not permit derived-path exceptions")
+		}
+	}
 	for _, source := range receipt.Sources {
 		if _, statErr := os.Stat(source.Worktree); statErr == nil {
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipted source worktree %s still exists; use resume, supersede-validation-failed, or prepare-conflict-replacement instead", source.Worktree)
@@ -114,8 +138,21 @@ func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
+	if zeroDelta && gitRoot == receipt.Candidate.Worktree {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("zero-delta publication candidate worktree %s still exists", gitRoot)
+	}
 	if err := requireAbsorbedConflictCandidateUnpublished(ctx, gitRoot, receipt); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
+	if zeroDelta {
+		for _, source := range receipt.Sources {
+			if err := requireAbsorbedConflictBranchAbsent(ctx, gitRoot, source.Branch); err != nil {
+				return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+			}
+		}
+		if err := requireZeroDeltaCandidateWithoutPullRequest(ctx, gitRoot, receipt); err != nil {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+		}
 	}
 	currentTarget, err := fetchExactMergeTarget(ctx, gitRoot, receipt.Target)
 	if err != nil {
@@ -124,12 +161,27 @@ func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	if err := verifyMissingAbsorbedConflictCandidate(ctx, gitRoot, receipt, currentTarget); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
 	}
-	excusedDerivedPaths, derivedPathSet, err := validateAbsorbedConflictDerivedPaths(ctx, gitRoot, currentTarget, options.DerivedPaths)
-	if err != nil {
-		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	var excusedDerivedPaths []string
+	var derivedPathSet map[string]bool
+	if !zeroDelta {
+		excusedDerivedPaths, derivedPathSet, err = validateAbsorbedConflictDerivedPaths(ctx, gitRoot, currentTarget, options.DerivedPaths)
+		if err != nil {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+		}
 	}
 	proofs := make([]WorktreeMergeAbsorbedConflictSourceProof, 0, len(receipt.Sources))
 	for _, source := range receipt.Sources {
+		if zeroDelta {
+			ancestor, ancestorErr := isMergeAncestor(ctx, gitRoot, source.SHA, currentTarget)
+			if ancestorErr != nil {
+				return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("verify receipted source %s ancestry: %w", source.Branch, ancestorErr)
+			}
+			if !ancestor {
+				return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipted source %s is not an ancestor of current target %s", source.Branch, currentTarget)
+			}
+			proofs = append(proofs, WorktreeMergeAbsorbedConflictSourceProof{Task: source.Task, Worktree: source.Worktree, Branch: source.Branch, SHA: source.SHA, Method: "ancestor"})
+			continue
+		}
 		result, proofErr := proveAbsorbedConflictSource(ctx, gitRoot, currentTarget, source, derivedPathSet)
 		if proofErr != nil {
 			return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipted source %s: %w", source.Branch, proofErr)
@@ -142,6 +194,9 @@ func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	receiptHash, err := hashReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+	}
+	if zeroDelta && receiptHash != initialReceiptHash {
+		return WorktreeMergeAbsorbedConflictAcknowledgement{}, fmt.Errorf("receipt %s changed immutable evidence during recovery proof", receiptPath)
 	}
 	ackPath := absorbedConflictAcknowledgementPath(receiptPath)
 	ack := WorktreeMergeAbsorbedConflictAcknowledgement{
@@ -164,6 +219,11 @@ func acknowledgeAbsorbedConflict(ctx context.Context, options WorktreeMergeAbsor
 	}
 	if !options.Apply {
 		return ack, nil
+	}
+	if zeroDelta {
+		if err := recheckZeroDeltaPublicationBeforeWrite(ctx, options.ProjectsRoot, receipt, receiptPath, gitRoot, currentTarget, initialReceiptHash, hashReceipt, absorbedConflictGitRoot); err != nil {
+			return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
+		}
 	}
 	if err := persist(ackPath, ack); err != nil {
 		return WorktreeMergeAbsorbedConflictAcknowledgement{}, err
@@ -194,8 +254,8 @@ func mergeAckReceiptIdentity(receipt WorktreeMergeReceipt) mergeack.ReceiptIdent
 }
 
 // validateAbsorbedConflictReceipt narrowly scopes eligibility to an
-// unpublished prepare-phase conflict: a real merge/validation conflict that
-// never reached publication or landing. A published candidate is
+// unpublished prepare-phase conflict or the exact zero-delta publication
+// shape. An ordinary published candidate is
 // acknowledge-stranded-landing's or acknowledge-landed-failed's territory
 // instead; a validation_failed receipt belongs to
 // supersede-validation-failed/acknowledge-landed-failed.
@@ -203,18 +263,20 @@ func validateAbsorbedConflictReceipt(receipt WorktreeMergeReceipt, receiptPath s
 	if receipt.ReceiptPath != receiptPath || receipt.ID == "" || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) {
 		return fmt.Errorf("receipt %s has inconsistent immutable receipt identity", receiptPath)
 	}
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeConflict {
+	if receipt.Status != WorktreeMergeConflict || (receipt.Phase != WorktreeMergePhasePrepare && !isZeroDeltaPublicationConflict(receipt)) {
 		return fmt.Errorf("receipt %s is %s/%s, want an unpublished prepare conflict", receiptPath, receipt.Phase, receipt.Status)
 	}
 	if receipt.LandingSHA != "" {
 		return fmt.Errorf("receipt %s already recorded a landing SHA %s; use acknowledge-landed-failed instead", receiptPath, receipt.LandingSHA)
 	}
-	unpublished, unpublishedErr := effectiveUnpublishedConflict(receipt)
-	if unpublishedErr != nil {
-		return unpublishedErr
-	}
-	if !unpublished {
-		return fmt.Errorf("receipt %s already published a candidate; use acknowledge-stranded-landing instead", receiptPath)
+	if !isZeroDeltaPublicationConflict(receipt) {
+		unpublished, unpublishedErr := effectiveUnpublishedConflict(receipt)
+		if unpublishedErr != nil {
+			return unpublishedErr
+		}
+		if !unpublished {
+			return fmt.Errorf("receipt %s already published a candidate; use acknowledge-stranded-landing instead", receiptPath)
+		}
 	}
 	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" {
 		return fmt.Errorf("receipt %s lacks complete immutable repository or target identity", receiptPath)
@@ -231,6 +293,15 @@ func validateAbsorbedConflictReceipt(receipt WorktreeMergeReceipt, receiptPath s
 		}
 	}
 	return nil
+}
+
+// This is the only land-phase publication state admitted by absorbed-conflict
+// recovery: the attempted candidate push named the target's existing commit.
+func isZeroDeltaPublicationConflict(receipt WorktreeMergeReceipt) bool {
+	return receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeConflict &&
+		receipt.PullRequest == "" && receipt.LandingSHA == "" && receipt.TargetSHA != "" &&
+		receipt.Candidate.SHA == receipt.TargetSHA && receipt.PublishedCandidateSHA == receipt.TargetSHA &&
+		receipt.PreviousTargetSHA == receipt.TargetSHA
 }
 
 // absorbedConflictGitRoot uses the preserved candidate when present. When its
@@ -294,14 +365,104 @@ func requireAbsorbedConflictCandidateUnpublished(ctx context.Context, gitRoot st
 }
 
 func requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx context.Context, run runner.Runner, gitRoot string, receipt WorktreeMergeReceipt) error {
-	remote, _, err := runCommand(ctx, run, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	return requireAbsorbedConflictBranchAbsentWithRunner(ctx, run, gitRoot, receipt.Candidate.Branch)
+}
+
+func requireAbsorbedConflictBranchAbsent(ctx context.Context, gitRoot, branch string) error {
+	return requireAbsorbedConflictBranchAbsentWithRunner(ctx, defaultRunner, gitRoot, branch)
+}
+
+func requireAbsorbedConflictBranchAbsentWithRunner(ctx context.Context, run runner.Runner, gitRoot, branch string) error {
+	remote, _, err := runCommand(ctx, run, 0, 0, gitRoot, "git", "ls-remote", "origin", "refs/heads/"+branch)
 	if err != nil {
-		return fmt.Errorf("inspect candidate publication state: %w", err)
+		return fmt.Errorf("inspect branch %s publication state: %w", branch, err)
 	}
 	if strings.TrimSpace(remote) != "" {
-		return fmt.Errorf("candidate branch %s is published; this recovery requires it to remain unpublished", receipt.Candidate.Branch)
+		return fmt.Errorf("branch %s is published; this recovery requires it to be absent", branch)
 	}
 	return nil
+}
+
+func requireZeroDeltaCandidateWithoutPullRequest(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt) error {
+	output, err := githubRead(ctx, gitRoot, "pr", "list", "--repo", receipt.Repository,
+		"--head", receipt.Candidate.Branch, "--state", "all", "--json", "number,url,headRefName", "--limit", "1000")
+	if err != nil {
+		return fmt.Errorf("inspect all-state pull requests for candidate branch %s: %w", receipt.Candidate.Branch, err)
+	}
+	var pullRequests []struct {
+		Number      int    `json:"number"`
+		URL         string `json:"url"`
+		HeadRefName string `json:"headRefName"`
+	}
+	if err := json.Unmarshal([]byte(output), &pullRequests); err != nil {
+		return fmt.Errorf("decode all-state pull requests for candidate branch %s: %w", receipt.Candidate.Branch, err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(output), "[") {
+		return fmt.Errorf("all-state pull-request lookup for candidate branch %s did not return a list", receipt.Candidate.Branch)
+	}
+	if len(pullRequests) > 0 {
+		return fmt.Errorf("candidate branch %s has a pull request in GitHub history; zero-delta recovery refuses it", receipt.Candidate.Branch)
+	}
+	return nil
+}
+
+// Re-read every external absence and immutable root immediately before the
+// append-only sidecar write. The lane lock fences WB merge operations; these
+// checks also catch an out-of-band branch, PR, or worktree reappearance.
+func recheckZeroDeltaPublicationBeforeWrite(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, receiptPath, gitRoot, currentTarget, receiptHash string, hashReceipt func(string) (string, error), resolveGitRoot func(context.Context, string, WorktreeMergeReceipt) (string, error)) error {
+	for _, path := range append([]string{receipt.Candidate.Worktree}, sourceWorktreePaths(receipt.Sources)...) {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("zero-delta recovery worktree %s reappeared before acknowledgement", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("reinspect zero-delta recovery worktree %s: %w", path, err)
+		}
+	}
+	latestRoot, err := resolveGitRoot(ctx, projectsRoot, receipt)
+	if err != nil {
+		return err
+	}
+	if latestRoot != gitRoot {
+		return errors.New("zero-delta recovery Git root changed before acknowledgement")
+	}
+	for _, branch := range append([]string{receipt.Candidate.Branch}, sourceBranches(receipt.Sources)...) {
+		if err := requireAbsorbedConflictBranchAbsent(ctx, gitRoot, branch); err != nil {
+			return err
+		}
+	}
+	if err := requireZeroDeltaCandidateWithoutPullRequest(ctx, gitRoot, receipt); err != nil {
+		return err
+	}
+	latestTarget, err := fetchExactMergeTarget(ctx, gitRoot, receipt.Target)
+	if err != nil {
+		return err
+	}
+	if latestTarget != currentTarget {
+		return fmt.Errorf("current target changed from %s to %s before acknowledgement", currentTarget, latestTarget)
+	}
+	latestHash, err := hashReceipt(receiptPath)
+	if err != nil {
+		return err
+	}
+	if latestHash != receiptHash {
+		return fmt.Errorf("receipt %s changed immutable evidence before acknowledgement", receiptPath)
+	}
+	return nil
+}
+
+func sourceWorktreePaths(sources []WorktreeMergeSource) []string {
+	paths := make([]string, 0, len(sources))
+	for _, source := range sources {
+		paths = append(paths, source.Worktree)
+	}
+	return paths
+}
+
+func sourceBranches(sources []WorktreeMergeSource) []string {
+	branches := make([]string, 0, len(sources))
+	for _, source := range sources {
+		branches = append(branches, source.Branch)
+	}
+	return branches
 }
 
 type absorbedConflictProof struct {

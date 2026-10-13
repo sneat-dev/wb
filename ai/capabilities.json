@@ -15967,7 +15967,7 @@
               ],
               "modes": [
                 "Proves, source by source, that every receipted source of an unpublished prepare conflict is already reachable from the freshly fetched current remote target by graph ancestry, path by path identical-blob content absorption, or lines-absorbed proof for a *.jsonl append-only ledger path",
-                "Accepts only a prepare-phase conflict receipt with no published candidate and no landing SHA whose every receipted source worktree is already gone from disk, and never reads or requires a receipted source worktree",
+                "Accepts an unpublished prepare conflict, or a land conflict whose published candidate, candidate, previous target, and target SHA are identical with no branch pull request, landing SHA, live worktree, or live source/candidate branch and strict ancestry for every source",
                 "Repeatable --derived-path audits an operator exclusion for one known generated-index shape (spec/**/README.md) that also exists on the fetched target, recorded in the sidecar alongside the actor and reason"
               ]
             }

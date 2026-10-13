@@ -109,10 +109,11 @@ Use seal-validation-failed to prepare a target-tree-identical ancestry-only
 replacement when an audited squash landing broke the historical graph. Use
 supersede-validation-failed only for a prepare failure that did not land: it
 binds a separately proved replacement candidate without rewriting history.
-Use acknowledge-absorbed-conflict only for an unpublished prepare conflict
-whose every receipted source worktree is already gone and whose exact content
-is proved, source by source, already reachable from the current remote
-target by graph ancestry or by identical-blob content absorption. Use
+Use acknowledge-absorbed-conflict for an unpublished prepare conflict whose
+every receipted source worktree is gone and whose content is proved reachable
+from the current remote target. It also accepts a land conflict whose recorded
+publication, candidate, previous target, and target are the same commit, with
+no candidate-branch pull request and every source proved by graph ancestry. Use
 acknowledge-retired-prepare-candidate only for a legacy prepare/conflict
 receipt with an empty candidate SHA whose clean unpublished candidate remains
 exactly at the deleted recorded target's SHA and is now contained in the
@@ -739,7 +740,7 @@ func newWorktreeMergeAcknowledgeAbsorbedConflictCmd(inv *mergeInvocation) *cobra
 	var derivedPaths []string
 	command := &cobra.Command{
 		Use:   "acknowledge-absorbed-conflict <merge-receipt>",
-		Short: "Acknowledge a prepare conflict whose sources are already reachable from the target",
+		Short: "Acknowledge an absorbed conflict whose sources are already reachable from the target",
 		Long: `Prove, source by source, that an unpublished prepare conflict receipt's
 every receipted source is already reachable from the freshly fetched current
 remote target -- either because the receipted source SHA is a graph ancestor
@@ -754,7 +755,7 @@ operator exclusion for one known generated-index shape,
 "spec/**/README.md" -- exactly "README.md" nested anywhere under a
 repo-root "spec/" directory -- and only when that path also exists on the
 fetched target; every other shape, or one absent from the target, refuses
-closed. This accepts only a prepare-phase conflict receipt with no published
+closed. The ordinary path accepts only a prepare-phase conflict receipt with no published
 candidate and no landing SHA whose every receipted source worktree is
 already gone from disk, which is exactly the case neither resume nor
 prepare-conflict-replacement or supersede-validation-failed can recover:
@@ -764,9 +765,15 @@ historical receipt or any Work Log, and never deletes a preserved,
 unpublished candidate worktree. A missing candidate worktree requires absent
 local source/candidate branches; when the receipt records a candidate SHA,
 that exact commit must be an ancestor of the freshly fetched current target.
-The candidate branch must also remain unpublished. This is a dry-run by default; --apply
+The candidate branch must also remain unpublished. A second, narrower path
+accepts a land-phase conflict only when the published candidate SHA, candidate
+SHA, previous target SHA, and recorded target SHA are identical; it requires
+the candidate and every source worktree and branch to be absent, no pull request
+for the exact candidate branch in any state, no landing SHA, and graph ancestry
+of that commit and every receipted source in the freshly fetched target.
+It permits no --derived-path exceptions. This is a dry-run by default; --apply
 requires --actor and --reason and writes only the new acknowledgement
-artifact. A source worktree that still exists, a published or landed
+artifact. A source worktree that still exists, an ordinary published or landed
 receipt, an invalid or absent --derived-path, or any path whose content
 cannot be proved reachable refuses closed.`,
 		Args: cobra.ExactArgs(1),
