@@ -17,18 +17,24 @@ import (
 
 	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // addLandWorktree creates a linked git worktree of fixture.canonical checked
-// out on branch, giving the local-sync tests a "local WB worktree" to act
-// on. It carries its own git identity, matching every other repository the
-// fixture creates: a CI runner has no global one to fall back on.
+// out on branch, then adopts it through WB's native ownership transaction.
+// This lets the landing's source admission verify the fixture's claim before
+// it reaches the local-sync behavior under test. It carries its own git
+// identity: a CI runner has no global one to fall back on.
 func addLandWorktree(t *testing.T, fixture *landFixture, branch string) string {
 	t.Helper()
 	dir := filepath.Join(fixture.root, "worktree-"+branch)
 	runEngineGit(t, fixture.canonical, "worktree", "add", dir, branch)
 	runEngineGit(t, dir, "config", "user.name", "WB Test")
 	runEngineGit(t, dir, "config", "user.email", "wb@example.test")
+	adopted, err := worktrees.Adopt(t.Context(), worktrees.AdoptOptions{ProjectsRoot: fixture.projects, Path: dir, Apply: true})
+	if err != nil || len(adopted) != 1 || adopted[0].Action != worktrees.AdoptAdopted {
+		t.Fatalf("adopt local-sync fixture: %+v %v", adopted, err)
+	}
 	return dir
 }
 
