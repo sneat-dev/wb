@@ -816,13 +816,21 @@ repositories MUST remain independent. Missing source identity or unreadable sour
 evidence MUST refuse. A fork's head MUST NOT select or retire a same-named
 branch in the target repository; fork source worktrees are retained explicitly.
 
-A cleanup warning for an unrelated retired sibling stage MUST NOT block source
-admission when typed, verified no-follow artifact inspection and the source Git
-worktree registry prove it contains no matching or unidentified producer.
-Containment MUST follow physical directory identity and ancestry, including
-case aliases and symbolic parent aliases; unavailable ancestry evidence refuses.
-The recovery artifact MUST remain untouched. Missing provenance, unreadable registry
-evidence, and registered source producers inside an artifact MUST still refuse.
+Source admission MUST discover producers from the exact repository's canonical
+Git worktree registry before inspecting task or recovery state. It MUST inspect
+the exact source branch and detached or unidentified potential producers.
+Unregistered log-only residue and unrelated recovery artifacts MUST remain
+visible to ordinary global inventory without blocking source admission or
+receiving cleanup authority. Registered source producers inside a recovery
+artifact MUST still refuse when their evidence cannot be established.
+
+Canonical lookup MUST preserve physical path spelling across repository case
+variants. Registered producer roots and common Git directories MUST agree by
+physical identity, including case and symbolic aliases; missing ownership,
+broken metadata, unreadable or malformed registry evidence, contradictory HEAD
+or branch identity, and identity changes during inspection MUST refuse.
+Landing cleanup MUST discover its source tasks through the same scoped query
+and retain the ordinary claim- and receipt-validated cleanup transaction.
 
 A missing work-log claim on a detached checkout MUST NOT block an unrelated
 PR only when its physical repository and directory identity, actual Git HEAD,
@@ -2024,6 +2032,15 @@ the source repository at a different commit from the PR head
 untouched and does not block admission; the same-head checkout, tracked or
 untracked changes, and inconsistent or unreadable evidence refuse before any
 auto-merge or merge.
+
+**Given** those foreign states together with a log-only unregistered task
+residue, a clean source, and source producers registered through physical case
+or symbolic aliases inside recovery state
+**When** source admission and landing cleanup run
+**Then** only the registered source is selected; global audit retains unrelated
+diagnostics, foreign files remain unchanged, and missing source claims, broken
+Git metadata, or live hand-written and recorded source links refuse with and
+without `--keep` before any irreversible action.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 

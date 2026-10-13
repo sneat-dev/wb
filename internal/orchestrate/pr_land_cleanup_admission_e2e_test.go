@@ -47,6 +47,7 @@ func fixtureLandingCleanupAdmission(t *testing.T) {
 	options := landOptions(fixture)
 	options.Keep = true
 	view := orchCovPullRequestView(t, `{"head":{"ref":"bump/admission","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	view.Head.SHA = fixture.headSHA
 	evidence := filepath.Join(checkout, "go.work")
 	original := []byte("{malformed\n")
 	if err = os.WriteFile(evidence, original, 0600); err != nil {
@@ -58,6 +59,7 @@ func fixtureLandingCleanupAdmission(t *testing.T) {
 		t.Fatalf("unrelated branch refused: %+v", got)
 	}
 	wrongRepository := orchCovPullRequestView(t, `{"head":{"ref":"bump/admission","repo":{"full_name":"acme/ap"}},"base":{"ref":"main"}}`)
+	wrongRepository.Head.SHA = fixture.headSHA
 	if got := preflightLandingCleanup(context.Background(), options, wrongRepository, "7", true); got != nil {
 		t.Fatalf("substring repository match refused: %+v", got)
 	}
@@ -162,6 +164,7 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 	}
 	options := landOptions(fixture)
 	view := orchCovPullRequestView(t, `{"head":{"ref":"bump/scoped-source","repo":{"full_name":"Acme/App"}},"base":{"ref":"main"}}`)
+	view.Head.SHA = fixture.headSHA
 	fixture.writeState(t, "head-repository", "Acme/App")
 	// The public inventory's substring filter also selects app-extra. A
 	// malformed manifest there is still provably a different Git repository,
@@ -246,6 +249,7 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 	}
 	forkSource := created[0].WorktreeDir
 	forkView := orchCovPullRequestView(t, `{"head":{"ref":"bump/scoped-source","repo":{"full_name":"fork/app"}},"base":{"ref":"main"}}`)
+	forkView.Head.SHA = fixture.headSHA
 	if err := os.WriteFile(filepath.Join(source, "go.work"), []byte("go 1.27\nuse /elsewhere/target-library\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +312,7 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	writeEngineFile(t, payload, "retained legacy recovery evidence\n")
 	options := landOptions(fixture)
 	view := orchCovPullRequestView(t, `{"head":{"ref":"bump/retirement-admission","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	view.Head.SHA = fixture.headSHA
 	listed, err := worktrees.ListWithDiagnostics(t.Context(), worktrees.ListOptions{ProjectsRoot: fixture.projects, Filter: "acme/app"})
 	if err != nil {
 		t.Fatal(err)
@@ -435,6 +440,15 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	// manifest but no WB projection/claim. The manifest cannot grant ownership;
 	// exact Git commit, status, and physical registry evidence may exclude it.
 	foreign := filepath.Join(fixture.canonical, ".claude", "worktrees", "foreign-detached")
+	// This seed is a tiny Go repository, without the operator's global ignore
+	// rules for foreign tool metadata. Keep canonical synchronization's clean
+	// precondition while reproducing the foreign placement in this fixture.
+	exclude := filepath.Join(fixture.canonical, ".git", "info", "exclude")
+	exclusions, err := os.ReadFile(exclude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, exclude, string(exclusions)+"\n/.claude/\n")
 	runEngineGit(t, fixture.canonical, "worktree", "add", "-b", "claude/foreign-review", foreign, "main")
 	if err := worktrees.WriteManifest(foreign, worktrees.Manifest{Version: 1, EffortID: "foreign-detached", EffortKind: "task", Repository: "acme/app", Worktree: foreign, Branch: "claude/foreign-review", Base: "main", BaseSHA: fixture.baseSHA, CreatedAt: time.Now().UTC(), Provenance: "reconstructed", InferredFields: []string{"base_sha"}}); err != nil {
 		t.Fatal(err)
@@ -489,6 +503,87 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 		t.Fatal("contradictory registration fault was not exercised")
 	}
 	options.run = nil
+	// All three previously broad-blocking foreign states coexist. The global
+	// audit still reports the log-only orphan; source admission does not open it.
+	orphan := filepath.Join(fixture.canonical, ".worktrees", "stranded-squash-landing")
+	orphanLog := filepath.Join(orphan, ".wb", "local", "run", "events.jsonl")
+	writeEngineFile(t, orphanLog, "{retained unrelated run event}\n")
+	global, err := worktrees.ListWithDiagnostics(t.Context(), worktrees.ListOptions{ProjectsRoot: fixture.projects, Filter: "acme/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundOrphan := false
+	for _, diagnostic := range global.Diagnostics {
+		foundOrphan = foundOrphan || diagnostic.Path == orphan
+	}
+	if !foundOrphan {
+		t.Fatal("global inventory lost the orphan diagnostic")
+	}
+	for _, keep := range []bool{false, true} {
+		if refusal := preflightLandingCleanup(t.Context(), options, view, "7", keep); refusal != nil {
+			t.Fatalf("combined unrelated foreign states blocked source (keep=%t): %+v", keep, refusal)
+		}
+	}
+	projection := filepath.Join(source, ".wb-worklog", "recovery.json")
+	if err := os.Rename(projection, projection+".retained"); err != nil {
+		t.Fatal(err)
+	}
+	assertRefused("matching source with missing immutable claim projection", false)
+	if err := os.Rename(projection+".retained", projection); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(source, ".wb", "local", "manifest.yaml")
+	manifestEvidence, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, manifestPath, "[malformed source manifest")
+	assertRefused("matching source with unreadable creation metadata", false)
+	if err := os.WriteFile(manifestPath, manifestEvidence, 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertLinkedSource := func(handwritten bool) {
+		t.Helper()
+		for _, keep := range []bool{false, true} {
+			options.Keep = keep
+			result, err := LandPullRequest(t.Context(), options)
+			code := "cleanup-blocked-live-link"
+			if handwritten && !keep {
+				code = "cleanup-blocked-dirty"
+			}
+			if err != nil || result.RefusalCode != code || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
+				t.Fatalf("combined foreign fixture let linked source escape (keep=%t): %+v %v", keep, result, err)
+			}
+		}
+	}
+	store, err := streams.Open(fixture.projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(streams.Stream{Name: "combined-source-link", Members: []streams.Member{{Repository: "acme/app", Worktree: source, Links: []streams.Link{{Library: "/elsewhere/library", Mechanism: streams.MechanismPnpmLink, Identity: "@acme/core"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	assertLinkedSource(false)
+	if err := os.RemoveAll(store.Dir("combined-source-link")); err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, filepath.Join(source, "go.work"), "go 1.27\nuse /elsewhere/unpublished\n")
+	assertLinkedSource(true)
+	if err := os.Remove(filepath.Join(source, "go.work")); err != nil {
+		t.Fatal(err)
+	}
+	// Complete the normal retirement journey through the same source query.
+	options.Keep = false
+	landed, err := LandPullRequest(t.Context(), options)
+	if err != nil || landed.Outcome != LandSuccess || len(landed.CleanedTasks) != 1 || landed.CleanedTasks[0] != "retirement-source" {
+		t.Fatalf("source-scoped landing/cleanup failed: %+v %v", landed, err)
+	}
+	if raw, err := os.ReadFile(orphanLog); err != nil || string(raw) != "{retained unrelated run event}\n" {
+		t.Fatalf("landing changed unrelated log-only residue: %q %v", raw, err)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, foreign, "rev-parse", "HEAD")); got != fixture.baseSHA {
+		t.Fatalf("landing changed foreign detached checkout: %s", got)
+	}
 	if raw, err := os.ReadFile(payload); err != nil || string(raw) != "retained legacy recovery evidence\n" {
 		t.Fatalf("retired artifact evidence changed: %q %v", raw, err)
 	}
@@ -504,7 +599,7 @@ type landingRegistryMismatchRunner struct {
 
 func (r *landingRegistryMismatchRunner) RunOpts(ctx context.Context, dir string, options runner.RunOptions, name string, args ...string) (runner.Result, error) {
 	result, err := r.Runner.RunOpts(ctx, dir, options, name, args...)
-	if err == nil && name == "git" && strings.Join(args, " ") == "worktree list --porcelain -z" {
+	if err == nil && name == "git" && strings.Join(args, " ") == "--no-optional-locks worktree list --porcelain -z" {
 		before := "worktree " + r.path + "\x00HEAD " + r.before + "\x00detached"
 		after := "worktree " + r.path + "\x00HEAD " + r.after + "\x00detached"
 		r.exercised = r.exercised || strings.Contains(result.CombinedOutput+result.Stdout, before)

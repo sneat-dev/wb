@@ -1596,23 +1596,26 @@ func branchAlreadyGone(stdout, stderr []byte) bool {
 // receipt. That proof may supersede an earlier manifest base in memory without
 // rewriting the append-only creation record.
 func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headRef, headSHA, base, landingSHA string) ([]string, []string, error) {
-	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
-		ProjectsRoot: projectsRoot,
-		Base:         base,
-		Filter:       repository,
+	listed, err := worktrees.ListSourceWithDiagnostics(ctx, worktrees.SourceListOptions{
+		ProjectsRoot: projectsRoot, Repository: repository, Branch: headRef, HeadSHA: headSHA,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(listed.Diagnostics) > 0 {
+		return nil, nil, fmt.Errorf("source worktree cleanup inventory is incomplete at %s: %s", listed.Diagnostics[0].Path, listed.Diagnostics[0].Message)
+	}
 	tasks := make([]string, 0, 1)
 	seen := map[string]bool{}
 	proofsByTask := map[string][]worktrees.MergeReceiptCleanupProof{}
+	repositoriesByTask := map[string]string{}
 	for _, entry := range listed.Results {
-		if entry.Repository != repository || entry.Branch != headRef {
+		if !strings.EqualFold(entry.Repository, repository) || entry.Branch != headRef {
 			continue
 		}
+		repositoriesByTask[entry.Task] = entry.Repository
 		proofsByTask[entry.Task] = append(proofsByTask[entry.Task], worktrees.MergeReceiptCleanupProof{
-			Repository: repository, Target: base, SourceTask: entry.Task,
+			Repository: entry.Repository, Target: base, SourceTask: entry.Task,
 			SourceWorktree: entry.WorktreeDir, SourceBranch: headRef, SourceSHA: headSHA,
 			CandidateSHA: headSHA, LandingSHA: landingSHA,
 		})
@@ -1627,7 +1630,7 @@ func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headR
 		outcome, cleanupErr := worktrees.Cleanup(ctx, worktrees.CleanupOptions{
 			ProjectsRoot:       projectsRoot,
 			Tasks:              []string{task},
-			ExactRepository:    repository,
+			ExactRepository:    repositoriesByTask[task],
 			Base:               base,
 			AbsorbedBy:         landingSHA,
 			MergeReceiptProofs: proofsByTask[task],
