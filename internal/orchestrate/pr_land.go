@@ -1609,10 +1609,9 @@ func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headR
 	seen := map[string]bool{}
 	proofsByTask := map[string][]worktrees.MergeReceiptCleanupProof{}
 	repositoriesByTask := map[string]string{}
+	// The exact-source query has already corroborated every result's
+	// repository and branch against its authoritative Git registration/claim.
 	for _, entry := range listed.Results {
-		if !strings.EqualFold(entry.Repository, repository) || entry.Branch != headRef {
-			continue
-		}
 		repositoriesByTask[entry.Task] = entry.Repository
 		proofsByTask[entry.Task] = append(proofsByTask[entry.Task], worktrees.MergeReceiptCleanupProof{
 			Repository: entry.Repository, Target: base, SourceTask: entry.Task,

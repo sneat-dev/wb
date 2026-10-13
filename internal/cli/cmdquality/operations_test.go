@@ -500,3 +500,22 @@ func TestVerificationRenderIncludesEmptyRowsAndProfile(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestCheckNativeProfileKeepsOnlyNativeGoTestContract(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies(t)
+	called := false
+	deps.Verification = func(_ context.Context, r qualityrun.VerificationRequest) (qualityrun.VerificationResult, error) {
+		called = true
+		if r.Profile != "native" || !r.Run.NativeOnly || r.Run.IncludeE2E || r.Run.Retry != 0 || len(r.Checks) != 1 || r.Checks[0] != quality.CheckTest {
+			t.Fatalf("native request changed selection: %+v", r)
+		}
+		return qualityrun.VerificationResult{}, nil
+	}
+	if _, _, err := executeTest(t, NewCheck(testRuntime(), deps), ".", "--profile", "native", "--retry", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("native profile did not invoke verification")
+	}
+}

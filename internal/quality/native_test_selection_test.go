@@ -131,6 +131,18 @@ func TestNativeWorkflowSelectionRejectsDriftAndMissingRuns(t *testing.T) {
 		{"bad first good last", "jobs:\n  native:\n    steps:\n      - run: go test -tags e2e -run '^Test' -run='" + NativeGoTestSelector + "' ./...", false},
 		{"missing selector", "jobs:\n  native:\n    steps:\n      - run: go test -tags e2e ./...", false},
 		{"not native", "jobs:\n  native:\n    steps:\n      - run: go test ./...\n      - run: echo go test -tags=e2e", false},
+		{"owned native profile", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native --timeout 10m --format json", true},
+		{"owned minimal profile", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native", true},
+		{"wrong profile", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile full", false},
+		{"wrong scope", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check ./internal/orchestrate --profile native", false},
+		{"lookalike entrypoint", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb-other check . --profile native", false},
+		{"comment fake", "jobs:\n  native:\n    steps:\n      - run: echo go run ./cmd/wb check . --profile native", false},
+		{"selector override", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native --run TestOne", false},
+		{"duplicate profile", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native --profile full", false},
+		{"missing profile", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --format json", false},
+		{"dangling option", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native --format", false},
+		{"wrong budget", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native --timeout 20m", false},
+		{"wrong format", "jobs:\n  native:\n    steps:\n      - run: go run ./cmd/wb check . --profile native --format yaml", false},
 		{"parse error", "jobs: [", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

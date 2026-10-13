@@ -384,6 +384,29 @@ func TestPlanGoTestShardsIsDeterministicCompleteAndUnique(t *testing.T) {
 	}
 }
 
+func TestPlanGoTestShardsPreservesUnicodeGoIdentifiers(t *testing.T) {
+	t.Parallel()
+	names := []string{"TestE2ECafé", "TestContract日本語٢", "ExampleΔ_δοκιμή", "Fuzz解析", "TestE2Eʰ", "TestASCII_123"}
+	partitions, err := planGoTestShards(names, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, part := range partitions {
+		for _, name := range part {
+			seen[name]++
+		}
+	}
+	if len(seen) != len(names) {
+		t.Fatalf("Unicode names omitted: %v", seen)
+	}
+	for _, name := range names {
+		if seen[name] != 1 {
+			t.Fatalf("%s executed %d times", name, seen[name])
+		}
+	}
+}
+
 func TestPlanGoTestShardsRejectsUnsafeInputs(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -396,6 +419,12 @@ func TestPlanGoTestShardsRejectsUnsafeInputs(t *testing.T) {
 		{name: "no tests", shards: 2, want: "no tests"},
 		{name: "duplicate", tests: []string{"TestOne", "TestOne"}, shards: 2, want: "duplicate"},
 		{name: "invalid name", tests: []string{"TestOne", "not-a-test"}, shards: 2, want: "unsupported"},
+		{name: "regex metacharacter", tests: []string{"TestE2E(A)"}, shards: 2, want: "unsupported"},
+		{name: "regex alternative", tests: []string{"TestContractX|Y"}, shards: 2, want: "unsupported"},
+		{name: "combining mark", tests: []string{"TestE2ECafe\u0301"}, shards: 2, want: "unsupported"},
+		{name: "non-decimal number", tests: []string{"TestE2E²"}, shards: 2, want: "unsupported"},
+		{name: "letter number", tests: []string{"TestE2EⅫ"}, shards: 2, want: "unsupported"},
+		{name: "format character", tests: []string{"TestE2E\u200c"}, shards: 2, want: "unsupported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

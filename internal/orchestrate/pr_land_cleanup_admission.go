@@ -44,10 +44,9 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 			command: "inspect and repair the source worktree inventory, then retry wb pr land " + options.Repository + "#" + number,
 		}
 	}
+	// ListSourceWithDiagnostics owns exact repository/branch corroboration;
+	// all returned producers must receive the admission/link checks below.
 	for _, entry := range listed.Results {
-		if !strings.EqualFold(entry.Repository, sourceRepository) || entry.Branch != view.Head.Ref {
-			continue
-		}
 		if !entry.Clean && !linksOnly && strings.EqualFold(sourceRepository, options.Repository) {
 			return &landRefusal{
 				code: "cleanup-blocked-dirty",

@@ -186,7 +186,7 @@ func NewCheck(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 				return err
 			}
 			result, err := deps.Verification(context.Background(), qualityrun.VerificationRequest{
-				Selection: selectionRequest(path, runtime.Flags(), options), Run: runOptions(options), Checks: checks, Name: "check", Profile: profile, ReportDir: options.reportDir, Resume: options.resume, Observer: newObserver(cmd, runtime, "check"),
+				Selection: selectionRequest(path, runtime.Flags(), options), Run: checkRunOptions(options, profile), Checks: checks, Name: "check", Profile: profile, ReportDir: options.reportDir, Resume: options.resume, Observer: newObserver(cmd, runtime, "check"),
 			})
 			if err != nil {
 				return err
@@ -205,7 +205,7 @@ func NewCheck(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 		},
 	}
 	bindQualityScopeFlags(command, &options)
-	command.Flags().StringVar(&profile, "profile", "full", "built-in profile: fast, full, or ci")
+	command.Flags().StringVar(&profile, "profile", "full", "built-in profile: fast, full, ci, or native (Go E2E/contract tests only)")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write check.md and check.yaml to this directory")
 	return command
@@ -332,16 +332,27 @@ func coverageOptionsForCommand(options qualityOptions) quality.RunOptions {
 	return runOptions
 }
 
+func checkRunOptions(options qualityOptions, profile string) quality.RunOptions {
+	run := runOptions(options)
+	run.NativeOnly = profile == "native"
+	if run.NativeOnly {
+		run.Retry = 0
+	}
+	return run
+}
+
 func checksForProfile(profile string) ([]quality.Check, error) {
 	switch profile {
 	case "fast":
 		return []quality.Check{quality.CheckLint}, nil
 	case "full":
 		return []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild}, nil
+	case "native":
+		return []quality.Check{quality.CheckTest}, nil
 	case "ci":
 		return []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec}, nil
 	default:
-		return nil, fmt.Errorf("unknown check profile %q (want fast, full, or ci)", profile)
+		return nil, fmt.Errorf("unknown check profile %q (want fast, full, ci, or native)", profile)
 	}
 }
 

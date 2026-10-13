@@ -196,8 +196,16 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 	if err := os.WriteFile(gitFile, []byte("gitdir: /missing/source-evidence\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", true); refusal == nil || refusal.code != "cleanup-unverifiable" {
-		t.Fatalf("skipped source inventory diagnostic authorized landing: %+v", refusal)
+	for _, keep := range []bool{false, true} {
+		if refusal := preflightLandingCleanup(t.Context(), options, view, "7", keep); refusal == nil || refusal.code != "cleanup-unverifiable" {
+			t.Fatalf("contradictory registered source evidence authorized landing (keep=%t): %+v", keep, refusal)
+		}
+	}
+	if _, _, err := cleanupLandedWorktrees(t.Context(), fixture.projects, "acme/app", view.Head.Ref, view.Head.SHA, "main", view.Head.SHA); err == nil || !strings.Contains(err.Error(), "source worktree cleanup inventory is incomplete at "+source) {
+		t.Fatalf("contradictory source cleanup inventory was accepted: %v", err)
+	}
+	if got, err := os.ReadFile(gitFile); err != nil || string(got) != "gitdir: /missing/source-evidence\n" {
+		t.Fatalf("refused cleanup mutated source evidence: %q %v", got, err)
 	}
 	if err := os.WriteFile(gitFile, gitEvidence, 0600); err != nil {
 		t.Fatal(err)
