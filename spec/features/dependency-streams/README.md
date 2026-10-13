@@ -808,6 +808,13 @@ signals independently: state alone would miss a hand-written `go.work`, and
 `go.work` alone would miss an npm link. There MUST be no flag that both bypasses
 this guard and pushes.
 
+`wb pr land` MUST apply the same guard before arming auto-merge or merging,
+including with `--keep`, to worktrees matching the authoritative pull request
+head repository and branch. Other branches and repositories MUST remain
+independent. Missing source identity or unreadable source inventory/link
+evidence MUST refuse. A fork's head MUST NOT select or retire a same-named
+branch in the target repository; fork source worktrees are retained explicitly.
+
 #### REQ: verification-prints-its-active-links
 
 Every verification run against a linked consumer MUST print the links in effect,
@@ -1986,6 +1993,13 @@ committed modules in that repository
 **Then** it refuses before any push, names the link or the `use` entry and the
 command that clears it, and no flag combination both bypasses the guard and
 pushes; the committed intrinsic workspace is accepted.
+
+**Given** two worktrees of one repository, where only the unrelated branch has
+a live link or malformed `go.work`
+**When** `wb pr land` lands the other branch with or without `--keep`
+**Then** the unrelated worktree does not block admission and is preserved;
+moving either a recorded link or a hand-written unpublished workspace to the
+actual PR source refuses before auto-merge or merge, even with `--keep`.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 

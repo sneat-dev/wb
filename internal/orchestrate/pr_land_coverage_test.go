@@ -267,7 +267,7 @@ func orchCovInstallDeleteGit(t *testing.T, state testfixture.State) {
 
 func TestOrchCovDeleteRemoteBranchNeverTouchesAForkHead(t *testing.T) {
 	t.Parallel()
-	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate"},"base":{"ref":"main"}}`)
+	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
 	landed := orchCovPullRequestView(t, `{"base":{"ref":"main"}}`)
 	if deleted, err := deleteRemoteBranch(context.Background(), defaultRunner, ".", "acme/app", view, landed, view.Head.SHA); err != nil || deleted {
 		t.Fatalf("head with no repository deleted=%t err=%v", deleted, err)

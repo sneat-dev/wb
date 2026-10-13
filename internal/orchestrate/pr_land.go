@@ -1229,7 +1229,7 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Completed, view.Head.Ref, 0, 0)
 
-	if !options.Keep {
+	if !options.Keep && view.Head.Repo != nil && strings.EqualFold(view.Head.Repo.FullName, options.Repository) {
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Started, view.Head.Ref, 0, 0)
 		tasks, reports, cleanupErr := cleanupLandedWorktrees(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Head.SHA, view.Base.Ref, landed.MergeCommitSHA)
 		result.CleanedTasks = tasks
@@ -1247,6 +1247,8 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 			return landedIncomplete(options, result, number, "cleanup-incomplete", cleanupErr.Error(), "wb worktree gc --apply"), nil
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
+	} else if !options.Keep {
+		result.Evidence["cleanup"] = "fork source worktrees retained; target-repository worktrees do not belong to this pull request head"
 	}
 
 	// #615: report the issues this landing closes, from GitHub's own
