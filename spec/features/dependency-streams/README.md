@@ -810,8 +810,9 @@ this guard and pushes.
 
 `wb pr land` MUST apply the same guard before arming auto-merge or merging,
 including with `--keep`, to worktrees matching the authoritative pull request
-head repository and branch. Other branches and repositories MUST remain
-independent. Missing source identity or unreadable source inventory/link
+head repository (case-insensitively) and exact branch. Discovery MUST preserve
+repository case variants without changing physical paths. Other branches and
+repositories MUST remain independent. Missing source identity or unreadable source inventory/link
 evidence MUST refuse. A fork's head MUST NOT select or retire a same-named
 branch in the target repository; fork source worktrees are retained explicitly.
 

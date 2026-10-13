@@ -49,9 +49,9 @@ type ListOptions struct {
 	ExplicitBase bool
 	// Filter narrows the inventory to candidates whose owner/repository slug
 	// (or, for a candidate that cannot be identified that cleanly, whatever
-	// raw path-derived identity is available) contains this substring — the
-	// same "only repos whose org/name contains this substring" semantics as
-	// the root --filter flag elsewhere in WB. An empty Filter matches
+	// raw path-derived identity is available) contains this case-insensitive
+	// substring. Like the root --filter flag, it selects repositories by an
+	// owner/name substring. An empty Filter matches
 	// everything, exactly like today. Filtering happens before a candidate's
 	// diagnostic or result is retained, so a candidate outside the selection
 	// can neither appear in the report nor influence it.
@@ -2502,8 +2502,10 @@ func inspectErrorFilterCandidates(owner, path, slug string, err error) []string 
 }
 
 // filterMatches reports whether at least one candidate identity string
-// contains filter as a substring. An empty filter always matches, so an
-// unfiltered call sees exactly today's behavior. Candidates may be a full
+// contains filter as a case-insensitive substring. Repository identities are
+// case-insensitive even when their physical filesystem spelling is not.
+// An empty filter always matches, so an unfiltered call sees exactly today's
+// behavior. Candidates may be a full
 // path, a bare repository name, or an "owner/repository" slug — whatever
 // identity is available at the point of the check; a malformed candidate
 // often cannot offer more than that.
@@ -2511,8 +2513,9 @@ func filterMatches(filter string, candidates ...string) bool {
 	if filter == "" {
 		return true
 	}
+	filter = strings.ToLower(filter)
 	for _, candidate := range candidates {
-		if candidate != "" && strings.Contains(candidate, filter) {
+		if candidate != "" && strings.Contains(strings.ToLower(candidate), filter) {
 			return true
 		}
 	}

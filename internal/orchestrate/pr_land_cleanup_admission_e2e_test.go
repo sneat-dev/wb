@@ -159,7 +159,8 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := landOptions(fixture)
-	view := orchCovPullRequestView(t, `{"head":{"ref":"bump/scoped-source","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	view := orchCovPullRequestView(t, `{"head":{"ref":"bump/scoped-source","repo":{"full_name":"Acme/App"}},"base":{"ref":"main"}}`)
+	fixture.writeState(t, "head-repository", "Acme/App")
 	// The public inventory's substring filter also selects app-extra. A
 	// malformed manifest there is still provably a different Git repository,
 	// even with exactly the same branch name as the PR source.
@@ -203,9 +204,12 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 	if _, err := store.Create(streams.Stream{Name: "source-link", Members: []streams.Member{{Repository: "acme/app", Worktree: source, Links: []streams.Link{{Library: "/elsewhere/library", Mechanism: streams.MechanismPnpmLink, Identity: "@acme/core"}}}}}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := LandPullRequest(t.Context(), options)
-	if err != nil || result.RefusalCode != "cleanup-blocked-live-link" || strings.Contains(result.SanctionedCommand, "--keep") || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
-		t.Fatalf("recorded source link escaped admission: %+v %v", result, err)
+	for _, keep := range []bool{false, true} {
+		options.Keep = keep
+		result, err := LandPullRequest(t.Context(), options)
+		if err != nil || result.RefusalCode != "cleanup-blocked-live-link" || strings.Contains(result.SanctionedCommand, "--keep") || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
+			t.Fatalf("mixed-case recorded source link escaped admission (keep=%t): %+v %v", keep, result, err)
+		}
 	}
 	if err := os.RemoveAll(store.Dir("source-link")); err != nil {
 		t.Fatal(err)
@@ -213,9 +217,16 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "go.work"), []byte("go 1.27\nuse /elsewhere/library\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err = LandPullRequest(t.Context(), options)
-	if err != nil || result.RefusalCode != "cleanup-blocked-live-link" || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
-		t.Fatalf("hand-written source workspace escaped admission: %+v %v", result, err)
+	for _, keep := range []bool{false, true} {
+		options.Keep = keep
+		result, err := LandPullRequest(t.Context(), options)
+		code := "cleanup-blocked-live-link"
+		if !keep {
+			code = "cleanup-blocked-dirty"
+		}
+		if err != nil || result.RefusalCode != code || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
+			t.Fatalf("mixed-case hand-written source workspace escaped admission (keep=%t): %+v %v", keep, result, err)
+		}
 	}
 	if err := os.Remove(filepath.Join(source, "go.work")); err != nil {
 		t.Fatal(err)
@@ -250,7 +261,7 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 	}
 	fixture.writeState(t, "head-repository", "fork/app")
 	options.Keep = false
-	result, err = LandPullRequest(t.Context(), options)
+	result, err := LandPullRequest(t.Context(), options)
 	if err != nil || result.Outcome != LandSuccess || !strings.Contains(result.Evidence["cleanup"], "fork source worktrees retained") || len(result.CleanedTasks) != 0 {
 		t.Fatalf("unrelated diagnostic checkout blocked real landing: %+v %v", result, err)
 	}

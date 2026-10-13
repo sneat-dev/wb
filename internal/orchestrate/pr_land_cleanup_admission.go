@@ -39,8 +39,17 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 			command: "inspect and repair the source worktree inventory, then retry wb pr land " + options.Repository + "#" + number,
 		}
 	}
+	// Use a validated inventory path for diagnostics too. API repository casing
+	// must never be used to invent a differently spelled physical clone path.
+	sourceCanonical := ""
+	for _, entry := range listed.Results {
+		if strings.EqualFold(entry.Repository, sourceRepository) && entry.CanonicalDir != "" {
+			sourceCanonical = entry.CanonicalDir
+			break
+		}
+	}
 	for _, diagnostic := range listed.Diagnostics {
-		if diagnostic.NonBlocking || landingDiagnosticIsUnrelated(ctx, options, view, diagnostic) {
+		if diagnostic.NonBlocking || landingDiagnosticIsUnrelated(ctx, options, view, diagnostic, sourceCanonical) {
 			continue
 		}
 		return &landRefusal{
@@ -72,7 +81,7 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 // block acme/app, but its path or stale creation manifest cannot establish
 // that distinction. Only readable Git identity may exclude a candidate;
 // incomplete evidence keeps the fail-closed refusal above.
-func landingDiagnosticIsUnrelated(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, diagnostic worktrees.ListDiagnostic) bool {
+func landingDiagnosticIsUnrelated(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, diagnostic worktrees.ListDiagnostic, sourceCanonical string) bool {
 	identity, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, diagnostic.Path, "git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD")
 	lines := strings.Split(strings.TrimSpace(identity), "\n")
 	if err != nil || len(lines) != 3 || filepath.Clean(lines[0]) != filepath.Clean(diagnostic.Path) || lines[2] == "" || lines[2] == "HEAD" {
@@ -81,11 +90,13 @@ func landingDiagnosticIsUnrelated(ctx context.Context, options PullRequestLandOp
 	if lines[2] != view.Head.Ref {
 		return true
 	}
-	canonical, err := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, view.Head.Repo.FullName)
-	if err != nil {
-		return false
+	if sourceCanonical == "" {
+		sourceCanonical, err = worktrees.CanonicalRepositoryPath(options.ProjectsRoot, view.Head.Repo.FullName)
+		if err != nil {
+			return false
+		}
 	}
-	common, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, canonical, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	common, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, sourceCanonical, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil || strings.TrimSpace(common) == "" {
 		return false
 	}

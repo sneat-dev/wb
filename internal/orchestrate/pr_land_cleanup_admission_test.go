@@ -91,7 +91,7 @@ func TestLandingDiagnosticExclusionRequiresReadableGitIdentity(t *testing.T) {
 				fake.ExpectArgv([]string{"git", "rev-parse", "--path-format=absolute", "--git-common-dir"}, runner.Result{Stdout: sourceCommon}, sourceErr)
 			}
 			view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"`+repository+`"}}}`)
-			got := landingDiagnosticIsUnrelated(t.Context(), PullRequestLandOptions{ProjectsRoot: t.TempDir(), run: fake}, view, worktrees.ListDiagnostic{Path: candidate})
+			got := landingDiagnosticIsUnrelated(t.Context(), PullRequestLandOptions{ProjectsRoot: t.TempDir(), run: fake}, view, worktrees.ListDiagnostic{Path: candidate}, "")
 			want := kind == "different branch" || kind == "different repository"
 			if got != want {
 				t.Fatalf("diagnostic exclusion=%t want=%t", got, want)
@@ -110,6 +110,21 @@ func TestLandingCleanupRefusesUnresolvableLinkStorage(t *testing.T) {
 	refusal := refuseLinkedWorktree(projects, worktrees.ListResult{WorktreeDir: checkout})
 	if refusal == nil || refusal.code != "cleanup-unverifiable" || !strings.Contains(refusal.reason, "could not be resolved") {
 		t.Fatalf("unreadable stream home allowed landing: %+v", refusal)
+	}
+}
+
+func TestLandingDiagnosticUsesValidatedCanonicalSpelling(t *testing.T) {
+	t.Parallel()
+	candidate, common, canonical := t.TempDir(), t.TempDir(), t.TempDir()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD"}, runner.Result{Stdout: candidate + "\n" + common + "\ncandidate\n"}, nil)
+	fake.ExpectArgv([]string{"git", "rev-parse", "--path-format=absolute", "--git-common-dir"}, runner.Result{Stdout: common}, nil)
+	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"Acme/App"}}}`)
+	if landingDiagnosticIsUnrelated(t.Context(), PullRequestLandOptions{ProjectsRoot: t.TempDir(), run: fake}, view, worktrees.ListDiagnostic{Path: candidate}, canonical) {
+		t.Fatal("source common directory was excluded")
+	}
+	if calls := fake.Calls(); len(calls) != 2 || calls[1].Dir != canonical {
+		t.Fatalf("API casing changed the physical source path: %+v", calls)
 	}
 }
 
