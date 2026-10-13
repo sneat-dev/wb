@@ -130,11 +130,16 @@ func TestLandingDiagnosticUsesValidatedCanonicalSpelling(t *testing.T) {
 
 func TestLandingRetiredArtifactRequiresInspectionAndSourceRegistryProof(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"unregistered retirement", "unverified", "wrong kind", "staging", "task owned", "wrong disposition", "different path", "different root", "not sibling", "relative stage", "source unknown", "registry error", "malformed registry", "missing path record", "relative registry path", "canonical missing", "registered source", "registered nested source", "unidentified nested producer", "malformed nested branch", "unrelated nested branch", "prefix sibling producer"} {
+	for _, kind := range []string{"unregistered retirement", "unverified", "wrong kind", "staging", "task owned", "wrong disposition", "different path", "different root", "not sibling", "relative stage", "source unknown", "canonical unavailable", "registry error", "malformed registry", "missing path record", "relative registry path", "missing registered directory", "unreadable registered directory", "canonical missing", "registered source", "registered nested source", "unidentified nested producer", "malformed nested branch", "unrelated nested branch", "prefix sibling producer"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			root, canonical := t.TempDir(), t.TempDir()
 			path := filepath.Join(root, ".wb-retired-stage-fixture")
+			for _, directory := range []string{filepath.Join(path, "retired-checkout"), path + "-other"} {
+				if err := os.MkdirAll(directory, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
 			artifact := worktrees.LifecycleArtifact{Path: path, WorktreesRoot: root, Kind: "secure_worktree_stage", State: "quarantined", InspectionVerified: true, Disposition: "unscoped_local_stage"}
 			diagnostic := worktrees.ListDiagnostic{Path: path, WorktreesRoot: root}
 			registry := "worktree " + canonical + "\x00HEAD abc\x00branch refs/heads/main\x00\x00"
@@ -163,6 +168,8 @@ func TestLandingRetiredArtifactRequiresInspectionAndSourceRegistryProof(t *testi
 				diagnostic.Path, diagnostic.WorktreesRoot = artifact.Path, artifact.WorktreesRoot
 			case "source unknown":
 				canonical, expectRegistry = "", false
+			case "canonical unavailable":
+				canonical, expectRegistry = filepath.Join(canonical, "missing"), false
 			case "registry error":
 				registryErr = errors.New("source Git registry unavailable")
 			case "malformed registry":
@@ -171,8 +178,20 @@ func TestLandingRetiredArtifactRequiresInspectionAndSourceRegistryProof(t *testi
 				registry = "HEAD abc\x00\x00"
 			case "relative registry path":
 				registry = "worktree relative\x00HEAD abc\x00\x00"
+			case "missing registered directory":
+				registry += "worktree " + filepath.Join(path, "missing") + "\x00HEAD abc\x00branch refs/heads/candidate\x00\x00"
+			case "unreadable registered directory":
+				if os.Geteuid() == 0 {
+					t.Skip("root ignores directory access permissions")
+				}
+				directory := filepath.Join(path, "retired-checkout")
+				if err := os.Chmod(directory, 0000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(directory, 0700) })
+				registry += "worktree " + directory + "\x00HEAD abc\x00branch refs/heads/candidate\x00\x00"
 			case "canonical missing":
-				registry = "worktree /other\x00HEAD abc\x00branch refs/heads/main\x00\x00"
+				registry = "worktree " + t.TempDir() + "\x00HEAD abc\x00branch refs/heads/main\x00\x00"
 			case "registered source":
 				registry += "worktree " + path + "\x00HEAD abc\x00branch refs/heads/candidate\x00\x00"
 			case "registered nested source":
@@ -195,6 +214,87 @@ func TestLandingRetiredArtifactRequiresInspectionAndSourceRegistryProof(t *testi
 			want := kind == "unregistered retirement" || kind == "unrelated nested branch" || kind == "prefix sibling producer"
 			if got != want {
 				t.Fatalf("artifact exclusion=%t want=%t", got, want)
+			}
+		})
+	}
+}
+
+func TestLandingRegisteredDirectoryUsesPhysicalAncestry(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"inside", "same directory", "outside", "case alias", "distinct case directory", "symbolic parent alias", "symbolic escape", "missing", "unreadable", "regular file", "dangling alias"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			stage := filepath.Join(root, "retired-stage")
+			nested := filepath.Join(stage, "producer")
+			outside := filepath.Join(root, "outside")
+			for _, directory := range []string{nested, outside} {
+				if err := os.MkdirAll(directory, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stageIdentity, err := os.Stat(stage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, wantInside, wantError := nested, true, false
+			switch kind {
+			case "same directory":
+				path = stage
+			case "outside":
+				path, wantInside = outside, false
+			case "case alias":
+				alias := filepath.Join(root, "RETIRED-STAGE")
+				aliasIdentity, err := os.Stat(alias)
+				if err != nil || !os.SameFile(stageIdentity, aliasIdentity) {
+					t.Skip("filesystem does not support this case alias")
+				}
+				path = filepath.Join(alias, "producer")
+			case "distinct case directory":
+				alias := filepath.Join(root, "RETIRED-STAGE")
+				if aliasIdentity, err := os.Stat(alias); err == nil && os.SameFile(stageIdentity, aliasIdentity) {
+					t.Skip("filesystem treats case variants as one directory")
+				}
+				path, wantInside = filepath.Join(alias, "producer"), false
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "symbolic parent alias":
+				alias := filepath.Join(root, "symbolic-parent")
+				if err := os.Symlink(stage, alias); err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(alias, "producer")
+			case "symbolic escape":
+				path, wantInside = filepath.Join(stage, "escape"), false
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				path, wantError = filepath.Join(root, "missing"), true
+			case "unreadable":
+				if os.Geteuid() == 0 {
+					t.Skip("root ignores directory access permissions")
+				}
+				if err := os.Chmod(nested, 0000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(nested, 0700) })
+				wantError = true
+			case "regular file":
+				path, wantError = filepath.Join(root, "file"), true
+				if err := os.WriteFile(path, []byte("retained"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "dangling alias":
+				path, wantError = filepath.Join(root, "dangling"), true
+				if err := os.Symlink(filepath.Join(root, "missing"), path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			identity, inside, err := landingRegisteredDirectoryRelation(stageIdentity, path)
+			if (err != nil) != wantError || err == nil && (identity == nil || inside != wantInside) {
+				t.Fatalf("physical relation: inside=%t identity=%v err=%v", inside, identity, err)
 			}
 		})
 	}

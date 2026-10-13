@@ -818,8 +818,10 @@ branch in the target repository; fork source worktrees are retained explicitly.
 
 A cleanup warning for an unrelated retired sibling stage MUST NOT block source
 admission when typed, verified no-follow artifact inspection and the source Git
-worktree registry prove it contains no matching or unidentified producer. The
-recovery artifact MUST remain untouched. Missing provenance, unreadable registry
+worktree registry prove it contains no matching or unidentified producer.
+Containment MUST follow physical directory identity and ancestry, including
+case aliases and symbolic parent aliases; unavailable ancestry evidence refuses.
+The recovery artifact MUST remain untouched. Missing provenance, unreadable registry
 evidence, and registered source producers inside an artifact MUST still refuse.
 
 #### REQ: verification-prints-its-active-links

@@ -325,11 +325,18 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 			t.Fatalf("unregistered retired recovery state blocked source (keep=%t): %+v", keep, refusal)
 		}
 	}
-	assertRefused := func(label string) {
+	assertRefused := func(label string, dirtySource bool) {
 		t.Helper()
-		result, err := LandPullRequest(t.Context(), options)
-		if err != nil || result.RefusalCode != "cleanup-unverifiable" || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
-			t.Fatalf("%s escaped source admission: %+v %v", label, result, err)
+		for _, keep := range []bool{false, true} {
+			options.Keep = keep
+			result, err := LandPullRequest(t.Context(), options)
+			code := "cleanup-unverifiable"
+			if dirtySource && !keep {
+				code = "cleanup-blocked-dirty"
+			}
+			if err != nil || result.RefusalCode != code || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
+				t.Fatalf("%s escaped source admission (keep=%t): %+v %v", label, keep, result, err)
+			}
 		}
 	}
 	gitFile := filepath.Join(source, ".git")
@@ -340,13 +347,13 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	if err := os.WriteFile(gitFile, []byte("gitdir: /missing/producer-evidence\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	assertRefused("broken actual producer")
+	assertRefused("broken actual producer", false)
 	if err := os.WriteFile(gitFile, gitEvidence, 0600); err != nil {
 		t.Fatal(err)
 	}
 	workspace := filepath.Join(source, "go.work")
 	writeEngineFile(t, workspace, "{malformed source workspace\n")
-	assertRefused("unknown actual source link")
+	assertRefused("unknown actual source link", true)
 	if err := os.Remove(workspace); err != nil {
 		t.Fatal(err)
 	}
@@ -357,13 +364,71 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", true); refusal != nil {
 		t.Fatalf("registered independent retirement blocked source: %+v", refusal)
 	}
-	producer := filepath.Join(stage, ".wb-retired-checkout-source")
-	runEngineGit(t, fixture.canonical, "worktree", "add", "--force", producer, view.Head.Ref)
-	assertRefused("registered source inside retired artifact")
-	if err := os.WriteFile(filepath.Join(producer, ".git"), []byte("gitdir: /missing/nested-producer\n"), 0600); err != nil {
+	symbolicParent := filepath.Join(fixture.root, "retired-stage-parent-alias")
+	if err := os.Symlink(stage, symbolicParent); err != nil {
 		t.Fatal(err)
 	}
-	assertRefused("registered broken source inside retired artifact")
+	for _, alias := range []string{"ordinary", "case", "symbolic parent"} {
+		parent := stage
+		if alias == "case" {
+			parent = filepath.Join(filepath.Dir(stage), strings.ToUpper(filepath.Base(stage)))
+			actual, actualErr := os.Stat(stage)
+			alternate, alternateErr := os.Stat(parent)
+			if actualErr != nil || alternateErr != nil || !os.SameFile(actual, alternate) {
+				t.Log("case-alias fixture skipped on a case-sensitive filesystem")
+				continue
+			}
+		}
+		if alias == "symbolic parent" {
+			parent = symbolicParent
+		}
+		for _, state := range []string{"source", "detached"} {
+			producer := filepath.Join(parent, ".wb-retired-checkout-producer")
+			arguments := []string{"worktree", "add", "--force"}
+			if state == "detached" {
+				arguments = append(arguments, "--detach")
+			}
+			arguments = append(arguments, producer, view.Head.Ref)
+			runEngineGit(t, fixture.canonical, arguments...)
+			gitFile := filepath.Join(producer, ".git")
+			gitEvidence, err := os.ReadFile(gitFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if alias != "ordinary" {
+				// Some Git versions resolve symbolic parents during add. Retain
+				// the equivalent alias in this disposable registration so Git's
+				// actual porcelain output exercises the physical identity guard.
+				admin := strings.TrimSpace(strings.TrimPrefix(string(gitEvidence), "gitdir: "))
+				writeEngineFile(t, filepath.Join(admin, "gitdir"), gitFile+"\n")
+				registry := runEngineGit(t, fixture.canonical, "worktree", "list", "--porcelain", "-z")
+				if !strings.Contains(registry, "worktree "+producer+"\x00") {
+					t.Fatalf("native Git registry did not retain %s alias: %q", alias, registry)
+				}
+				parentIdentity, parentErr := os.Stat(parent)
+				stageIdentity, stageErr := os.Stat(stage)
+				relative, relativeErr := filepath.Rel(stage, producer)
+				if parentErr != nil || stageErr != nil || !os.SameFile(parentIdentity, stageIdentity) || relativeErr != nil || !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					t.Fatalf("%s fixture does not prove physical containment despite lexical exclusion", alias)
+				}
+				t.Logf("exercised native %s alias for %s registration", alias, state)
+			}
+			assertRefused(alias+" registered "+state+" inside retired artifact", false)
+			if err := os.WriteFile(gitFile, []byte("gitdir: /missing/nested-producer\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			assertRefused(alias+" registered broken "+state+" inside retired artifact", false)
+			if err := os.WriteFile(gitFile, gitEvidence, 0600); err != nil {
+				t.Fatal(err)
+			}
+			// Remove only this disposable test checkout before exercising the
+			// next alias; each case must independently retain admission.
+			runEngineGit(t, fixture.canonical, "worktree", "remove", "--force", producer)
+		}
+	}
+	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", true); refusal != nil {
+		t.Fatalf("unrelated retirement stopped passing after alias checks: %+v", refusal)
+	}
 	if raw, err := os.ReadFile(payload); err != nil || string(raw) != "retained legacy recovery evidence\n" {
 		t.Fatalf("retired artifact evidence changed: %q %v", raw, err)
 	}

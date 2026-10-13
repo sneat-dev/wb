@@ -2,10 +2,13 @@ package orchestrate
 
 import (
 	"context"
+	"fmt"
 	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/sneat-dev/wb/internal/worktreesecure"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -90,6 +93,19 @@ func landingRetiredArtifactIsUnrelated(ctx context.Context, options PullRequestL
 			artifact.Path != diagnostic.Path || artifact.WorktreesRoot != diagnostic.WorktreesRoot || filepath.Dir(artifact.Path) != artifact.WorktreesRoot {
 			continue
 		}
+		directory, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(artifact.Path, false)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = directory.Close() }()
+		artifactIdentity, err := directory.Stat()
+		if err != nil {
+			return false
+		}
+		canonicalIdentity, err := os.Stat(sourceCanonical)
+		if err != nil || !canonicalIdentity.IsDir() {
+			return false
+		}
 		registry, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, sourceCanonical, "git", "worktree", "list", "--porcelain", "-z")
 		if err != nil || !strings.HasSuffix(registry, "\x00\x00") {
 			return false
@@ -101,25 +117,66 @@ func landingRetiredArtifactIsUnrelated(ctx context.Context, options PullRequestL
 			if !known || !filepath.IsAbs(path) {
 				return false
 			}
-			canonicalFound = canonicalFound || filepath.Clean(path) == filepath.Clean(sourceCanonical)
+			registeredIdentity, inside, err := landingRegisteredDirectoryRelation(artifactIdentity, path)
+			if err != nil {
+				return false
+			}
+			canonicalFound = canonicalFound || os.SameFile(canonicalIdentity, registeredIdentity)
 			branch := ""
 			for _, field := range fields[1:] {
 				if value, found := strings.CutPrefix(field, "branch "); found {
 					branch = value
 				}
 			}
-			relative, err := filepath.Rel(artifact.Path, path)
-			if err != nil {
-				return false
-			}
-			inside := relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 			if inside && (!strings.HasPrefix(branch, "refs/heads/") || branch == "refs/heads/" || branch == "refs/heads/"+view.Head.Ref) {
 				return false
 			}
 		}
-		return canonicalFound
+		return canonicalFound && worktreesecure.DirectoryStillMatches(artifact.Path, directory)
 	}
 	return false
+}
+
+// Resolve symlinks before a no-follow open, then compare physical parent
+// descriptors. Cleaned path strings (including EvalSymlinks output) cannot
+// prove ancestry on a filesystem where alternate casing names the same inode.
+func landingRegisteredDirectoryRelation(artifactIdentity os.FileInfo, path string) (os.FileInfo, bool, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, false, err
+	}
+	current, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(resolved, false)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = current.Close() }()
+	registeredIdentity, err := current.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	for {
+		identity, err := current.Stat()
+		if err != nil {
+			return nil, false, err
+		}
+		if os.SameFile(artifactIdentity, identity) {
+			return registeredIdentity, true, nil
+		}
+		parent, err := worktreesecure.OpenDirectoryAtNoFollow(int(current.Fd()), "..", "wb-landing-parent", "inspect physical registered worktree parent")
+		if err != nil {
+			return nil, false, err
+		}
+		parentIdentity, err := parent.Stat()
+		if err != nil {
+			_ = parent.Close()
+			return nil, false, fmt.Errorf("inspect physical parent identity: %w", err)
+		}
+		_ = current.Close()
+		current = parent
+		if os.SameFile(identity, parentIdentity) {
+			return registeredIdentity, false, nil
+		}
+	}
 }
 
 // Inventory filters are substrings. A diagnostic for acme/app-extra must not
