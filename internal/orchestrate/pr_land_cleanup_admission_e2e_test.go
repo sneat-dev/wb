@@ -274,3 +274,97 @@ func TestE2ELandingChecksOnlyTheAuthoritativeSourceWorktree(t *testing.T) {
 		t.Fatalf("unrelated evidence changed: %q %v", raw, err)
 	}
 }
+
+func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
+	const marker = "WB_LANDING_RETIRED_ARTIFACT_CHILD"
+	if os.Getenv(marker) != t.Name() {
+		t.Parallel()
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.v")
+		command.Env = append(os.Environ(), marker+"="+t.Name())
+		if coverFlag := flag.Lookup("test.gocoverdir"); testing.CoverMode() != "" && coverFlag != nil && coverFlag.Value.String() != "" {
+			command.Args = append(command.Args, "-test.gocoverdir="+coverFlag.Value.String())
+			command.Env = append(command.Env, "GOCOVERDIR="+coverFlag.Value.String())
+		}
+		output, err := command.CombinedOutput()
+		t.Logf("isolated retirement fixture:\n%s", output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	fixture := newLandFixture(t, "bump/retirement-admission", "go.mod")
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	writeEngineFile(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
+	created, err := worktrees.Create(t.Context(), []string{"acme/app"}, worktrees.CreateOptions{ProjectsRoot: fixture.projects, Operation: "retirement-source", Branch: "bump/retirement-admission", BranchChosen: true, Resume: true, WorkLog: worktrees.WorkLogOptions{Model: "unknown"}})
+	if err != nil || len(created) != 1 {
+		t.Fatal(created, err)
+	}
+	source := created[0].WorktreeDir
+	stage := filepath.Join(fixture.canonical, ".worktrees", ".wb-retired-stage-6c1f44adcc9f37e8714a364751203148")
+	payload := filepath.Join(stage, ".wb-retired-checkout-646a6024d926487690b2f583704c5aa5", "retained")
+	writeEngineFile(t, payload, "retained legacy recovery evidence\n")
+	options := landOptions(fixture)
+	view := orchCovPullRequestView(t, `{"head":{"ref":"bump/retirement-admission","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	listed, err := worktrees.ListWithDiagnostics(t.Context(), worktrees.ListOptions{ProjectsRoot: fixture.projects, Filter: "acme/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundArtifact, foundDiagnostic := false, false
+	for _, artifact := range listed.Artifacts {
+		foundArtifact = foundArtifact || artifact.Path == stage && artifact.InspectionVerified && artifact.State == "quarantined" && artifact.Disposition == "unscoped_local_stage"
+	}
+	for _, diagnostic := range listed.Diagnostics {
+		foundDiagnostic = foundDiagnostic || diagnostic.Path == stage
+	}
+	if !foundArtifact || !foundDiagnostic {
+		t.Fatalf("fixture did not reproduce typed recovery artifact plus cleanup diagnostic: %+v", listed)
+	}
+	for _, keep := range []bool{false, true} {
+		if refusal := preflightLandingCleanup(t.Context(), options, view, "7", keep); refusal != nil {
+			t.Fatalf("unregistered retired recovery state blocked source (keep=%t): %+v", keep, refusal)
+		}
+	}
+	assertRefused := func(label string) {
+		t.Helper()
+		result, err := LandPullRequest(t.Context(), options)
+		if err != nil || result.RefusalCode != "cleanup-unverifiable" || fixtureHasMarker(fixture, "auto-merge") || fixture.readState(t, "merged") != "false" {
+			t.Fatalf("%s escaped source admission: %+v %v", label, result, err)
+		}
+	}
+	gitFile := filepath.Join(source, ".git")
+	gitEvidence, err := os.ReadFile(gitFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gitFile, []byte("gitdir: /missing/producer-evidence\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertRefused("broken actual producer")
+	if err := os.WriteFile(gitFile, gitEvidence, 0600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(source, "go.work")
+	writeEngineFile(t, workspace, "{malformed source workspace\n")
+	assertRefused("unknown actual source link")
+	if err := os.Remove(workspace); err != nil {
+		t.Fatal(err)
+	}
+	// A retired container may retain a registered independent checkout. Its
+	// branch is authoritative evidence that it did not produce this PR.
+	independent := filepath.Join(stage, ".wb-retired-checkout-independent")
+	runEngineGit(t, fixture.canonical, "worktree", "add", "-b", "independent-retirement", independent, "main")
+	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", true); refusal != nil {
+		t.Fatalf("registered independent retirement blocked source: %+v", refusal)
+	}
+	producer := filepath.Join(stage, ".wb-retired-checkout-source")
+	runEngineGit(t, fixture.canonical, "worktree", "add", "--force", producer, view.Head.Ref)
+	assertRefused("registered source inside retired artifact")
+	if err := os.WriteFile(filepath.Join(producer, ".git"), []byte("gitdir: /missing/nested-producer\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertRefused("registered broken source inside retired artifact")
+	if raw, err := os.ReadFile(payload); err != nil || string(raw) != "retained legacy recovery evidence\n" {
+		t.Fatalf("retired artifact evidence changed: %q %v", raw, err)
+	}
+}

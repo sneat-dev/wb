@@ -49,7 +49,7 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 		}
 	}
 	for _, diagnostic := range listed.Diagnostics {
-		if diagnostic.NonBlocking || landingDiagnosticIsUnrelated(ctx, options, view, diagnostic, sourceCanonical) {
+		if diagnostic.NonBlocking || landingRetiredArtifactIsUnrelated(ctx, options, view, diagnostic, listed.Artifacts, sourceCanonical) || landingDiagnosticIsUnrelated(ctx, options, view, diagnostic, sourceCanonical) {
 			continue
 		}
 		return &landRefusal{
@@ -75,6 +75,51 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 		}
 	}
 	return nil
+}
+
+// A verified retired sibling stage is recovery state, not a task producer.
+// Its cleanup diagnostic can be excluded only when the source Git registry
+// independently proves no matching or unidentified producer inside it. The
+// artifact remains untouched and ordinary cleanup retains its own admission.
+func landingRetiredArtifactIsUnrelated(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, diagnostic worktrees.ListDiagnostic, artifacts []worktrees.LifecycleArtifact, sourceCanonical string) bool {
+	if sourceCanonical == "" {
+		return false
+	}
+	for _, artifact := range artifacts {
+		if !artifact.InspectionVerified || artifact.Kind != "secure_worktree_stage" || artifact.State != "quarantined" || artifact.Task != "" || artifact.Disposition != "unscoped_local_stage" ||
+			artifact.Path != diagnostic.Path || artifact.WorktreesRoot != diagnostic.WorktreesRoot || filepath.Dir(artifact.Path) != artifact.WorktreesRoot {
+			continue
+		}
+		registry, _, err := runCommand(ctx, options.resolveRunner(), 0, 0, sourceCanonical, "git", "worktree", "list", "--porcelain", "-z")
+		if err != nil || !strings.HasSuffix(registry, "\x00\x00") {
+			return false
+		}
+		canonicalFound := false
+		for _, record := range strings.Split(strings.TrimSuffix(registry, "\x00\x00"), "\x00\x00") {
+			fields := strings.Split(record, "\x00")
+			path, known := strings.CutPrefix(fields[0], "worktree ")
+			if !known || !filepath.IsAbs(path) {
+				return false
+			}
+			canonicalFound = canonicalFound || filepath.Clean(path) == filepath.Clean(sourceCanonical)
+			branch := ""
+			for _, field := range fields[1:] {
+				if value, found := strings.CutPrefix(field, "branch "); found {
+					branch = value
+				}
+			}
+			relative, err := filepath.Rel(artifact.Path, path)
+			if err != nil {
+				return false
+			}
+			inside := relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+			if inside && (!strings.HasPrefix(branch, "refs/heads/") || branch == "refs/heads/" || branch == "refs/heads/"+view.Head.Ref) {
+				return false
+			}
+		}
+		return canonicalFound
+	}
+	return false
 }
 
 // Inventory filters are substrings. A diagnostic for acme/app-extra must not

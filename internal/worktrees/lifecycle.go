@@ -438,13 +438,17 @@ type LifecycleArtifact struct {
 	Path          string `json:"path"`
 	Kind          string `json:"kind"`
 	State         string `json:"state"`
-	Repository    string `json:"repository,omitempty"`
-	NonBlocking   bool   `json:"non_blocking,omitempty"`
-	Disposition   string `json:"disposition"`
-	Eligible      bool   `json:"eligible"`
-	Applied       bool   `json:"applied"`
-	ArchivePath   string `json:"archive_path,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	// InspectionVerified records successful validation of the reserved stage
+	// identity, no-follow directory open, and content enumeration. It does not
+	// authorize recovery or deletion, or prove absence of registered producers.
+	InspectionVerified bool   `json:"inspection_verified,omitempty"`
+	Repository         string `json:"repository,omitempty"`
+	NonBlocking        bool   `json:"non_blocking,omitempty"`
+	Disposition        string `json:"disposition"`
+	Eligible           bool   `json:"eligible"`
+	Applied            bool   `json:"applied"`
+	ArchivePath        string `json:"archive_path,omitempty"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 // ListOutcome preserves the valid local inventory while exposing every
@@ -2429,6 +2433,7 @@ func inspectOpenedLifecycleArtifact(ctx context.Context, path string, artifact L
 		artifact.Reason = "cannot inspect reserved WB stage contents: " + emptyErr.Error()
 		return artifact
 	}
+	artifact.InspectionVerified = true
 	if !empty {
 		artifact.Reason = "reserved WB stage is non-empty and requires audited recovery before task cleanup"
 		if repository, err := OriginSlug(ctx, path); err == nil {

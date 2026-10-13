@@ -128,6 +128,78 @@ func TestLandingDiagnosticUsesValidatedCanonicalSpelling(t *testing.T) {
 	}
 }
 
+func TestLandingRetiredArtifactRequiresInspectionAndSourceRegistryProof(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"unregistered retirement", "unverified", "wrong kind", "staging", "task owned", "wrong disposition", "different path", "different root", "not sibling", "relative stage", "source unknown", "registry error", "malformed registry", "missing path record", "relative registry path", "canonical missing", "registered source", "registered nested source", "unidentified nested producer", "malformed nested branch", "unrelated nested branch", "prefix sibling producer"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			root, canonical := t.TempDir(), t.TempDir()
+			path := filepath.Join(root, ".wb-retired-stage-fixture")
+			artifact := worktrees.LifecycleArtifact{Path: path, WorktreesRoot: root, Kind: "secure_worktree_stage", State: "quarantined", InspectionVerified: true, Disposition: "unscoped_local_stage"}
+			diagnostic := worktrees.ListDiagnostic{Path: path, WorktreesRoot: root}
+			registry := "worktree " + canonical + "\x00HEAD abc\x00branch refs/heads/main\x00\x00"
+			var registryErr error
+			expectRegistry := true
+			switch kind {
+			case "unverified":
+				artifact.InspectionVerified, expectRegistry = false, false
+			case "wrong kind":
+				artifact.Kind, expectRegistry = "task_namespace", false
+			case "staging":
+				artifact.State, expectRegistry = "staging", false
+			case "task owned":
+				artifact.Task, expectRegistry = "other", false
+			case "wrong disposition":
+				artifact.Disposition, expectRegistry = "cleanup_backlog", false
+			case "different path":
+				diagnostic.Path, expectRegistry = path+"-other", false
+			case "different root":
+				diagnostic.WorktreesRoot, expectRegistry = root+"-other", false
+			case "not sibling":
+				artifact.Path = filepath.Join(path, "nested")
+				diagnostic.Path, expectRegistry = artifact.Path, false
+			case "relative stage":
+				artifact.Path, artifact.WorktreesRoot = "relative-stage", "."
+				diagnostic.Path, diagnostic.WorktreesRoot = artifact.Path, artifact.WorktreesRoot
+			case "source unknown":
+				canonical, expectRegistry = "", false
+			case "registry error":
+				registryErr = errors.New("source Git registry unavailable")
+			case "malformed registry":
+				registry = "partial"
+			case "missing path record":
+				registry = "HEAD abc\x00\x00"
+			case "relative registry path":
+				registry = "worktree relative\x00HEAD abc\x00\x00"
+			case "canonical missing":
+				registry = "worktree /other\x00HEAD abc\x00branch refs/heads/main\x00\x00"
+			case "registered source":
+				registry += "worktree " + path + "\x00HEAD abc\x00branch refs/heads/candidate\x00\x00"
+			case "registered nested source":
+				registry += "worktree " + filepath.Join(path, "retired-checkout") + "\x00HEAD abc\x00branch refs/heads/candidate\x00\x00"
+			case "unidentified nested producer":
+				registry += "worktree " + filepath.Join(path, "retired-checkout") + "\x00HEAD abc\x00detached\x00\x00"
+			case "malformed nested branch":
+				registry += "worktree " + filepath.Join(path, "retired-checkout") + "\x00HEAD abc\x00branch refs/heads/\x00\x00"
+			case "unrelated nested branch":
+				registry += "worktree " + filepath.Join(path, "retired-checkout") + "\x00HEAD abc\x00branch refs/heads/independent\x00\x00"
+			case "prefix sibling producer":
+				registry += "worktree " + path + "-other\x00HEAD abc\x00branch refs/heads/candidate\x00\x00"
+			}
+			fake := runnertest.New(t)
+			if expectRegistry {
+				fake.ExpectArgv([]string{"git", "worktree", "list", "--porcelain", "-z"}, runner.Result{Stdout: registry}, registryErr)
+			}
+			view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","repo":{"full_name":"acme/app"}}}`)
+			got := landingRetiredArtifactIsUnrelated(t.Context(), PullRequestLandOptions{run: fake}, view, diagnostic, []worktrees.LifecycleArtifact{artifact}, canonical)
+			want := kind == "unregistered retirement" || kind == "unrelated nested branch" || kind == "prefix sibling producer"
+			if got != want {
+				t.Fatalf("artifact exclusion=%t want=%t", got, want)
+			}
+		})
+	}
+}
+
 func TestLandingCleanupRequiresAuthoritativeSourceIdentity(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{`{"head":{"ref":"candidate"}}`, `{"head":{"ref":"candidate","repo":{"full_name":""}}}`, `{"head":{"repo":{"full_name":"acme/app"}}}`} {
