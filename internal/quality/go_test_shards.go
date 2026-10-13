@@ -14,7 +14,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
-var supportedGoTestName = regexp.MustCompile(`^(Test|Example|Fuzz)[\p{L}\p{Nd}_]*$`)
+var supportedGoTestName = regexp.MustCompile(`^(Test|Example|Fuzz)[A-Za-z0-9_]*$`)
 
 // planGoTestShards assigns every discovered top-level test, example, and fuzz
 // seed to exactly one deterministic process shard. Sorting before round-robin

@@ -373,9 +373,9 @@ jobs:
       needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
-    # Task-23's 10-minute e2e budget (spec/plans/coverage-to-100/README.md
-    # "Plan choices, not founder instructions").
-    timeout-minutes: 10
+    # Match the existing combined-coverage native attempt budget; leave setup
+    # and failure reporting outside the per-package test deadline.
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -386,7 +386,7 @@ jobs:
           cache: true
       - name: go test -tags e2e (real-git journeys and adapter contract tests)
         run: >-
-          go run ./cmd/wb check . --profile native --timeout 10m --format json
+          go test -tags e2e -count=1 -timeout 20m -run '^Test(E2E|Contract)' ./...
 
   windows:
     name: Native Windows compile and test

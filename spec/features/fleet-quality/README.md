@@ -91,7 +91,7 @@ Quality commands MUST continue after repository-level failures and report each a
 
 #### REQ: check-profiles
 
-`wb check` MUST provide named built-in profiles: `fast` runs lint, `full` runs lint, test, and build, and `ci` adds SpecScore lint when a repository has a `spec/` directory, unless the repository is an external SpecScore Plans store as defined below. When `specscore.yaml` explicitly configures SpecScore, `ci` MUST fail if the canonical `spec/` root is missing; repositories with neither the config nor the root remain non-applicable. `full` MUST be the default profile. The conventional profiles MUST use the same Go and Node adapters as `wb verify`. The `native` profile MUST run only the compiled Go tests selected by `^Test(E2E|Contract)` with the `e2e` tag and `-count=1`, with no retries. Both this profile and the native tier of combined coverage MUST honor the same repository-owned `go_test` shard policy: each selected name belongs to exactly one deterministic partition, configured packages with no matching names still execute once, and unconfigured packages execute once with the complete native selector. Discovery MUST use the native build tag so native-only packages are retained. Failures from every partition MUST be reported and fail the command; only successful profiles may be merged.
+`wb check` MUST provide named built-in profiles: `fast` runs lint, `full` runs lint, test, and build, and `ci` adds SpecScore lint when a repository has a `spec/` directory, unless the repository is an external SpecScore Plans store as defined below. When `specscore.yaml` explicitly configures SpecScore, `ci` MUST fail if the canonical `spec/` root is missing; repositories with neither the config nor the root remain non-applicable. `full` MUST be the default profile. A profile MUST use the same conventional Go and Node adapters as `wb verify`.
 
 A repository is an external SpecScore Plans store (SpecScore's Plan repository routing; `sneat-co/workbench` is one) only when all of these hold: its root has no `specscore.yaml` entry, a symlink counting as present; its root `.gitignore` is a regular file with the line `/.specscore-lifecycle.lock` (SpecScore's `REQ:external-store-lifecycle-lock`); every non-directory entry under `spec/` is `spec/plans/README.md`, a namespace index `spec/plans/{host}/{owner}/{repo}/README.md`, or lies beneath a plan directory `spec/plans/{host}/{owner}/{repo}/{plan-id}/`; and at least one such entry lies inside a namespace. `{host}` MUST look like a hostname: lowercase letters, digits, `-` and `.`, at least one dot, and dot-separated labels that are non-empty and neither start nor end with `-`. `{owner}` and `{repo}` MUST be non-empty and MUST NOT start with `.`. For such a repository `ci` MUST report SpecScore lint skipped and MUST NOT claim the Plans are validated: SpecScore lint does not apply to that layout, because without a `specscore.yaml` it cannot run, and with one it reports structural violations (`readme-exists` and `plan-hierarchy` in specscore 0.49.0). Every other `spec/` -- an empty one, one holding only directories, one reached through a symlink, a SpecScore project that lost its `specscore.yaml`, or a same-repository `spec/plans/{plan-id}` tree -- MUST still run lint and fail exactly as when the layout does not apply.
 
@@ -166,13 +166,6 @@ A selected local fleet has predictable filtering and bounded execution, and its 
 **Requirements:** fleet-quality#req:conventional-go-checks, fleet-quality#req:conventional-node-checks, fleet-quality#req:complete-index, fleet-quality#req:check-profiles, fleet-quality#req:bounded-command-execution, fleet-quality#req:report-resume, fleet-quality#req:dual-audience-reports, fleet-quality#req:graduation-receipt, fleet-quality#req:custom-stack-recipes
 
 Every applicable conventional check appears in a complete, tool-readable and human-readable index. Unsupported custom stacks are not guessed and remain available through explicit recipes.
-
-For a repository with a four-shard policy and tagged/default Go test files,
-`wb check . --profile native` and the native tier of combined coverage retain
-exactly the compiled native selection, including empty and unconfigured
-packages. Each selected name executes in one partition, every attempt keeps its
-deadline, and all failing partitions are reported without retries or changes to
-the default unit tier.
 
 ### AC: exact-graduation-receipt
 

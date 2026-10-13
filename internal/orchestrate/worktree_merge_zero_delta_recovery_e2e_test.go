@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -56,7 +58,8 @@ func zeroDeltaContext(t *testing.T, output string) context.Context {
 	}})
 }
 
-func TestZeroDeltaPublicationAcknowledgementFreesNativeGitLane(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationAcknowledgementFreesNativeGitLane(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	before, err := os.ReadFile(r.ReceiptPath)
 	if err != nil {
@@ -94,7 +97,8 @@ func TestZeroDeltaPublicationAcknowledgementFreesNativeGitLane(t *testing.T) {
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesAmbiguousEvidence(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesAmbiguousEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		edit func(*WorktreeMergeReceipt)
@@ -111,6 +115,7 @@ func TestZeroDeltaPublicationRecoveryRefusesAmbiguousEvidence(t *testing.T) {
 		{"null PR lookup", nil, "null", "did not return a list"},
 		{"malformed PR lookup", nil, "{broken", "decode all-state pull requests"},
 	} {
+		//nolint:paralleltest // Rows share the process-wide fixture environment and private lane evidence.
 		t.Run(tc.name, func(t *testing.T) {
 			f, r := zeroDeltaConflictFixture(t)
 			if tc.edit != nil {
@@ -132,7 +137,8 @@ func TestZeroDeltaPublicationRecoveryRefusesAmbiguousEvidence(t *testing.T) {
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesUnavailablePullRequestLookup(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesUnavailablePullRequestLookup(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Read: func(context.Context, string, ...string) ([]byte, error) {
 		return nil, errors.New("provider unavailable")
@@ -148,7 +154,8 @@ func TestZeroDeltaPublicationRecoveryRefusesUnavailablePullRequestLookup(t *test
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRequiresGraphAncestryEvenWhenContentMatches(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRequiresGraphAncestryEvenWhenContentMatches(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	runEngineGit(t, f.canonical, "checkout", "-b", "divergent-content", r.Sources[0].SHA)
 	writeEngineFile(t, filepath.Join(f.canonical, "later.txt"), "later\n")
@@ -170,7 +177,8 @@ func TestZeroDeltaPublicationRecoveryRequiresGraphAncestryEvenWhenContentMatches
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesDerivedPathException(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesDerivedPathException(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	_, err := AcknowledgeAbsorbedConflict(zeroDeltaContext(t, "[]"), WorktreeMergeAbsorbedConflictAcknowledgementOptions{
 		ProjectsRoot: f.githubDir, Receipt: r.ReceiptPath, Apply: true, Actor: "test", Reason: "derived exception refusal",
@@ -184,7 +192,8 @@ func TestZeroDeltaPublicationRecoveryRefusesDerivedPathException(t *testing.T) {
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesReappearingBranchesAndWorktrees(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesReappearingBranchesAndWorktrees(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		prepare func(*testing.T, engineFixture, WorktreeMergeReceipt)
@@ -213,6 +222,7 @@ func TestZeroDeltaPublicationRecoveryRefusesReappearingBranchesAndWorktrees(t *t
 			runEngineGit(t, f.canonical, "push", "origin", r.Sources[0].SHA+":refs/heads/"+r.Sources[0].Branch)
 		}, "branch"},
 	} {
+		//nolint:paralleltest // Rows share the process-wide fixture environment and private lane evidence.
 		t.Run(tc.name, func(t *testing.T) {
 			f, r := zeroDeltaConflictFixture(t)
 			tc.prepare(t, f, r)
@@ -229,7 +239,8 @@ func TestZeroDeltaPublicationRecoveryRefusesReappearingBranchesAndWorktrees(t *t
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesReceiptChangedUnderLaneLock(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesReceiptChangedUnderLaneLock(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	reads := 0
 	read := func(path string) (WorktreeMergeReceipt, error) {
@@ -254,7 +265,8 @@ func TestZeroDeltaPublicationRecoveryRefusesReceiptChangedUnderLaneLock(t *testi
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesReceiptChangedDuringProof(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesReceiptChangedDuringProof(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	reads := 0
 	ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Read: func(context.Context, string, ...string) ([]byte, error) {
@@ -279,7 +291,8 @@ func TestZeroDeltaPublicationRecoveryRefusesReceiptChangedDuringProof(t *testing
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRechecksPullRequestBeforeWrite(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRechecksPullRequestBeforeWrite(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	reads := 0
 	ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Read: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -303,7 +316,8 @@ func TestZeroDeltaPublicationRecoveryRechecksPullRequestBeforeWrite(t *testing.T
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesLateEvidenceChanges(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesLateEvidenceChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*testing.T, engineFixture, WorktreeMergeReceipt)
@@ -338,6 +352,7 @@ func TestZeroDeltaPublicationRecoveryRefusesLateEvidenceChanges(t *testing.T) {
 			runEngineGit(t, f.canonical, "push", "origin", "main")
 		}, "current target changed"},
 	} {
+		//nolint:paralleltest // Rows share the process-wide fixture environment and private lane evidence.
 		t.Run(tc.name, func(t *testing.T) {
 			f, r := zeroDeltaConflictFixture(t)
 			calls := 0
@@ -361,7 +376,8 @@ func TestZeroDeltaPublicationRecoveryRefusesLateEvidenceChanges(t *testing.T) {
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesLateReceiptHashFailure(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesLateReceiptHashFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		failureCall  int
@@ -373,6 +389,7 @@ func TestZeroDeltaPublicationRecoveryRefusesLateReceiptHashFailure(t *testing.T)
 		{"prewrite read fails", 4, "error", "hash read failed"},
 		{"prewrite hash drifts", 4, "different", "changed immutable evidence before acknowledgement"},
 	} {
+		//nolint:paralleltest // Rows share the process-wide fixture environment and private lane evidence.
 		t.Run(tc.name, func(t *testing.T) {
 			f, r := zeroDeltaConflictFixture(t)
 			calls := 0
@@ -396,7 +413,8 @@ func TestZeroDeltaPublicationRecoveryRefusesLateReceiptHashFailure(t *testing.T)
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesShapeChangedUnderLaneLock(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesShapeChangedUnderLaneLock(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	reads := 0
 	read := func(path string) (WorktreeMergeReceipt, error) {
@@ -417,7 +435,8 @@ func TestZeroDeltaPublicationRecoveryRefusesShapeChangedUnderLaneLock(t *testing
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesLateUninspectableWorktree(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesLateUninspectableWorktree(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	parent := filepath.Join(f.githubDir, "late-parent")
 	r.Candidate.Worktree = filepath.Join(parent, "candidate")
@@ -442,7 +461,8 @@ func TestZeroDeltaPublicationRecoveryRefusesLateUninspectableWorktree(t *testing
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesCandidateReappearingAfterPrewriteStat(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesCandidateReappearingAfterPrewriteStat(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	receiptHash, err := worktreeMergeReceiptSHA256(r.ReceiptPath)
 	if err != nil {
@@ -465,7 +485,8 @@ func TestZeroDeltaPublicationRecoveryRefusesCandidateReappearingAfterPrewriteSta
 	}
 }
 
-func TestZeroDeltaPublicationRecoveryRefusesTargetDisappearingBeforeWrite(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EZeroDeltaPublicationRecoveryRefusesTargetDisappearingBeforeWrite(t *testing.T) {
 	f, r := zeroDeltaConflictFixture(t)
 	reads := 0
 	ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Read: func(context.Context, string, ...string) ([]byte, error) {
@@ -486,7 +507,8 @@ func TestZeroDeltaPublicationRecoveryRefusesTargetDisappearingBeforeWrite(t *tes
 	}
 }
 
-func TestAbsorbedConflictValidationRejectsMalformedRetirementEvidence(t *testing.T) {
+//nolint:paralleltest // Native conflict fixture sets WB_PROJECTS_ROOT for this process.
+func TestE2EAbsorbedConflictValidationRejectsMalformedRetirementEvidence(t *testing.T) {
 	_, r := zeroDeltaConflictFixture(t)
 	r.Phase = WorktreeMergePhasePrepare
 	r.PullRequest = "https://example.test/pr/1"

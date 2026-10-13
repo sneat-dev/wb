@@ -189,9 +189,6 @@ func coverageProfilePathWithAbs(retain string, inj *filewrite.Injector, absolute
 
 func coverageCommandDescription(options RunOptions) string {
 	packages := strings.Join(goCoveragePackagePatterns(options), ",")
-	if options.NativeOnly {
-		return fmt.Sprintf("native go test -tags=e2e -count=1 -run %s %s (%d configured process shards)", NativeGoTestSelector, packages, options.GoTestShards)
-	}
 	if options.IncludeE2E {
 		return "default and native E2E/contract coverage for " + packages
 	}

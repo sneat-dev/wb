@@ -72,9 +72,6 @@ type RunOptions struct {
 	CoverageProfile string
 	// IncludeE2E merges a separately measured native tier into default coverage.
 	IncludeE2E bool
-	// NativeOnly runs the compiled native selector once through the same shard policy.
-	NativeOnly   bool
-	coverageMode string
 	// coverPackages is internal instrumentation scope for a combined run.
 	coverPackages []string
 	// redBase is set only while a per-change ratchet measures its merge base.
@@ -190,10 +187,6 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			}
 		}
 	}
-	if options.NativeOnly {
-		report.Status = verificationStatus(report.Results)
-		return report
-	}
 	if nodes, ok, err := nodeProjects(path); err != nil {
 		report.Results = append(report.Results, VerificationEntry{Language: "node", Status: StatusFailed, Detail: err.Error()})
 	} else if ok {
@@ -228,20 +221,17 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 	if containsCheck(checks, CheckSpec) {
 		report.Results = append(report.Results, verifySpecWithMetadata(ctx, options, path, os.Stat, os.Lstat))
 	}
-	report.Status = verificationStatus(report.Results)
-	return report
-}
-
-func verificationStatus(results []VerificationEntry) Status {
-	if len(results) == 0 {
-		return StatusSkipped
+	if len(report.Results) == 0 {
+		return report
 	}
-	for _, result := range results {
+	report.Status = StatusPassed
+	for _, result := range report.Results {
 		if result.Status == StatusFailed {
-			return StatusFailed
+			report.Status = StatusFailed
+			break
 		}
 	}
-	return StatusPassed
+	return report
 }
 
 // verifySpecWithMetadata keeps the missing-root/config policy in one place;
@@ -538,7 +528,7 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 		entry.Detail = "unsupported check"
 		return entry
 	}
-	shardedGoTest := language == "go" && check == CheckTest && (options.GoTestShards > 1 || options.NativeOnly)
+	shardedGoTest := language == "go" && check == CheckTest && options.GoTestShards > 1
 	if shardedGoTest {
 		entry.Command = coverageCommandDescription(options)
 	}

@@ -28,13 +28,6 @@ func ValidateNativeWorkflowSelector(data []byte) error {
 		for _, step := range job.Steps {
 			for _, line := range strings.Split(step.Run, "\n") {
 				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "go run ./cmd/wb check ") {
-					if err := validateNativeCheckCommand(line); err != nil {
-						return err
-					}
-					found = true
-					continue
-				}
 				if !strings.HasPrefix(line, "go test ") || (!strings.Contains(line, "-tags e2e") && !strings.Contains(line, "-tags=e2e")) {
 					continue
 				}
@@ -59,44 +52,6 @@ func ValidateNativeWorkflowSelector(data []byte) error {
 	}
 	if !found {
 		return fmt.Errorf("native workflow has no e2e Go test run step")
-	}
-	return nil
-}
-
-// The native profile owns tagged discovery and NativeGoTestSelector; its CLI
-// contract tests bind this exact entrypoint to the shared runner. Only the full
-// current repository and these presentation/budget options are admitted here.
-func validateNativeCheckCommand(line string) error {
-	fields := strings.Fields(line)
-	if len(fields) < 7 || fields[4] != "." {
-		return fmt.Errorf("native check must select the complete current repository")
-	}
-	seen := map[string]bool{}
-	for i := 5; i < len(fields); i += 2 {
-		if i+1 == len(fields) || seen[fields[i]] {
-			return fmt.Errorf("ambiguous native check arguments")
-		}
-		seen[fields[i]] = true
-		value := fields[i+1]
-		switch fields[i] {
-		case "--profile":
-			if value != "native" {
-				return fmt.Errorf("native check profile must be native")
-			}
-		case "--timeout":
-			if value != "10m" {
-				return fmt.Errorf("native check must retain its 10m attempt budget")
-			}
-		case "--format":
-			if value != "json" {
-				return fmt.Errorf("native check format must be json")
-			}
-		default:
-			return fmt.Errorf("unsupported native check option %q", fields[i])
-		}
-	}
-	if !seen["--profile"] {
-		return fmt.Errorf("native check profile is missing")
 	}
 	return nil
 }
