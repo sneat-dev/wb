@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,7 +37,8 @@ func TestPRRootRegistersCompleteFamily(t *testing.T) {
 }
 
 func TestPRRootBindsParsedFlagsAndPreservesExactRefusalIdentity(t *testing.T) {
-	root := t.TempDir()
+	fixture, _ := newPRLandPreflightFixture(t)
+	root := fixture.projects
 	t.Chdir(root)
 	state := filepath.Join(root, ".wb", "streams", "broken")
 	if err := os.MkdirAll(state, 0700); err != nil {
@@ -55,12 +57,18 @@ func TestPRRootBindsParsedFlagsAndPreservesExactRefusalIdentity(t *testing.T) {
 	command.SetArgs([]string{"--projects-root", root, "pr", "land", "acme/app#1", "--non-interactive", "--format", "json"})
 	err := command.Execute()
 	var exit *exitError
-	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(exit.message, "cannot tell whether acme/app holds a live local link") || !strings.Contains(exit.message, "broken (") {
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(exit.message, "local dependency link evidence") || !strings.Contains(exit.message, "broken (") {
 		t.Fatalf("refusal %T %v", err, err)
 	}
-	if inv.projectsRoot != root || out.Len() != 0 {
-		t.Fatal(inv.projectsRoot, out.String())
+	var result orchestrate.PullRequestLandResult
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+		t.Fatal(decodeErr, out.String())
 	}
+	if inv.projectsRoot != root || result.RefusalCode != "cleanup-unverifiable" || exit.message != result.Reason+"; resolve with: "+result.SanctionedCommand {
+		t.Fatal(inv.projectsRoot, out.String(), exit.message)
+	}
+	assertPRLandOnlyReadEvidence(t, fixture, "1")
+	out.Reset()
 	// Construct the actual post-checkout callback via create --land before the native missing-task refusal.
 	create := prCommandForTest(inv, "create")
 	create.SilenceUsage = true

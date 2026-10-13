@@ -808,6 +808,37 @@ signals independently: state alone would miss a hand-written `go.work`, and
 `go.work` alone would miss an npm link. There MUST be no flag that both bypasses
 this guard and pushes.
 
+`wb pr land` MUST apply the same guard before arming auto-merge or merging,
+including with `--keep`, to worktrees matching the authoritative pull request
+head repository (case-insensitively) and exact branch. Discovery MUST preserve
+repository case variants without changing physical paths. Other branches and
+repositories MUST remain independent. Missing source identity or unreadable source inventory/link
+evidence MUST refuse. A fork's head MUST NOT select or retire a same-named
+branch in the target repository; fork source worktrees are retained explicitly.
+
+Source admission MUST discover producers from the exact repository's canonical
+Git worktree registry before inspecting task or recovery state. It MUST inspect
+the exact source branch and detached or unidentified potential producers.
+Unregistered log-only residue and unrelated recovery artifacts MUST remain
+visible to ordinary global inventory without blocking source admission or
+receiving cleanup authority. Registered source producers inside a recovery
+artifact MUST still refuse when their evidence cannot be established.
+
+Canonical lookup MUST preserve physical path spelling across repository case
+variants. Registered producer roots and common Git directories MUST agree by
+physical identity, including case and symbolic aliases; missing ownership,
+broken metadata, unreadable or malformed registry evidence, contradictory HEAD
+or branch identity, and identity changes during inspection MUST refuse.
+Landing cleanup MUST discover its source tasks through the same scoped query
+and retain the ordinary claim- and receipt-validated cleanup transaction.
+
+A missing work-log claim on a detached checkout MUST NOT block an unrelated
+PR only when its physical repository and directory identity, actual Git HEAD,
+and canonical worktree registration agree, its tracked and untracked status
+is clean, and its full commit differs from the authoritative PR head SHA.
+Same-head, dirty, missing, unreadable, malformed, or contradictory evidence
+MUST refuse; this distinction grants no cleanup authority over that checkout.
+
 #### REQ: verification-prints-its-active-links
 
 Every verification run against a linked consumer MUST print the links in effect,
@@ -1986,6 +2017,30 @@ committed modules in that repository
 **Then** it refuses before any push, names the link or the `use` entry and the
 command that clears it, and no flag combination both bypasses the guard and
 pushes; the committed intrinsic workspace is accepted.
+
+**Given** two worktrees of one repository, where only the unrelated branch has
+a live link or malformed `go.work`
+**When** `wb pr land` lands the other branch with or without `--keep`
+**Then** the unrelated worktree does not block admission and is preserved;
+moving either a recorded link or a hand-written unpublished workspace to the
+actual PR source refuses before auto-merge or merge, even with `--keep`.
+
+**Given** an uncorroborated manifest on a real detached checkout registered in
+the source repository at a different commit from the PR head
+**When** `wb pr land` preflights with or without `--keep`
+**Then** a clean checkout with consistent physical and Git evidence is left
+untouched and does not block admission; the same-head checkout, tracked or
+untracked changes, and inconsistent or unreadable evidence refuse before any
+auto-merge or merge.
+
+**Given** those foreign states together with a log-only unregistered task
+residue, a clean source, and source producers registered through physical case
+or symbolic aliases inside recovery state
+**When** source admission and landing cleanup run
+**Then** only the registered source is selected; global audit retains unrelated
+diagnostics, foreign files remain unchanged, and missing source claims, broken
+Git metadata, or live hand-written and recorded source links refuse with and
+without `--keep` before any irreversible action.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 

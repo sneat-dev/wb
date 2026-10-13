@@ -2526,7 +2526,6 @@ internal/worktrees::TestGCNamesARepositoryHeldBackByTheGraceWindow	serial pendin
 internal/worktrees::TestGCPlansEmptyShellsAndScopesThemToTheNamedTask	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestGCRefusesADetachedCheckoutWithNoLanding	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/worktrees::TestGCRefusesMissingWorkLogClaimBeforeApply	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestGCReportsLandedWithResidueAndRetiresItOnlyWithAllowResidue	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestGCSeesAnEditedFileAsActivity	serial pending case-by-case review (sneat-dev/wb#623 baseline)

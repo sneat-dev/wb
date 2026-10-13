@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -14,7 +16,7 @@ import (
 )
 
 //nolint:paralleltest // Native Git fixture configures process-wide Git and WB environment.
-func TestCleanupMissingHistoryRetiresOnlyAfterDurableAttestation(t *testing.T) {
+func TestE2ECleanupMissingHistoryRetiresOnlyAfterDurableAttestation(t *testing.T) {
 	for _, missing := range []string{"run", "claims directory", "claim"} {
 		//nolint:paralleltest // Native fixture owns process environment.
 		t.Run(missing, func(t *testing.T) {
@@ -97,7 +99,7 @@ func TestCleanupMissingHistoryRetiresOnlyAfterDurableAttestation(t *testing.T) {
 }
 
 //nolint:paralleltest // Native fixture owns process-wide environment and serial subtests restore its files.
-func TestMissingHistoryRefusesUnverifiableOrMismatchedEvidence(t *testing.T) {
+func TestE2EMissingHistoryRefusesUnverifiableOrMismatchedEvidence(t *testing.T) {
 	fixture, created, head, mergedAt := prepareMergedTask(t, "missing-history-refusals")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	projection, err := readWorkLogProjection(created.WorktreeDir)
@@ -257,7 +259,7 @@ func TestMissingHistoryRefusesUnverifiableOrMismatchedEvidence(t *testing.T) {
 }
 
 //nolint:paralleltest // Native Git fixture configures process-wide environment.
-func TestMissingHistoryAttestationIsIdempotentAcrossAdvancingTarget(t *testing.T) {
+func TestE2EMissingHistoryAttestationIsIdempotentAcrossAdvancingTarget(t *testing.T) {
 	fixture, created, head, mergedAt := prepareMergedTask(t, "missing-history-retry")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	projection, err := readWorkLogProjection(created.WorktreeDir)
@@ -297,7 +299,7 @@ func TestMissingHistoryAttestationIsIdempotentAcrossAdvancingTarget(t *testing.T
 }
 
 //nolint:paralleltest // Native fixture and immutable-write fault seam own process-wide state.
-func TestMissingHistoryRefusesClaimRacesAndUnwritableAudit(t *testing.T) {
+func TestE2EMissingHistoryRefusesClaimRacesAndUnwritableAudit(t *testing.T) {
 	fixture, created, head, mergedAt := prepareMergedTask(t, "missing-history-audit-faults")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	projection, err := readWorkLogProjection(created.WorktreeDir)

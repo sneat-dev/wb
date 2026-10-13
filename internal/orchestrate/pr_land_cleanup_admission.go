@@ -6,6 +6,7 @@ import (
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"strings"
 )
 
 // preflightLandingCleanup refuses a landing whose tidy-up would fail, before
@@ -15,10 +16,17 @@ import (
 // about retiring a checkout and does not apply, while the live-link check is
 // about what is being landed and always does.
 func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, number string, linksOnly bool) *landRefusal {
-	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
-		ProjectsRoot: options.ProjectsRoot,
-		Base:         view.Base.Ref,
-		Filter:       options.Repository,
+	if view.Head.Repo == nil || strings.TrimSpace(view.Head.Repo.FullName) == "" || strings.TrimSpace(view.Head.Ref) == "" {
+		return &landRefusal{
+			code:    "cleanup-unverifiable",
+			reason:  "the pull request head repository and branch could not be established, so its source worktrees cannot be checked",
+			command: "inspect the pull request head, then retry wb pr land " + options.Repository + "#" + number,
+		}
+	}
+	sourceRepository := view.Head.Repo.FullName
+	listed, err := worktrees.ListSourceWithDiagnostics(ctx, worktrees.SourceListOptions{
+		ProjectsRoot: options.ProjectsRoot, Repository: sourceRepository,
+		Branch: view.Head.Ref, HeadSHA: view.Head.SHA, Runner: options.resolveRunner(),
 	})
 	if err != nil {
 		// The inventory is unreadable, which is not the same as clean. Refuse
@@ -26,14 +34,20 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 		return &landRefusal{
 			code:    "cleanup-unverifiable",
 			reason:  "the worktree inventory could not be read, so this landing's cleanup cannot be pre-flighted: " + err.Error(),
-			command: "wb pr land " + options.Repository + "#" + number + " --keep",
+			command: "inspect and repair the source worktree inventory, then retry wb pr land " + options.Repository + "#" + number,
 		}
 	}
-	for _, entry := range listed.Results {
-		if entry.Repository != options.Repository || entry.Branch != view.Head.Ref {
-			continue
+	for _, diagnostic := range listed.Diagnostics {
+		return &landRefusal{
+			code:    "cleanup-unverifiable",
+			reason:  "the source worktree inventory is incomplete at " + diagnostic.Path + ": " + diagnostic.Message,
+			command: "inspect and repair the source worktree inventory, then retry wb pr land " + options.Repository + "#" + number,
 		}
-		if !entry.Clean && !linksOnly {
+	}
+	// ListSourceWithDiagnostics owns exact repository/branch corroboration;
+	// all returned producers must receive the admission/link checks below.
+	for _, entry := range listed.Results {
+		if !entry.Clean && !linksOnly && strings.EqualFold(sourceRepository, options.Repository) {
 			return &landRefusal{
 				code: "cleanup-blocked-dirty",
 				reason: "the worktree for task " + entry.Task + " has uncommitted changes, so landing now would " +
@@ -56,13 +70,14 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 // locallink.HasLiveLink rather than asking half the question a second way.
 func refuseLinkedWorktree(projectsRoot string, entry worktrees.ListResult) *landRefusal {
 	store, err := streams.Open(projectsRoot)
-	var linkStore locallink.LiveLinkStore = store
 	if err != nil {
-		// Open resolves the WB home; absence is handled by the store's List.
-		// Preserve the home-resolution fallback and still inspect go.work.
-		linkStore = nil
+		return &landRefusal{
+			code:    "cleanup-unverifiable",
+			reason:  "local dependency link storage for " + entry.WorktreeDir + " could not be resolved: " + err.Error(),
+			command: "inspect and repair the WB home, then retry landing",
+		}
 	}
-	links, err := locallink.HasLiveLink(linkStore, entry.WorktreeDir)
+	links, err := locallink.HasLiveLink(store, entry.WorktreeDir)
 	if err != nil {
 		return &landRefusal{
 			code:    "cleanup-unverifiable",
@@ -76,6 +91,6 @@ func refuseLinkedWorktree(projectsRoot string, entry worktrees.ListResult) *land
 	return &landRefusal{
 		code:    "cleanup-blocked-live-link",
 		reason:  locallink.RefusalMessage(entry.WorktreeDir, links),
-		command: "wb deps propagate local --undo, or land with --keep",
+		command: "wb deps propagate local --to " + entry.WorktreeDir + " --undo, then verify with released dependencies and retry landing",
 	}
 }

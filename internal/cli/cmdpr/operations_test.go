@@ -196,17 +196,15 @@ func TestCreateOutcomeCodesAndSuggestion(t *testing.T) {
 func TestLandOperationErrorsOptionsAndOutputBranches(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("land failed")
-	for _, kind := range []string{"guard", "operation", "json-write", "text-write", "footer-write", "usage", "findings", "json", "success"} {
+	for _, kind := range []string{"operation", "json-write", "text-write", "footer-write", "usage", "findings", "json", "success"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			deps := testDependencies()
 			deps.Interactive = func(io.Writer, bool) bool { return true }
 			deps.IsTerminal = func(io.Writer) bool { return true }
 			deps.CheckRepository = func(string, string) error {
-				if kind == "guard" {
-					return sentinel
-				}
-				return nil
+				t.Fatal("landing checked unrelated repository worktrees before resolving the PR head")
+				return sentinel
 			}
 			deps.Land = func(_ context.Context, o orchestrate.PullRequestLandOptions) (orchestrate.PullRequestLandResult, error) {
 				if o.Subject != "subject" || o.Reason != "reason" || !o.NoUpdateBranch || !o.NoAutoMerge || !o.MergeMethodExplicit || !o.Keep || o.ReviewCommentFile != "file" || !reflect.DeepEqual(o.KeepCommits, []string{"one", "two"}) {
@@ -242,7 +240,7 @@ func TestLandOperationErrorsOptionsAndOutputBranches(t *testing.T) {
 			c.SilenceErrors = true
 			c.SetArgs(args)
 			err := c.Execute()
-			if kind == "guard" || kind == "operation" {
+			if kind == "operation" {
 				if err != sentinel {
 					t.Fatal(err)
 				}

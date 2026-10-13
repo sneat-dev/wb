@@ -47,18 +47,26 @@ func TestLandingCleanupRefusesUnverifiableLinkEvidence(t *testing.T) {
 	}
 }
 
-func TestLandingCleanupHomeResolutionFallbackStillChecksWorkspace(t *testing.T) {
+func TestLandingCleanupRefusesUnresolvableLinkStorage(t *testing.T) {
 	t.Parallel()
 	projects := filepath.Join(t.TempDir(), "cycle")
 	if err := os.Symlink(projects, projects); err != nil {
 		t.Fatal(err)
 	}
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, "go.work"), []byte("{malformed\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	refusal := refuseLinkedWorktree(projects, worktrees.ListResult{WorktreeDir: checkout})
-	if refusal == nil || refusal.code != "cleanup-unverifiable" {
-		t.Fatalf("home fallback missed malformed workspace: %+v", refusal)
+	if refusal == nil || refusal.code != "cleanup-unverifiable" || !strings.Contains(refusal.reason, "could not be resolved") {
+		t.Fatalf("unreadable stream home allowed landing: %+v", refusal)
+	}
+}
+
+func TestLandingCleanupRequiresAuthoritativeSourceIdentity(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{`{"head":{"ref":"candidate"}}`, `{"head":{"ref":"candidate","repo":{"full_name":""}}}`, `{"head":{"repo":{"full_name":"acme/app"}}}`} {
+		view := orchCovPullRequestView(t, raw)
+		refusal := preflightLandingCleanup(t.Context(), PullRequestLandOptions{Repository: "acme/app", ProjectsRoot: t.TempDir()}, view, "7", true)
+		if refusal == nil || refusal.code != "cleanup-unverifiable" || !strings.Contains(refusal.reason, "head repository and branch") {
+			t.Fatalf("unknown source accepted: %+v", refusal)
+		}
 	}
 }

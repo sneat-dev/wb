@@ -22,8 +22,8 @@ const (
 	landingGuardByWorktree = "worktree"
 	landingGuardByReceipt  = "receipt"
 	// landingGuardByPullRequest addresses a landing by `owner/repository#N`.
-	// The worktrees to guard are every open stream member of that repository:
-	// landing a pull request while the stream's checkout still builds against
+	// The worktrees to guard match its authoritative head repository and branch:
+	// landing a pull request while its producing checkout still builds against
 	// an unpublished tree publishes a commit whose CI ran against something the
 	// registry never carried, which is the same defect the other two modes
 	// guard, arriving through a different door.

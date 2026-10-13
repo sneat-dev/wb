@@ -841,11 +841,11 @@ func TestOrchCovPreflightLandingCleanupRefusesAnUnreadableInventory(t *testing.T
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate"},"base":{"ref":"main"}}`)
+	view := orchCovPullRequestView(t, `{"head":{"ref":"candidate","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
 	refusal := preflightLandingCleanup(context.Background(), PullRequestLandOptions{
 		Repository: "acme/app", ProjectsRoot: file,
 	}, view, "7", true)
-	if refusal == nil || refusal.code != "cleanup-unverifiable" {
+	if refusal == nil || refusal.code != "cleanup-unverifiable" || !strings.Contains(refusal.reason, "inventory could not be read") {
 		t.Fatalf("unreadable inventory refusal = %+v", refusal)
 	}
 }

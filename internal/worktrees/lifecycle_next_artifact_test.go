@@ -58,7 +58,7 @@ func TestLifecycleNextOpenedArtifactPreservesNativeEnumerationRefusal(t *testing
 		t.Fatal("closed owned descriptor did not refuse the directory-inspection seek")
 	}
 	artifact := inspectOpenedLifecycleArtifact(context.Background(), stage, LifecycleArtifact{Path: stage, Disposition: "cleanup_backlog"}, directory)
-	if artifact.Eligible || artifact.Disposition != "cleanup_backlog" || !strings.Contains(artifact.Reason, nativeCause.Error()) {
+	if artifact.InspectionVerified || artifact.Eligible || artifact.Disposition != "cleanup_backlog" || !strings.Contains(artifact.Reason, nativeCause.Error()) {
 		t.Fatalf("refusal was promoted or lost: %+v; native=%v", artifact, nativeCause)
 	}
 	if info, err := os.Stat(stage); err != nil || !info.IsDir() {
@@ -81,12 +81,29 @@ func TestLifecycleNextArtifactRetainsBareReservedStagePrefixes(t *testing.T) {
 				t.Fatalf("native stage entry=%v %v", entries, err)
 			}
 			artifact, recognized := inspectLifecycleArtifact(context.Background(), root, "task", path, entries[0])
-			if !recognized || artifact.Eligible || artifact.Disposition != "cleanup_backlog" || artifact.Reason != "reserved WB stage name has no collision-resistant identity suffix" {
+			if !recognized || artifact.InspectionVerified || artifact.Eligible || artifact.Disposition != "cleanup_backlog" || artifact.Reason != "reserved WB stage name has no collision-resistant identity suffix" {
 				t.Fatalf("bare reserved stage admitted=%+v %v", artifact, recognized)
 			}
 			if retained, err := os.ReadDir(path); err != nil || len(retained) != 0 {
 				t.Fatalf("refusal changed reserved stage=%v %v", retained, err)
 			}
 		})
+	}
+}
+
+func TestLifecycleArtifactSymlinkDoesNotCarryVerifiedInspection(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := filepath.Join(root, ".wb-retired-stage-linked")
+	if err := os.Symlink(t.TempDir(), path); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatal(entries, err)
+	}
+	artifact, recognized := inspectLifecycleArtifact(t.Context(), root, "", path, entries[0])
+	if !recognized || artifact.InspectionVerified || artifact.Eligible {
+		t.Fatalf("symlink forged verified lifecycle provenance: %+v", artifact)
 	}
 }

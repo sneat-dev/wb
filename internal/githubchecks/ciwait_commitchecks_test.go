@@ -157,6 +157,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 }
 
 func TestNormalizeCheckName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		input string
 		want  string
@@ -174,6 +175,7 @@ func TestNormalizeCheckName(t *testing.T) {
 }
 
 func TestFailedObservedChecksWithWaivers(t *testing.T) {
+	t.Parallel()
 	checks := []RemoteCheck{
 		{Name: "check-run:CI", Bucket: "pass"},
 		{Name: "check-run:Workers Builds: specscore-md", Bucket: "fail"},

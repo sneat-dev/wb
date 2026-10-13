@@ -198,15 +198,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			effectiveNonInteractive := nonInteractive || runtime.Flags().Quiet
 			progress := landingProgress(runtime, deps, command, effectiveNonInteractive)
 			progress.Start(repository, number, "", "")
-			// The landing guard runs before anything else, including the
-			// GitHub read: a worktree of this repository still building against
-			// an unpublished tree makes every check observation meaningless.
-			progress.Update("pr land: local link preflight: " + repository + ": started")
-			if err := deps.CheckRepository(runtime.Flags().ProjectsRoot, repository); err != nil {
-				progress.FinishOperation("pr land: local link preflight: failed: " + err.Error())
-				return err
-			}
-			progress.Update("pr land: local link preflight: " + repository + ": completed")
+			// Land resolves the authoritative PR head before checking its source
+			// worktrees. Other branches of this repository are independent work.
 			events, streamName := deps.Events(runtime.Flags().ProjectsRoot, repository)
 			result, err := deps.Land(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:          repository,
