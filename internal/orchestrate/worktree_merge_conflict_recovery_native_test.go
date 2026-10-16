@@ -3,8 +3,10 @@ package orchestrate
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/runner"
 )
@@ -14,6 +16,35 @@ type conflictRecoveryFixture struct {
 	receipt   WorktreeMergeReceipt
 	head      string
 	claimPath string
+}
+
+func TestUnpublishedLandConflictRetryRequiresExactCleanCandidate(t *testing.T) {
+	f := newConflictRecoveryFixture(t)
+	receipt := f.receipt
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Candidate.SHA = f.head
+	before := receipt
+	changed, err := advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
+	if err != nil || changed || !reflect.DeepEqual(receipt, before) {
+		t.Fatalf("unchanged unpublished land candidate: changed=%v receipt=%+v err=%v", changed, receipt, err)
+	}
+
+	receipt.Candidate.SHA = f.receipt.Candidate.SHA
+	before = receipt
+	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
+	if changed || err == nil || !strings.Contains(err.Error(), "unpublished land-phase candidate HEAD drifted") || !reflect.DeepEqual(receipt, before) {
+		t.Fatalf("drifted unpublished land candidate: changed=%v receipt=%+v err=%v", changed, receipt, err)
+	}
+
+	receipt = f.receipt
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Candidate.SHA = f.head
+	receipt.PublishedCandidateSHA = f.head
+	receipt.PullRequest = "https://example.test/pull/1"
+	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
+	if changed || err != nil {
+		t.Fatalf("published candidate should use published recovery: changed=%v err=%v", changed, err)
+	}
 }
 
 func newConflictRecoveryFixture(t *testing.T) conflictRecoveryFixture {

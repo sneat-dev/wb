@@ -116,11 +116,14 @@ func advanceResolvedConflictCandidateWithRunner(ctx context.Context, run runner.
 	// Older WB versions converted an otherwise recoverable published-candidate
 	// drift into conflict before the recorded-predecessor path could inspect it.
 	// Leave that state for advancePublishedWorktreeMergeCandidate below; this
-	// helper owns only unpublished prepare conflicts.
+	// helper also admits an unchanged, unpublished land-phase candidate: a
+	// transient pre-push refusal can leave it at land/conflict before any ref
+	// was published. LandWorktreeMerge will recheck sources, target, validation,
+	// and the pre-push gate before it retries publication.
 	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.LandingSHA == "" {
 		return false, nil
 	}
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+	if (receipt.Phase != WorktreeMergePhasePrepare && receipt.Phase != WorktreeMergePhaseLand) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
 		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
 		return false, fmt.Errorf("receipt %s has no recoverable conflict candidate", receipt.ReceiptPath)
@@ -155,6 +158,9 @@ func advanceResolvedConflictCandidateWithRunner(ctx context.Context, run runner.
 	}
 	if head == receipt.Candidate.SHA {
 		return false, nil
+	}
+	if receipt.Phase == WorktreeMergePhaseLand {
+		return false, fmt.Errorf("unpublished land-phase candidate HEAD drifted from %s to %s", receipt.Candidate.SHA, head)
 	}
 	containsOriginal, err := isMergeAncestorWithRunner(ctx, run, guard.Path, receipt.Candidate.SHA, head)
 	if err != nil {
