@@ -771,7 +771,10 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		if err := save(receipt); err != nil {
 			return receipt, err
 		}
-		if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, options.Timeout, options.Retry); err != nil {
+		if err := pushWorktreeMergeRefWithExpectedAbsent(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, unpublishedPrePushRetry, options.Timeout, options.Retry); err != nil {
+			if unpublishedPrePushRetry {
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("candidate create-only push failed: %w", err), save)
+			}
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("candidate push failed without force: %w", err), save)
 		}
 		reportWorktreeMergeProgress(options.Progress, "publish_candidate", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))
