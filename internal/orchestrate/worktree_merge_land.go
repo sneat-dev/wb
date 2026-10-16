@@ -44,6 +44,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	// first-ever transition from prepare into land, which must keep refusing
 	// on a bare identity mismatch rather than silently re-validating it away.
 	resumedFromLandPhase := receipt.Phase == WorktreeMergePhaseLand
+	unpublishedPrePushRetry := receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeConflict && unpublishedPrePushConflict(receipt)
 	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
 		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
 	}
@@ -760,6 +761,9 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
 		if err != nil {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
+		}
+		if unpublishedPrePushRetry && receipt.PushGate.PreviousRemoteSHA != strings.Repeat("0", 40) {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("unpublished retry candidate ref %s appeared before push: %s", receipt.Candidate.Branch, receipt.PushGate.PreviousRemoteSHA), save)
 		}
 		if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA), save)
