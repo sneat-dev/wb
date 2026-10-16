@@ -44,6 +44,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	// first-ever transition from prepare into land, which must keep refusing
 	// on a bare identity mismatch rather than silently re-validating it away.
 	resumedFromLandPhase := receipt.Phase == WorktreeMergePhaseLand
+	unpublishedPrePushRetry := receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeConflict && unpublishedPrePushConflict(receipt)
 	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
 		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
 	}
@@ -761,13 +762,19 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		if err != nil {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
 		}
+		if unpublishedPrePushRetry && receipt.PushGate.PreviousRemoteSHA != strings.Repeat("0", 40) {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("unpublished retry candidate ref %s appeared before push: %s", receipt.Candidate.Branch, receipt.PushGate.PreviousRemoteSHA), save)
+		}
 		if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA), save)
 		}
 		if err := save(receipt); err != nil {
 			return receipt, err
 		}
-		if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, options.Timeout, options.Retry); err != nil {
+		if err := pushWorktreeMergeRefWithExpectedAbsent(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, unpublishedPrePushRetry, options.Timeout, options.Retry); err != nil {
+			if unpublishedPrePushRetry {
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("candidate create-only push failed: %w", err), save)
+			}
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("candidate push failed without force: %w", err), save)
 		}
 		reportWorktreeMergeProgress(options.Progress, "publish_candidate", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))

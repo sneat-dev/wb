@@ -116,14 +116,20 @@ func advanceResolvedConflictCandidateWithRunner(ctx context.Context, run runner.
 	// Older WB versions converted an otherwise recoverable published-candidate
 	// drift into conflict before the recorded-predecessor path could inspect it.
 	// Leave that state for advancePublishedWorktreeMergeCandidate below; this
-	// helper owns only unpublished prepare conflicts.
+	// helper also admits an unchanged, unpublished land-phase candidate: a
+	// transient pre-push refusal can leave it at land/conflict before any ref
+	// was published. LandWorktreeMerge will recheck sources, target, validation,
+	// and the pre-push gate before it retries publication.
 	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.LandingSHA == "" {
 		return false, nil
 	}
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+	if (receipt.Phase != WorktreeMergePhasePrepare && receipt.Phase != WorktreeMergePhaseLand) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
 		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
 		return false, fmt.Errorf("receipt %s has no recoverable conflict candidate", receipt.ReceiptPath)
+	}
+	if receipt.Phase == WorktreeMergePhaseLand && !unpublishedPrePushConflict(*receipt) {
+		return false, fmt.Errorf("receipt %s does not prove an unpublished pre-push refusal", receipt.ReceiptPath)
 	}
 	guard, err := worktrees.Guard(ctx, receipt.Candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
 	if err != nil {
@@ -154,7 +160,19 @@ func advanceResolvedConflictCandidateWithRunner(ctx context.Context, run runner.
 		return false, err
 	}
 	if head == receipt.Candidate.SHA {
+		if receipt.Phase == WorktreeMergePhaseLand {
+			remoteCandidate, _, remoteErr := runCommand(ctx, run, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+			if remoteErr != nil {
+				return false, fmt.Errorf("inspect unpublished land candidate: %w", remoteErr)
+			}
+			if strings.TrimSpace(remoteCandidate) != "" {
+				return false, fmt.Errorf("land candidate branch %s is already published without a recorded predecessor", receipt.Candidate.Branch)
+			}
+		}
 		return false, nil
+	}
+	if receipt.Phase == WorktreeMergePhaseLand {
+		return false, fmt.Errorf("unpublished land-phase candidate HEAD drifted from %s to %s", receipt.Candidate.SHA, head)
 	}
 	containsOriginal, err := isMergeAncestorWithRunner(ctx, run, guard.Path, receipt.Candidate.SHA, head)
 	if err != nil {
@@ -222,6 +240,22 @@ func advanceResolvedConflictCandidateWithRunner(ctx context.Context, run runner.
 	}
 	recordRecoveredMergeCandidate(receipt, head)
 	return true, nil
+}
+
+// A pre-push refusal is the only unpublished land conflict that can be
+// replayed. Older resume attempts overwrote the original hook error, so the
+// legacy failure text is accepted only with the exact PR deferral and host
+// admission checkpoint that preceded that attempt.
+func unpublishedPrePushConflict(receipt WorktreeMergeReceipt) bool {
+	if receipt.Route.Route != WorktreeMergeRoutePullRequest || receipt.PushGate != nil {
+		return false
+	}
+	if strings.Contains(receipt.Failure, "managed pre-push gate failed before opening the push connection") {
+		return true
+	}
+	return receipt.HostLoadAdmission != nil && receipt.ValidationDeferral != nil &&
+		receipt.ValidationDeferral.Route == WorktreeMergeRoutePullRequest && receipt.ValidationDeferral.CandidateSHA == receipt.Candidate.SHA &&
+		strings.HasSuffix(receipt.Failure, "has no recoverable conflict candidate")
 }
 
 // conflictCandidateAdvanceNeedsValidation closes the interruption window after
