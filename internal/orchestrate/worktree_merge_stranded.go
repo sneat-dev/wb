@@ -34,6 +34,9 @@ const (
 // receipt and every Work Log remain untouched; this acknowledgement only
 // frees the merger lane for the next candidate.
 type WorktreeMergeStrandedLandingAcknowledgement struct {
+	// Set only by explicit recovery of a published predecessor retained by the candidate.
+	PublishedPredecessorSHA string `json:"published_predecessor_sha,omitempty"`
+
 	SchemaVersion       int                 `json:"schema_version"`
 	ID                  string              `json:"id"`
 	Status              string              `json:"status"`
@@ -80,6 +83,8 @@ type WorktreeMergeStrandedLandingAcknowledgement struct {
 // WorktreeMergeStrandedLandingAcknowledgementOptions configures
 // AcknowledgeStrandedPullRequestLanding.
 type WorktreeMergeStrandedLandingAcknowledgementOptions struct {
+	AllowPublishedPredecessor bool
+
 	ProjectsRoot string
 	Receipt      string
 	Apply        bool
@@ -105,11 +110,18 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
+	var initialReceiptHash string
+	if options.AllowPublishedPredecessor {
+		initialReceiptHash, err = hash(receiptPath)
+		if err != nil {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, err
+		}
+	}
 	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
-	if err := validateStrandedLandingReceipt(receipt, receiptPath); err != nil {
+	if err := validateStrandedLandingReceiptWithPredecessor(receipt, receiptPath, options.AllowPublishedPredecessor); err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
 	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
@@ -122,6 +134,24 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	}
 	defer func() { _ = lock.Release() }()
 
+	if options.AllowPublishedPredecessor {
+		// Re-read the exact historical record under the same lane lock used for proof.
+		lockedHash, hashErr := hash(receiptPath)
+		if hashErr != nil {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, hashErr
+		}
+		if lockedHash != initialReceiptHash {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, errors.New("historical receipt changed before published predecessor proof")
+		}
+		receipt, err = readReceipt(receiptPath)
+		if err != nil {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, err
+		}
+		if err := validateStrandedLandingReceiptWithPredecessor(receipt, receiptPath, true); err != nil {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, err
+		}
+	}
+
 	// Every dynamic proof is queried live, under the lane lock: GitHub, never
 	// a local worktree or any evidence gathered before this lock, is
 	// authoritative for whether this candidate landed and still does.
@@ -130,10 +160,20 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 		return WorktreeMergeStrandedLandingAcknowledgement{}, proofErr
 	}
 
+	if options.AllowPublishedPredecessor {
+		if err := proveStrandedPublishedPredecessor(ctx, receipt, candidateLanding); err != nil {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, err
+		}
+	}
+
 	receiptHash, err := hash(receiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
+	if options.AllowPublishedPredecessor && receiptHash != initialReceiptHash {
+		return WorktreeMergeStrandedLandingAcknowledgement{}, errors.New("historical receipt changed during published predecessor proof")
+	}
+
 	ackPath := strandedLandingAcknowledgementPath(receiptPath)
 	ack := WorktreeMergeStrandedLandingAcknowledgement{
 		SchemaVersion: worktreeMergeStrandedLandingAcknowledgementSchemaVersion,
@@ -147,10 +187,13 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...),
 		Actor:   strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
+	if options.AllowPublishedPredecessor {
+		ack.PublishedPredecessorSHA = receipt.PublishedCandidateSHA
+	}
 	ack.ID = strandedLandingAcknowledgementID(ack)
 	if existing, readErr := readStrandedLandingAcknowledgement(ackPath, receipt); readErr == nil {
 		if existing.ProvedLandingSHA != landingSHA || existing.CurrentTargetSHA != currentTarget ||
-			existing.PullRequestHeadSHA != pullRequestHeadSHA ||
+			existing.PullRequestHeadSHA != pullRequestHeadSHA || existing.PublishedPredecessorSHA != ack.PublishedPredecessorSHA ||
 			existing.CandidateLanding != candidateLanding || existing.CandidateLandingTreeSHA != candidateLandingTreeSHA {
 			return WorktreeMergeStrandedLandingAcknowledgement{}, fmt.Errorf("acknowledgement %s binds different landing or target evidence", ackPath)
 		}
@@ -175,6 +218,10 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 // PullRequest), and an already-landed post-target CI failure (LandingSHA
 // set; that is acknowledge-landed-failed's territory) are all excluded.
 func validateStrandedLandingReceipt(receipt WorktreeMergeReceipt, receiptPath string) error {
+	return validateStrandedLandingReceiptWithPredecessor(receipt, receiptPath, false)
+}
+
+func validateStrandedLandingReceiptWithPredecessor(receipt WorktreeMergeReceipt, receiptPath string, allowPredecessor bool) error {
 	if receipt.ReceiptPath != receiptPath || receipt.ID == "" || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) {
 		return fmt.Errorf("receipt %s has inconsistent immutable receipt identity", receiptPath)
 	}
@@ -190,8 +237,36 @@ func validateStrandedLandingReceipt(receipt WorktreeMergeReceipt, receiptPath st
 	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.SHA == "" {
 		return fmt.Errorf("receipt %s lacks complete immutable repository, target, or candidate identity", receiptPath)
 	}
-	if receipt.PublishedCandidateSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+	if receipt.PublishedCandidateSHA == "" || (!allowPredecessor && receipt.PublishedCandidateSHA != receipt.Candidate.SHA) {
 		return fmt.Errorf("receipt %s published candidate %s does not match its exact preserved candidate %s", receiptPath, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
+	}
+	if allowPredecessor {
+		if receipt.Status != WorktreeMergeConflict || receipt.Route.Route != WorktreeMergeRoutePullRequest || receipt.PublishedCandidateSHA == receipt.Candidate.SHA || len(receipt.Sources) == 0 {
+			return errors.New("--allow-published-predecessor requires a land/conflict PR receipt with distinct published and preserved candidate SHAs and complete sources")
+		}
+		for _, source := range receipt.Sources {
+			if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+				return errors.New("published predecessor receipt contains incomplete source identity")
+			}
+		}
+	}
+
+	return nil
+}
+
+// The opt-in recovery accepts only a plain ancestry chain: published predecessor
+// -> preserved candidate -> merged PR head -> exact current target. Every source
+// must also be in that preserved candidate. Tree similarity cannot prove this.
+func proveStrandedPublishedPredecessor(ctx context.Context, receipt WorktreeMergeReceipt, candidateLanding string) error {
+	if candidateLanding != "ancestor" {
+		return errors.New("published predecessor recovery requires candidate ancestry in the remote target")
+	}
+	roots := []string{receipt.PublishedCandidateSHA}
+	roots = append(roots, sourceSHAs(receipt.Sources)...)
+	for _, root := range roots {
+		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, root, receipt.Candidate.SHA); !contains {
+			return fmt.Errorf("preserved candidate %s does not prove published predecessor/source %s ancestry: %s", receipt.Candidate.SHA, root, reason)
+		}
 	}
 	return nil
 }
@@ -404,6 +479,12 @@ func strandedLandingAcknowledgementID(ack WorktreeMergeStrandedLandingAcknowledg
 		_, _ = hash.Write([]byte(ack.PullRequestHeadSHA))
 		_, _ = hash.Write([]byte{0})
 	}
+	if ack.PublishedPredecessorSHA != "" {
+		_, _ = hash.Write([]byte("published-predecessor"))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(ack.PublishedPredecessorSHA))
+		_, _ = hash.Write([]byte{0})
+	}
 	for _, source := range ack.Sources {
 		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
 			_, _ = hash.Write([]byte(value))
@@ -441,6 +522,16 @@ func readStrandedLandingAcknowledgement(path string, receipt WorktreeMergeReceip
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
+	}
+	if ack.PublishedPredecessorSHA != "" {
+		if err := validateStrandedLandingReceiptWithPredecessor(receipt, receipt.ReceiptPath, true); err != nil {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, err
+		}
+		if ack.PublishedPredecessorSHA != receipt.PublishedCandidateSHA || ack.CandidateLanding != "ancestor" {
+			return WorktreeMergeStrandedLandingAcknowledgement{}, fmt.Errorf("stranded-landing acknowledgement %s has invalid published predecessor evidence", path)
+		}
+	} else if receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		return WorktreeMergeStrandedLandingAcknowledgement{}, fmt.Errorf("stranded-landing acknowledgement %s lacks published predecessor evidence", path)
 	}
 	if ack.SchemaVersion != worktreeMergeStrandedLandingAcknowledgementSchemaVersion || ack.Status != "stranded_landing_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash ||

@@ -674,7 +674,7 @@ proof refuses closed.`,
 }
 
 func newWorktreeMergeAcknowledgeStrandedLandingCmd(inv *mergeInvocation) *cobra.Command {
-	var apply bool
+	var apply, allowPublishedPredecessor bool
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-stranded-landing <merge-receipt>",
@@ -691,7 +691,13 @@ the case where a resume's own landing-result read failed on pure I/O or
 environment error, typically because the candidate worktree was already
 removed. Unlike acknowledge-landed-failed, this proof never reads or requires
 the candidate or any receipted source worktree. The immutable Work Log and
-historical merge receipt are never rewritten. This is a dry-run by default;
+historical merge receipt are never rewritten. Default recovery requires the
+published candidate SHA to equal the preserved candidate SHA.
+--allow-published-predecessor explicitly recovers only land/conflict PR receipts
+with distinct SHAs when GitHub proves the published SHA and every source are
+ancestors of the preserved candidate, which must itself be an ancestor of the
+merged PR head and exact current target. It records both SHAs in the separate
+acknowledgement and refuses tree-only containment. This is a dry-run by default;
 --apply requires --actor and --reason and writes only the new acknowledgement
 artifact. A pull request that is not proved MERGED, or a merge commit or
 candidate not proved contained in the current remote target, refuses closed.`,
@@ -706,7 +712,7 @@ candidate not proved contained in the current remote target, refuses closed.`,
 			}
 			defer releaseAdmission()
 			ack, err := inv.operations.AcknowledgeStrandedPullRequestLanding(command.Context(), orchestrate.WorktreeMergeStrandedLandingAcknowledgementOptions{
-				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason, AllowPublishedPredecessor: allowPublishedPredecessor,
 			})
 			if err != nil {
 				return err
@@ -732,6 +738,7 @@ candidate not proved contained in the current remote target, refuses closed.`,
 			return err
 		},
 	}
+	command.Flags().BoolVar(&allowPublishedPredecessor, "allow-published-predecessor", false, "land/conflict PR only: prove a distinct published predecessor and all sources remain in the landed candidate")
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")

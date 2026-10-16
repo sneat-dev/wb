@@ -16591,6 +16591,7 @@
               "path": "wb worktree merge acknowledge-stranded-landing",
               "flags": [
                 "--actor",
+                "--allow-published-predecessor",
                 "--apply",
                 "--format",
                 "--initiator",
@@ -16599,6 +16600,7 @@
               ],
               "modes": [
                 "Proves, using only GitHub's own remote state, that a recoverable non-terminal land receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
+                "Explicit --allow-published-predecessor accepts a distinct published predecessor only for land/conflict PR receipts, proving the predecessor and all sources are ancestors of the preserved candidate and recording both SHAs; default equality remains strict",
                 "Accepts only a land-phase conflict, published, checks-pending, or checks-failed receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
               ]
             }
@@ -16613,6 +16615,7 @@
               "contains": [
                 "only GitHub's own remote state",
                 "--apply",
+                "--allow-published-predecessor",
                 "--actor",
                 "--initiator",
                 "--mode",

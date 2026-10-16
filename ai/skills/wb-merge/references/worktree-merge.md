@@ -401,3 +401,15 @@ as a required root. The command creates no receipt or acknowledgement, so pass
 the resulting candidate to `supersede-validation-failed` to append the only
 lane-releasing transition. Use `--progress` for heartbeat updates during long
 Git operations while JSON output remains stable.
+
+For an already-merged PR with a `land/conflict` receipt whose published SHA is
+an older predecessor of its preserved candidate, use explicit
+`acknowledge-stranded-landing --allow-published-predecessor`. WB proves using
+GitHub that the published predecessor and every receipted source are ancestors
+of the preserved candidate, and that candidate, the merged PR head, and landing
+remain in the exact remote target. It re-reads and digest-checks the historical
+receipt under the lane lock, then records both candidate SHAs in the separate
+acknowledgement. Default published/preserved equality remains strict. This
+option refuses rewritten or unlanded candidates, missing source identities,
+non-conflict receipts, and tree-only containment; it does not declare CI
+successful or remove worktrees. See WB issue #823 for the original refusal.

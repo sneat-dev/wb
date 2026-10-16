@@ -271,3 +271,10 @@ opts post-target CI recovery into proving every clean live source descendant is
 already contained in the exact freshly fetched remote target. Its append-only
 acknowledgement retains the original sources, observed source heads, and receipt
 digest. The default continues to require exact source heads.
+
+`worktree merge acknowledge-stranded-landing --allow-published-predecessor`
+recovers a land/conflict PR receipt whose recorded published SHA precedes its
+preserved candidate. It proves ancestry for that predecessor and every source
+into the preserved candidate, then the merged PR head and current target, and
+records the predecessor in the digest-bound acknowledgement. Default equality
+checks remain strict; this option refuses tree-only containment.

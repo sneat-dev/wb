@@ -116,6 +116,14 @@ func TestWorktreeLandAndRootLandAcceptProjectsRoot(t *testing.T) {
 }
 
 func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
+	t.Run("published predecessor flag reaches stranded recovery", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		root := newRootCmd()
+		root.SetArgs([]string{"--projects-root", fixture.projectsRoot, "worktree", "merge", "acknowledge-stranded-landing", fixture.receiptPath, "--allow-published-predecessor"})
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "want recoverable land receipt") {
+			t.Fatalf("predecessor option did not reach receipt guard: %v", err)
+		}
+	})
 	t.Run("source descendant flag reaches recovery guard", func(t *testing.T) {
 		fixture := newCLIWorktreeMergeFixture(t, 1)
 		root := newRootCmd()

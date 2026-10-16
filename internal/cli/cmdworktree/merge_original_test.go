@@ -109,7 +109,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 		t.Fatalf("supersede-validation-failed flags = %#v err=%v", supersede, err)
 	}
 	stranded, _, err := command.Find([]string{"acknowledge-stranded-landing"})
-	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil {
+	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil || stranded.Flags().Lookup("allow-published-predecessor") == nil {
 		t.Fatalf("acknowledge-stranded-landing flags = %#v err=%v", stranded, err)
 	}
 	for _, status := range []string{"conflict", "published", "checks_pending", "checks_failed"} {
