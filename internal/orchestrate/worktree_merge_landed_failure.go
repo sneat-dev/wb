@@ -46,7 +46,12 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	defer func() { _ = lock.Release() }()
 	if receipt.Status == WorktreeMergePostTargetCIFailed {
 		if _, statErr := os.Lstat(receipt.Candidate.Worktree); os.IsNotExist(statErr) {
-			return acknowledgeCleanedDirectPostTargetFailure(ctx, options, receipt, receiptPath, run, persist)
+			switch receipt.Route.Route {
+			case WorktreeMergeRouteDirect:
+				return acknowledgeCleanedDirectPostTargetFailure(ctx, options, receipt, receiptPath, run, persist)
+			case WorktreeMergeRoutePullRequest:
+				return acknowledgeCleanedPullRequestPostTargetFailure(ctx, options, receipt, receiptPath, run, persist)
+			}
 		} else if statErr != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("inspect receipted candidate worktree: %w", statErr)
 		}
@@ -138,6 +143,20 @@ func acknowledgeCleanedDirectPostTargetFailure(ctx context.Context, options Work
 	if receipt.Route.Route != WorktreeMergeRouteDirect || receipt.LandingSHA == "" || receipt.LandingSHA != receipt.Candidate.SHA {
 		return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("cleaned post-target-CI recovery requires a direct route with landing equal to candidate SHA")
 	}
+	return acknowledgeCleanedPostTargetFailure(ctx, options, receipt, receiptPath, run, persist, false)
+}
+
+// A cleaned PR failure has already recorded a landing SHA. Require GitHub to
+// prove that this exact PR merged at that SHA before accepting local cleanup
+// and ancestry evidence; a separately integrated candidate is insufficient.
+func acknowledgeCleanedPullRequestPostTargetFailure(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions, receipt WorktreeMergeReceipt, receiptPath string, run runner.Runner, persist func(string, WorktreeMergeLandedFailureAcknowledgement) error) (WorktreeMergeLandedFailureAcknowledgement, error) {
+	if receipt.Route.Route != WorktreeMergeRoutePullRequest || receipt.PullRequest == "" || receipt.LandingSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("cleaned PR post-target-CI recovery requires the exact published candidate, pull request, and recorded landing")
+	}
+	return acknowledgeCleanedPostTargetFailure(ctx, options, receipt, receiptPath, run, persist, true)
+}
+
+func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions, receipt WorktreeMergeReceipt, receiptPath string, run runner.Runner, persist func(string, WorktreeMergeLandedFailureAcknowledgement) error, pullRequest bool) (WorktreeMergeLandedFailureAcknowledgement, error) {
 	expectations, err := terminalWorkLogExpectations(receipt)
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
@@ -170,9 +189,23 @@ func acknowledgeCleanedDirectPostTargetFailure(ctx context.Context, options Work
 		}
 		claimBases[expectation.Task] = baseSHA
 	}
+	var provedTarget string
+	if pullRequest {
+		provedLanding, target, _, candidateLanding, _, proofErr := proveStrandedPullRequestLanding(ctx, receipt)
+		if proofErr != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("prove cleaned PR landing: %w", proofErr)
+		}
+		if provedLanding != receipt.LandingSHA || candidateLanding != "ancestor" {
+			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("GitHub PR landing %s does not prove exact recorded landing %s with candidate ancestry", provedLanding, receipt.LandingSHA)
+		}
+		provedTarget = target
+	}
 	currentTarget, err := fetchExactMergeTargetWithRunner(ctx, run, canonical, receipt.Target)
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
+	}
+	if pullRequest && currentTarget != provedTarget {
+		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("current remote target %s changed since GitHub PR proof at %s", currentTarget, provedTarget)
 	}
 	roots := []string{receipt.TargetSHA, receipt.LandingSHA, receipt.Candidate.SHA}
 	roots = append(roots, sourceSHAs(receipt.Sources)...)
