@@ -11,6 +11,12 @@ The canonical public Workbench site is [sneat.work/bench](https://sneat.work/ben
 For the product story, decision guide, and measured evidence, see
 [Why/when to use WB CLI? How it saves you time and money.](docs/why-use-wb.md)
 
+## WB in the DataTug development workflow
+
+[DataTug](https://datatug.app) is our flagship product. We use WB to coordinate
+its repository worktrees, checks, and delivery across the development fleet.
+Read [how we build DataTug with our tools](https://datatug.app/en/under-the-hood/tools-we-built/).
+
 ## WB
 
 Public Workbench projections are opt-in from this repository's root README:
