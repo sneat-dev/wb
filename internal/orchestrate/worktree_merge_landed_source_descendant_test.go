@@ -156,6 +156,36 @@ func TestSourceDescendantRecoveryRefusesOtherReceiptStatuses(t *testing.T) {
 	}
 }
 
+func TestSourceDescendantRecoveryRefusesReceiptRemovedBeforeHash(t *testing.T) {
+	t.Parallel()
+	f, r := landedFailureOwnerFixture(t)
+	hashed := false
+	_, err := acknowledgeLandedMergeFailureWithHasher(t.Context(), WorktreeMergeLandedFailureAcknowledgementOptions{
+		ProjectsRoot: f.githubDir, Receipt: r.ReceiptPath, AllowLandedSourceDescendants: true,
+	}, defaultRunner, func(string) (WorktreeMergeReceipt, error) {
+		t.Fatal("removed receipt was read")
+		return WorktreeMergeReceipt{}, nil
+	}, func(string, WorktreeMergeLandedFailureAcknowledgement) error {
+		t.Fatal("removed receipt produced an acknowledgement")
+		return nil
+	}, func(path string) (string, error) {
+		if path != r.ReceiptPath {
+			t.Fatalf("hash path=%q want=%q", path, r.ReceiptPath)
+		}
+		hashed = true
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		return worktreeMergeReceiptSHA256(path)
+	})
+	if !hashed || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed receipt hash attempted=%t error=%v", hashed, err)
+	}
+	if _, err := os.Stat(landedFailureAcknowledgementPath(r.ReceiptPath)); !os.IsNotExist(err) {
+		t.Fatalf("refusal wrote acknowledgement: %v", err)
+	}
+}
+
 func TestSourceDescendantRecoveryRechecksHeadsAndReceiptBeforePublication(t *testing.T) {
 	t.Parallel()
 	for _, change := range []string{"source moves", "receipt changes", "receipt disappears", "containment fails", "candidate removed"} {
