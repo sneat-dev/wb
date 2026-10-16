@@ -21,13 +21,17 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 }
 
 func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions, run runner.Runner, readReceipt func(string) (WorktreeMergeReceipt, error), persist func(string, WorktreeMergeLandedFailureAcknowledgement) error) (WorktreeMergeLandedFailureAcknowledgement, error) {
+	return acknowledgeLandedMergeFailureWithHasher(ctx, options, run, readReceipt, persist, worktreeMergeReceiptSHA256)
+}
+
+func acknowledgeLandedMergeFailureWithHasher(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions, run runner.Runner, readReceipt func(string) (WorktreeMergeReceipt, error), persist func(string, WorktreeMergeLandedFailureAcknowledgement) error, receiptSHA256 func(string) (string, error)) (WorktreeMergeLandedFailureAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	var receiptHash string
 	if options.AllowLandedSourceDescendants {
-		receiptHash, err = worktreeMergeReceiptSHA256(receiptPath)
+		receiptHash, err = receiptSHA256(receiptPath)
 		if err != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, err
 		}
@@ -168,7 +172,7 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
 	if len(observedSources) > 0 {
-		ack.ReceiptSHA256, err = worktreeMergeReceiptSHA256(receiptPath)
+		ack.ReceiptSHA256, err = receiptSHA256(receiptPath)
 		if err != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, err
 		}
