@@ -98,6 +98,43 @@ func TestE2ELandOwnerNativePublicationRefusalsKeepOriginalRemoteHeads(t *testing
 	}
 }
 
+//nolint:paralleltest // scripted gh and native Git hook are scoped to this test process
+func TestE2EUnpublishedPrePushConflictRerunsHookOnResume(t *testing.T) {
+	fixture, receipt := landOwnerNativeFixture(t)
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	hooks := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "hook-runs")
+	writeHook := func(exitCode string) {
+		t.Helper()
+		body := "#!/bin/sh\necho run >> '" + marker + "'\nexit " + exitCode + "\n"
+		if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-push"), []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeHook("1")
+	runEngineGit(t, receipt.Candidate.Worktree, "config", "core.hooksPath", hooks)
+	options := WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest, StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond}
+	first, err := LandWorktreeMerge(t.Context(), options)
+	if err == nil || first.Status != WorktreeMergeConflict || !strings.Contains(err.Error(), "managed pre-push gate failed") {
+		t.Fatalf("first hook refusal: status=%s err=%v", first.Status, err)
+	}
+	if first.PullRequest != "" || first.PublishedCandidateSHA != "" {
+		t.Fatalf("refused candidate was published: %+v", first)
+	}
+	writeHook("0")
+	second, err := LandWorktreeMerge(t.Context(), options)
+	if err != nil || second.PullRequest == "" || second.PublishedCandidateSHA != receipt.Candidate.SHA {
+		t.Fatalf("resume did not publish after hook replay: status=%s err=%v", second.Status, err)
+	}
+	runs, err := os.ReadFile(marker)
+	if err != nil || string(runs) != "run\nrun\n" {
+		t.Fatalf("pre-push hook was not re-run: runs=%q err=%v", runs, err)
+	}
+}
+
 //nolint:paralleltest // controlled provider subprocess errors use original PATH/XDG fixtures, real Git publication remains native
 func TestE2ELandOwnerFreshPullRequestPublicationRefusalsRetainNativeCandidate(t *testing.T) {
 	for _, stage := range []string{"published record save", "open discovery", "create observation", "created PR save", "handoff verification", "handoff save"} {
