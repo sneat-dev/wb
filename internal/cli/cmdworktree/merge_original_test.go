@@ -97,7 +97,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 		}
 	}
 	ack, _, err := command.Find([]string{"acknowledge-landed-failed"})
-	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil {
+	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil || ack.Flags().Lookup("allow-landed-source-descendants") == nil {
 		t.Fatalf("acknowledge-landed-failed flags = %#v err=%v", ack, err)
 	}
 	seal, _, err := command.Find([]string{"seal-validation-failed"})

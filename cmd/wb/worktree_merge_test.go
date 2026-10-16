@@ -116,6 +116,14 @@ func TestWorktreeLandAndRootLandAcceptProjectsRoot(t *testing.T) {
 }
 
 func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
+	t.Run("source descendant flag reaches recovery guard", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		root := newRootCmd()
+		root.SetArgs([]string{"--projects-root", fixture.projectsRoot, "worktree", "merge", "acknowledge-landed-failed", fixture.receiptPath, "--allow-landed-source-descendants"})
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "requires a landed_post_target_ci_failed receipt") {
+			t.Fatalf("descendant option did not reach status guard: %v", err)
+		}
+	})
 	t.Run("acknowledge-landed-failed", func(t *testing.T) {
 		fixture := newCLIWorktreeMergeFixture(t, 1)
 		originalReceipt := readCLIFile(t, fixture.receiptPath)

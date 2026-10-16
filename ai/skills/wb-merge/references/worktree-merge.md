@@ -244,6 +244,18 @@ landing that is not an ancestor of the current target, a missing active claim,
 or any dirty/drifted receipt/source identity refuses closed; branch names,
 patch similarity, and PR state are never substitutes for the ancestry proof.
 
+For a `landed_post_target_ci_failed` receipt whose live source worktrees
+advanced, explicitly pass `--allow-landed-source-descendants` only when those
+clean descendants are already in the remote target. WB proves each original
+source is an ancestor of its observed head and every observed head is an
+ancestor of the freshly fetched target; it then rechecks the same source heads.
+The separate acknowledgement binds the historical receipt digest and records
+both original and observed sources. This option requires all candidate/source
+worktrees and matching active claims; it refuses removed or rewritten sources,
+unlanded advances, and other receipt statuses. The default exact-source check
+is unchanged. This acknowledges the historical failure; it does not declare CI
+successful or delete any worktree.
+
 When a non-terminal land receipt is stuck because its own landing-result read
 failed on I/O or environment error -- most commonly because the candidate
 worktree was already removed before a resume could confirm the server

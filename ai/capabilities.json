@@ -16060,6 +16060,7 @@
               "path": "wb worktree merge acknowledge-landed-failed",
               "flags": [
                 "--actor",
+                "--allow-landed-source-descendants",
                 "--apply",
                 "--format",
                 "--initiator",
@@ -16067,7 +16068,7 @@
                 "--reason"
               ],
               "modes": [
-                "Proves an exact clean candidate and every receipted source commit are contained in the freshly fetched remote target; only the landed failed-validation form may preserve subsequently advanced source worktrees",
+                "Proves an exact clean candidate and every receipted source commit are contained in the freshly fetched remote target; the landed failed-validation form preserves subsequently advanced source worktrees; post-target CI recovery requires explicit --allow-landed-source-descendants and proves every observed clean descendant is already contained in that exact target",
                 "Acknowledges only stale prepare validation_failed, landed failed-validation, or landed_post_target_ci_failed receipts without falsely making a failed validation successful"
               ]
             }
@@ -16082,6 +16083,7 @@
               "contains": [
                 "separate audited acknowledgement",
                 "--apply",
+                "--allow-landed-source-descendants",
                 "--actor",
                 "--initiator",
                 "--mode",

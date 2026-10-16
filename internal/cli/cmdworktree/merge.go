@@ -615,7 +615,7 @@ func newWorktreeMergeRevertCmd(inv *mergeInvocation) *cobra.Command {
 }
 
 func newWorktreeMergeAcknowledgeLandedFailedCmd(inv *mergeInvocation) *cobra.Command {
-	var apply bool
+	var apply, allowLandedSourceDescendants bool
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-landed-failed <merge-receipt>",
@@ -625,7 +625,12 @@ with recorded failed validation, or a landed_post_target_ci_failed receipt has
 its clean candidate and every receipted source contained in the exact current remote target, then record a
 separate audited acknowledgement so a fresh forward repair can own the lane.
 The landed failed-validation form may preserve source worktrees that advanced
-after landing; other forms still require their exact source heads. Post-target CI receipts must also prove their exact failed landing. The immutable
+after landing. Post-target CI receipts require exact source heads by default;
+--allow-landed-source-descendants explicitly permits clean source descendants
+only when every observed head is also contained in the freshly fetched target.
+The acknowledgement retains both receipted and observed source SHAs and the
+historical receipt digest. It requires live candidate and source worktrees.
+Post-target CI receipts must also prove their exact failed landing. The immutable
 Work Log and historical merge receipt are never rewritten. This is a dry-run by
 default; --apply requires --actor and --reason and writes only the new
 acknowledgement artifact. Any missing claim, target, ancestry, or cleanliness
@@ -641,7 +646,7 @@ proof refuses closed.`,
 			}
 			defer releaseAdmission()
 			ack, err := inv.operations.AcknowledgeLandedMergeFailure(command.Context(), orchestrate.WorktreeMergeLandedFailureAcknowledgementOptions{
-				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason, AllowLandedSourceDescendants: allowLandedSourceDescendants,
 			})
 			if err != nil {
 				return err
@@ -659,6 +664,7 @@ proof refuses closed.`,
 			return err
 		},
 	}
+	command.Flags().BoolVar(&allowLandedSourceDescendants, "allow-landed-source-descendants", false, "post-target CI only: prove clean source descendants are already in the exact remote target")
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")

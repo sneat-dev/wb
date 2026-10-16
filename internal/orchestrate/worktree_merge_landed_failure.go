@@ -25,12 +25,22 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
+	var receiptHash string
+	if options.AllowLandedSourceDescendants {
+		receiptHash, err = worktreeMergeReceiptSHA256(receiptPath)
+		if err != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, err
+		}
+	}
 	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	if err := validateLandedFailureAcknowledgementReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
+	}
+	if options.AllowLandedSourceDescendants && receipt.Status != WorktreeMergePostTargetCIFailed {
+		return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("--allow-landed-source-descendants requires a landed_post_target_ci_failed receipt")
 	}
 	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.SHA == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || len(receipt.Sources) == 0 {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("receipt %s lacks complete immutable target, candidate, or source identity", receiptPath)
@@ -46,6 +56,9 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	defer func() { _ = lock.Release() }()
 	if receipt.Status == WorktreeMergePostTargetCIFailed {
 		if _, statErr := os.Lstat(receipt.Candidate.Worktree); os.IsNotExist(statErr) {
+			if options.AllowLandedSourceDescendants {
+				return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("--allow-landed-source-descendants requires the exact live candidate and source worktrees")
+			}
 			switch receipt.Route.Route {
 			case WorktreeMergeRouteDirect:
 				return acknowledgeCleanedDirectPostTargetFailure(ctx, options, receipt, receiptPath, run, persist)
@@ -85,8 +98,17 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		}
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
+	var observedSources []WorktreeMergeSource
 	for _, source := range receipt.Sources {
-		if isLandedFailedValidationReceipt(receipt) {
+		if options.AllowLandedSourceDescendants {
+			var observedHead string
+			if err := validateLandedFailureAcknowledgementSourceHeadWithRunner(ctx, run, options.ProjectsRoot, receipt, source, "", true, &observedHead); err != nil {
+				return WorktreeMergeLandedFailureAcknowledgement{}, err
+			}
+			observed := source
+			observed.SHA = observedHead
+			observedSources = append(observedSources, observed)
+		} else if isLandedFailedValidationReceipt(receipt) {
 			if err := validatePreservedLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
 				return WorktreeMergeLandedFailureAcknowledgement{}, err
 			}
@@ -120,6 +142,20 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		}
 	}
 
+	for _, observed := range observedSources {
+		contains, err := isMergeAncestorWithRunner(ctx, run, receipt.Candidate.Worktree, observed.SHA, currentTarget)
+		if err != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("verify observed source containment: %w", err)
+		}
+		if !contains {
+			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("current remote target %s does not contain observed source %s", currentTarget, observed.SHA)
+		}
+		// Pin the same clean source head again after the remote observation.
+		if err := validateLandedFailureAcknowledgementSourceHeadWithRunner(ctx, run, options.ProjectsRoot, receipt, observed, "", false); err != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, err
+		}
+	}
+
 	ack := WorktreeMergeLandedFailureAcknowledgement{
 		SchemaVersion: worktreeMergeLandedFailureAcknowledgementSchemaVersion,
 		Status:        "landed_failure_acknowledged",
@@ -130,6 +166,16 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		CandidateWorktree: receipt.Candidate.Worktree, CandidateBranch: receipt.Candidate.Branch,
 		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), Actor: strings.TrimSpace(options.Actor),
 		Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
+	}
+	if len(observedSources) > 0 {
+		ack.ReceiptSHA256, err = worktreeMergeReceiptSHA256(receiptPath)
+		if err != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, err
+		}
+		if ack.ReceiptSHA256 != receiptHash {
+			return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("historical receipt changed during source descendant proof")
+		}
+		ack.ObservedSources = observedSources
 	}
 	ack.ID = landedFailureAcknowledgementID(ack)
 	return finishLandedFailureAcknowledgement(receipt, ack, options.Apply, persist)
@@ -282,7 +328,7 @@ func validateCleanedLandedFailureAncestry(ctx context.Context, run runner.Runner
 func finishLandedFailureAcknowledgement(receipt WorktreeMergeReceipt, ack WorktreeMergeLandedFailureAcknowledgement, apply bool, persist func(string, WorktreeMergeLandedFailureAcknowledgement) error) (WorktreeMergeLandedFailureAcknowledgement, error) {
 	ackPath := landedFailureAcknowledgementPath(ack.ReceiptPath)
 	if existing, readErr := readLandedFailureAcknowledgement(ackPath, receipt); readErr == nil {
-		if existing.CurrentTargetSHA != ack.CurrentTargetSHA || existing.CandidateSHA != ack.CandidateSHA {
+		if existing.CurrentTargetSHA != ack.CurrentTargetSHA || existing.CandidateSHA != ack.CandidateSHA || !sameWorktreeMergeSources(existing.ObservedSources, ack.ObservedSources) {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("acknowledgement %s binds different target or candidate evidence", ackPath)
 		}
 		return existing, nil

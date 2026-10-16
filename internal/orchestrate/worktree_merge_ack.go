@@ -175,6 +175,9 @@ type WorktreeMergePreparedRebatch struct {
 // be present in the current target but whose validation boundary never became
 // terminal. The original merge receipt and Work Log remain untouched.
 type WorktreeMergeLandedFailureAcknowledgement struct {
+	// Optional descendant evidence is separate from the immutable receipted sources.
+	ReceiptSHA256       string                `json:"receipt_sha256,omitempty"`
+	ObservedSources     []WorktreeMergeSource `json:"observed_sources,omitempty"`
 	SchemaVersion       int                   `json:"schema_version"`
 	ID                  string                `json:"id"`
 	Status              string                `json:"status"`
@@ -199,11 +202,12 @@ type WorktreeMergeLandedFailureAcknowledgement struct {
 }
 
 type WorktreeMergeLandedFailureAcknowledgementOptions struct {
-	ProjectsRoot string
-	Receipt      string
-	Apply        bool
-	Actor        string
-	Reason       string
+	AllowLandedSourceDescendants bool
+	ProjectsRoot                 string
+	Receipt                      string
+	Apply                        bool
+	Actor                        string
+	Reason                       string
 }
 
 // WorktreeMergeValidationFailureSupersession is a separate, append-only
@@ -959,6 +963,18 @@ func landedFailureAcknowledgementID(ack WorktreeMergeLandedFailureAcknowledgemen
 			_, _ = hash.Write([]byte{0})
 		}
 	}
+	if len(ack.ObservedSources) > 0 {
+		for _, value := range []string{"observed_sources", ack.ReceiptSHA256} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+		for _, source := range ack.ObservedSources {
+			for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+				_, _ = hash.Write([]byte(value))
+				_, _ = hash.Write([]byte{0})
+			}
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -985,6 +1001,24 @@ func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt)
 	var ack WorktreeMergeLandedFailureAcknowledgement
 	if err := readMergeAcknowledgement(path, "landed-failure acknowledgement", &ack); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
+	}
+	if len(ack.ObservedSources) > 0 {
+		receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+		if err != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, err
+		}
+		if validateLandedFailureAcknowledgementReceipt(receipt, receipt.ReceiptPath) != nil || receipt.Status != WorktreeMergePostTargetCIFailed || ack.ReceiptSHA256 != receiptHash || len(ack.ObservedSources) != len(receipt.Sources) || ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() {
+			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s has invalid descendant evidence", path)
+		}
+		for i, source := range receipt.Sources {
+			observed := ack.ObservedSources[i]
+			observed.SHA = source.SHA
+			if observed != source || ack.ObservedSources[i].SHA == "" {
+				return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s has mismatched observed source identity", path)
+			}
+		}
+	} else if ack.ReceiptSHA256 != "" {
+		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s lacks observed sources", path)
 	}
 	if ack.SchemaVersion != worktreeMergeLandedFailureAcknowledgementSchemaVersion || ack.Status != "landed_failure_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.CurrentTargetSHA == "" || ack.CandidateSHA == "" || ack.ClaimBaseSHA == "" ||

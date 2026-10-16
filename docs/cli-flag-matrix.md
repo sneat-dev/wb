@@ -265,3 +265,9 @@ pull-request candidate as well as a direct target, so a repository with no CI at
 all lands instead of polling until the slice deadline; both phases still require
 stable exact-head check observations whenever checks exist. Prepare does not
 accept the flag because it performs no remote landing or CI-fence decision.
+
+`worktree merge acknowledge-landed-failed --allow-landed-source-descendants`
+opts post-target CI recovery into proving every clean live source descendant is
+already contained in the exact freshly fetched remote target. Its append-only
+acknowledgement retains the original sources, observed source heads, and receipt
+digest. The default continues to require exact source heads.
