@@ -481,10 +481,23 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	}
 	runEngineGit(t, foreign, "checkout", "--detach", fixture.headSHA)
 	assertRefused("detached checkout at exact reviewed source head", false)
+	exactHeadDirty := filepath.Join(foreign, "untracked-at-source-head.go")
+	writeEngineFile(t, exactHeadDirty, "untracked exact-head work\n")
+	assertRefused("dirty detached checkout at exact reviewed source head", false)
+	if err := os.Remove(exactHeadDirty); err != nil {
+		t.Fatal(err)
+	}
 	runEngineGit(t, foreign, "checkout", "--detach", fixture.baseSHA)
 	untracked := filepath.Join(foreign, "untracked-source.go")
 	writeEngineFile(t, untracked, "dirty untracked source\n")
-	assertRefused("detached checkout with untracked changes", false)
+	for _, keep := range []bool{false, true} {
+		if refusal := preflightLandingCleanup(t.Context(), options, view, "7", keep); refusal != nil {
+			t.Fatalf("unrelated dirty detached checkout blocked source (keep=%t): %+v", keep, refusal)
+		}
+	}
+	if got, err := os.ReadFile(untracked); err != nil || string(got) != "dirty untracked source\n" {
+		t.Fatalf("unrelated untracked work changed: %q %v", got, err)
+	}
 	if err := os.Remove(untracked); err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +510,14 @@ func TestE2ELandingPreservesUnrelatedRetiredSiblingStage(t *testing.T) {
 	if err := os.WriteFile(trackedPath, append(append([]byte{}, originalTracked...), []byte("\nchanged tracked fixture\n")...), 0600); err != nil {
 		t.Fatal(err)
 	}
-	assertRefused("detached checkout with tracked changes", false)
+	for _, keep := range []bool{false, true} {
+		if refusal := preflightLandingCleanup(t.Context(), options, view, "7", keep); refusal != nil {
+			t.Fatalf("unrelated tracked changes blocked source (keep=%t): %+v", keep, refusal)
+		}
+	}
+	if got, err := os.ReadFile(trackedPath); err != nil || string(got) != string(originalTracked)+"\nchanged tracked fixture\n" {
+		t.Fatalf("unrelated tracked work changed: %q %v", got, err)
+	}
 	if err := os.WriteFile(trackedPath, originalTracked, 0600); err != nil {
 		t.Fatal(err)
 	}

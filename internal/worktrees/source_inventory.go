@@ -246,8 +246,11 @@ func inspectSourceRegistration(ctx context.Context, options SourceListOptions, r
 	}
 	var result *ListResult
 	if entry.detached {
-		if strings.EqualFold(entry.head, options.HeadSHA) || status != "" {
-			return nil, nil, fmt.Errorf("detached potential source producer is at the PR head or has tracked/untracked changes")
+		// A detached checkout at another commit cannot be retired as this
+		// branch's source. Its dirty files remain in place and do not affect
+		// admission for an independently produced pull request.
+		if strings.EqualFold(entry.head, options.HeadSHA) {
+			return nil, nil, fmt.Errorf("detached potential source producer is at the PR head")
 		}
 	} else {
 		claim, _, _, err := activeWorkLogClaimReadOnly(home, entry.path)

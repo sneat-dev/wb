@@ -118,6 +118,92 @@ func TestRemovedTerminalHistoryScansLegacyRunsAndRequiresUniqueProof(t *testing.
 	}
 }
 
+func TestRemovedTerminalHistoryAcceptsSiblingPullRequestBinding(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addRemovedHistoryRun(t, home, expectation, claim)
+	sibling := claim
+	sibling.Repository = "acme/other"
+	sibling.Worktree = filepath.Join(home, "other-removed")
+	sibling.ClaimID = WorkLogClaimID(sibling.EffortID, CreationResult{Repository: sibling.Repository,
+		WorktreeDir: sibling.Worktree, Branch: sibling.Branch, Base: sibling.Base, BaseSHA: sibling.BaseSHA})
+	claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+	writeHistoryJSON(t, filepath.Join(claimsDir, sibling.ClaimID+".json"), sibling)
+	writeHistoryJSON(t, filepath.Join(claimsDir, sibling.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+		Repository: sibling.Repository, PullRequest: 42, URL: "https://github.com/acme/other/pull/42", RecordedAt: time.Unix(456, 0).UTC(),
+	})
+	base, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation)
+	if err != nil || base != claim.BaseSHA {
+		t.Fatalf("sibling pull request binding blocked exact removed terminal proof: base=%q, err=%v", base, err)
+	}
+}
+
+func TestRemovedTerminalHistoryRefusesUnsafePullRequestBindings(t *testing.T) {
+	t.Parallel()
+	for name, writeBinding := range map[string]func(*testing.T, string, Claim){
+		"orphan binding": func(t *testing.T, claimsDir string, claim Claim) {
+			writeHistoryJSON(t, filepath.Join(claimsDir, strings.Repeat("a", 64)+PullRequestBindingSuffix), ClaimPullRequestBinding{
+				Repository: claim.Repository, PullRequest: 42, URL: "https://github.com/acme/app/pull/42", RecordedAt: time.Unix(456, 0).UTC(),
+			})
+		},
+		"mismatched repository": func(t *testing.T, claimsDir string, claim Claim) {
+			writeHistoryJSON(t, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+				Repository: "acme/other", PullRequest: 42, URL: "https://github.com/acme/other/pull/42", RecordedAt: time.Unix(456, 0).UTC(),
+			})
+		},
+		"malformed json": func(t *testing.T, claimsDir string, claim Claim) {
+			if err := os.WriteFile(filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink": func(t *testing.T, claimsDir string, claim Claim) {
+			outside := filepath.Join(t.TempDir(), "binding.json")
+			writeHistoryJSON(t, outside, ClaimPullRequestBinding{
+				Repository: claim.Repository, PullRequest: 42, URL: "https://github.com/acme/app/pull/42", RecordedAt: time.Unix(456, 0).UTC(),
+			})
+			if err := os.Symlink(outside, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix)); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			home, expectation, claim := terminalHistoryFixture(t)
+			addRemovedHistoryRun(t, home, expectation, claim)
+			writeBinding(t, filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims"), claim)
+			if _, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil {
+				t.Fatal("unsafe pull request binding accepted")
+			}
+		})
+	}
+}
+
+func TestRemovedTerminalHistoryReportsPullRequestBindingDescriptorFailure(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addRemovedHistoryRun(t, home, expectation, claim)
+	claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+	writeHistoryJSON(t, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+		Repository: claim.Repository, PullRequest: 42, URL: "https://github.com/acme/app/pull/42", RecordedAt: time.Unix(456, 0).UTC(),
+	})
+	ports := terminalHistoryTestPorts()
+	original := ports.OpenChild
+	failure := errors.New("injected binding descriptor failure")
+	claimOpens := 0
+	ports.OpenChild = func(parent *os.File, name string, create bool) (*os.File, error) {
+		if name == "claims" {
+			claimOpens++
+			if claimOpens == 3 {
+				return nil, failure
+			}
+		}
+		return original(parent, name, create)
+	}
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); !errors.Is(err, failure) {
+		t.Fatalf("binding descriptor failure = %v", err)
+	}
+}
+
 func TestRemovedTerminalExpectationMatchesExactIdentityWithOptionalBase(t *testing.T) {
 	t.Parallel()
 	ports := terminalHistoryTestPorts()
