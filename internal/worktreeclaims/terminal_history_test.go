@@ -178,6 +178,32 @@ func TestRemovedTerminalHistoryRefusesUnsafePullRequestBindings(t *testing.T) {
 	}
 }
 
+func TestRemovedTerminalHistoryReportsPullRequestBindingDescriptorFailure(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addRemovedHistoryRun(t, home, expectation, claim)
+	claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+	writeHistoryJSON(t, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+		Repository: claim.Repository, PullRequest: 42, URL: "https://github.com/acme/app/pull/42", RecordedAt: time.Unix(456, 0).UTC(),
+	})
+	ports := terminalHistoryTestPorts()
+	original := ports.OpenChild
+	failure := errors.New("injected binding descriptor failure")
+	claimOpens := 0
+	ports.OpenChild = func(parent *os.File, name string, create bool) (*os.File, error) {
+		if name == "claims" {
+			claimOpens++
+			if claimOpens == 3 {
+				return nil, failure
+			}
+		}
+		return original(parent, name, create)
+	}
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); !errors.Is(err, failure) {
+		t.Fatalf("binding descriptor failure = %v", err)
+	}
+}
+
 func TestRemovedTerminalExpectationMatchesExactIdentityWithOptionalBase(t *testing.T) {
 	t.Parallel()
 	ports := terminalHistoryTestPorts()
