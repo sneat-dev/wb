@@ -148,7 +148,37 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		return "", fmt.Errorf("read terminal Work Log claims for task %s: %w", expectation.Task, readErr)
 	}
 	sort.Strings(claimNames)
+	baseSHA := ""
+	claimFiles := make(map[string]bool, len(claimNames))
 	for _, name := range claimNames {
+		claimFiles[name] = true
+	}
+	for _, name := range claimNames {
+		if strings.HasSuffix(name, PullRequestBindingSuffix) {
+			claimID := strings.TrimSuffix(name, PullRequestBindingSuffix)
+			if !ValidClaimID(claimID) || !claimFiles[claimID+".json"] {
+				return "", fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)
+			}
+			claims, err = p.OpenChild(runDir, "claims", false)
+			if err != nil {
+				return "", fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
+			}
+			var binding ClaimPullRequestBinding
+			readErr = p.ReadJSON(claims, name, &binding)
+			var boundClaim Claim
+			if readErr == nil {
+				readErr = p.ReadJSON(claims, claimID+".json", &boundClaim)
+			}
+			_ = claims.Close()
+			if readErr != nil {
+				return "", fmt.Errorf("read terminal Work Log pull request binding %q for task %s: %w", name, expectation.Task, readErr)
+			}
+			if binding.Repository != boundClaim.Repository || binding.PullRequest <= 0 ||
+				strings.TrimSpace(binding.URL) == "" || binding.RecordedAt.IsZero() {
+				return "", fmt.Errorf("invalid terminal Work Log pull request binding %q for task %s", name, expectation.Task)
+			}
+			continue
+		}
 		claimID := strings.TrimSuffix(name, ".json")
 		if name != claimID+".json" || !ValidClaimID(claimID) {
 			return "", fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)
@@ -194,9 +224,9 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		if err := p.validateRemovedTerminalOutbox(home, claim, terminal); err != nil {
 			return "", fmt.Errorf("validate removed terminal Work Log outbox for task %s: %w", expectation.Task, err)
 		}
-		return claim.BaseSHA, nil
+		baseSHA = claim.BaseSHA
 	}
-	return "", nil
+	return baseSHA, nil
 }
 
 func (p HistoryPorts) matchesRemovedTerminalExpectation(claim Claim, expectation TerminalWorkLogExpectation) bool {
