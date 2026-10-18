@@ -221,7 +221,7 @@ func TestSourceDetachedExclusionRequiresStablePhysicalGitIdentityAndCleanStatus(
 
 func TestSourceInventoryScopesDiagnosticsAndFailsClosedOnRegistryOrIdentityErrors(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"empty source selection", "missing projects root", "duplicate physical producer", "missing canonical", "invalid repository", "unknown head", "invalid branch", "missing canonical git", "canonical identity error", "canonical identity truncated", "canonical root mismatch", "canonical common mismatch", "registry error", "registry malformed", "invalid registered branch", "canonical registration mismatch", "source directory missing", "source claim missing", "unknown producer", "clean detached other head", "detached source head", "registry changed", "final registry error", "canonical root replaced", "canonical common replaced"} {
+	for _, scenario := range []string{"empty source selection", "missing projects root", "duplicate physical producer", "missing canonical", "invalid repository", "unknown head", "invalid branch", "missing canonical git", "canonical identity error", "canonical identity truncated", "canonical root mismatch", "canonical common mismatch", "registry error", "registry malformed", "invalid registered branch", "canonical registration mismatch", "source directory missing", "source claim missing", "unknown producer", "clean detached other head", "dirty detached other head", "detached source head", "dirty detached source head", "registry changed", "final registry error", "canonical root replaced", "canonical common replaced"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
@@ -282,9 +282,9 @@ func TestSourceInventoryScopesDiagnosticsAndFailsClosedOnRegistryOrIdentityError
 				registry += "worktree " + path + "\x00HEAD " + localHead + "\x00branch refs/heads/source\x00\x00"
 			case "unknown producer":
 				registry += "worktree " + path + "\x00HEAD " + localHead + "\x00\x00"
-			case "clean detached other head":
+			case "clean detached other head", "dirty detached other head":
 				registry += "worktree " + path + "\x00HEAD " + localHead + "\x00detached\x00\x00"
-			case "detached source head":
+			case "detached source head", "dirty detached source head":
 				localHead = head
 				registry += "worktree " + path + "\x00HEAD " + localHead + "\x00detached\x00\x00"
 			case "final registry error":
@@ -307,10 +307,14 @@ func TestSourceInventoryScopesDiagnosticsAndFailsClosedOnRegistryOrIdentityError
 			}
 			fake.ExpectArgv(identityArgs, runner.Result{Stdout: identity}, nil)
 			statusArgs := []string{"git", "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"}
-			fake.ExpectArgv(statusArgs, runner.Result{}, nil)
-			if scenario == "clean detached other head" {
+			status := ""
+			if scenario == "dirty detached other head" || scenario == "dirty detached source head" {
+				status = " M retained.go\n"
+			}
+			fake.ExpectArgv(statusArgs, runner.Result{Stdout: status}, nil)
+			if strings.Contains(scenario, "detached") {
 				fake.ExpectArgv(identityArgs, runner.Result{Stdout: identity}, nil)
-				fake.ExpectArgv(statusArgs, runner.Result{}, nil)
+				fake.ExpectArgv(statusArgs, runner.Result{Stdout: status}, nil)
 			}
 			after := registry
 			if scenario == "registry changed" {
@@ -336,8 +340,8 @@ func TestSourceInventoryScopesDiagnosticsAndFailsClosedOnRegistryOrIdentityError
 				return true
 			}, runner.Result{Stdout: after}, afterErr)
 			result, err := ListSourceWithDiagnostics(t.Context(), options)
-			diagnostic := scenario == "duplicate physical producer" || scenario == "source directory missing" || scenario == "source claim missing" || scenario == "unknown producer" || scenario == "detached source head"
-			success := scenario == "empty source selection" || scenario == "missing canonical" || scenario == "clean detached other head"
+			diagnostic := scenario == "duplicate physical producer" || scenario == "source directory missing" || scenario == "source claim missing" || scenario == "unknown producer" || scenario == "detached source head" || scenario == "dirty detached source head"
+			success := scenario == "empty source selection" || scenario == "missing canonical" || scenario == "clean detached other head" || scenario == "dirty detached other head"
 			wantDiagnostics := 1
 			if scenario == "duplicate physical producer" {
 				wantDiagnostics = 2
