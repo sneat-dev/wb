@@ -14,8 +14,9 @@ import (
 	"testing"
 )
 
+//nolint:paralleltest // Isolates XDG_CONFIG_HOME with t.Setenv; process environment changes must remain serial.
 func TestDefaultLocalMachineRejectsMalformedPrivateConfiguration(t *testing.T) {
-	t.Parallel()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := wbconfig.DefaultPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)

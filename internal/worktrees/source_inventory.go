@@ -150,8 +150,22 @@ func sourceCanonicalPath(root, repository string) (string, error) {
 		return "", err
 	}
 	for _, entry := range entries {
-		if (entry.IsDir() || entry.Type()&os.ModeSymlink != 0) && repopath.IsForgeHost(entry.Name()) && (address.Host == "" || strings.EqualFold(address.Host, entry.Name())) {
-			levels = append(levels, filepath.Join(root, entry.Name()))
+		if !repopath.IsForgeHost(entry.Name()) || address.Host != "" && !strings.EqualFold(address.Host, entry.Name()) {
+			continue
+		}
+		level := filepath.Join(root, entry.Name())
+		if entry.IsDir() {
+			levels = append(levels, level)
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			info, err := os.Stat(level)
+			if err != nil {
+				return "", err
+			}
+			if info.IsDir() {
+				levels = append(levels, level)
+			}
 		}
 	}
 	var matches []string

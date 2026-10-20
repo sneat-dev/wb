@@ -13,7 +13,7 @@ import (
 
 func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"legacy", "hosted", "explicit host", "absent", "ambiguous", "unrelated broken owner", "unreadable matching owner", "unreadable host", "unreadable root", "invalid repository", "missing root"} {
+	for _, scenario := range []string{"legacy", "hosted", "explicit host", "host-shaped symlink to directory", "absent", "ambiguous", "unrelated broken owner", "host-shaped symlink to file", "unreadable matching owner", "unreadable host", "unreadable root", "invalid repository", "missing root"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
@@ -28,11 +28,13 @@ func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testi
 				}
 			}
 			switch scenario {
-			case "legacy", "unrelated broken owner":
+			case "legacy", "unrelated broken owner", "host-shaped symlink to file":
 				mkdir(legacy)
 				expected = legacy
 			case "hosted", "explicit host":
 				mkdir(hosted)
+				expected = hosted
+			case "host-shaped symlink to directory":
 				expected = hosted
 			case "ambiguous":
 				mkdir(legacy)
@@ -67,12 +69,56 @@ func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testi
 					t.Fatal(err)
 				}
 			}
+			if scenario == "host-shaped symlink to file" {
+				file := filepath.Join(root, "forge-marker")
+				if err := os.WriteFile(file, []byte("not a host directory"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(file, filepath.Join(root, "AGENTS.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "host-shaped symlink to directory" {
+				target := filepath.Join(root, "host-target")
+				mkdir(filepath.Join(target, "Acme", "App"))
+				if err := os.Symlink(target, filepath.Join(root, "github.com")); err != nil {
+					t.Fatal(err)
+				}
+				expected = filepath.Join(root, "github.com", "Acme", "App")
+			}
 			got, err := sourceCanonicalPath(root, repository)
 			wantErr := strings.HasPrefix(scenario, "unreadable") || scenario == "ambiguous" || scenario == "invalid repository"
 			if (err != nil) != wantErr || err == nil && got != expected {
 				t.Fatalf("path=%q err=%v want=%q error=%t", got, err, expected, wantErr)
 			}
 		})
+	}
+}
+
+func TestSourceCanonicalResolutionRefusesUnreadableHostDirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	host := filepath.Join(root, "github.com")
+	if err := os.Mkdir(host, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(host, 0700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Chmod(host, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadDir(host); err == nil {
+		t.Skip("requires directory read permissions to be enforced")
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Fatal(err)
+	}
+	got, err := sourceCanonicalPath(root, "github.com/ACME/APP")
+	var pathErr *os.PathError
+	if got != "" || !errors.Is(err, os.ErrPermission) || !errors.As(err, &pathErr) || pathErr.Path != host {
+		t.Fatalf("unreadable host resolved to %q, %v; want permission error for %q", got, err, host)
 	}
 }
 
