@@ -95,6 +95,33 @@ func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testi
 	}
 }
 
+func TestSourceCanonicalResolutionRefusesUnreadableHostDirectory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	host := filepath.Join(root, "github.com")
+	if err := os.Mkdir(host, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(host, 0700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Chmod(host, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadDir(host); err == nil {
+		t.Skip("requires directory read permissions to be enforced")
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Fatal(err)
+	}
+	got, err := sourceCanonicalPath(root, "github.com/ACME/APP")
+	var pathErr *os.PathError
+	if got != "" || !errors.Is(err, os.ErrPermission) || !errors.As(err, &pathErr) || pathErr.Path != host {
+		t.Fatalf("unreadable host resolved to %q, %v; want permission error for %q", got, err, host)
+	}
+}
+
 func TestSourceRegistryRequiresCompleteUnambiguousGitEvidence(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("a", 40)
