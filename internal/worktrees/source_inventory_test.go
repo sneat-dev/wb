@@ -13,7 +13,7 @@ import (
 
 func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"legacy", "hosted", "explicit host", "absent", "ambiguous", "unrelated broken owner", "unreadable matching owner", "unreadable host", "unreadable root", "invalid repository", "missing root"} {
+	for _, scenario := range []string{"legacy", "hosted", "explicit host", "host-shaped symlink to directory", "absent", "ambiguous", "unrelated broken owner", "host-shaped symlink to file", "unreadable matching owner", "unreadable host", "unreadable root", "invalid repository", "missing root"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
@@ -28,11 +28,13 @@ func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testi
 				}
 			}
 			switch scenario {
-			case "legacy", "unrelated broken owner":
+			case "legacy", "unrelated broken owner", "host-shaped symlink to file":
 				mkdir(legacy)
 				expected = legacy
 			case "hosted", "explicit host":
 				mkdir(hosted)
+				expected = hosted
+			case "host-shaped symlink to directory":
 				expected = hosted
 			case "ambiguous":
 				mkdir(legacy)
@@ -66,6 +68,23 @@ func TestSourceCanonicalResolutionPreservesPhysicalCaseAndExactIdentity(t *testi
 				if err := os.Symlink(filepath.Join(root, "other"), filepath.Join(root, "other")); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if scenario == "host-shaped symlink to file" {
+				file := filepath.Join(root, "forge-marker")
+				if err := os.WriteFile(file, []byte("not a host directory"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(file, filepath.Join(root, "AGENTS.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "host-shaped symlink to directory" {
+				target := filepath.Join(root, "host-target")
+				mkdir(filepath.Join(target, "Acme", "App"))
+				if err := os.Symlink(target, filepath.Join(root, "github.com")); err != nil {
+					t.Fatal(err)
+				}
+				expected = filepath.Join(root, "github.com", "Acme", "App")
 			}
 			got, err := sourceCanonicalPath(root, repository)
 			wantErr := strings.HasPrefix(scenario, "unreadable") || scenario == "ambiguous" || scenario == "invalid repository"
