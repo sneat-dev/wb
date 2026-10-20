@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -14,7 +16,7 @@ import (
 // hard-coded containment answers.
 //
 //nolint:paralleltest // The native fixture and GitHub shim set process-wide environment variables.
-func TestAcknowledgeCleanedPullRequestPostTargetFailureRequiresMergedIdentityAndRecordedRoots(t *testing.T) {
+func TestE2EAcknowledgeCleanedPullRequestPostTargetFailureRequiresMergedIdentityAndRecordedRoots(t *testing.T) {
 	fixture, _, receipt, _ := landedTerminalCleanupFixture(t)
 	runEngineGit(t, fixture.canonical, "commit", "--allow-empty", "-m", "server PR merge")
 	landing := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
@@ -62,6 +64,7 @@ func TestAcknowledgeCleanedPullRequestPostTargetFailureRequiresMergedIdentityAnd
 		{name: "wrong published candidate", mutate: func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = r.TargetSHA }, want: "exact published candidate"},
 		{name: "wrong source", mutate: func(r *WorktreeMergeReceipt) { r.Sources[0].SHA = r.TargetSHA }, want: "terminal cleanup receipt does not exactly match"},
 	} {
+		//nolint:paralleltest // Each case changes the process-wide GitHub shim environment with t.Setenv.
 		t.Run(row.name, func(t *testing.T) {
 			changed := receipt
 			changed.Sources = append([]WorktreeMergeSource(nil), receipt.Sources...)
