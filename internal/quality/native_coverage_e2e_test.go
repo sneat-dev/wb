@@ -239,3 +239,30 @@ func TestE2ECombinedCoverageUsesRealShardedProfilesAndMatchingBaselineTier(t *te
 		t.Errorf("requested native shard child-process instrumentation scope %q includes an e2e-only package", requestedShardScope)
 	}
 }
+
+func TestE2ENativeCoverageRejectsUnavailableInstrumentationBeforeRunningTests(t *testing.T) {
+	t.Parallel()
+	module := nativeModule(t)
+	if err := os.Mkdir(filepath.Join(module, "pkg"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nativeWrite(t, filepath.Join(module, "pkg", "app.go"), "package pkg\nfunc Value() int { return 1 }\n")
+	nativeWrite(t, filepath.Join(module, "pkg", "native_test.go"), "//go:build e2e\n\npackage pkg\nimport (\"os\"; \"testing\")\nfunc TestE2EShouldNotRun(t *testing.T) { if err:=os.WriteFile(os.Getenv(\"WB_NATIVE_SCOPE_MARKER\"),[]byte(\"ran\"),0600);err!=nil {t.Fatal(err)} }\n")
+	profile := filepath.Join(t.TempDir(), "native.cov")
+	marker := filepath.Join(t.TempDir(), "native-ran")
+	_, attempts, err := runShardedCoverageWithTestOptions(context.Background(), nil, module, profile, []string{"./pkg"}, 2, "", "", time.Minute, time.Minute, 0, nil, []string{"WB_NATIVE_SCOPE_MARKER=" + marker}, false, coverageTestOptions{
+		tags: []string{"-tags=e2e"}, selector: NativeGoTestSelector, coverMode: "count", nativeOnly: true, countOnce: true,
+	}, []string{"./..."}, []string{"./missing"})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("unavailable instrumentation scope error = %v, want missing-package diagnostic", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("unavailable instrumentation scope started %d test attempts", attempts)
+	}
+	if _, err := os.Stat(profile); !os.IsNotExist(err) {
+		t.Fatalf("rejected instrumentation scope published a profile: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("native tests ran before instrumentation scope was established: %v", err)
+	}
+}
