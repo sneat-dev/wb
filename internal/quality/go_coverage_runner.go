@@ -316,13 +316,27 @@ func runShardedCoverageWithTestOptions(ctx context.Context, redBase *redBaseReco
 	if len(selectedPackagePatterns) > 1 {
 		coverPackages = selectedPackagePatterns[1]
 	}
+	discoveryTags := []string(nil)
+	if testOptions.nativeOnly {
+		discoveryTags = testOptions.tags
+	}
 	allPackages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list selected packages", func(commandCtx context.Context) ([]string, error) {
-		return goCoveragePackages(commandCtx, module, packagePatterns, environment)
+		return goCoveragePackagesWithTags(commandCtx, module, packagePatterns, discoveryTags, environment)
 	})
 	if err != nil {
 		return "", 0, err
 	}
 	canonical, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "resolve native coverage scope", func(discoveryCtx context.Context) ([]string, error) {
+		if testOptions.nativeOnly && len(coverPackages) > 0 {
+			// Preserve the existing unit-derived canonical scope for child-process
+			// counters. Native tags select test packages separately; the child
+			// instrumentation set remains resolved without those tags.
+			instrumentationPackages, err := goCoveragePackages(discoveryCtx, module, coverPackages, environment)
+			if err != nil {
+				return nil, err
+			}
+			return resolveNativeCoveragePackages(discoveryCtx, module, environment, appendCoverageInstrumentation(nil, coverPackages), coverPackages, instrumentationPackages)
+		}
 		return resolveNativeCoveragePackages(discoveryCtx, module, environment, appendCoverageInstrumentation(nil, coverPackages), packagePatterns, allPackages)
 	})
 	if err != nil {
@@ -338,6 +352,9 @@ func runShardedCoverageWithTestOptions(ctx context.Context, redBase *redBaseReco
 	}
 	for _, requested := range requestedPackages {
 		packages, err := runCoverageDiscoveryCommand(ctx, discoveryTimeout, "list shard package "+requested, func(commandCtx context.Context) ([]string, error) {
+			if testOptions.nativeOnly {
+				return goListPackagesWithTags(commandCtx, module, requested, testOptions.tags, environment)
+			}
 			return goListPackages(commandCtx, module, requested, environment)
 		})
 		if err != nil {
@@ -506,9 +523,13 @@ func runShardedCoverageWithTestOptions(ctx context.Context, redBase *redBaseReco
 }
 
 func goCoveragePackages(ctx context.Context, module string, patterns []string, environment ...[]string) ([]string, error) {
+	return goCoveragePackagesWithTags(ctx, module, patterns, nil, environment...)
+}
+
+func goCoveragePackagesWithTags(ctx context.Context, module string, patterns, tags []string, environment ...[]string) ([]string, error) {
 	seen := make(map[string]bool)
 	for _, pattern := range patterns {
-		packages, err := goListPackages(ctx, module, pattern, environment...)
+		packages, err := goListPackagesWithTags(ctx, module, pattern, tags, environment...)
 		if err != nil {
 			return nil, err
 		}
@@ -731,11 +752,18 @@ func coverageDiagnosticFromPath(manifestPath string) *CoverageDiagnostic {
 }
 
 func goListPackages(ctx context.Context, module, pattern string, environments ...[]string) ([]string, error) {
+	return goListPackagesWithTags(ctx, module, pattern, nil, environments...)
+}
+
+func goListPackagesWithTags(ctx context.Context, module, pattern string, tags []string, environments ...[]string) ([]string, error) {
 	var environment []string
 	if len(environments) != 0 {
 		environment = environments[0]
 	}
-	output, err := runStdoutWithEnv(ctx, environment, module, "go", "list", "-f", "{{.ImportPath}}", pattern)
+	arguments := []string{"list"}
+	arguments = append(arguments, tags...)
+	arguments = append(arguments, "-f", "{{.ImportPath}}", pattern)
+	output, err := runStdoutWithEnv(ctx, environment, module, "go", arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("go list %s: %w\n%s", pattern, err, strings.TrimSpace(output))
 	}

@@ -153,12 +153,15 @@ func TestE2ECombinedCoverageUsesRealShardedProfilesAndMatchingBaselineTier(t *te
 	repo.writeFile("extra/app.go", "package extra\nfunc Extra() int { return 3 }\n")
 	repo.writeFile("extra/app_test.go", "package extra\nimport \"testing\"\nfunc TestExtra(t *testing.T) { if Extra()!=3 {t.Fatal(\"extra\")} }\n")
 	repo.writeFile("extra/native_test.go", "//go:build e2e\n\npackage extra\nimport (\"fmt\"; \"os\"; \"testing\")\nfunc TestE2EUnsharded(t *testing.T) { f,err:=os.OpenFile(os.Getenv(\"WB_NATIVE_TEST_LOG\"),os.O_CREATE|os.O_APPEND|os.O_WRONLY,0600); if err!=nil {t.Fatal(err)}; if _,err=fmt.Fprintf(f,\"extra/TestE2EUnsharded %d\\n\",os.Getpid());err!=nil {t.Fatal(err)}; if err=f.Close();err!=nil {t.Fatal(err)}; if Extra()!=3 {t.Fatal(\"extra\")} }\n")
+	repo.writeFile("nativeonly/native.go", "//go:build e2e\n\npackage nativeonly\nfunc Value() int { return 5 }\n")
+	repo.writeFile("nativeonly/native_test.go", "//go:build e2e\n\npackage nativeonly\nimport (\"fmt\"; \"os\"; \"testing\")\nfunc TestE2EOnlyPackage(t *testing.T) { f,err:=os.OpenFile(os.Getenv(\"WB_NATIVE_TEST_LOG\"),os.O_CREATE|os.O_APPEND|os.O_WRONLY,0600); if err!=nil {t.Fatal(err)}; if _,err=fmt.Fprintf(f,\"nativeonly/TestE2EOnlyPackage %d\\n\",os.Getpid());err!=nil {t.Fatal(err)}; if err=f.Close();err!=nil {t.Fatal(err)}; if err=os.WriteFile(os.Getenv(\"WB_NATIVE_SCOPE_LOG\"),[]byte(os.Getenv(\"WB_TEST_NATIVE_COVERPKG\")),0600);err!=nil {t.Fatal(err)}; if Value()!=5 {t.Fatal(\"native only\")} }\n")
 	repo.writeFile("empty/app.go", "package empty\nfunc Empty() int { return 4 }\n")
 	repo.writeFile("empty/app_test.go", "package empty\nimport \"testing\"\nfunc TestEmpty(t *testing.T) { if Empty()!=4 {t.Fatal(\"empty\")} }\n")
 	repo.commitAll("combined coverage fixture")
 	profile := filepath.Join(t.TempDir(), "combined.cov")
 	nativeLog := filepath.Join(t.TempDir(), "native-tests.log")
-	options := RunOptions{IncludeE2E: true, GoTestPackages: []string{"./..."}, GoShardPackages: []string{"./pkg", "./empty"}, GoTestShards: 2, Timeout: time.Minute, ShardAttemptTimeout: 45 * time.Second, CheckTimeout: 2 * time.Minute, Env: []string{"GOFLAGS=-coverpkg=example.invalid/foreign", "WB_NATIVE_TEST_LOG=" + nativeLog}}
+	nativeScopeLog := filepath.Join(t.TempDir(), "native-coverpkg.txt")
+	options := RunOptions{IncludeE2E: true, GoTestPackages: []string{"./..."}, GoShardPackages: []string{"./pkg", "./empty"}, GoTestShards: 2, Timeout: time.Minute, ShardAttemptTimeout: 45 * time.Second, CheckTimeout: 2 * time.Minute, Env: []string{"GOFLAGS=-coverpkg=example.invalid/foreign", "WB_NATIVE_TEST_LOG=" + nativeLog, "WB_NATIVE_SCOPE_LOG=" + nativeScopeLog}}
 	if output, _, err := runCoverageWithOptions(context.Background(), options, repo.dir, profile); err != nil {
 		t.Fatalf("real combined run: %v\n%s", err, output)
 	}
@@ -178,7 +181,7 @@ func TestE2ECombinedCoverageUsesRealShardedProfilesAndMatchingBaselineTier(t *te
 			packagePIDs[fields[1]] = true
 		}
 	}
-	for _, name := range []string{"pkg/TestE2ENativeOne", "pkg/TestContractNativeTwo", "extra/TestE2EUnsharded"} {
+	for _, name := range []string{"pkg/TestE2ENativeOne", "pkg/TestContractNativeTwo", "extra/TestE2EUnsharded", "nativeonly/TestE2EOnlyPackage"} {
 		if counts[name] != 1 {
 			t.Errorf("native test %s ran %d times, want exactly once", name, counts[name])
 		}
@@ -189,8 +192,15 @@ func TestE2ECombinedCoverageUsesRealShardedProfilesAndMatchingBaselineTier(t *te
 	if len(packagePIDs) != 2 {
 		t.Errorf("configured native tests used %d test processes, want two shards: %v", len(packagePIDs), packagePIDs)
 	}
+	nativeScope, err := os.ReadFile(nativeScopeLog)
+	if err != nil {
+		t.Fatalf("read native instrumentation package scope: %v", err)
+	}
+	if strings.Contains(string(nativeScope), "fixture.test/app/nativeonly") {
+		t.Errorf("native child-process instrumentation scope %q includes an e2e-only package", nativeScope)
+	}
 	statements, covered, err := profileTotals(profile)
-	if err != nil || statements != 4 || covered != 4 {
+	if err != nil || statements != 5 || covered != 5 {
 		t.Fatalf("real combined coverage=%d/%d: %v", covered, statements, err)
 	}
 	mode, _, err := readCoverageProfile(profile)
@@ -205,5 +215,27 @@ func TestE2ECombinedCoverageUsesRealShardedProfilesAndMatchingBaselineTier(t *te
 		if uncovered != 0 {
 			t.Fatalf("baseline package %s lost native coverage: %d", name, uncovered)
 		}
+	}
+	requestedShardLog := filepath.Join(t.TempDir(), "requested-native-shard.log")
+	requestedShardScopeLog := filepath.Join(t.TempDir(), "requested-native-shard-coverpkg.txt")
+	requestedShardProfile := filepath.Join(t.TempDir(), "requested-native-shard.cov")
+	if output, _, err := runShardedCoverageWithTestOptions(context.Background(), nil, repo.dir, requestedShardProfile, []string{"./nativeonly"}, 2, "", "", time.Minute, 45*time.Second, 0, nil, []string{"WB_NATIVE_TEST_LOG=" + requestedShardLog, "WB_NATIVE_SCOPE_LOG=" + requestedShardScopeLog}, false, coverageTestOptions{
+		tags: []string{"-tags=e2e"}, selector: NativeGoTestSelector, coverMode: mode, nativeOnly: true, countOnce: true,
+	}, []string{"./nativeonly"}, []string{"./..."}); err != nil {
+		t.Fatalf("requested e2e-only native shard: %v\n%s", err, output)
+	}
+	requestedShardEntries, err := os.ReadFile(requestedShardLog)
+	if err != nil {
+		t.Fatalf("read requested native shard execution log: %v", err)
+	}
+	if got := strings.TrimSpace(string(requestedShardEntries)); got == "" || len(strings.Split(got, "\n")) != 1 || !strings.HasPrefix(got, "nativeonly/TestE2EOnlyPackage ") {
+		t.Fatalf("requested e2e-only native shard executions = %q, want its test exactly once", got)
+	}
+	requestedShardScope, err := os.ReadFile(requestedShardScopeLog)
+	if err != nil {
+		t.Fatalf("read requested native shard instrumentation scope: %v", err)
+	}
+	if strings.Contains(string(requestedShardScope), "fixture.test/app/nativeonly") {
+		t.Errorf("requested native shard child-process instrumentation scope %q includes an e2e-only package", requestedShardScope)
 	}
 }
