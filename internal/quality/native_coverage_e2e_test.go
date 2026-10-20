@@ -149,18 +149,53 @@ func TestE2ECombinedCoverageUsesRealShardedProfilesAndMatchingBaselineTier(t *te
 	repo := newFixtureRepo(t)
 	repo.writeFile("pkg/app.go", "package pkg\nfunc Unit() int { return 1 }\nfunc Native() int { return 2 }\n")
 	repo.writeFile("pkg/app_test.go", "//go:build !e2e\n\npackage pkg\nimport \"testing\"\nfunc TestUnitOne(t *testing.T) { if Unit()!=1 {t.Fatal(\"unit\")} }\nfunc TestUnitTwo(t *testing.T) { if Unit()!=1 {t.Fatal(\"unit\")} }\n")
-	repo.writeFile("pkg/native_test.go", "//go:build e2e\n\npackage pkg\nimport (\"os/exec\"; \"testing\")\nfunc TestE2ENative(t *testing.T) { if err:=exec.Command(\"git\",\"--version\").Run();err!=nil {t.Fatal(err)}; if Native()!=2 {t.Fatal(\"native\")} }\n")
+	repo.writeFile("pkg/native_test.go", "//go:build e2e\n\npackage pkg\nimport (\"fmt\"; \"os\"; \"os/exec\"; \"testing\")\nfunc recordNative(t *testing.T, name string) { t.Helper(); f,err:=os.OpenFile(os.Getenv(\"WB_NATIVE_TEST_LOG\"),os.O_CREATE|os.O_APPEND|os.O_WRONLY,0600); if err!=nil {t.Fatal(err)}; if _,err=fmt.Fprintf(f,\"pkg/%s %d\\n\",name,os.Getpid());err!=nil {t.Fatal(err)}; if err=f.Close();err!=nil {t.Fatal(err)} }\nfunc TestE2ENativeOne(t *testing.T) { recordNative(t,\"TestE2ENativeOne\"); if err:=exec.Command(\"git\",\"--version\").Run();err!=nil {t.Fatal(err)}; if Native()!=2 {t.Fatal(\"native\")} }\nfunc TestContractNativeTwo(t *testing.T) { recordNative(t,\"TestContractNativeTwo\"); if Native()!=2 {t.Fatal(\"native\")} }\nfunc TestOrdinaryNative(t *testing.T) { recordNative(t,\"TestOrdinaryNative\") }\n")
 	repo.writeFile("extra/app.go", "package extra\nfunc Extra() int { return 3 }\n")
 	repo.writeFile("extra/app_test.go", "package extra\nimport \"testing\"\nfunc TestExtra(t *testing.T) { if Extra()!=3 {t.Fatal(\"extra\")} }\n")
+	repo.writeFile("extra/native_test.go", "//go:build e2e\n\npackage extra\nimport (\"fmt\"; \"os\"; \"testing\")\nfunc TestE2EUnsharded(t *testing.T) { f,err:=os.OpenFile(os.Getenv(\"WB_NATIVE_TEST_LOG\"),os.O_CREATE|os.O_APPEND|os.O_WRONLY,0600); if err!=nil {t.Fatal(err)}; if _,err=fmt.Fprintf(f,\"extra/TestE2EUnsharded %d\\n\",os.Getpid());err!=nil {t.Fatal(err)}; if err=f.Close();err!=nil {t.Fatal(err)}; if Extra()!=3 {t.Fatal(\"extra\")} }\n")
+	repo.writeFile("empty/app.go", "package empty\nfunc Empty() int { return 4 }\n")
+	repo.writeFile("empty/app_test.go", "package empty\nimport \"testing\"\nfunc TestEmpty(t *testing.T) { if Empty()!=4 {t.Fatal(\"empty\")} }\n")
 	repo.commitAll("combined coverage fixture")
 	profile := filepath.Join(t.TempDir(), "combined.cov")
-	options := RunOptions{IncludeE2E: true, GoTestPackages: []string{"./..."}, GoShardPackages: []string{"./pkg"}, GoTestShards: 2, Timeout: time.Minute, CheckTimeout: 2 * time.Minute, Env: []string{"GOFLAGS=-coverpkg=example.invalid/foreign"}}
+	nativeLog := filepath.Join(t.TempDir(), "native-tests.log")
+	options := RunOptions{IncludeE2E: true, GoTestPackages: []string{"./..."}, GoShardPackages: []string{"./pkg", "./empty"}, GoTestShards: 2, Timeout: time.Minute, ShardAttemptTimeout: 45 * time.Second, CheckTimeout: 2 * time.Minute, Env: []string{"GOFLAGS=-coverpkg=example.invalid/foreign", "WB_NATIVE_TEST_LOG=" + nativeLog}}
 	if output, _, err := runCoverageWithOptions(context.Background(), options, repo.dir, profile); err != nil {
 		t.Fatalf("real combined run: %v\n%s", err, output)
 	}
+	entries, err := os.ReadFile(nativeLog)
+	if err != nil {
+		t.Fatalf("read native test execution log: %v", err)
+	}
+	counts := map[string]int{}
+	packagePIDs := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(entries)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			t.Fatalf("malformed native test execution record %q", line)
+		}
+		counts[fields[0]]++
+		if strings.HasPrefix(fields[0], "pkg/") {
+			packagePIDs[fields[1]] = true
+		}
+	}
+	for _, name := range []string{"pkg/TestE2ENativeOne", "pkg/TestContractNativeTwo", "extra/TestE2EUnsharded"} {
+		if counts[name] != 1 {
+			t.Errorf("native test %s ran %d times, want exactly once", name, counts[name])
+		}
+	}
+	if counts["pkg/TestOrdinaryNative"] != 0 {
+		t.Errorf("ordinary e2e-tagged test ran in native tier %d times", counts["pkg/TestOrdinaryNative"])
+	}
+	if len(packagePIDs) != 2 {
+		t.Errorf("configured native tests used %d test processes, want two shards: %v", len(packagePIDs), packagePIDs)
+	}
 	statements, covered, err := profileTotals(profile)
-	if err != nil || statements != 3 || covered != 3 {
+	if err != nil || statements != 4 || covered != 4 {
 		t.Fatalf("real combined coverage=%d/%d: %v", covered, statements, err)
+	}
+	mode, _, err := readCoverageProfile(profile)
+	if err != nil || mode != "set" {
+		t.Fatalf("real combined coverage mode=%q: %v", mode, err)
 	}
 	baseline, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", 2*time.Minute, options)
 	if err != nil || !baseline.IncludeE2E {
