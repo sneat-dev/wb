@@ -15,7 +15,7 @@ import (
 
 //nolint:paralleltest // original scripted hosted-policy provider changes process-wide PATH/XDG state; native repositories remain private
 func TestE2ELandOwnerLateRouteRefusalsPreserveNativeCandidateAndTarget(t *testing.T) {
-	for _, stage := range []string{"rebased direct policy", "stop-before direct CI mismatch", "merge queue"} {
+	for _, stage := range []string{"rebased direct policy", "stop-before direct CI mismatch", "merge queue refuses direct"} {
 		//nolint:paralleltest // Process-wide environment changes in TestE2ELandOwnerLateRouteRefusalsPreserveNativeCandidateAndTarget, installWorktreeMergePublishOnlyPRGH; these rows share their parent environment and remain sequential.
 		t.Run(stage, func(t *testing.T) {
 			fixture, receipt := landOwnerNativeFixture(t)
@@ -38,8 +38,10 @@ func TestE2ELandOwnerLateRouteRefusalsPreserveNativeCandidateAndTarget(t *testin
 			case "stop-before direct CI mismatch":
 				options.StopBeforeMerge = true
 				options.DirectCIPullRequest = "https://example.test/acme/app/pull/41"
-			case "merge queue":
-				options.Route = WorktreeMergeRouteAuto
+			case "merge queue refuses direct":
+				// A merge-queue target lands only through the queue: an explicit
+				// direct route must refuse before anything is pushed or published.
+				options.Route = WorktreeMergeRouteDirect
 				script := filepath.Join(strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0], "gh")
 				body, err := os.ReadFile(script)
 				if err != nil {
@@ -72,9 +74,9 @@ func TestE2ELandOwnerLateRouteRefusalsPreserveNativeCandidateAndTarget(t *testin
 				if !strings.Contains(runErr.Error(), "direct CI deferral requires --route direct") || got.Candidate.SHA != receipt.Candidate.SHA {
 					t.Fatalf("actual plan projection refusal=%+v %v", got, runErr)
 				}
-			case "merge queue":
-				if !strings.Contains(runErr.Error(), "unsupported target policy: target requires a merge queue") || got.Candidate.SHA != receipt.Candidate.SHA {
-					t.Fatalf("unsupported actual policy decision=%+v %v", got, runErr)
+			case "merge queue refuses direct":
+				if !strings.Contains(runErr.Error(), "direct route is not authoritatively permitted by target policy") || got.Candidate.SHA != receipt.Candidate.SHA {
+					t.Fatalf("merge-queue direct route decision=%+v %v", got, runErr)
 				}
 			}
 			stored, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
