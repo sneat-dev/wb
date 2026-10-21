@@ -1873,34 +1873,59 @@ func (p existingCleanupPorts) validateExistingCleanupOutbox(home string, claim w
 	return nil
 }
 
+type sealedSuccessSourcePorts struct {
+	readProjection func(string) (workLogProjection, error)
+	readTerminal   func(string, string) (*workLogTerminalRecord, error)
+	openRun        func(string, string, string, bool) (*os.File, string, error)
+	readClaim      func(*os.File, string) (workLogClaim, error)
+	corroborate    func(string, string, string, workLogProjection, workLogClaim) error
+	validateOutbox func(string, workLogClaim, workLogTerminalRecord) error
+}
+
+func defaultSealedSuccessSourcePorts() sealedSuccessSourcePorts {
+	return sealedSuccessSourcePorts{
+		readProjection: readWorkLogProjectionForReadOnlyClaim,
+		readTerminal:   readWorkLogTerminalRecordReadOnly,
+		openRun:        openWorkLogRun, readClaim: readWorkLogClaimAt,
+		corroborate: corroborateClaimAtPath,
+		validateOutbox: func(home string, claim workLogClaim, terminal workLogTerminalRecord) error {
+			return defaultExistingCleanupPorts().validateExistingCleanupOutbox(home, claim, terminal)
+		},
+	}
+}
+
 // sealedSuccessSourceClaimReadOnly accepts only the original producer's exact
 // successful finalize, with its immutable claim, terminal, and outbox agreeing.
 // It never repairs a projection or takes cleanup's mutating claim lock.
 func sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit string) (workLogClaim, error) {
-	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	return defaultSealedSuccessSourcePorts().sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit)
+}
+
+func (p sealedSuccessSourcePorts) sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit string) (workLogClaim, error) {
+	projection, err := p.readProjection(worktree)
 	if err != nil {
 		return workLogClaim{}, err
 	}
 	if projection.Lifecycle != "terminal" {
 		return workLogClaim{}, fmt.Errorf("work-log projection is %s, not terminal", projection.Lifecycle)
 	}
-	terminal, err := readWorkLogTerminalRecordReadOnly(home, worktree)
+	terminal, err := p.readTerminal(home, worktree)
 	if err != nil {
 		return workLogClaim{}, err
 	}
 	if terminal == nil {
 		return workLogClaim{}, fmt.Errorf("immutable terminal is unavailable")
 	}
-	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	runDir, _, err := p.openRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
 		return workLogClaim{}, err
 	}
-	claim, readErr := readWorkLogClaimAt(runDir, projection.ClaimID)
+	claim, readErr := p.readClaim(runDir, projection.ClaimID)
 	_ = runDir.Close()
 	if readErr != nil {
 		return workLogClaim{}, readErr
 	}
-	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
+	if err := p.corroborate(home, worktree, finalCommit, projection, claim); err != nil {
 		return workLogClaim{}, err
 	}
 	if err := validateExistingCleanupTerminalRecord(*terminal, claim, finalCommit); err != nil {
@@ -1909,10 +1934,10 @@ func sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit string) (workL
 	if terminal.Disposition != "landed" || terminal.Landed != nil || terminal.FinalizeReport != nil && terminal.FinalizeReport.Result != "success" {
 		return workLogClaim{}, fmt.Errorf("immutable terminal is not an exact successful finalize")
 	}
-	if err := defaultExistingCleanupPorts().validateExistingCleanupOutbox(home, claim, *terminal); err != nil {
+	if err := p.validateOutbox(home, claim, *terminal); err != nil {
 		return workLogClaim{}, err
 	}
-	current, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	current, err := p.readProjection(worktree)
 	if err != nil || current != projection {
 		return workLogClaim{}, fmt.Errorf("work-log projection changed during terminal inspection: %v", err)
 	}
