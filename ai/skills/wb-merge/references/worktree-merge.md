@@ -88,8 +88,9 @@ pushing. Resuming a published receipt whose target has not moved is a no-op:
 no merge, revalidation, or push runs.
 
 `--route auto` direct-pushes only when authoritative GitHub branch and ruleset
-evidence permits it; otherwise it uses a pull request or refuses unsupported
-merge-queue policy. PR text comes from the exact candidate commits. Both routes
+evidence permits it; otherwise it uses a pull request. A merge-queue target
+always takes the pull-request route, which enqueues the exact candidate and lets
+GitHub's queue merge it (`--route direct` is refused there). PR text comes from the exact candidate commits. Both routes
 wait for exact-head evidence, verify the fetched remote target receipt, and
 fast-forward a clean canonical checkout already on the target.
 

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
@@ -214,6 +215,17 @@ type PullRequestLandOptions struct {
 	// Inspector overrides the check policy and check inspection seam. Nil
 	// uses defaultChecksPolicyInspectorInstance.
 	Inspector ChecksPolicyInspector
+	// Requeue lets a merge-queue landing enqueue a head the queue already
+	// removed. Without it a removal nobody watched is reported instead, so a
+	// resume never re-runs a failing merge group on its own.
+	Requeue bool
+	// releaseLane frees the landing lane once the pull request is queued:
+	// from then on the queue serializes the target. Nil keeps the lane.
+	releaseLane func()
+	// mergeQueue is the target's merge queue, when its active rules require
+	// one. A landing with it set never arms auto-merge, never updates the
+	// branch and never calls a merge endpoint: it enqueues (pr_land_merge_queue.go).
+	mergeQueue *githubchecks.MergeQueuePolicy
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -339,6 +351,10 @@ type PullRequestLandResult struct {
 	// LaneOwner is the landing-lane record this landing acquired, when the
 	// caller populated Lane. It is nil when no guard ran.
 	LaneOwner *landinglane.Record `json:"lane_owner,omitempty"`
+
+	// MergeQueue is set when the target requires GitHub's merge queue, which
+	// then performed the merge instead of WB.
+	MergeQueue *MergeQueueReceipt `json:"merge_queue,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -409,6 +425,10 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 	// resume command must carry the posted comment's URL, never the
 	// identity and review text again — copy-running it must not post a
 	// second comment re-approving whatever head is current when it runs.
+	if result.MergeQueue != nil && result.MergeQueue.Enqueued {
+		// --requeue was spent by this attempt's enqueue (pr_land_merge_queue.go).
+		options.Requeue = false
+	}
 	if strings.TrimSpace(result.ReviewCommentURL) != "" {
 		options.ApprovedBy = result.ReviewCommentURL
 		options.ReviewComment = ""
@@ -476,6 +496,9 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 	}
 	if options.NoAutoMerge {
 		parts = append(parts, "--no-auto-merge")
+	}
+	if options.Requeue {
+		parts = append(parts, "--requeue")
 	}
 	if options.AllowUnfenced {
 		parts = append(parts, "--allow-unfenced")
@@ -622,9 +645,13 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 	if laneRecord.Owner.WBSessionID != "" {
 		result.LaneOwner = &laneRecord
-		defer func() {
-			_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
-		}()
+		var releaseOnce sync.Once
+		options.releaseLane = func() {
+			releaseOnce.Do(func() {
+				_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
+			})
+		}
+		defer options.releaseLane()
 	}
 	if view.Merged {
 		// A prior invocation may have issued the exact leased merge write and
@@ -637,6 +664,25 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	if refusal := landPreflightRefusal(view, options.Repository, number); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
+	}
+	// A merge-queue target is read before any flag is acted on: the queue
+	// overrides the merge method and message, and a direct merge would go
+	// around it, so the whole landing below takes the enqueue route instead.
+	queue, err := githubchecks.TargetMergeQueue(ctx, options.Repository, view.Base.Ref)
+	if options.AllowUnfenced && githubchecks.IsPolicyUnavailableByPlan(err) {
+		result.Evidence["merge_queue"] = "unknown: " + err.Error() + "; landing under explicit --allow-unfenced"
+		queue, err = nil, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	if queue != nil {
+		if refusal := mergeQueueOptionConflict(options, *queue, view.Base.Ref, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
+		}
+		options.mergeQueue, options.MergeMethod = queue, queue.MergeMethod
+		result.MergeQueue = newMergeQueueReceipt(*queue)
+		result.Evidence["merge_queue"] = mergeQueueEvidence(*queue, view.Base.Ref)
 	}
 	if len(options.KeepCommits) > 0 && !options.AllowUnfenced && !targetHasRequiredChecks(ctx, options.Repository, view.Base.Ref) {
 		// Rewriting the branch means the checks that were observed no longer
@@ -848,7 +894,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// verbatim and cannot be corrected without rewriting history.
 		subject = fmt.Sprintf("%s (#%d)", view.Title, view.Number)
 	}
-	result.Subject = subject
+	if options.mergeQueue == nil {
+		// The queue writes its own commit message, so a queue landing does
+		// not claim one.
+		result.Subject = subject
+	}
 
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Started, view.Head.Ref, 0, 0)
 	sourceCommits, err := pullRequestCommits(ctx, options.Repository, number)
@@ -868,6 +918,13 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		mergedByGitHub bool
 		updateRefusal  *landRefusal
 	)
+	// The merge-queue tail shares this wait's budget rather than starting a
+	// second one, so one invocation stays inside its --timeout. Only a queue
+	// landing reads the clock here; every other landing keeps its exact reads.
+	var deadline time.Time
+	if options.mergeQueue != nil {
+		deadline = waitDeadline(options)
+	}
 	view, waited, result.AutoMergeArmed, mergedByGitHub, updateRefusal, err = awaitLandablePullRequest(ctx, options, view, number, subject, body, result.Evidence)
 	// Record the exact head this attempt last observed on every path - the
 	// refusal and error returns below included - so a caller reading the
@@ -1052,6 +1109,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// provably covered before letting the receipt claim it is.
 	if !result.Mechanical && mergedByGitHub && reviewedHead != "" {
 		recordMergedByGitHubReviewBinding(ctx, options, view, reviewedHead, &result)
+	}
+
+	if options.mergeQueue != nil {
+		return landThroughMergeQueue(ctx, options, result, view, number, deadline)
 	}
 
 	head := view.Head.SHA

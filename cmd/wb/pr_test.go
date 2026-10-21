@@ -34,7 +34,9 @@ func assertPRLandOnlyReadEvidence(t *testing.T, fixture *prCreateLinkPreflightFi
 	for _, call := range strings.Split(strings.TrimSpace(log), "\n") {
 		expected := "api repos/acme/app/pulls/" + number
 		readOnly := false
-		for _, endpoint := range []string{expected, expected + "/files?per_page=100", expected + "/commits?per_page=100"} {
+		// The target's active rules are read to learn whether it requires a
+		// merge queue, which decides the landing route.
+		for _, endpoint := range []string{expected, expected + "/files?per_page=100", expected + "/commits?per_page=100", "api repos/acme/app/rules/branches/main?per_page=100"} {
 			readOnly = readOnly || call == endpoint || call == endpoint+" --include"
 		}
 		if !readOnly {
