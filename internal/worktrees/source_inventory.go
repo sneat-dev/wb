@@ -282,7 +282,10 @@ func inspectSourceRegistration(ctx context.Context, options SourceListOptions, r
 		}
 		// The native claim reader corroborates current placement, including
 		// immutable relocation receipts; claim.Worktree may name its old path.
-		if !strings.EqualFold(entry.head, options.HeadSHA) {
+		// Successful finalized producers must still be at their reviewed
+		// commit. Active producers may have advanced locally; the normal
+		// landing path preserves their divergent checkout without retiring it.
+		if projection.Lifecycle == "terminal" && !strings.EqualFold(entry.head, options.HeadSHA) {
 			return nil, nil, fmt.Errorf("source producer HEAD does not match the reviewed pull request head")
 		}
 		if !strings.EqualFold(claim.Repository, options.Repository) || claim.Branch != options.Branch {
