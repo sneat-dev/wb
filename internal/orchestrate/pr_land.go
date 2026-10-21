@@ -919,8 +919,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		updateRefusal  *landRefusal
 	)
 	// The merge-queue tail shares this wait's budget rather than starting a
-	// second one, so one invocation stays inside its --timeout.
-	deadline := waitDeadline(options)
+	// second one, so one invocation stays inside its --timeout. Only a queue
+	// landing reads the clock here; every other landing keeps its exact reads.
+	var deadline time.Time
+	if options.mergeQueue != nil {
+		deadline = waitDeadline(options)
+	}
 	view, waited, result.AutoMergeArmed, mergedByGitHub, updateRefusal, err = awaitLandablePullRequest(ctx, options, view, number, subject, body, result.Evidence)
 	// Record the exact head this attempt last observed on every path - the
 	// refusal and error returns below included - so a caller reading the
