@@ -118,6 +118,22 @@ func TestRemovedTerminalHistoryScansLegacyRunsAndRequiresUniqueProof(t *testing.
 	}
 }
 
+func TestSuccessfulFinalizeHistoryDoesNotAuthorizeRemoval(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addSealedHistoryRun(t, home, expectation, claim, "landed", nil)
+	ports := terminalHistoryTestPorts()
+	if base, err := ports.ReadSuccessfulFinalizeClaimBase(home, expectation); err != nil || base != claim.BaseSHA {
+		t.Fatalf("successful finalize: %s %v", base, err)
+	}
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil {
+		t.Fatal("finalize alone authorized removal")
+	}
+	if _, err := ports.ReadSuccessfulFinalizeClaimBase(home, TerminalWorkLogExpectation{}); err == nil {
+		t.Fatal("missing exact identity accepted")
+	}
+}
+
 func TestRemovedTerminalHistoryAcceptsSiblingPullRequestBinding(t *testing.T) {
 	t.Parallel()
 	home, expectation, claim := terminalHistoryFixture(t)

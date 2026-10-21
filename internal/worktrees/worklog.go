@@ -209,6 +209,16 @@ func ReadRemovedTerminalWorkLogClaimBase(projectsRoot string, expectation Termin
 	return terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation)
 }
 
+// ReadSuccessfulFinalizeClaimBase authenticates claim, successful finalize and
+// outbox without a deleted projection. This does not prove cleanup or landing.
+func ReadSuccessfulFinalizeClaimBase(projectsRoot string, expectation TerminalWorkLogExpectation) (string, error) {
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return terminalHistoryPorts().ReadSuccessfulFinalizeClaimBase(home, expectation)
+}
+
 func terminalHistoryPorts() worktreeclaims.HistoryPorts {
 	return worktreeclaims.HistoryPorts{
 		OpenHome: openAbsoluteDirectoryNoFollow, OpenChild: openPrivateChild,
