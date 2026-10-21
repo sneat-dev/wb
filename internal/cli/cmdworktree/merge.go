@@ -889,7 +889,7 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(inv *mergeInvoca
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
 		Short: "Retire an unpublished failed attempt while preserving its sources",
-		Long: `Prove that an exact unpublished failed receipt never landed its candidate
+		Long: `Prove that this receipt never published its candidate branch or landed it
 and that every receipted source still exists as a clean, actively claimed
 worktree at the exact recorded SHA. A validation_failed attempt retains its
 clean candidate. An interrupted preparing attempt may instead name an absent
