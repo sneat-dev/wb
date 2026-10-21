@@ -43,9 +43,9 @@ func proveRetiredUnpublishedFailureSource(ctx context.Context, projectsRoot stri
 		return empty, errors.New("retired source lacks exact successful cleanup and merged pull-request identity")
 	}
 	expectation := worktrees.TerminalWorkLogExpectation{Task: source.Task, Repository: receipt.Repository, Worktree: source.Worktree, Branch: source.Branch, Base: receipt.Target, FinalCommit: source.SHA}
-	base, err := worktrees.ReadSuccessfulFinalizeClaimBase(projectsRoot, expectation)
+	base, err := worktrees.ReadRemovedTerminalWorkLogClaimBase(projectsRoot, expectation)
 	if err != nil {
-		return empty, fmt.Errorf("authenticate retired source successful finalize: %w", err)
+		return empty, fmt.Errorf("authenticate retired source cleanup terminal: %w", err)
 	}
 	synthetic := receipt
 	synthetic.Candidate = WorktreeMergeCandidate{Task: source.Task, Worktree: source.Worktree, Branch: source.Branch, SHA: source.SHA}

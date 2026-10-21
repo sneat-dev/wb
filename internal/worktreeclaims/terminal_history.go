@@ -23,26 +23,14 @@ type TerminalWorkLogExpectation struct {
 // HistoryPorts binds descriptor reads and special claim-ID derivation to one
 // inspection. The service never writes or opens a projection for repair.
 type HistoryPorts struct {
-	OpenHome               func(string, bool) (*os.File, error)
-	OpenChild              func(*os.File, string, bool) (*os.File, error)
-	OpenRun                func(string, string, string, bool) (*os.File, string, error)
-	OpenOutbox             func(string, string, bool) (*os.File, error)
-	ReadJSON               func(*os.File, string, any) error
-	ValidSegment           func(string) bool
-	ExpectedClaimID        func(Claim) (string, error)
-	IdentityFromClaim      func(Claim) ExecutionIdentity
-	successfulFinalizeOnly bool
-}
-
-// ReadSuccessfulFinalizeClaimBase authenticates an exact successful finalize
-// after removal. It proves the finalize, not removal or remote integration;
-// callers must independently authenticate cleanup and remote landing.
-func (p HistoryPorts) ReadSuccessfulFinalizeClaimBase(home string, expectation TerminalWorkLogExpectation) (string, error) {
-	if err := p.validateRemovedTerminalExpectation(expectation); err != nil {
-		return "", err
-	}
-	p.successfulFinalizeOnly = true
-	return p.validateRemovedTerminalWorkLog(home, expectation)
+	OpenHome          func(string, bool) (*os.File, error)
+	OpenChild         func(*os.File, string, bool) (*os.File, error)
+	OpenRun           func(string, string, string, bool) (*os.File, string, error)
+	OpenOutbox        func(string, string, bool) (*os.File, error)
+	ReadJSON          func(*os.File, string, any) error
+	ValidSegment      func(string) bool
+	ExpectedClaimID   func(Claim) (string, error)
+	IdentityFromClaim func(Claim) ExecutionIdentity
 }
 
 func (p HistoryPorts) ValidateRemovedTerminalWorkLogs(home string, expectations []TerminalWorkLogExpectation) error {
@@ -227,13 +215,8 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		}
 		expectedClaim := claim
 		expectedClaim.Lifecycle = "terminal"
-		dispositionOK := cleanupSealedDisposition(terminal)
-		if p.successfulFinalizeOnly {
-			dispositionOK = terminal.Disposition == "landed" && terminal.Landed == nil &&
-				(terminal.FinalizeReport == nil || terminal.FinalizeReport.Result == "success")
-		}
 		if !reflect.DeepEqual(terminal.Claim, expectedClaim) || terminal.FinalCommit != expectation.FinalCommit ||
-			!dispositionOK || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
+			!cleanupSealedDisposition(terminal) || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
 			terminal.SuccessorAgentID != "" || terminal.ExternalHandoff != nil || terminal.Orphaned != nil ||
 			terminal.DirtyCapture != nil || terminal.Supersession != nil {
 			return "", fmt.Errorf("removed terminal Work Log does not exactly corroborate task %s", expectation.Task)

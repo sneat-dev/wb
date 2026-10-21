@@ -904,7 +904,7 @@ heads. An unpublished land/validation_failed receipt may name a retired
 candidate only when its exact ordinary cleanup terminal and outbox corroborate
 removal, the checkout and local registration/branch are absent, and GitHub has
 no pull request in the candidate branch's all-state history. The
-source may instead be absent only when exact successful-finalize claim,
+source may instead be absent only when exact cleanup-sealed claim,
 terminal and outbox evidence plus an exact cleanup receipt and fresh GitHub
 proof establish its separate pull-request landing on the current target.
 That independent landing is recorded explicitly, rather than as preservation. The

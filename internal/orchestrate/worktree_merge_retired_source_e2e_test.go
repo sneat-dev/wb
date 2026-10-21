@@ -25,9 +25,6 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 	f, r := unpublishedOwnerFixture(t)
 	source := r.Sources[0]
 	runEngineGit(t, r.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/fixture-archive")
-	if _, err := worktrees.LogFinalize(t.Context(), worktrees.LogFinalizeOptions{ProjectsRoot: f.githubDir, Worktree: source.Worktree, Result: "success", Apply: true}); err != nil {
-		t.Fatal(err)
-	}
 	// Produce a real squash: same tree as source, different commit identity.
 	runEngineGit(t, f.canonical, "merge", "--squash", source.SHA)
 	runEngineGit(t, f.canonical, "commit", "-m", "fixture: separately squash source")
@@ -214,7 +211,7 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 		t.Fatal("registered missing source accepted")
 	}
 	runEngineGit(t, f.canonical, "worktree", "prune")
-	for _, failure := range []string{"wrong PR head", "open PR", "wrong landing", "landing absent", "missing remote", "source reappears", "late source reappearance", "missing terminal", "missing outbox", "wrong terminal head", "failed finalize", "forged outbox", "forged claim"} {
+	for _, failure := range []string{"wrong PR head", "open PR", "wrong landing", "landing absent", "missing remote", "source reappears", "late source reappearance", "missing terminal", "missing outbox", "wrong terminal head", "invalid landing terminal", "forged outbox", "forged claim"} {
 		//nolint:paralleltest // Rows mutate and restore one isolated native evidence fixture.
 		t.Run(failure, func(t *testing.T) {
 			mode = failure
@@ -237,7 +234,7 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 					t.Fatal(err)
 				}
 				defer os.Rename(outboxes[0]+".saved", outboxes[0])
-			case "wrong terminal head", "failed finalize", "forged outbox", "forged claim":
+			case "wrong terminal head", "invalid landing terminal", "forged outbox", "forged claim":
 				path := terminals[0]
 				if failure == "forged outbox" {
 					path = outboxes[0]
@@ -257,8 +254,8 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 				if failure == "wrong terminal head" {
 					record["final_commit"] = r.TargetSHA
 				}
-				if failure == "failed finalize" {
-					record["finalize_report"] = map[string]any{"result": "failure"}
+				if failure == "invalid landing terminal" {
+					record["landed"] = nil
 				}
 				if failure == "forged outbox" {
 					record["disposition"] = "removed"
