@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,9 @@ func quarantineNextReadReport(t *testing.T, path string) BranchQuarantineOutcome
 
 func TestE2EQuarantineRetainsEveryDurableCheckpoint(t *testing.T) {
 	t.Parallel()
-	for _, checkpoint := range []int{0, 1, 2} {
+	// These are the four report publications: initial plan, per-row admission,
+	// metadata receipt before CAS, and the final report after CAS.
+	for _, checkpoint := range []int{0, 1, 2, 3} {
 		t.Run(string(rune('0'+checkpoint)), func(t *testing.T) {
 			t.Parallel()
 			options, clone, ops := quarantineNextFixture(t)
@@ -65,7 +68,7 @@ func TestE2EQuarantineRetainsEveryDurableCheckpoint(t *testing.T) {
 				t.Fatalf("checkpoint%d outcome=%+v error=%v", checkpoint, outcome, err)
 			}
 			result := outcome.Results[0]
-			moved := checkpoint == 2
+			moved := checkpoint == 3
 			if got := gitRefExists(clone, "refs/heads/"+options.Branch); got == moved {
 				t.Fatalf("source exists=%v, moved=%v", got, moved)
 			}
@@ -73,7 +76,10 @@ func TestE2EQuarantineRetainsEveryDurableCheckpoint(t *testing.T) {
 				t.Fatalf("destination exists=%v, moved=%v", got, moved)
 			}
 			want := "planned"
-			if moved {
+			switch checkpoint {
+			case 2:
+				want = "failed"
+			case 3:
 				want = "quarantined"
 			}
 			if result.Outcome != want || result.SHA != options.SHA || result.Reason != options.Reason {
@@ -85,8 +91,23 @@ func TestE2EQuarantineRetainsEveryDurableCheckpoint(t *testing.T) {
 				}
 			} else {
 				report := quarantineNextReadReport(t, outcome.ReportPath)
-				if len(report.Results) != 1 || report.Results[0].Outcome != "planned" || report.Results[0].SHA != options.SHA || report.Results[0].Destination != result.Destination || report.Results[0].Reason != options.Reason {
+				if len(report.Results) != 1 || report.Results[0].SHA != options.SHA || report.Results[0].Destination != result.Destination || report.Results[0].Reason != options.Reason {
 					t.Fatalf("durable recovery record=%+v", report)
+				}
+				durable := report.Results[0]
+				if checkpoint < 3 && durable.Outcome != "planned" {
+					t.Fatalf("pre-metadata report=%+v", durable)
+				}
+				if checkpoint == 2 && (durable.OriginalSHA != "" || durable.RetiredSHA != "" || !gitRefExists(clone, "refs/heads/"+options.Branch)) {
+					t.Fatalf("metadata checkpoint failure did not preserve the recoverable source=%+v", durable)
+				}
+				if checkpoint == 3 {
+					if durable.Outcome != "planned" || durable.OriginalSHA != options.SHA || durable.RetiredSHA == "" || durable.ReceiptID == "" {
+						t.Fatalf("post-CAS failure lost durable pre-CAS receipt=%+v", durable)
+					}
+					if gitTestOutput(t, clone, "rev-parse", durable.RetiredSHA+"^") != options.SHA || gitTestOutput(t, clone, "rev-parse", durable.RetiredSHA+"^{tree}") != gitTestOutput(t, clone, "rev-parse", options.SHA+"^{tree}") {
+						t.Fatal("post-CAS failure changed retirement parent or tree")
+					}
 				}
 			}
 		})
@@ -104,11 +125,16 @@ func TestE2EQuarantineCheckpointsKeepAdmissionAndCASIndependent(t *testing.T) {
 			t.Fatalf("apply=%+v %v", outcome, err)
 		}
 		report := quarantineNextReadReport(t, outcome.ReportPath)
-		if report.Results[0] != outcome.Results[0] || !report.GeneratedAt.Equal(options.Now()) || !strings.HasPrefix(outcome.ReportPath, filepath.Join(options.ProjectsRoot, ".wb", "reports", "branch-quarantine")) {
+		if !reflect.DeepEqual(report.Results[0], outcome.Results[0]) || !report.GeneratedAt.Equal(options.Now()) || !strings.HasPrefix(outcome.ReportPath, filepath.Join(options.ProjectsRoot, ".wb", "reports", "branch-quarantine")) {
 			t.Fatalf("durable final report=%+v", report)
 		}
-		if gitRefExists(clone, "refs/heads/"+options.Branch) || gitTestOutput(t, clone, "rev-parse", outcome.Results[0].Destination) != options.SHA {
-			t.Fatal("CAS did not preserve exact source commit")
+		result := outcome.Results[0]
+		retired := gitTestOutput(t, clone, "rev-parse", result.Destination)
+		if gitRefExists(clone, "refs/heads/"+options.Branch) || retired != result.RetiredSHA || result.SHA != options.SHA || result.OriginalSHA != options.SHA || retired == options.SHA {
+			t.Fatal("CAS did not preserve the exact source identity in its retirement commit")
+		}
+		if gitTestOutput(t, clone, "rev-parse", retired+"^") != options.SHA || gitTestOutput(t, clone, "rev-parse", retired+"^{tree}") != gitTestOutput(t, clone, "rev-parse", options.SHA+"^{tree}") {
+			t.Fatal("retirement commit changed its original parent or preserved tree")
 		}
 	})
 	t.Run("collision refuses all before apply", func(t *testing.T) {
@@ -156,7 +182,7 @@ func TestE2EQuarantineCheckpointsKeepAdmissionAndCASIndependent(t *testing.T) {
 		if !gitRefExists(clone, "refs/heads/"+options.Branch) {
 			t.Fatal("late collision removed source")
 		}
-		if report := quarantineNextReadReport(t, outcome.ReportPath); report.Results[0] != outcome.Results[0] {
+		if report := quarantineNextReadReport(t, outcome.ReportPath); !reflect.DeepEqual(report.Results[0], outcome.Results[0]) {
 			t.Fatalf("failed apply report=%+v", report)
 		}
 	})
@@ -165,18 +191,18 @@ func TestE2EQuarantineCheckpointsKeepAdmissionAndCASIndependent(t *testing.T) {
 		options, clone, ops := quarantineNextFixture(t)
 		gitTest(t, clone, "commit", "--allow-empty", "-m", "second")
 		replacement := gitTestOutput(t, clone, "rev-parse", "main")
-		ops.rename = func(ctx context.Context, path, source, destination, sha string) error {
+		ops.retire = func(ctx context.Context, path, source, destination, sha, replacementSHA string) error {
 			gitTest(t, clone, "update-ref", "refs/heads/"+source, replacement, sha)
-			return atomicLocalBranchRename(ctx, path, source, destination, sha)
+			return atomicLocalBranchRetirement(ctx, path, source, destination, sha, replacementSHA)
 		}
 		outcome, err := branchQuarantineWithOps(context.Background(), options, ops, nil)
-		if err != nil || len(outcome.Results) != 1 || outcome.Results[0].Outcome != "failed" || !strings.Contains(outcome.Results[0].Error, "local CAS rename:") {
+		if err != nil || len(outcome.Results) != 1 || outcome.Results[0].Outcome != "failed" || !strings.Contains(outcome.Results[0].Error, "local CAS retirement:") {
 			t.Fatalf("CAS race=%+v %v", outcome, err)
 		}
 		if gitTestOutput(t, clone, "rev-parse", options.Branch) != replacement || gitRefExists(clone, "refs/heads/"+outcome.Results[0].Destination) {
 			t.Fatal("CAS failure changed competing refs")
 		}
-		if report := quarantineNextReadReport(t, outcome.ReportPath); report.Results[0] != outcome.Results[0] {
+		if report := quarantineNextReadReport(t, outcome.ReportPath); !reflect.DeepEqual(report.Results[0], outcome.Results[0]) {
 			t.Fatalf("CAS failure report=%+v", report)
 		}
 	})

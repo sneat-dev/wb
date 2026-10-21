@@ -9,7 +9,6 @@
 # Reviewed real-Git receipts: the added eight calls construct and rewind isolated remotes to prove cleaned-landing ancestry.
 # Reviewed real-Git imported-main graph: git subprocess, isolated PATH fixture, and executable helper remain exercised in the default tier.
 # These four helper calls use an injected fake runner; the static detector cannot follow context values.
-# Reviewed real-Git branch quarantine fixtures exercise ref state and compare-and-swap rename behavior.
 # Reviewed clone migration fixtures require a real checkout to prove destination safety.
 # Three real Git worktree additions establish exact registration conflicts and interrupted recovery states.
 # Retirement scenarios use controlled Git fixtures and a PATH-scoped fake gh executable.

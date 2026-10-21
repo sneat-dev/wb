@@ -41,7 +41,7 @@ func TestCommandsBindParsedOptionsContextAndIndependentStreams(t *testing.T) {
 			}
 			deps.Quarantine = func(got context.Context, o worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
 				called = true
-				if got != ctx || o.ProjectsRoot != "after" || o.Repository != "acme/app" || o.Branch != "task/old" || o.SHA != "abc" || o.Reason != "operator reason" || o.Manifest != "manifest.json" || !o.Apply || o.ReportDir != "reports" {
+				if got != ctx || o.ProjectsRoot != "after" || o.Repository != "acme/app" || o.Branch != "task/old" || o.SHA != "abc" || o.Reason != "operator reason" || o.Description != "preserved work" || !reflect.DeepEqual(o.Replacement, []string{"PR #113", "commit abc123"}) || o.Retention != "delete after verification" || !o.Annotate || o.Manifest != "" || !o.Apply || o.ReportDir != "reports" {
 					t.Fatal(o, got)
 				}
 				return worktrees.BranchQuarantineOutcome{}, nil
@@ -66,7 +66,7 @@ func TestCommandsBindParsedOptionsContextAndIndependentStreams(t *testing.T) {
 			case "cleanup":
 				args = append(args, "--base=release", "--scope=all", "--older-than=2h", "--branch=task/old", "--apply", "--receipts", "--absorbed-by=42", "--superseded-by=receipt.json", "--report-dir=reports", "--peer-evidence=one,two", "--require-host=mac,linux")
 			case "quarantine":
-				args = append(args, "--branch=task/old", "--sha=abc", "--reason=operator reason", "--manifest=manifest.json", "--apply", "--report-dir=reports")
+				args = append(args, "--branch=task/old", "--sha=abc", "--reason=operator reason", "--description=preserved work", "--replacement=PR #113", "--replacement=commit abc123", "--retention=delete after verification", "--annotate", "--apply", "--report-dir=reports")
 			}
 			command.SetContext(ctx)
 			command.SetOut(&out)
@@ -202,7 +202,7 @@ func TestQuarantineRowsAndReportPropagateEveryWriterFailure(t *testing.T) {
 	t.Parallel()
 	deps := depsForTest()
 	deps.Quarantine = func(context.Context, worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
-		return worktrees.BranchQuarantineOutcome{Results: []worktrees.BranchQuarantineResult{{Outcome: "refused", Ref: "task/one", Error: "changed"}, {Outcome: "quarantined", Ref: "task/two", Destination: "retired/two"}}, ReportPath: "report.json"}, nil
+		return worktrees.BranchQuarantineOutcome{Results: []worktrees.BranchQuarantineResult{{Outcome: "refused", Ref: "task/one", Error: "changed"}, {Outcome: "annotated", Ref: "retired/two", RetiredSHA: "metadata-commit"}}, ReportPath: "report.json"}, nil
 	}
 	for after := 0; after <= 3; after++ {
 		t.Run(fmt.Sprint(after), func(t *testing.T) {
@@ -220,7 +220,7 @@ func TestQuarantineRowsAndReportPropagateEveryWriterFailure(t *testing.T) {
 			if after < 3 && err != failure {
 				t.Fatal(err)
 			}
-			if after == 3 && (err != nil || out.String() != "refused task/one: changed\nquarantined task/two -> retired/two\nreport: report.json\n") {
+			if after == 3 && (err != nil || out.String() != "refused task/one: changed\nannotated retired/two -> metadata-commit\nreport: report.json\n") {
 				t.Fatal(err, out.String())
 			}
 		})

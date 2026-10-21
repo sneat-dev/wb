@@ -913,16 +913,22 @@
               "path": "wb branch quarantine",
               "flags": [
                 "--apply",
+                "--annotate",
                 "--branch",
+                "--description",
                 "--manifest",
+                "--replacement",
+                "--retention",
                 "--reason",
                 "--repo",
                 "--report-dir",
                 "--sha"
               ],
               "modes": [
-                "Dry-run plan is the default; --apply uses one local compare-and-swap update-ref transaction",
-                "Every manifest row binds exact repository, source ref, SHA, and reason; per-row outcomes are durably reported before and after mutation",
+                "Dry-run plan is the default; --apply creates a tree-identical metadata commit and uses local compare-and-swap ref updates",
+                "Every retirement commit records the preserved repository, ref, original SHA, description, reason, UTC review date, replacement references, retention decision, stable receipt ID, and WB documentation link",
+                "--annotate requires one explicit local retired/* ref and exact SHA; manifest rows bind exact repository, ref, SHA, and reason with optional metadata",
+                "Per-row outcomes and the metadata commit SHA are durably reported before and after ref mutation",
                 "Open pull requests using the source as either head or base, protected/current refs, checked-out refs, live claims, moved sources, and destination collisions are refused",
                 "Remote quarantine is unavailable by design until independent peer evidence and leased remote mutation are implemented"
               ]

@@ -98,7 +98,7 @@ func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
 		//nolint:paralleltest // Subtests share the fixture's process environment and canonical checkout.
 		t.Run(tc.name, func(t *testing.T) {
 			result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: tc.ref, SHA: tc.sha}, Destination: "retired/test", Outcome: "planned"}
-			applyBranchQuarantineWithOps(ctx, fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps())
+			applyBranchQuarantineWithOps(ctx, fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps(), nil)
 			if result.Outcome != "failed" || !strings.Contains(result.Error, tc.want) {
 				t.Fatalf("apply result = %#v, want %q", result, tc.want)
 			}
@@ -175,7 +175,7 @@ func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
 	destination := worktreebranches.RetiredBranchDestination(time.Now(), "feature/old", sha)
 	gitTest(t, fixture.canonical, "branch", destination)
 	result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha}, Destination: destination, Outcome: "planned"}
-	applyBranchQuarantineWithOps(context.Background(), fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps())
+	applyBranchQuarantineWithOps(context.Background(), fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps(), nil)
 	if result.Outcome != "failed" || !strings.Contains(result.Error, "destination appeared") {
 		t.Fatalf("destination collision apply = %#v", result)
 	}
@@ -221,6 +221,37 @@ func TestBranchQuarantineManifestRefusesFlattenedDestinationCollision(t *testing
 		if !gitRefExists(fixture.canonical, "refs/heads/"+result.Ref) {
 			t.Fatalf("source %s changed during planning", result.Ref)
 		}
+	}
+}
+
+func TestBranchQuarantineAnnotationAndManifestMetadataValidation(t *testing.T) {
+	t.Parallel()
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, options := range []BranchQuarantineOptions{
+		{Annotate: true, Repository: "invalid", Branch: "retired/good", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "feature/not-retired", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/bad ref", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/good", SHA: sha, Reason: "bad\nReason"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/good", SHA: sha, Reason: "   "},
+		{Manifest: "unused", Description: "silently ignored"},
+	} {
+		if _, err := quarantineRequests(options); err == nil {
+			t.Fatalf("invalid quarantine options accepted: %#v", options)
+		}
+	}
+	trimmed, err := validateQuarantineRequests([]BranchQuarantineRequest{{
+		Repository: "acme/app", Ref: "feature/old", Reason: "obsolete", Replacement: []string{"  PR #17  "},
+	}})
+	if err != nil || len(trimmed) != 1 || len(trimmed[0].Replacement) != 1 || trimmed[0].Replacement[0] != "PR #17" {
+		t.Fatalf("replacement normalization = (%#v, %v)", trimmed, err)
+	}
+	if _, err := validateQuarantineRequests([]BranchQuarantineRequest{{
+		Repository: "acme/app", Ref: "feature/old", Reason: "obsolete", Description: "two lines\nmisleading heading",
+	}}); err == nil || !strings.Contains(err.Error(), "line breaks") {
+		t.Fatalf("multiline manifest metadata error = %v", err)
+	}
+	if err := validateQuarantineMetadata("acme/app", "feature/old", "draft", "obsolete", "", []string{"PR #1\nmalicious heading"}); err == nil {
+		t.Fatal("replacement reference with a newline was accepted")
 	}
 }
 

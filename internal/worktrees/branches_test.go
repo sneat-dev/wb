@@ -497,21 +497,27 @@ func TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision(t *t
 	head := writeAndCommit(t, fixture.canonical, "old.txt", "old\n", "old branch")
 	gitTest(t, fixture.canonical, "checkout", "main")
 	destination := "retired/20260923-feature-old-" + shortSHA(head)
-	if err := atomicLocalBranchRename(context.Background(), fixture.canonical, "feature/old", destination, head); err != nil {
+	metadata, err := quarantineMetadataCommit(context.Background(), fixture.canonical, head, quarantineCommitMessage(BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", Reason: "obsolete"}, head, "wb-quarantine-test", time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicLocalBranchRetirement(context.Background(), fixture.canonical, "feature/old", destination, head, metadata); err != nil {
 		t.Fatal(err)
 	}
 	if gitRefExists(fixture.canonical, "refs/heads/feature/old") {
 		t.Fatal("source remains after quarantine")
 	}
 	got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+destination)
-	if got != head {
-		t.Fatalf("retired head = %s, want %s", got, head)
+	if got != metadata || gitTestOutput(t, fixture.canonical, "rev-parse", metadata+"^{tree}") != gitTestOutput(t, fixture.canonical, "rev-parse", head+"^{tree}") {
+		t.Fatalf("retired head %s does not preserve original tree %s", got, head)
 	}
-	if err := atomicLocalBranchRename(context.Background(), fixture.canonical, "main", destination, gitTestOutput(t, fixture.canonical, "rev-parse", "main")); err == nil {
+	main := gitTestOutput(t, fixture.canonical, "rev-parse", "main")
+	if err := atomicLocalBranchRetirement(context.Background(), fixture.canonical, "main", destination, main, main); err == nil {
 		t.Fatal("destination collision was accepted")
 	}
 }
 
+//nolint:paralleltest // fixture and private gh executable use process-wide environment overrides.
 func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
@@ -538,11 +544,73 @@ func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
 	if applied.Results[0].Outcome != "quarantined" || applied.ReportPath == "" {
 		t.Fatalf("apply = %#v", applied)
 	}
+
 	if _, err := os.Stat(applied.ReportPath); err != nil {
 		t.Fatalf("durable report: %v", err)
 	}
 	if gitRefExists(fixture.canonical, "refs/heads/feature/quarantine") {
 		t.Fatal("source was not quarantined")
+	}
+}
+
+func TestQuarantineGitMutationHelpersUseRunnerForPreservingCAS(t *testing.T) {
+	t.Parallel()
+	const (
+		path        = "/projects/acme/app"
+		parent      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		tree        = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		metadata    = "cccccccccccccccccccccccccccccccccccccccc"
+		replacement = "dddddddddddddddddddddddddddddddddddddddd"
+	)
+	ctx := context.Background()
+	run := runnertest.New(t)
+	run.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: tree + "\n"}, nil)
+	run.Expect(func(call runnertest.Call) bool {
+		return call.Op == "RunWithInput" && strings.Join(call.Argv(), "\x00") == strings.Join([]string{"git", "-C", path, "commit-tree", tree, "-p", parent, "-F", "-"}, "\x00") && string(call.Input) == "retirement receipt\n"
+	}, runner.Result{Stdout: metadata + "\n"}, nil)
+	got, err := quarantineMetadataCommit(withGitRunner(ctx, run), path, parent, "retirement receipt\n")
+	if err != nil || got != metadata {
+		t.Fatalf("quarantineMetadataCommit = %q, %v", got, err)
+	}
+	retireInput := "start\ncreate refs/heads/retired/old " + metadata + "\ndelete refs/heads/feature/old " + parent + "\nprepare\ncommit\n"
+	run.Expect(func(call runnertest.Call) bool {
+		return call.Op == "RunWithInput" && strings.Join(call.Argv(), "\x00") == strings.Join([]string{"git", "-C", path, "update-ref", "--stdin"}, "\x00") && string(call.Input) == retireInput
+	}, runner.Result{}, nil)
+	if err := atomicLocalBranchRetirement(withGitRunner(ctx, run), path, "feature/old", "retired/old", parent, metadata); err != nil {
+		t.Fatalf("atomicLocalBranchRetirement = %v", err)
+	}
+	run.Expect(func(call runnertest.Call) bool {
+		return call.Op == "RunWithInput" && strings.Join(call.Argv(), "\x00") == strings.Join([]string{"git", "-C", path, "update-ref", "refs/heads/retired/old", replacement, metadata}, "\x00")
+	}, runner.Result{}, nil)
+	if err := atomicLocalRetiredAnnotation(withGitRunner(ctx, run), path, "retired/old", metadata, replacement); err != nil {
+		t.Fatalf("atomicLocalRetiredAnnotation = %v", err)
+	}
+}
+
+func TestQuarantineGitMutationHelpersReportCommandFailures(t *testing.T) {
+	t.Parallel()
+	const path, parent = "/projects/acme/app", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	readFailure := runnertest.New(t)
+	readFailure.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: "missing object"}, errors.New("exit status 128"))
+	if _, err := quarantineMetadataCommit(withGitRunner(context.Background(), readFailure), path, parent, "receipt"); err == nil || !strings.Contains(err.Error(), "read preserved tree") {
+		t.Fatalf("missing preserved tree error = %v", err)
+	}
+	commitFailure := runnertest.New(t)
+	commitFailure.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, nil)
+	commitFailure.ExpectArgv([]string{"git", "-C", path, "commit-tree", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "-p", parent, "-F", "-"}, runner.Result{Stderr: "object write failed"}, errors.New("exit status 128"))
+	if _, err := quarantineMetadataCommit(withGitRunner(context.Background(), commitFailure), path, parent, "receipt"); err == nil || !strings.Contains(err.Error(), "object write failed") {
+		t.Fatalf("metadata creation error = %v", err)
+	}
+	invalidObject := runnertest.New(t)
+	invalidObject.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, nil)
+	invalidObject.ExpectArgv([]string{"git", "-C", path, "commit-tree", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "-p", parent, "-F", "-"}, runner.Result{Stdout: "not-an-object-id\n"}, nil)
+	if _, err := quarantineMetadataCommit(withGitRunner(context.Background(), invalidObject), path, parent, "receipt"); err == nil || !strings.Contains(err.Error(), "invalid object id") {
+		t.Fatalf("invalid metadata object id error = %v", err)
+	}
+	casFailure := runnertest.New(t)
+	casFailure.ExpectArgv([]string{"git", "-C", path, "update-ref", "refs/heads/retired/old", parent, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, runner.Result{}, errors.New("exit status 128"))
+	if err := atomicLocalRetiredAnnotation(withGitRunner(context.Background(), casFailure), path, "retired/old", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", parent); err == nil || !strings.Contains(err.Error(), "exit status 128") {
+		t.Fatalf("annotation CAS error = %v", err)
 	}
 }
 

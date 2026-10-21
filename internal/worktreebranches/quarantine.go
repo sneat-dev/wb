@@ -9,17 +9,24 @@ import (
 
 // BranchQuarantineRequest identifies one exact local ref selected for retirement.
 type BranchQuarantineRequest struct {
-	Repository string `json:"repository"`
-	Ref        string `json:"ref"`
-	SHA        string `json:"sha"`
-	Reason     string `json:"reason"`
+	Repository  string   `json:"repository"`
+	Ref         string   `json:"ref"`
+	SHA         string   `json:"sha"`
+	Reason      string   `json:"reason"`
+	Description string   `json:"description,omitempty"`
+	Replacement []string `json:"replacement,omitempty"`
+	Retention   string   `json:"retention,omitempty"`
 }
 
 type BranchQuarantineResult struct {
 	BranchQuarantineRequest
-	Destination string `json:"destination,omitempty"`
-	Outcome     string `json:"outcome"`
-	Error       string `json:"error,omitempty"`
+	Destination string    `json:"destination,omitempty"`
+	Outcome     string    `json:"outcome"`
+	Error       string    `json:"error,omitempty"`
+	OriginalSHA string    `json:"original_sha,omitempty"`
+	RetiredSHA  string    `json:"retired_sha,omitempty"`
+	ReceiptID   string    `json:"receipt_id,omitempty"`
+	ReviewedAt  time.Time `json:"reviewed_at,omitempty"`
 }
 
 // PlanBranchQuarantine proves the source is safe to rename and reserves its

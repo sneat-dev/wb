@@ -133,7 +133,6 @@ var UnitTierGitHelperNames = map[string]bool{
 	"commitPatchIDs":                 true, // internal/worktrees/patchid.go
 	"isAncestor":                     true, // internal/worktrees/lifecycle.go
 	"localBranchExists":              true, // internal/worktrees/worktrees.go
-	"atomicLocalBranchRename":        true, // internal/worktrees/branches_quarantine.go
 	"mergeResultTree":                true, // internal/worktrees/lifecycle.go
 	"GitBytes":                       true, // internal/worktreeretire/archive.go
 	"GitObjectSHA":                   true, // internal/worktreeretire/archive.go

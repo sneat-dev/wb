@@ -39,7 +39,9 @@ func branchLifecycleQuarantineOps(sha string) branchQuarantinePlanOps {
 		openBasePull: func(context.Context, string, string, string) (*PullRequest, error) {
 			return nil, nil
 		},
-		rename: func(context.Context, string, string, string, string) error { return nil },
+		retire:   func(context.Context, string, string, string, string, string) error { return nil },
+		annotate: func(context.Context, string, string, string, string) error { return nil },
+		commit:   func(_ context.Context, _ string, parent, _ string) (string, error) { return parent, nil },
 	}
 }
 
@@ -59,7 +61,7 @@ func TestBranchLifecycleRefactorBatchQuarantineApply(t *testing.T) {
 	}
 
 	result := planned
-	applyBranchQuarantineWithOps(context.Background(), "/projects", "/repo", &result, branchLifecycleQuarantineOps(sha))
+	applyBranchQuarantineWithOps(context.Background(), "/projects", "/repo", &result, branchLifecycleQuarantineOps(sha), nil)
 	if result.Outcome != "quarantined" || result.Error != "" {
 		t.Fatalf("quarantine apply = %#v", result)
 	}
@@ -132,15 +134,15 @@ func TestBranchLifecycleRefactorBatchQuarantineApply(t *testing.T) {
 			}
 		}, want: "became claimed"},
 		{name: "rename", change: func(ops *branchQuarantinePlanOps) {
-			ops.rename = func(context.Context, string, string, string, string) error { return errors.New("race") }
-		}, want: "local CAS rename"},
+			ops.retire = func(context.Context, string, string, string, string, string) error { return errors.New("race") }
+		}, want: "local CAS retirement"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ops := branchLifecycleQuarantineOps(sha)
 			tc.change(&ops)
 			attempt := planned
-			applyBranchQuarantineWithOps(context.Background(), "/projects", "/repo", &attempt, ops)
+			applyBranchQuarantineWithOps(context.Background(), "/projects", "/repo", &attempt, ops, nil)
 			if attempt.Outcome != "failed" || !strings.Contains(attempt.Error, tc.want) {
 				t.Fatalf("apply result = %#v, want %q", attempt, tc.want)
 			}
@@ -154,12 +156,79 @@ func TestBranchLifecycleRefactorBatchQuarantineApply(t *testing.T) {
 	if claimed := planBranchQuarantineWithOps(context.Background(), "/projects", "/repo", request, now, claimedOps); !strings.Contains(claimed.Error, "is claimed") {
 		t.Fatalf("plan claim refusal = %q", claimed.Error)
 	}
+	annotationRequest := BranchQuarantineRequest{Repository: "acme/app", Ref: "retired/old", SHA: sha, Reason: "obsolete"}
+	annotationOps := branchLifecycleQuarantineOps(sha)
+	annotationOps.inUse = func(context.Context, string, string) (map[string]string, string) {
+		return map[string]string{branchInUseKey(annotationRequest.Repository, annotationRequest.Ref): "task"}, ""
+	}
+	if annotated := planBranchAnnotationWithOps(context.Background(), "/projects", "/repo", annotationRequest, now, annotationOps); !strings.Contains(annotated.Error, "claimed") {
+		t.Fatalf("annotation claim refusal = %q", annotated.Error)
+	}
+	annotationOps = branchLifecycleQuarantineOps(sha)
+	annotationOps.pullRequests = func(context.Context, string, string, string) ([]githubPullRequest, error) {
+		return []githubPullRequest{{Number: 42, URL: "https://example.test/42", State: "open", Head: githubRef{Ref: annotationRequest.Ref, SHA: sha, Repo: &githubRepository{FullName: annotationRequest.Repository}}}}, nil
+	}
+	if annotated := planBranchAnnotationWithOps(context.Background(), "/projects", "/repo", annotationRequest, now, annotationOps); !strings.Contains(annotated.Error, "open pull request") {
+		t.Fatalf("annotation open-PR refusal = %q", annotated.Error)
+	}
 	if source, refusal := inspectBranchQuarantineCandidate(context.Background(), "/projects", "/repo", request, planned.Destination, true, branchLifecycleQuarantineOps(sha)); source != sha || refusal != "" {
 		t.Fatalf("direct candidate inspection = %q, %q", source, refusal)
 	}
 	realOps := realBranchQuarantineOps()
-	if realOps.git == nil || realOps.checkedOut == nil || realOps.inUse == nil || realOps.pullRequests == nil || realOps.openBasePull == nil || realOps.rename == nil {
+	if realOps.git == nil || realOps.checkedOut == nil || realOps.inUse == nil || realOps.pullRequests == nil || realOps.openBasePull == nil || realOps.retire == nil || realOps.annotate == nil || realOps.commit == nil {
 		t.Fatal("real quarantine operations are incomplete")
+	}
+}
+
+func TestBranchQuarantineApplyRecordsMutationFailures(t *testing.T) {
+	t.Parallel()
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct {
+		name       string
+		ref        string
+		mutate     func(*branchQuarantinePlanOps)
+		checkpoint func() error
+		want       string
+	}{
+		{name: "metadata operation missing", ref: "feature/old", mutate: func(ops *branchQuarantinePlanOps) { ops.commit = nil }, want: "operations are unavailable"},
+		{name: "metadata creation fails", ref: "feature/old", mutate: func(ops *branchQuarantinePlanOps) {
+			ops.commit = func(context.Context, string, string, string) (string, error) {
+				return "", errors.New("identity unavailable")
+			}
+		}, want: "create retirement commit"},
+		{name: "retirement receipt checkpoint fails", ref: "feature/old", checkpoint: func() error { return errors.New("disk full") }, want: "publish retirement receipt before CAS"},
+		{name: "local retirement CAS fails", ref: "feature/old", mutate: func(ops *branchQuarantinePlanOps) {
+			ops.retire = func(context.Context, string, string, string, string, string) error {
+				return errors.New("compare failed")
+			}
+		}, want: "local CAS retirement"},
+		{name: "annotation metadata creation fails", ref: "retired/old", mutate: func(ops *branchQuarantinePlanOps) {
+			ops.commit = func(context.Context, string, string, string) (string, error) {
+				return "", errors.New("identity unavailable")
+			}
+		}, want: "create annotation commit"},
+		{name: "annotation safety refusal", ref: "retired/old", mutate: func(ops *branchQuarantinePlanOps) {
+			ops.inUse = func(context.Context, string, string) (map[string]string, string) {
+				return map[string]string{branchInUseKey("acme/app", "retired/old"): "task"}, ""
+			}
+		}, want: "claimed"},
+		{name: "annotation receipt checkpoint fails", ref: "retired/old", checkpoint: func() error { return errors.New("disk full") }, want: "publish annotation receipt before CAS"},
+		{name: "annotation CAS fails", ref: "retired/old", mutate: func(ops *branchQuarantinePlanOps) {
+			ops.annotate = func(context.Context, string, string, string, string) error { return errors.New("compare failed") }
+		}, want: "local CAS annotation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ops := branchLifecycleQuarantineOps(sha)
+			if tc.mutate != nil {
+				tc.mutate(&ops)
+			}
+			result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: tc.ref, SHA: sha, Reason: "obsolete"}, Destination: "retired/feature-old", ReceiptID: "wb-quarantine-test", ReviewedAt: time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC), Outcome: "planned"}
+			applyBranchQuarantineWithOps(context.Background(), "/projects", "/repo", &result, ops, tc.checkpoint)
+			if result.Outcome != "failed" || !strings.Contains(result.Error, tc.want) {
+				t.Fatalf("apply result = %#v, want error %q", result, tc.want)
+			}
+		})
 	}
 }
 

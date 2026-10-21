@@ -95,7 +95,7 @@ func TestBranchQuarantineDefaultsToDryRun(t *testing.T) {
 	if flag := command.Flags().Lookup("apply"); flag == nil || flag.DefValue != "false" {
 		t.Fatal("quarantine must default to dry-run")
 	}
-	for _, name := range []string{"repo", "branch", "sha", "reason", "manifest", "report-dir"} {
+	for _, name := range []string{"repo", "branch", "sha", "reason", "description", "replacement", "retention", "annotate", "manifest", "report-dir"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Fatalf("missing --%s", name)
 		}

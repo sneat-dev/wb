@@ -48,11 +48,22 @@ explicitly unknown rather than a cached zero.
 
 ## Local quarantine
 
-`wb branch quarantine` is a deliberate local-only rename into `retired/*`.
+`wb branch quarantine` is a deliberate local-only retirement into `retired/*`.
 It plans by default. Supply one exact repository, source ref, and durable
-reason; `--apply` creates the retired ref at the observed SHA and deletes the
-source in one local compare-and-swap transaction. A JSON `--manifest` can
-contain multiple exact `repository`, `ref`, `sha`, and `reason` rows.
+reason; `--apply` creates a metadata-only commit with the original tip as its
+parent and the same tree, then creates the retired ref and deletes the source
+in one local compare-and-swap transaction. Its commit message records the
+preserved repository/ref/SHA, description, reason, UTC review time, optional
+replacement PR/commit references, retention decision, stable WB receipt ID,
+and this document. An omitted retention decision is recorded as not specified;
+WB does not automatically expire retired refs. A JSON
+`--manifest` can contain multiple exact `repository`, `ref`, `sha`, `reason`,
+and optional metadata rows.
+
+To add that explanation to an existing local retired ref, pass `--annotate`
+with its exact `--repo`, `--branch retired/...`, `--sha`, and `--reason`. This
+adds a tree-identical child commit and compare-and-swaps the selected local
+retired ref. Annotation is never implicit.
 
 Remote retirement is explicitly unavailable in this command. The future flow
 will resolve an archive target from user-only

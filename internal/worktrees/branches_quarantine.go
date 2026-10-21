@@ -2,11 +2,11 @@ package worktrees
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
@@ -28,6 +29,10 @@ type BranchQuarantineOptions struct {
 	Branch       string
 	SHA          string
 	Reason       string
+	Description  string
+	Replacement  []string
+	Retention    string
+	Annotate     bool
 	Manifest     string
 	Apply        bool
 	ReportDir    string
@@ -73,7 +78,17 @@ func branchQuarantineWithOps(ctx context.Context, options BranchQuarantineOption
 	now := options.Now().UTC()
 	results := make([]BranchQuarantineResult, 0, len(requests))
 	for _, request := range requests {
-		results = append(results, planBranchQuarantineWithOps(ctx, options.ProjectsRoot, paths[request.Repository], request, now, ops))
+		var result BranchQuarantineResult
+		if options.Annotate {
+			result = planBranchAnnotationWithOps(ctx, options.ProjectsRoot, paths[request.Repository], request, now, ops)
+		} else {
+			result = planBranchQuarantineWithOps(ctx, options.ProjectsRoot, paths[request.Repository], request, now, ops)
+		}
+		if result.ReceiptID == "" && result.SHA != "" {
+			result.ReceiptID = quarantineReceiptID(request.Repository, request.Ref, result.SHA, now)
+		}
+		result.ReviewedAt = now
+		results = append(results, result)
 	}
 	// Flat names can collide (a/b and a-b). Refuse every colliding plan before
 	// creating the report or mutating the first row, so a manifest is atomic in
@@ -123,7 +138,9 @@ func branchQuarantineWithOps(ctx context.Context, options BranchQuarantineOption
 		if err := writeQuarantineReportInjected(outcome.ReportPath, outcome, reportInjector); err != nil {
 			return outcome, err
 		}
-		applyBranchQuarantineWithOps(ctx, options.ProjectsRoot, paths[outcome.Results[i].Repository], &outcome.Results[i], ops)
+		applyBranchQuarantineWithOps(ctx, options.ProjectsRoot, paths[outcome.Results[i].Repository], &outcome.Results[i], ops, func() error {
+			return writeQuarantineReportInjected(outcome.ReportPath, outcome, reportInjector)
+		})
 		if err := writeQuarantineReportInjected(outcome.ReportPath, outcome, reportInjector); err != nil {
 			return outcome, err
 		}
@@ -149,9 +166,32 @@ func reserveQuarantineReportDir(reportDir string) error {
 }
 
 func quarantineRequests(options BranchQuarantineOptions) ([]BranchQuarantineRequest, error) {
+	if options.Annotate {
+		options.Repository, options.Branch, options.SHA = strings.TrimSpace(options.Repository), strings.TrimSpace(options.Branch), strings.TrimSpace(options.SHA)
+		options.Reason, options.Description, options.Retention = strings.TrimSpace(options.Reason), strings.TrimSpace(options.Description), strings.TrimSpace(options.Retention)
+		for i := range options.Replacement {
+			options.Replacement[i] = strings.TrimSpace(options.Replacement[i])
+		}
+		if options.Manifest != "" || options.Repository == "" || options.Branch == "" || options.SHA == "" || options.Reason == "" {
+			return nil, fmt.Errorf("--annotate requires --repo, --branch, exact --sha, and --reason; it cannot use --manifest")
+		}
+		if !isRetiredBranch(options.Branch) || !isGitObjectID(options.SHA) {
+			return nil, fmt.Errorf("--annotate requires an exact local retired/* ref and valid SHA")
+		}
+		if parts := strings.Split(options.Repository, "/"); len(parts) != 2 || !validRepositorySegment(parts[0]) || !validRepositorySegment(parts[1]) {
+			return nil, fmt.Errorf("invalid quarantine repository %q", options.Repository)
+		}
+		if err := branchValidationError(context.Background(), "quarantine retired ref", options.Branch); err != nil {
+			return nil, err
+		}
+		if err := validateQuarantineMetadata(options.Repository, options.Branch, options.Description, options.Reason, options.Retention, options.Replacement); err != nil {
+			return nil, err
+		}
+		return []BranchQuarantineRequest{{Repository: strings.TrimSpace(options.Repository), Ref: strings.TrimSpace(options.Branch), SHA: strings.TrimSpace(options.SHA), Reason: strings.TrimSpace(options.Reason), Description: strings.TrimSpace(options.Description), Replacement: options.Replacement, Retention: strings.TrimSpace(options.Retention)}}, nil
+	}
 	if options.Manifest != "" {
-		if options.Repository != "" || options.Branch != "" || options.SHA != "" || options.Reason != "" {
-			return nil, fmt.Errorf("--manifest cannot be combined with --repo, --branch, --sha, or --reason")
+		if options.Repository != "" || options.Branch != "" || options.SHA != "" || options.Reason != "" || options.Description != "" || len(options.Replacement) != 0 || options.Retention != "" {
+			return nil, fmt.Errorf("--manifest cannot be combined with per-entry flags")
 		}
 		data, err := os.ReadFile(options.Manifest)
 		if err != nil {
@@ -178,7 +218,7 @@ func quarantineRequests(options BranchQuarantineOptions) ([]BranchQuarantineRequ
 	if options.Repository == "" || options.Branch == "" || options.Reason == "" {
 		return nil, fmt.Errorf("single quarantine requires --repo, --branch, and --reason")
 	}
-	return validateQuarantineRequests([]BranchQuarantineRequest{{Repository: options.Repository, Ref: options.Branch, SHA: options.SHA, Reason: options.Reason}})
+	return validateQuarantineRequests([]BranchQuarantineRequest{{Repository: options.Repository, Ref: options.Branch, SHA: options.SHA, Reason: options.Reason, Description: options.Description, Replacement: options.Replacement, Retention: options.Retention}})
 }
 
 func validateQuarantineRequests(requests []BranchQuarantineRequest) ([]BranchQuarantineRequest, error) {
@@ -186,6 +226,10 @@ func validateQuarantineRequests(requests []BranchQuarantineRequest) ([]BranchQua
 	for i := range requests {
 		r := &requests[i]
 		r.Repository, r.Ref, r.SHA, r.Reason = strings.TrimSpace(r.Repository), strings.TrimSpace(r.Ref), strings.TrimSpace(r.SHA), strings.TrimSpace(r.Reason)
+		r.Description, r.Retention = strings.TrimSpace(r.Description), strings.TrimSpace(r.Retention)
+		for j := range r.Replacement {
+			r.Replacement[j] = strings.TrimSpace(r.Replacement[j])
+		}
 		if parts := strings.Split(r.Repository, "/"); len(parts) != 2 || !validRepositorySegment(parts[0]) || !validRepositorySegment(parts[1]) {
 			return nil, fmt.Errorf("invalid quarantine repository %q", r.Repository)
 		}
@@ -201,6 +245,9 @@ func validateQuarantineRequests(requests []BranchQuarantineRequest) ([]BranchQua
 		if r.Reason == "" {
 			return nil, fmt.Errorf("quarantine reason is required for %s/%s", r.Repository, r.Ref)
 		}
+		if err := validateQuarantineMetadata(r.Repository, r.Ref, r.Description, r.Reason, r.Retention, r.Replacement); err != nil {
+			return nil, err
+		}
 		key := r.Repository + "|" + r.Ref
 		if seen[key] {
 			return nil, fmt.Errorf("duplicate quarantine manifest entry %s", key)
@@ -214,6 +261,15 @@ func validateQuarantineRequests(requests []BranchQuarantineRequest) ([]BranchQua
 		return requests[i].Ref < requests[j].Ref
 	})
 	return requests, nil
+}
+
+func validateQuarantineMetadata(repository, ref, description, reason, retention string, replacement []string) error {
+	for _, field := range append([]string{description, reason, retention}, replacement...) {
+		if strings.ContainsAny(field, "\r\n\x00") {
+			return fmt.Errorf("quarantine metadata for %s/%s cannot contain line breaks or NUL", repository, ref)
+		}
+	}
+	return nil
 }
 
 func quarantineRepositoryPaths(root string, requests []BranchQuarantineRequest) (map[string]string, error) {
@@ -241,14 +297,16 @@ type branchQuarantinePlanOps struct {
 	inUse        func(context.Context, string, string) (map[string]string, string)
 	pullRequests func(context.Context, string, string, string) ([]githubPullRequest, error)
 	openBasePull func(context.Context, string, string, string) (*PullRequest, error)
-	rename       func(context.Context, string, string, string, string) error
+	retire       func(context.Context, string, string, string, string, string) error
+	annotate     func(context.Context, string, string, string, string) error
+	commit       func(context.Context, string, string, string) (string, error)
 }
 
 func realBranchQuarantineOps() branchQuarantinePlanOps {
 	return branchQuarantinePlanOps{
 		git: git, checkedOut: checkedOutLocalBranches, inUse: branchInUseIndex,
 		pullRequests: githubPullRequests, openBasePull: openPullRequestUsingBranchAsBase,
-		rename: atomicLocalBranchRename,
+		retire: atomicLocalBranchRetirement, annotate: atomicLocalRetiredAnnotation, commit: quarantineMetadataCommit,
 	}
 }
 
@@ -271,18 +329,114 @@ func planBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string,
 	return branchQuarantineService(ops).PlanBranchQuarantine(ctx, projectsRoot, path, request, now)
 }
 
-func applyBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult, ops branchQuarantinePlanOps) {
+func applyBranchQuarantineWithOps(ctx context.Context, projectsRoot, path string, result *BranchQuarantineResult, ops branchQuarantinePlanOps, checkpoint func() error) {
+	if checkpoint == nil {
+		checkpoint = func() error { return nil }
+	}
+	if ops.commit == nil || ops.retire == nil || ops.annotate == nil {
+		result.Outcome, result.Error = "failed", "quarantine mutation operations are unavailable"
+		return
+	}
 	request := result.BranchQuarantineRequest
+	if strings.HasPrefix(request.Ref, "retired/") {
+		current, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, "", true, ops)
+		if refusal != "" {
+			result.Outcome, result.Error = "failed", refusal
+			return
+		}
+		message := quarantineCommitMessage(request, current, result.ReceiptID, result.ReviewedAt)
+		metadata, err := ops.commit(ctx, path, current, message)
+		if err != nil {
+			result.Outcome, result.Error = "failed", "create annotation commit: "+err.Error()
+			return
+		}
+		result.OriginalSHA, result.RetiredSHA = current, metadata
+		if err := checkpoint(); err != nil {
+			result.Outcome, result.Error = "failed", "publish annotation receipt before CAS: "+err.Error()
+			return
+		}
+		if err := ops.annotate(ctx, path, request.Ref, current, metadata); err != nil {
+			result.Outcome, result.Error = "failed", "local CAS annotation: "+err.Error()
+			return
+		}
+		result.Outcome = "annotated"
+		return
+	}
 	current, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, result.Destination, true, ops)
 	if refusal != "" {
 		result.Outcome, result.Error = "failed", refusal
 		return
 	}
-	if err := ops.rename(ctx, path, result.Ref, result.Destination, current); err != nil {
-		result.Outcome, result.Error = "failed", "local CAS rename: "+err.Error()
+	result.OriginalSHA = current
+	message := quarantineCommitMessage(request, current, result.ReceiptID, result.ReviewedAt)
+	metadata, err := ops.commit(ctx, path, current, message)
+	if err != nil {
+		result.Outcome, result.Error = "failed", "create retirement commit: "+err.Error()
+		return
+	}
+	result.RetiredSHA = metadata
+	if err := checkpoint(); err != nil {
+		result.Outcome, result.Error = "failed", "publish retirement receipt before CAS: "+err.Error()
+		return
+	}
+	if err := ops.retire(ctx, path, result.Ref, result.Destination, current, metadata); err != nil {
+		result.Outcome, result.Error = "failed", "local CAS retirement: "+err.Error()
 		return
 	}
 	result.Outcome = "quarantined"
+}
+
+const quarantineDocsURL = "https://github.com/sneat-dev/wb/blob/main/ai/skills/wb-branches/SKILL.md#local-quarantine"
+
+func quarantineReceiptID(repository, ref, sha string, reviewedAt time.Time) string {
+	digest := sha256.Sum256([]byte(repository + "\x00" + ref + "\x00" + sha + "\x00" + reviewedAt.UTC().Format(time.RFC3339Nano)))
+	return fmt.Sprintf("wb-quarantine-%x", digest[:8])
+}
+
+func quarantineCommitMessage(request BranchQuarantineRequest, original, receiptID string, reviewedAt time.Time) string {
+	retention := request.Retention
+	if retention == "" {
+		retention = "Not specified; retained until explicitly removed. WB does not automatically expire retired refs."
+	}
+	description := request.Description
+	if description == "" {
+		description = "No additional description supplied."
+	}
+	var b strings.Builder
+	title := description
+	if title == "No additional description supplied." {
+		title = request.Reason
+	}
+	fmt.Fprintf(&b, "retire: %s\n\n", title)
+	fmt.Fprintf(&b, "Preserved repository: %s\n", request.Repository)
+	fmt.Fprintf(&b, "Preserved ref: %s\n", request.Ref)
+	fmt.Fprintf(&b, "Original commit: %s\n", original)
+	fmt.Fprintf(&b, "Description: %s\n", description)
+	fmt.Fprintf(&b, "Reason: %s\n", request.Reason)
+	fmt.Fprintf(&b, "Reviewed at (UTC): %s\n", reviewedAt.UTC().Format(time.RFC3339))
+	if len(request.Replacement) == 0 {
+		b.WriteString("Superseded by: none recorded\n")
+	} else {
+		fmt.Fprintf(&b, "Superseded by: %s\n", strings.Join(request.Replacement, ", "))
+	}
+	fmt.Fprintf(&b, "Retention: %s\n", retention)
+	fmt.Fprintf(&b, "WB receipt: %s\n", receiptID)
+	fmt.Fprintf(&b, "Details: %s\n", quarantineDocsURL)
+	return b.String()
+}
+
+func planBranchAnnotationWithOps(ctx context.Context, projectsRoot, path string, request BranchQuarantineRequest, now time.Time, ops branchQuarantinePlanOps) BranchQuarantineResult {
+	result := BranchQuarantineResult{BranchQuarantineRequest: request, Outcome: "refused"}
+	current, refusal := inspectBranchQuarantineCandidate(ctx, projectsRoot, path, request, "", false, ops)
+	if refusal != "" {
+		result.Error = refusal
+		return result
+	}
+	result.SHA = current
+	result.ReceiptID = quarantineReceiptID(request.Repository, request.Ref, current, now)
+	result.OriginalSHA, result.RetiredSHA = current, current
+	result.Outcome = "planned"
+	return result
 }
 
 func inspectBranchQuarantineCandidate(
@@ -314,14 +468,49 @@ func openPullRequestUsingBranchAsBase(ctx context.Context, worktree, repository,
 	return nil, nil
 }
 
-func atomicLocalBranchRename(ctx context.Context, path, source, destination, sha string) error {
-	command := exec.CommandContext(ctx, "git", "-C", path, "update-ref", "--stdin")
-	command.Stdin = strings.NewReader("start\ncreate refs/heads/" + destination + " " + sha + "\ndelete refs/heads/" + source + " " + sha + "\nprepare\ncommit\n")
-	output, err := command.CombinedOutput()
+func quarantineMetadataCommit(ctx context.Context, path, parent, message string) (string, error) {
+	tree, err := git(ctx, path, "rev-parse", "--verify", parent+"^{tree}")
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("read preserved tree: %w", err)
+	}
+	output, err := runGitWithInput(ctx, path, []byte(message), "commit-tree", tree, "-p", parent, "-F", "-")
+	if err != nil {
+		return "", fmt.Errorf("git commit-tree: %w: %s", err, output)
+	}
+	sha := strings.TrimSpace(output)
+	if !isGitObjectID(sha) {
+		return "", fmt.Errorf("git commit-tree returned invalid object id %q", sha)
+	}
+	return sha, nil
+}
+
+func atomicLocalBranchRetirement(ctx context.Context, path, source, destination, expected, replacement string) error {
+	output, err := runGitWithInput(ctx, path, []byte("start\ncreate refs/heads/"+destination+" "+replacement+"\ndelete refs/heads/"+source+" "+expected+"\nprepare\ncommit\n"), "update-ref", "--stdin")
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, output)
 	}
 	return nil
+}
+
+func atomicLocalRetiredAnnotation(ctx context.Context, path, ref, expected, replacement string) error {
+	output, err := runGitWithInput(ctx, path, nil, "update-ref", "refs/heads/"+ref, replacement, expected)
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, output)
+	}
+	return nil
+}
+
+func runGitWithInput(ctx context.Context, path string, input []byte, args ...string) (string, error) {
+	commandRunner, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner)
+	if !ok {
+		commandRunner = runner.New()
+	}
+	result, err := commandRunner.RunWithInput(ctx, path, input, "git", append([]string{"-C", path}, args...)...)
+	output := strings.TrimSpace(result.Stdout + result.Stderr)
+	if err != nil && output == "" {
+		output = err.Error()
+	}
+	return output, err
 }
 
 // writeQuarantineReportInjected publishes every durable checkpoint through the

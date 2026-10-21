@@ -61,7 +61,6 @@ internal/testenv/git_fixture.go	1	task-24
 internal/testenv/testenv.go	2	task-15
 internal/wbupdate/child.go	1	task-16
 internal/worktreerun/end.go	4	task-16
-internal/worktrees/branches_quarantine.go	1	task-18
 internal/worktrees/clone_migrate.go	4	task-18
 internal/worktrees/git_capability_darwin.go	1	task-18
 internal/worktrees/git_executable_darwin.go	1	task-18
