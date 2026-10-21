@@ -888,11 +888,11 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(inv *mergeInvoca
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
-		Short: "Retire an unpublished failed attempt while preserving its sources",
-		Long: `Prove that this receipt never published its candidate branch or landed it
-and that every receipted source still exists as a clean, actively claimed
-worktree at the exact recorded SHA. A validation_failed attempt retains its
-clean candidate. An interrupted preparing attempt may instead name an absent
+		Short: "Retire an unpublished failed attempt with verified source evidence",
+		Long: `Prove that the receipt never published its candidate branch and that its
+original source work remains preserved in clean, actively claimed worktrees
+or is independently proven landed and retired. A prepare/validation_failed
+attempt retains its clean candidate. An interrupted preparing attempt may instead name an absent
 candidate only when WB's private lifecycle backlog proves that exact checkout
 and local branch were deliberately discarded to completion. WB freshly checks
 that the candidate branch has no remote ref and the candidate is not reachable
