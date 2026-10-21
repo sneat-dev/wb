@@ -207,6 +207,11 @@ func TestBranchQuarantineApplyRecordsMutationFailures(t *testing.T) {
 				return "", errors.New("identity unavailable")
 			}
 		}, want: "create annotation commit"},
+		{name: "annotation safety refusal", ref: "retired/old", mutate: func(ops *branchQuarantinePlanOps) {
+			ops.inUse = func(context.Context, string, string) (map[string]string, string) {
+				return map[string]string{branchInUseKey("acme/app", "retired/old"): "task"}, ""
+			}
+		}, want: "claimed"},
 		{name: "annotation receipt checkpoint fails", ref: "retired/old", checkpoint: func() error { return errors.New("disk full") }, want: "publish annotation receipt before CAS"},
 		{name: "annotation CAS fails", ref: "retired/old", mutate: func(ops *branchQuarantinePlanOps) {
 			ops.annotate = func(context.Context, string, string, string, string) error { return errors.New("compare failed") }

@@ -202,7 +202,7 @@ func TestQuarantineRowsAndReportPropagateEveryWriterFailure(t *testing.T) {
 	t.Parallel()
 	deps := depsForTest()
 	deps.Quarantine = func(context.Context, worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
-		return worktrees.BranchQuarantineOutcome{Results: []worktrees.BranchQuarantineResult{{Outcome: "refused", Ref: "task/one", Error: "changed"}, {Outcome: "quarantined", Ref: "task/two", Destination: "retired/two"}}, ReportPath: "report.json"}, nil
+		return worktrees.BranchQuarantineOutcome{Results: []worktrees.BranchQuarantineResult{{Outcome: "refused", Ref: "task/one", Error: "changed"}, {Outcome: "annotated", Ref: "retired/two", RetiredSHA: "metadata-commit"}}, ReportPath: "report.json"}, nil
 	}
 	for after := 0; after <= 3; after++ {
 		t.Run(fmt.Sprint(after), func(t *testing.T) {
@@ -220,7 +220,7 @@ func TestQuarantineRowsAndReportPropagateEveryWriterFailure(t *testing.T) {
 			if after < 3 && err != failure {
 				t.Fatal(err)
 			}
-			if after == 3 && (err != nil || out.String() != "refused task/one: changed\nquarantined task/two -> retired/two\nreport: report.json\n") {
+			if after == 3 && (err != nil || out.String() != "refused task/one: changed\nannotated retired/two -> metadata-commit\nreport: report.json\n") {
 				t.Fatal(err, out.String())
 			}
 		})

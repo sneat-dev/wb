@@ -229,6 +229,8 @@ func TestBranchQuarantineAnnotationAndManifestMetadataValidation(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	for _, options := range []BranchQuarantineOptions{
 		{Annotate: true, Repository: "invalid", Branch: "retired/good", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "feature/not-retired", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/bad ref", SHA: sha, Reason: "obsolete"},
 		{Annotate: true, Repository: "acme/app", Branch: "retired/good", SHA: sha, Reason: "bad\nReason"},
 		{Annotate: true, Repository: "acme/app", Branch: "retired/good", SHA: sha, Reason: "   "},
 		{Manifest: "unused", Description: "silently ignored"},
@@ -236,6 +238,17 @@ func TestBranchQuarantineAnnotationAndManifestMetadataValidation(t *testing.T) {
 		if _, err := quarantineRequests(options); err == nil {
 			t.Fatalf("invalid quarantine options accepted: %#v", options)
 		}
+	}
+	trimmed, err := validateQuarantineRequests([]BranchQuarantineRequest{{
+		Repository: "acme/app", Ref: "feature/old", Reason: "obsolete", Replacement: []string{"  PR #17  "},
+	}})
+	if err != nil || len(trimmed) != 1 || len(trimmed[0].Replacement) != 1 || trimmed[0].Replacement[0] != "PR #17" {
+		t.Fatalf("replacement normalization = (%#v, %v)", trimmed, err)
+	}
+	if _, err := validateQuarantineRequests([]BranchQuarantineRequest{{
+		Repository: "acme/app", Ref: "feature/old", Reason: "obsolete", Description: "two lines\nmisleading heading",
+	}}); err == nil || !strings.Contains(err.Error(), "line breaks") {
+		t.Fatalf("multiline manifest metadata error = %v", err)
 	}
 	if err := validateQuarantineMetadata("acme/app", "feature/old", "draft", "obsolete", "", []string{"PR #1\nmalicious heading"}); err == nil {
 		t.Fatal("replacement reference with a newline was accepted")
