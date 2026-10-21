@@ -3737,6 +3737,11 @@ func (i *lifecycleInspection) locate() error {
 		// the path-derived task is the shared run. Re-read authoritative claim
 		// evidence instead of treating a suffix or a local manifest as authority.
 		claim, _, _, claimErr := activeWorkLogClaim(i.home, i.worktree)
+		if claimErr != nil {
+			if head, headErr := git(i.ctx, i.worktree, "rev-parse", "HEAD"); headErr == nil {
+				claim, claimErr = sealedSuccessSourceClaimReadOnly(i.home, i.worktree, head)
+			}
+		}
 		if claimErr != nil || claim.Task != i.task || claim.RunID != location.Task {
 			return fmt.Errorf("WB worktree %s belongs to task %q, not %q", i.worktree, location.Task, i.task)
 		}
