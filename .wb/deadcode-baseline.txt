@@ -87,7 +87,9 @@ github.com/sneat-dev/wb/internal/sessiontransport/transporttest.CheckZeroTargetA
 github.com/sneat-dev/wb/internal/sessiontransport/transporttest.Suite
 github.com/sneat-dev/wb/internal/sessiontransport/transporttest.probeTarget
 github.com/sneat-dev/wb/internal/sessiontransport/transporttest.run
+github.com/sneat-dev/wb/internal/testenv.CloneWithOrigin
 github.com/sneat-dev/wb/internal/testenv.ConfigureGitAutoMaintenanceOff
+github.com/sneat-dev/wb/internal/testenv.Git
 github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffEnv
 github.com/sneat-dev/wb/internal/testenv.GitAutoMaintenanceOffProcess
 github.com/sneat-dev/wb/internal/testenv.InitBareRemoteForTest
@@ -96,7 +98,9 @@ github.com/sneat-dev/wb/internal/testenv.IsolateHarnessProcess
 github.com/sneat-dev/wb/internal/testenv.IsolateProcess
 github.com/sneat-dev/wb/internal/testenv.IsolateUserState
 github.com/sneat-dev/wb/internal/testenv.SetGitAutoMaintenanceOff
+github.com/sneat-dev/wb/internal/testenv.SnapshotTrees
 github.com/sneat-dev/wb/internal/testenv.UserStateViolations
+github.com/sneat-dev/wb/internal/testenv.WaitForQueued
 github.com/sneat-dev/wb/internal/testenv.WriteExecutableFile
 github.com/sneat-dev/wb/internal/testenv.globalGitConfigFiles
 github.com/sneat-dev/wb/internal/testenv.goEnvFileValues
@@ -104,6 +108,7 @@ github.com/sneat-dev/wb/internal/testenv.inheritedUserStateRoot
 github.com/sneat-dev/wb/internal/testenv.isolateEnvironment
 github.com/sneat-dev/wb/internal/testenv.resolvedGoToolVariables
 github.com/sneat-dev/wb/internal/testenv.under
+github.com/sneat-dev/wb/internal/testenv.waitForQueued
 github.com/sneat-dev/wb/internal/testsweep.Sweep
 
 # == A1. Test-support dependencies and test-only hooks ==
@@ -330,6 +335,61 @@ github.com/sneat-dev/wb/hub.WorkflowRunHarvester.HarvestWorkflowRun
 github.com/sneat-dev/wb/hub.WorkflowRunHarvester.narrateLine
 github.com/sneat-dev/wb/hub.extractCoverageSummaryFromZip
 
+# == C2. Superseded adapters still called by tests, cleanup pending ==
+#
+# Refactors moved these behaviours to owning packages (internal/cli/progress, shared,
+# reposelection, landingcontext; orchestrate WithRunner/WithDependencies owners; claim ports)
+# and left the old wrapper or predicate behind with only test callers. They are not a
+# design choice: migrate each test to the owning entry point, then delete the wrapper and
+# its line here. Recorded 2026-10-21 because deadcode had stopped running on main; see
+# docs/deadcode-baseline.md.
+github.com/sneat-dev/wb/cmd/wb.addJSONFormatFlags
+github.com/sneat-dev/wb/cmd/wb.campaignProgress.finish
+github.com/sneat-dev/wb/cmd/wb.campaignProgress.reporter
+github.com/sneat-dev/wb/cmd/wb.ciWaitProgress.fail
+github.com/sneat-dev/wb/cmd/wb.ciWaitProgress.finishOperation
+github.com/sneat-dev/wb/cmd/wb.ciWaitProgress.operationReporter
+github.com/sneat-dev/wb/cmd/wb.ciWaitProgress.report
+github.com/sneat-dev/wb/cmd/wb.ciWaitProgress.start
+github.com/sneat-dev/wb/cmd/wb.ciWaitProgress.update
+github.com/sneat-dev/wb/cmd/wb.landingLaneGuardRequest
+github.com/sneat-dev/wb/cmd/wb.liveProgress.Enabled
+github.com/sneat-dev/wb/cmd/wb.liveProgress.finish
+github.com/sneat-dev/wb/cmd/wb.liveProgress.printLine
+github.com/sneat-dev/wb/cmd/wb.liveProgress.start
+github.com/sneat-dev/wb/cmd/wb.liveProgress.update
+github.com/sneat-dev/wb/cmd/wb.matchesQualityTarget
+github.com/sneat-dev/wb/cmd/wb.newCIWaitProgress
+github.com/sneat-dev/wb/cmd/wb.newCampaignProgress
+github.com/sneat-dev/wb/cmd/wb.newLiveProgress
+github.com/sneat-dev/wb/cmd/wb.newLiveProgressWithHeartbeat
+github.com/sneat-dev/wb/cmd/wb.outputFormatChanged
+github.com/sneat-dev/wb/cmd/wb.qualityTargets
+github.com/sneat-dev/wb/cmd/wb.releaseWorktreeMergeLane
+github.com/sneat-dev/wb/cmd/wb.requireOutputFormat
+github.com/sneat-dev/wb/cmd/wb.runTargets
+github.com/sneat-dev/wb/cmd/wb.shellQuoteCIWaitArg
+github.com/sneat-dev/wb/internal/agentguard.MaskedPipelineScopedReadOnlyFlags
+github.com/sneat-dev/wb/internal/agentguard.MaskedPipelineVerbPaths
+github.com/sneat-dev/wb/internal/cli/progress.Checks.Update
+github.com/sneat-dev/wb/internal/daemon.SocketPath
+github.com/sneat-dev/wb/internal/daemonruntime.cleanupDaemonFileQuarantine
+github.com/sneat-dev/wb/internal/daemonruntime.daemonFileBridgeDirectory
+github.com/sneat-dev/wb/internal/orchestrate.activeWorktreeMergeLaneReceipt
+github.com/sneat-dev/wb/internal/orchestrate.canPreparePostTargetRepair
+github.com/sneat-dev/wb/internal/orchestrate.canRefreshWorktreeMergeReceipt
+github.com/sneat-dev/wb/internal/orchestrate.inspectWorktreeMergeSources
+github.com/sneat-dev/wb/internal/orchestrate.requireCandidateContainsImmutableClaimBase
+github.com/sneat-dev/wb/internal/orchestrate.requireCleanMergeWorktree
+github.com/sneat-dev/wb/internal/orchestrate.validateExactPreparingWorktreeMergeReceipt
+github.com/sneat-dev/wb/internal/orchestrate.validatePrepareFailureSupersessionCandidate
+github.com/sneat-dev/wb/internal/orchestrate.validatePreparingWorktreeMergeCandidate
+github.com/sneat-dev/wb/internal/orchestrate.validationCacheValidatorSHAs
+github.com/sneat-dev/wb/internal/quality.run
+github.com/sneat-dev/wb/internal/remoterun.Service.Load
+github.com/sneat-dev/wb/internal/worktreebranches.SupersessionService.DependencyCampaignWorktree
+github.com/sneat-dev/wb/internal/worktrees.EnsureManifest
+
 # == X. Test fixtures used across packages (decision needed; see docs/deadcode-baseline.md) ==
 #
 # Production-package functions whose only callers are tests in another package, so they cannot move
@@ -354,6 +414,6 @@ github.com/sneat-dev/wb/internal/worktrees.parkedSessionWorkLogSnapshotWithReads
 # repopath.Address.String is the fmt.Stringer used when addresses are printed with %s/%v, which
 # static reachability cannot see. platformGitFilesystemCapabilityConfines and
 # daemonSupervisorRecordsStartLog have one definition per OS and are read only by tests.
-github.com/sneat-dev/wb/cmd/wb.daemonSupervisorRecordsStartLog
+github.com/sneat-dev/wb/internal/daemonruntime.daemonSupervisorRecordsStartLog
 github.com/sneat-dev/wb/internal/repopath.Address.String
 github.com/sneat-dev/wb/internal/worktrees.platformGitFilesystemCapabilityConfines
