@@ -13,6 +13,13 @@ unreachable functions were deleted or moved out of production code, and the
 rest are the categories below. Since then the retired dashboard's one entry
 left and seven native-test selection analysers arrived from main, for 267.
 
+On 2026-10-21 `wb deadcode` was found failing on main with 52 unrecorded
+findings: the check runs in local `wb` validation but not in CI, so refactors
+landed without it. By the founder's decision they were recorded rather than
+fixed first, so the sidecar fix that exposed them could land: 5 `internal/testenv`
+helpers under A1, one per-OS probe that moved package under X, and 46
+superseded adapters under C2, which is cleanup owed, not a tolerated category.
+
 ## How to decide a new unreachable function
 
 1. Called only by tests in its own package: move it into a `_test.go` file
@@ -25,7 +32,7 @@ left and seven native-test selection analysers arrived from main, for 267.
 4. Scheduled for wiring by a live spec or plan: category A3, and name the task.
 5. Otherwise delete it.
 
-## A1. Test support, by design (164 entries)
+## A1. Test support, by design (169 entries)
 
 * 72: `internal/gitcli/gitclitest`, `internal/runner/runnertest`,
   `internal/sessiontransport/transporttest`, `internal/testenv`,
@@ -33,7 +40,10 @@ left and seven native-test selection analysers arrived from main, for 267.
   `internal/testenv` includes seven entries added by the user-state isolation
   guard (`IsolateUserState`, `UserStateViolations`, `globalGitConfigFiles`,
   `goEnvFileValues`, `inheritedUserStateRoot`, `resolvedGoToolVariables`,
-  `under`) that were missing from the baseline on main.
+  `under`) that were missing from the baseline on main. Recorded 2026-10-21:
+  `Git`, `CloneWithOrigin`, `SnapshotTrees`, `WaitForQueued` and
+  `waitForQueued`, shared Git, snapshot and run-queue fixtures with `_test.go`
+  callers in several packages.
 * 7: `internal/githubobserver/testfixture`: `InstallGH`, `State.Answer`,
   `WithEmptyActionsRuns`, `ScriptState`, `PullRequestView`,
   `InstallTransientReadGH`, `InstallDirectCIGH`. This package owns the concrete
@@ -120,6 +130,32 @@ the service to it. It is public API for external store adapters.
 The fix is to wire a `WorkflowRunHarvester` with an `HTTPArtifactDownloader`
 into the hub handler options, not to delete it.
 
+## C2. Superseded adapters still called by tests (46 entries, cleanup owed)
+
+Recorded 2026-10-21 by the founder's decision, against rules 1 and 5 above, so
+that an unrelated fix could land. Refactors moved each behaviour to an owning
+package and left the old wrapper or predicate behind with only test callers.
+Each one is removed by migrating its tests to the owning entry point and then
+deleting the wrapper and its baseline line; this category must only shrink.
+
+* 26 in `cmd/wb`: progress, output-format, target-selection, landing-lane and
+  quoting adapters that delegate to `internal/cli/progress`, `shared`,
+  `reposelection` and `landingcontext`.
+* 10 in `internal/orchestrate`: wrappers over the `WithRunner` /
+  `WithDependencies` owners used in production.
+* 7 thin or duplicate adapters: `progress.Checks.Update`, `daemon.SocketPath`,
+  the `daemonruntime` file-bridge directory and quarantine-cleanup wrappers,
+  `quality.run`, `remoterun.Service.Load`, `worktrees.EnsureManifest`. Their
+  owners are called in production (claim ports in `operation_manifest.go`,
+  quarantine stages in `file_bridge.go`, remote load in status, autoclaim, read,
+  release and claim).
+* 2 `agentguard` metadata getters, `MaskedPipelineVerbPaths` and
+  `MaskedPipelineScopedReadOnlyFlags`. The runtime reads `statefulWBVerbs` and
+  `scopedReadOnlyFlags` directly.
+* 1 duplicate predicate, `SupersessionService.DependencyCampaignWorktree`.
+  `ValidateDependencyDeltasReason` already enforces the same boundary before
+  supersession is accepted.
+
 ## X. Not covered by the ruling (17 entries)
 
 Cross-package test fixtures (14): production-package functions whose only
@@ -151,5 +187,5 @@ used whenever an address is printed with `%s` or `%v`; reachability analysis
 cannot see that call.
 
 Per-OS test probes (2): `internal/worktrees.platformGitFilesystemCapabilityConfines`
-and `cmd/wb.daemonSupervisorRecordsStartLog` have one definition per platform
-and are read only by tests.
+and `internal/daemonruntime.daemonSupervisorRecordsStartLog` (moved from
+`cmd/wb`) have one definition per platform and are read only by tests.
