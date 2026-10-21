@@ -50,7 +50,12 @@ func awaitLandablePullRequest(
 	// in the original `wb pr land` call site (pr_land.go) for why: everything
 	// below can end without landing, and arming first means none of those
 	// endings strand a complete change.
-	if !options.NoAutoMerge {
+	if options.mergeQueue != nil {
+		// On a merge-queue target GitHub's auto-merge means "enqueue when
+		// ready", an authorization WB would hand over before the pull request's
+		// own checks were observed. WB enqueues itself once they pass.
+		evidence["auto_merge"] = "not armed: " + updatedView.Base.Ref + " merges through its merge queue, which WB enqueues once the pull request's own checks pass"
+	} else if !options.NoAutoMerge {
 		reportPullRequestLandProgress(options.OperationProgress, "arm_auto_merge", progress.Started, options.Repository+"#"+number, 0, 0)
 		if bypassed := autoMergeBypassesAGuard(ctx, options, updatedView.Base.Ref); bypassed != "" {
 			evidence["auto_merge"] = "not armed: " + bypassed
@@ -65,7 +70,9 @@ func awaitLandablePullRequest(
 		}
 	}
 
-	updates := !options.NoUpdateBranch && len(options.KeepCommits) == 0
+	// The merge queue builds its merge group on the current target, so a
+	// candidate behind it needs no update-branch and no fresh CI cycle.
+	updates := !options.NoUpdateBranch && len(options.KeepCommits) == 0 && options.mergeQueue == nil
 	pollInterval := options.CheckPollInterval
 	if pollInterval <= 0 {
 		pollInterval = githubchecks.DefaultCheckPollInterval
@@ -167,6 +174,7 @@ func awaitLandablePullRequest(
 			Target:            updatedView.Base.Ref,
 			Head:              updatedView.Head.SHA,
 			AllowUnfenced:     options.AllowUnfenced,
+			MergeQueue:        options.mergeQueue != nil,
 			WaiveChecks:       options.WaiveChecks,
 			Slice:             remaining,
 			CheckPollInterval: options.CheckPollInterval,

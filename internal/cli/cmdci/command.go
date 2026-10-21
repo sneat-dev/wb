@@ -75,8 +75,10 @@ the candidate may fix a red target. A same-named PR summary or legacy status
 cannot satisfy a required context pinned to another GitHub App. A pass requires
 GitHub's authoritative required-check policy plus a terminal reread that is
 unchanged, so the first green snapshot cannot become sole merger evidence while
-suites are still registering. A target advance rejects the receipt. Merge-group
-observation is not implemented, so merge-queue PRs fail closed. The reread
+suites are still registering. A target advance rejects the receipt. A
+merge-queue target fails closed: no source-head receipt can authorize what the
+queue merges, and its merge group exists only once the PR is enqueued, which
+this read-only command never does; 'wb pr land' enqueues and observes it. The reread
 proves bounded observed-set quiescence, not that a future optional workflow can
 never appear; collect separate release evidence where the repository requires
 it. This command never starts a detached watcher or background loop.`,

@@ -81,6 +81,15 @@ type PullRequestWaitOptions struct {
 	// branch has no server-enforced strict freshness fence. Merge callers leave
 	// this false; it is an explicit opt-in for wait-only validation.
 	AllowUnfenced bool
+	// MergeQueue is set only by a landing that hands the merge to GitHub's
+	// merge queue instead of performing it. The queue, not this receipt, then
+	// proves freshness: it tests the merge group (the current target plus the
+	// candidate) and merges only that. So the candidate need not contain the
+	// current target, a target advance does not reject the receipt, and the
+	// queue counts as the server-enforced freshness authority. A caller that
+	// sets this and then merges directly would land an unfenced head; the only
+	// caller is the merge-queue landing, which never does.
+	MergeQueue bool
 	// WaiveChecks names checks whose failed/cancelled conclusion on the PR head
 	// will not fail the wait loop, allowing required checks to finish.
 	WaiveChecks       []string

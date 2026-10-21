@@ -179,7 +179,9 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 				return failedCommitWaitResult(result, reason), nil
 			}
 			result.CandidateContainsTarget = containsTarget
-			if !containsTarget {
+			// A merge-queue candidate is merged as part of a merge group built on
+			// the current target, so being behind the target is not a defect.
+			if !containsTarget && !options.MergeQueue {
 				return failedCommitWaitResult(result, fmt.Sprintf("pull request head %s does not contain current target %s at %s; rebase or reintegrate before waiting or merging", options.Head, options.Target, observedTargetHead)), nil
 			}
 		} else {
@@ -296,7 +298,13 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 			(options.PullRequest == "" || options.AllowUnfenced)
 		terminal := !pending && len(missingRequired) == 0 && len(missingExpected) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {
-			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, observedTargetHead, freshnessAuthority)
+			fingerprintTarget := observedTargetHead
+			if options.MergeQueue {
+				// The queue, not this receipt, binds the target; a busy target
+				// moving must not keep the candidate's own checks from settling.
+				fingerprintTarget = ""
+			}
+			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, fingerprintTarget, freshnessAuthority)
 			if fingerprint == stableFingerprint {
 				stableObservations++
 			} else {
@@ -356,7 +364,7 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 					}
 					return failedCommitWaitResult(result, "re-read exact pull-request target head: "+targetReason), nil
 				}
-				if finalTargetHead != observedTargetHead {
+				if finalTargetHead != observedTargetHead && !options.MergeQueue {
 					return failedCommitWaitResult(result, fmt.Sprintf("target %s advanced after checks passed from %s to %s; rebase or reintegrate before merging", options.Target, observedTargetHead, finalTargetHead)), nil
 				}
 			} else {
@@ -386,7 +394,9 @@ func waitForCommitChecksWith(ctx context.Context, options PullRequestWaitOptions
 				result.ObservedTargetHead = observedHead
 			}
 			result.Status = PullRequestWaitPassed
-			if options.PullRequest != "" && !options.AllowUnfenced {
+			if options.PullRequest != "" && options.MergeQueue {
+				result.Reason = "GitHub's required-check policy was enumerated, every required check was present on the exact candidate head, and the observed GitHub check set stayed terminal across a bounded stable reread; target freshness is delegated to GitHub's merge queue, which tests the merge group against the current target before merging it"
+			} else if options.PullRequest != "" && !options.AllowUnfenced {
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, server-side target freshness was enforced, and the observed GitHub check set stayed terminal across a bounded stable reread"
 			} else if options.PullRequest != "" && result.PolicyAuthorityUnavailable != "" {
 				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the pull-request base, exact candidate head, target containment, and observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication"
@@ -783,7 +793,10 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 		policyUnavailable = cache.policyUnavailable
 	} else {
 		var reason string
-		branchChecks, freshnessAuthority, reason = RequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "" && !options.AllowUnfenced)
+		branchChecks, freshnessAuthority, reason = RequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "" && !options.AllowUnfenced && !options.MergeQueue)
+		if reason == "" && options.MergeQueue {
+			freshnessAuthority = strings.Trim(freshnessAuthority+"+"+MergeQueueFreshnessAuthority, "+")
+		}
 		if reason != "" {
 			if !options.AllowUnfenced || !isGitHubPolicyPlan403(reason) {
 				return nil, "", "", "", reason
@@ -882,6 +895,9 @@ type ActiveBranchRule struct {
 			Context       string `json:"context"`
 			IntegrationID int64  `json:"integration_id"`
 		} `json:"required_status_checks"`
+		// The merge_queue rule's own parameters.
+		MergeMethod      string `json:"merge_method"`
+		GroupingStrategy string `json:"grouping_strategy"`
 	} `json:"parameters"`
 }
 
@@ -963,7 +979,7 @@ func RequiredChecks(ctx context.Context, repository, target string, requireServe
 				}
 			case ruleType == "merge_queue":
 				if requireServerFreshness {
-					return nil, "", fmt.Sprintf("%s requires merge-group check observation, which this source-head waiter does not yet implement", source)
+					return nil, "", fmt.Sprintf("%s requires GitHub's merge queue, so no source-head receipt can authorize a merge: the queue tests and merges a merge group that exists only once the pull request is enqueued; land it with `wb pr land`, which enqueues it and observes the merge group to the target", source)
 				}
 			case strings.Contains(ruleType, "workflow"):
 				return nil, "", fmt.Sprintf("%s contains %s, whose expected check names GitHub does not expose in this receipt", source, ruleType)

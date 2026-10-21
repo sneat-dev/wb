@@ -296,9 +296,11 @@ than a fictional queue.
    Before candidate CI, prove the candidate head contains the freshly fetched
    exact target SHA and that the target has a nonempty server-enforced strict
    required-status-check policy. If the target advances, rebase or reintegrate
-   and obtain a new receipt. Merge-group observation is planned; this
-   source-head workflow must fail closed for a merge queue rather than claim
-   synthetic-SHA support.
+   and obtain a new receipt. A merge-queue target is the exception: never
+   merge it directly (an admin bypass would land a head the queue never
+   tested); land it with `wb pr land` or `wb worktree land`, which enqueue
+   the exact head and observe the queue to the target. `wb ci wait` fails
+   closed there by design.
    `wb worktree merge` now composes this conflict-free mechanical path. Its
    prepare receipt remains explicitly local and not landed until Phase 2
    proves the exact remote target.

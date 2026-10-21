@@ -2031,7 +2031,11 @@ ancestor of the candidate, and requires either classic or ruleset strict
 required-status-check policy with at least one required check. It does not wait
 for current target CI to turn green: an updated candidate may be the fix for a
 red target. Target movement rejects the receipt and requires reintegration.
-Merge-group observation for merge queues remains planned and fails closed.
+On a merge-queue target the source-head receipt fails closed, because the
+queue merges a merge group that exists only once the pull request is enqueued;
+`wb pr land` and `wb worktree land` enqueue it with `enqueuePullRequest` pinned
+to the observed head and observe the queue to the target, never merging
+directly.
 Missing policy authority, unsupported required-workflow names, or incomplete
 check/status pagination remain pending or fail closed. A pass requires two
 unchanged terminal observations. That is a bounded quiescence receipt, not

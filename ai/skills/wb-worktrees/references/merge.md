@@ -21,7 +21,8 @@ wb worktree merge <source-worktree...> --route auto --cleanup --format json
 The default target is the repository's remote default branch. Pass
 `--target <branch>` for a feature or integration target. `--route auto` uses a
 direct target push only when authoritative GitHub policy supports it; otherwise
-it uses a PR, or refuses an unsupported merge queue. WB derives PR text from
+it uses a PR; a merge-queue target always takes the PR route, enqueued
+through GitHub's queue rather than merged directly. WB derives PR text from
 commit messages, waits for exact-head checks, verifies the remote landing, and
 fast-forwards a clean canonical checkout already on the target.
 Use `--progress` from non-terminal agent tools so stderr reports the current

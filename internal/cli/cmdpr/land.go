@@ -70,7 +70,7 @@ func NewLand(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var keepCommits, waiveChecks []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
 	var pollInterval, totalTimeout time.Duration
-	var noUpdateBranch, noAutoMerge bool
+	var noUpdateBranch, noAutoMerge, requeue bool
 	command := &cobra.Command{
 		Use:   "land <owner/repository#number>",
 		Short: "Verify, land, and tidy up after one pull request",
@@ -123,6 +123,21 @@ the checks run is caught up again. Auto-merge is not armed where it would skip
 one of this verb's guards: with --keep-commits, or on a target without a strict
 up-to-date policy unless --allow-unfenced is explicit. A conflicting update refuses with
 update-branch-conflict. --no-update-branch refuses a behind candidate instead.
+
+MERGE QUEUE TARGETS ARE ENQUEUED, NEVER MERGED. When the target's active rules
+include a merge_queue rule, wb waits for the pull request's own required checks
+(a candidate behind the target needs no update-branch), then adds it to the
+queue with GitHub's enqueuePullRequest pinned to the observed head, and watches
+until the queue merges it, removes it, or the --timeout budget runs out. It
+never arms auto-merge and never calls a merge endpoint, even when the caller is
+a ruleset bypass actor who could merge around the queue. The queue merges with
+its own method and message, so a conflicting --merge-method, --subject or
+--keep-commits is refused (merge-queue-option-conflict). A failed merge group
+reports merge-group-failed, any other removal merge-queue-dequeued, and a
+still-queued pull request merge-queue-pending with a resume command; re-running
+it finds the pull request already queued and does not enqueue it again. A head
+the queue already removed is reported, not re-enqueued, unless --requeue is
+passed or a new head was pushed since the removal.
 
 REVIEW. A mechanical dependency bump — a diff touching only go.mod, go.sum,
 package.json dependency fields, pnpm-lock.yaml, pnpm-workspace.yaml — lands on
@@ -220,6 +235,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				Slice:               totalTimeout,
 				NoUpdateBranch:      noUpdateBranch,
 				NoAutoMerge:         noAutoMerge,
+				Requeue:             requeue,
 				CheckPollInterval:   pollInterval,
 				Progress:            progress.Report,
 				OperationProgress:   progress.OperationReporter("pr land"),
@@ -272,6 +288,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
 	command.Flags().BoolVar(&noUpdateBranch, "no-update-branch", false, "refuse a candidate that is behind the target instead of bringing it up to date")
 	command.Flags().BoolVar(&noAutoMerge, "no-auto-merge", false, "do not arm GitHub auto-merge; a wait that runs out of budget leaves the pull request for someone to land later")
+	command.Flags().BoolVar(&requeue, "requeue", false, "on a merge-queue target, enqueue again a head the queue already removed")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
 	command.Flags().StringSliceVar(&waiveChecks, "waive-check", nil, "GitHub check name whose failure to waive when it is not required by target policy and fails on target tip with the same conclusion (repeatable)")
 	command.Flags().StringVar(&waiveReason, "waive-reason", "", "why the waived checks are safe to ignore; required with --waive-check")
