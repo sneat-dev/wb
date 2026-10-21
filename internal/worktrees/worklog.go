@@ -618,6 +618,7 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 	ports := worktreeclaims.PublicationPorts{
 		OpenPrivateChild: openPrivateChild,
 		ReadClaimAt:      readWorkLogClaimAt,
+		ReadJSONAt:       readJSONAt,
 		ReadClaimNames: func(claims *os.File) ([]string, error) {
 			return claims.Readdirnames(-1)
 		},

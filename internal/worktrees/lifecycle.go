@@ -1859,7 +1859,21 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 				return nil, namesErr
 			}
 			sort.Strings(claimNames)
+			claimFiles := make(map[string]bool, len(claimNames))
 			for _, name := range claimNames {
+				claimFiles[name] = true
+			}
+			for _, name := range claimNames {
+				// A claim landed through a pull request keeps a WB-written
+				// sidecar beside it; only a validated one is passed over.
+				if strings.HasSuffix(name, worktreeclaims.PullRequestBindingSuffix) {
+					if bindingErr := worktreeclaims.ValidatePullRequestBindingEntry(claims, name, claimFiles, readJSONAt); bindingErr != nil {
+						_ = claims.Close()
+						_ = runs.Close()
+						return nil, fmt.Errorf("unsafe Work Log claim entry %q: %w", name, bindingErr)
+					}
+					continue
+				}
 				claimID := strings.TrimSuffix(name, ".json")
 				if name != claimID+".json" || !validClaimID(claimID) {
 					_ = claims.Close()

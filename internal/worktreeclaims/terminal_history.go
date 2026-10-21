@@ -163,19 +163,10 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 			if err != nil {
 				return "", fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
 			}
-			var binding ClaimPullRequestBinding
-			readErr = p.ReadJSON(claims, name, &binding)
-			var boundClaim Claim
-			if readErr == nil {
-				readErr = p.ReadJSON(claims, claimID+".json", &boundClaim)
-			}
+			readErr = readValidatedClaimPullRequestBinding(claims, claimID, p.ReadJSON)
 			_ = claims.Close()
 			if readErr != nil {
 				return "", fmt.Errorf("read terminal Work Log pull request binding %q for task %s: %w", name, expectation.Task, readErr)
-			}
-			if binding.Repository != boundClaim.Repository || binding.PullRequest <= 0 ||
-				strings.TrimSpace(binding.URL) == "" || binding.RecordedAt.IsZero() {
-				return "", fmt.Errorf("invalid terminal Work Log pull request binding %q for task %s", name, expectation.Task)
 			}
 			continue
 		}
