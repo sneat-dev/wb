@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 //nolint:paralleltest // Shared-placement fixture selects process-wide WB configuration.
