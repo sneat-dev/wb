@@ -267,12 +267,24 @@ func inspectSourceRegistration(ctx context.Context, options SourceListOptions, r
 			return nil, nil, fmt.Errorf("detached potential source producer is at the PR head")
 		}
 	} else {
-		claim, _, _, err := activeWorkLogClaimReadOnly(home, entry.path)
+		projection, err := readWorkLogProjectionForReadOnlyClaim(entry.path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("corroborate source producer ownership: %w", err)
+		}
+		var claim workLogClaim
+		if projection.Lifecycle == "terminal" {
+			claim, err = sealedSuccessSourceClaimReadOnly(home, entry.path, entry.head)
+		} else {
+			claim, _, _, err = activeWorkLogClaimReadOnly(home, entry.path)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("corroborate source producer ownership: %w", err)
 		}
 		// The native claim reader corroborates current placement, including
 		// immutable relocation receipts; claim.Worktree may name its old path.
+		if !strings.EqualFold(entry.head, options.HeadSHA) {
+			return nil, nil, fmt.Errorf("source producer HEAD does not match the reviewed pull request head")
+		}
 		if !strings.EqualFold(claim.Repository, options.Repository) || claim.Branch != options.Branch {
 			return nil, nil, fmt.Errorf("source producer claim does not match its repository, branch, and physical directory")
 		}

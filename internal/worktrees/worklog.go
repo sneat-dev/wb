@@ -1819,6 +1819,28 @@ func (p existingCleanupPorts) acceptExistingCleanupTerminal(home, worktree, fina
 	if readTerminalErr != nil {
 		return fmt.Errorf("read immutable work-log terminal: %w", readTerminalErr)
 	}
+	if err := validateExistingCleanupTerminalRecord(terminal, claim, finalCommit); err != nil {
+		return err
+	}
+	if err := p.validateExistingCleanupOutbox(home, claim, terminal); err != nil {
+		return err
+	}
+	if projection.Lifecycle != "terminal" {
+		projection.Lifecycle = "terminal"
+		if err := p.writeProjection(worktree, projection); err != nil {
+			return fmt.Errorf("repair terminal work-log projection after finalize: %w", err)
+		}
+		if err := p.repairLocal(worktree); err != nil {
+			return fmt.Errorf("repair local work-log projection after finalize: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateExistingCleanupTerminalRecord is the immutable exact-head authority
+// shared by cleanup and read-only source inventory. A finalize success has a
+// landed disposition without a separate remote landing receipt.
+func validateExistingCleanupTerminalRecord(terminal workLogTerminalRecord, claim workLogClaim, finalCommit string) error {
 	expectedClaim := claim
 	expectedClaim.Lifecycle = "terminal"
 	if !reflect.DeepEqual(terminal.Claim, expectedClaim) || terminal.FinalCommit != finalCommit || terminal.SealedAt.IsZero() ||
@@ -1826,6 +1848,10 @@ func (p existingCleanupPorts) acceptExistingCleanupTerminal(home, worktree, fina
 		terminal.ExternalHandoff != nil || terminal.Orphaned != nil || terminal.DirtyCapture != nil || terminal.Supersession != nil {
 		return fmt.Errorf("immutable terminal does not authorize cleanup of the finalized claim")
 	}
+	return nil
+}
+
+func (p existingCleanupPorts) validateExistingCleanupOutbox(home string, claim workLogClaim, terminal workLogTerminalRecord) error {
 	outbox, err := p.openOutbox(home, claim.EffortID, false)
 	if err != nil {
 		return fmt.Errorf("open immutable terminal outbox: %w", err)
@@ -1838,22 +1864,59 @@ func (p existingCleanupPorts) acceptExistingCleanupTerminal(home, worktree, fina
 	}
 	expectedEvent := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
-		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit,
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
 		Lifecycle: "terminal", Disposition: terminal.Disposition, Landed: terminal.Landed,
 		FinalizeReport: terminal.FinalizeReport}
 	if !reflect.DeepEqual(event, expectedEvent) {
 		return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
 	}
-	if projection.Lifecycle != "terminal" {
-		projection.Lifecycle = "terminal"
-		if err := p.writeProjection(worktree, projection); err != nil {
-			return fmt.Errorf("repair terminal work-log projection after finalize: %w", err)
-		}
-		if err := p.repairLocal(worktree); err != nil {
-			return fmt.Errorf("repair local work-log projection after finalize: %w", err)
-		}
-	}
 	return nil
+}
+
+// sealedSuccessSourceClaimReadOnly accepts only the original producer's exact
+// successful finalize, with its immutable claim, terminal, and outbox agreeing.
+// It never repairs a projection or takes cleanup's mutating claim lock.
+func sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit string) (workLogClaim, error) {
+	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	if err != nil {
+		return workLogClaim{}, err
+	}
+	if projection.Lifecycle != "terminal" {
+		return workLogClaim{}, fmt.Errorf("work-log projection is %s, not terminal", projection.Lifecycle)
+	}
+	terminal, err := readWorkLogTerminalRecordReadOnly(home, worktree)
+	if err != nil {
+		return workLogClaim{}, err
+	}
+	if terminal == nil {
+		return workLogClaim{}, fmt.Errorf("immutable terminal is unavailable")
+	}
+	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return workLogClaim{}, err
+	}
+	claim, readErr := readWorkLogClaimAt(runDir, projection.ClaimID)
+	_ = runDir.Close()
+	if readErr != nil {
+		return workLogClaim{}, readErr
+	}
+	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
+		return workLogClaim{}, err
+	}
+	if err := validateExistingCleanupTerminalRecord(*terminal, claim, finalCommit); err != nil {
+		return workLogClaim{}, err
+	}
+	if terminal.Disposition != "landed" || terminal.Landed != nil || terminal.FinalizeReport != nil && terminal.FinalizeReport.Result != "success" {
+		return workLogClaim{}, fmt.Errorf("immutable terminal is not an exact successful finalize")
+	}
+	if err := defaultExistingCleanupPorts().validateExistingCleanupOutbox(home, claim, *terminal); err != nil {
+		return workLogClaim{}, err
+	}
+	current, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	if err != nil || current != projection {
+		return workLogClaim{}, fmt.Errorf("work-log projection changed during terminal inspection: %v", err)
+	}
+	return claim, nil
 }
 
 // acceptAdvancedCleanupTerminal authorizes cleanup of a worktree whose claim
