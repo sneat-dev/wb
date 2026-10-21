@@ -69,13 +69,14 @@ func newCount(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 }
 
 func newQuarantine(runtime shared.Runtime, deps Dependencies) *cobra.Command {
-	var repository, branch, sha, reason, manifest, reportDir string
-	var apply bool
+	var repository, branch, sha, reason, description, retention, manifest, reportDir string
+	var replacement []string
+	var apply, annotate bool
 	command := &cobra.Command{Use: "quarantine", Short: "Plan or locally quarantine exact old branches under retired/*", Args: cobra.NoArgs,
-		Long: "Quarantine is dry-run by default. --apply atomically creates retired/<date>-<flat-source>-<short-sha> and compare-and-deletes the exact local source SHA, recording every row in a durable report. Remote quarantine is intentionally refused until WB has equivalent peer evidence and a leased remote rename.",
+		Long: "Quarantine is dry-run by default. --apply creates a tree-identical metadata commit parented by the original tip, then atomically creates the retired ref and compare-and-deletes the exact source SHA. --annotate updates one explicitly named local retired/* ref after checking --sha. Both operations record durable receipts. Remote quarantine is intentionally refused until WB has equivalent peer evidence and a leased remote rename.",
 		RunE: func(command *cobra.Command, args []string) error {
 			flags := runtime.Flags()
-			outcome, err := deps.Quarantine(command.Context(), worktrees.BranchQuarantineOptions{ProjectsRoot: flags.ProjectsRoot, Repository: repository, Branch: branch, SHA: sha, Reason: reason, Manifest: manifest, Apply: apply, ReportDir: reportDir})
+			outcome, err := deps.Quarantine(command.Context(), worktrees.BranchQuarantineOptions{ProjectsRoot: flags.ProjectsRoot, Repository: repository, Branch: branch, SHA: sha, Reason: reason, Description: description, Replacement: replacement, Retention: retention, Annotate: annotate, Manifest: manifest, Apply: apply, ReportDir: reportDir})
 			if err != nil {
 				return err
 			}
@@ -85,7 +86,11 @@ func newQuarantine(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 						return err
 					}
 				} else {
-					if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s -> %s\n", result.Outcome, result.Ref, result.Destination); err != nil {
+					destination := result.Destination
+					if destination == "" {
+						destination = result.RetiredSHA
+					}
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s -> %s\n", result.Outcome, result.Ref, destination); err != nil {
 						return err
 					}
 				}
@@ -100,6 +105,10 @@ func newQuarantine(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	command.Flags().StringVar(&branch, "branch", "", "exact local source ref")
 	command.Flags().StringVar(&sha, "sha", "", "expected source SHA (required by manifest rows)")
 	command.Flags().StringVar(&reason, "reason", "", "durable operator reason")
+	command.Flags().StringVar(&description, "description", "", "what the retired work preserved")
+	command.Flags().StringArrayVar(&replacement, "replacement", nil, "replacement PR or commit reference (repeatable)")
+	command.Flags().StringVar(&retention, "retention", "", "explicit retention decision; omission records unspecified (WB does not auto-expire retired refs)")
+	command.Flags().BoolVar(&annotate, "annotate", false, "add a metadata commit to an existing local retired/* ref; requires exact --sha")
 	command.Flags().StringVar(&manifest, "manifest", "", "JSON manifest containing exact repository, ref, sha, and reason rows")
 	command.Flags().BoolVar(&apply, "apply", false, "perform planned local CAS renames")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "durable quarantine report directory")

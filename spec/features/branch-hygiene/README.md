@@ -147,11 +147,17 @@ to stderr in text mode; JSON and YAML retain diagnostics in the outcome.
 
 `wb branch quarantine` accepts one exact local `--repo`, `--branch`, optional
 `--sha`, and required `--reason`, or a JSON `--manifest` whose every row names
-exact repository, ref, SHA, and reason. It plans by default. Under `--apply`
-it atomically moves each proven-safe local source to
-`retired/<UTC-date>-<flat-source>-<short-SHA>` and writes a durable per-row
-receipt. Remote quarantine is refused until equivalent remote peer proof and
-leased mutation exist.
+exact repository, ref, SHA, and reason. `--description`, repeatable
+`--replacement`, and `--retention` add decision context to each retirement.
+It plans by default. Under `--apply` it creates a tree-identical metadata
+commit parented by the original tip, then atomically moves each proven-safe
+local source to `retired/<UTC-date>-<flat-source>-<short-SHA>` and writes a
+durable per-row receipt containing both SHAs and a stable receipt ID. An
+omitted retention choice is recorded as not specified; WB does not
+automatically expire retired refs. `--annotate` adds a metadata commit to one
+explicit existing local `retired/*` ref and requires its exact `--sha`.
+Remote quarantine is refused until equivalent remote peer proof and leased
+mutation exist.
 
 This local-only command does not retire worktrees, Work Logs, or remote refs.
 `wb worktree retire <task> --apply` persists original path/ref/SHA and WB

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,7 +105,7 @@ func TestE2EQuarantineCheckpointsKeepAdmissionAndCASIndependent(t *testing.T) {
 			t.Fatalf("apply=%+v %v", outcome, err)
 		}
 		report := quarantineNextReadReport(t, outcome.ReportPath)
-		if report.Results[0] != outcome.Results[0] || !report.GeneratedAt.Equal(options.Now()) || !strings.HasPrefix(outcome.ReportPath, filepath.Join(options.ProjectsRoot, ".wb", "reports", "branch-quarantine")) {
+		if !reflect.DeepEqual(report.Results[0], outcome.Results[0]) || !report.GeneratedAt.Equal(options.Now()) || !strings.HasPrefix(outcome.ReportPath, filepath.Join(options.ProjectsRoot, ".wb", "reports", "branch-quarantine")) {
 			t.Fatalf("durable final report=%+v", report)
 		}
 		if gitRefExists(clone, "refs/heads/"+options.Branch) || gitTestOutput(t, clone, "rev-parse", outcome.Results[0].Destination) != options.SHA {
@@ -156,7 +157,7 @@ func TestE2EQuarantineCheckpointsKeepAdmissionAndCASIndependent(t *testing.T) {
 		if !gitRefExists(clone, "refs/heads/"+options.Branch) {
 			t.Fatal("late collision removed source")
 		}
-		if report := quarantineNextReadReport(t, outcome.ReportPath); report.Results[0] != outcome.Results[0] {
+		if report := quarantineNextReadReport(t, outcome.ReportPath); !reflect.DeepEqual(report.Results[0], outcome.Results[0]) {
 			t.Fatalf("failed apply report=%+v", report)
 		}
 	})
@@ -165,18 +166,18 @@ func TestE2EQuarantineCheckpointsKeepAdmissionAndCASIndependent(t *testing.T) {
 		options, clone, ops := quarantineNextFixture(t)
 		gitTest(t, clone, "commit", "--allow-empty", "-m", "second")
 		replacement := gitTestOutput(t, clone, "rev-parse", "main")
-		ops.rename = func(ctx context.Context, path, source, destination, sha string) error {
+		ops.retire = func(ctx context.Context, path, source, destination, sha, replacementSHA string) error {
 			gitTest(t, clone, "update-ref", "refs/heads/"+source, replacement, sha)
-			return atomicLocalBranchRename(ctx, path, source, destination, sha)
+			return atomicLocalBranchRetirement(ctx, path, source, destination, sha, replacementSHA)
 		}
 		outcome, err := branchQuarantineWithOps(context.Background(), options, ops, nil)
-		if err != nil || len(outcome.Results) != 1 || outcome.Results[0].Outcome != "failed" || !strings.Contains(outcome.Results[0].Error, "local CAS rename:") {
+		if err != nil || len(outcome.Results) != 1 || outcome.Results[0].Outcome != "failed" || !strings.Contains(outcome.Results[0].Error, "local CAS retirement:") {
 			t.Fatalf("CAS race=%+v %v", outcome, err)
 		}
 		if gitTestOutput(t, clone, "rev-parse", options.Branch) != replacement || gitRefExists(clone, "refs/heads/"+outcome.Results[0].Destination) {
 			t.Fatal("CAS failure changed competing refs")
 		}
-		if report := quarantineNextReadReport(t, outcome.ReportPath); report.Results[0] != outcome.Results[0] {
+		if report := quarantineNextReadReport(t, outcome.ReportPath); !reflect.DeepEqual(report.Results[0], outcome.Results[0]) {
 			t.Fatalf("CAS failure report=%+v", report)
 		}
 	})
