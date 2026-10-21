@@ -29,25 +29,26 @@ const (
 // attempt is accepted only when WB's private cleanup backlog proves its exact
 // candidate was deliberately discarded.
 type WorktreeMergeUnpublishedValidationFailureAcknowledgement struct {
-	SchemaVersion           int                    `json:"schema_version"`
-	ID                      string                 `json:"id"`
-	Status                  string                 `json:"status"`
-	ReceiptPath             string                 `json:"receipt_path"`
-	AcknowledgementPath     string                 `json:"acknowledgement_path"`
-	ReceiptID               string                 `json:"receipt_id"`
-	ReceiptSHA256           string                 `json:"receipt_sha256"`
-	Lane                    string                 `json:"lane"`
-	Repository              string                 `json:"repository"`
-	Target                  string                 `json:"target"`
-	ReceiptTargetSHA        string                 `json:"receipt_target_sha"`
-	CurrentTargetSHA        string                 `json:"current_target_sha"`
-	Candidate               WorktreeMergeCandidate `json:"candidate"`
-	CandidateCleanupBacklog string                 `json:"candidate_cleanup_backlog,omitempty"`
-	Sources                 []WorktreeMergeSource  `json:"sources"`
-	PreservedSources        []WorktreeMergeSource  `json:"preserved_sources,omitempty"`
-	Actor                   string                 `json:"actor"`
-	Reason                  string                 `json:"reason"`
-	RecordedAt              time.Time              `json:"recorded_at"`
+	SchemaVersion           int                               `json:"schema_version"`
+	ID                      string                            `json:"id"`
+	Status                  string                            `json:"status"`
+	ReceiptPath             string                            `json:"receipt_path"`
+	AcknowledgementPath     string                            `json:"acknowledgement_path"`
+	ReceiptID               string                            `json:"receipt_id"`
+	ReceiptSHA256           string                            `json:"receipt_sha256"`
+	Lane                    string                            `json:"lane"`
+	Repository              string                            `json:"repository"`
+	Target                  string                            `json:"target"`
+	ReceiptTargetSHA        string                            `json:"receipt_target_sha"`
+	CurrentTargetSHA        string                            `json:"current_target_sha"`
+	Candidate               WorktreeMergeCandidate            `json:"candidate"`
+	CandidateCleanupBacklog string                            `json:"candidate_cleanup_backlog,omitempty"`
+	Sources                 []WorktreeMergeSource             `json:"sources"`
+	PreservedSources        []WorktreeMergeSource             `json:"preserved_sources,omitempty"`
+	LandedSources           []WorktreeMergeRetiredSourceProof `json:"landed_sources,omitempty"`
+	Actor                   string                            `json:"actor"`
+	Reason                  string                            `json:"reason"`
+	RecordedAt              time.Time                         `json:"recorded_at"`
 }
 
 type WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions struct {
@@ -96,7 +97,12 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	}
 	gitRoot := receipt.Candidate.Worktree
 	candidateCleanupBacklog := ""
-	if receipt.Status == WorktreeMergePreparing {
+	if receipt.Phase == WorktreeMergePhaseLand {
+		gitRoot, err = requireRetiredUnpublishedLandCandidate(ctx, options.ProjectsRoot, receipt, run, resolveCanonical)
+		if err != nil {
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
+		}
+	} else if receipt.Status == WorktreeMergePreparing {
 		proof, proofErr := worktrees.FindDiscardedLifecycleBacklogProof(ctx, options.ProjectsRoot, receipt.Repository, receipt.Target,
 			receipt.Candidate.Task, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA)
 		if proofErr != nil {
@@ -127,7 +133,16 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		}
 	}
 	preservedSources := make([]WorktreeMergeSource, 0, len(receipt.Sources))
+	var landedSources []WorktreeMergeRetiredSourceProof
 	for _, source := range receipt.Sources {
+		if _, statErr := os.Lstat(source.Worktree); receipt.Phase == WorktreeMergePhaseLand && errors.Is(statErr, os.ErrNotExist) {
+			proof, proofErr := proveRetiredUnpublishedFailureSource(ctx, options.ProjectsRoot, receipt, source, gitRoot, run)
+			if proofErr != nil {
+				return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove independently landed source: %w", proofErr)
+			}
+			landedSources = append(landedSources, proof)
+			continue
+		}
 		preservedSHA, validationErr := validatePreservedLandedFailureAcknowledgementSourceWithHead(ctx, options.ProjectsRoot, receipt, source)
 		if validationErr != nil {
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove preserved source: %w", validationErr)
@@ -154,6 +169,11 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	if landed {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("candidate %s is already reachable from current target %s; use acknowledge-landed-failed", receipt.Candidate.SHA, currentTarget)
 	}
+	for _, proof := range landedSources {
+		if proof.CurrentTargetSHA != currentTarget {
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, errors.New("target changed during independently landed source proof")
+		}
+	}
 	receiptHash, err := hash(receiptPath)
 	if err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
@@ -168,6 +188,7 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		CandidateCleanupBacklog: candidateCleanupBacklog,
 		Sources:                 append([]WorktreeMergeSource(nil), receipt.Sources...),
 		PreservedSources:        preservedSources,
+		LandedSources:           landedSources,
 		Actor:                   strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
 	ack.ID = unpublishedValidationFailureAcknowledgementID(ack)
@@ -182,18 +203,63 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	if !options.Apply {
 		return ack, nil
 	}
+	for _, proof := range landedSources {
+		current, proofErr := proveRetiredUnpublishedFailureSource(ctx, options.ProjectsRoot, receipt, proof.Source, gitRoot, run)
+		if proofErr != nil || !sameRetiredSourceProofs([]WorktreeMergeRetiredSourceProof{proof}, []WorktreeMergeRetiredSourceProof{current}) {
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("independently landed source evidence changed before acknowledgement: %v", proofErr)
+		}
+	}
 	if err := persist(ack.AcknowledgementPath, ack); err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 	}
 	return ack, nil
 }
 
+// A failed land call can have sealed and retired its unpublished candidate.
+// Authenticate that exact removal before using the canonical repository to
+// observe publication and target state; empty receipt fields are not proof.
+func requireRetiredUnpublishedLandCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, run runner.Runner, resolveCanonical func(string, string) (string, error)) (string, error) {
+	if _, err := os.Lstat(receipt.Candidate.Worktree); !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("retired candidate checkout must be absent: %v", err)
+	}
+	expectation := worktrees.TerminalWorkLogExpectation{Task: receipt.Candidate.Task, Repository: receipt.Repository,
+		Worktree: receipt.Candidate.Worktree, Branch: receipt.Candidate.Branch, FinalCommit: receipt.Candidate.SHA}
+	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, []worktrees.TerminalWorkLogExpectation{expectation}); err != nil {
+		return "", fmt.Errorf("authenticate retired candidate terminal: %w", err)
+	}
+	canonical, err := resolveCanonical(projectsRoot, receipt.Repository)
+	if err != nil {
+		return "", err
+	}
+	registered, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", fmt.Errorf("inspect retired candidate registration: %w", err)
+	}
+	for _, field := range strings.Split(registered, "\x00") {
+		if strings.HasPrefix(field, "worktree ") && filepath.Clean(strings.TrimPrefix(field, "worktree ")) == filepath.Clean(receipt.Candidate.Worktree) {
+			return "", errors.New("retired candidate checkout remains registered")
+		}
+	}
+	branch, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "for-each-ref", "--format=%(refname)", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return "", fmt.Errorf("inspect retired candidate local branch: %w", err)
+	}
+	if strings.TrimSpace(branch) != "" {
+		return "", errors.New("retired candidate branch still exists locally")
+	}
+	if err := requireZeroDeltaCandidateWithoutPullRequest(ctx, canonical, receipt); err != nil {
+		return "", err
+	}
+	return canonical, nil
+}
+
 func validateUnpublishedValidationFailureReceipt(receipt WorktreeMergeReceipt, receiptPath string) error {
+	validPhase := receipt.Phase == WorktreeMergePhasePrepare || receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeValidationFailed
 	if receipt.ReceiptPath != receiptPath || receipt.ID == "" || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) ||
-		receipt.Phase != WorktreeMergePhasePrepare || (receipt.Status != WorktreeMergeValidationFailed && receipt.Status != WorktreeMergePreparing) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+		!validPhase || (receipt.Status != WorktreeMergeValidationFailed && receipt.Status != WorktreeMergePreparing) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
 		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || len(receipt.Sources) == 0 {
-		return fmt.Errorf("receipt %s is not an exact unpublished prepare/validation_failed receipt", receiptPath)
+		return fmt.Errorf("receipt %s is not an exact unpublished prepare or failed-land receipt", receiptPath)
 	}
 	for _, source := range receipt.Sources {
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
@@ -226,6 +292,12 @@ func unpublishedValidationFailureAcknowledgementID(ack WorktreeMergeUnpublishedV
 			_, _ = hash.Write([]byte{0})
 		}
 	}
+	for _, proof := range ack.LandedSources {
+		for _, value := range []string{proof.Source.Task, proof.Source.Worktree, proof.Source.Branch, proof.Source.SHA, proof.ClaimBaseSHA, proof.CleanupReport, proof.CleanupSHA256, proof.PullRequest, proof.LandingSHA, proof.CurrentTargetSHA, proof.Kind, proof.TreeSHA} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -234,7 +306,7 @@ func sameUnpublishedValidationFailureAcknowledgement(left, right WorktreeMergeUn
 		left.ReceiptSHA256 == right.ReceiptSHA256 && left.Lane == right.Lane && left.Repository == right.Repository && left.Target == right.Target &&
 		left.ReceiptTargetSHA == right.ReceiptTargetSHA && left.CurrentTargetSHA == right.CurrentTargetSHA && left.Candidate == right.Candidate &&
 		left.CandidateCleanupBacklog == right.CandidateCleanupBacklog &&
-		sameWorktreeMergeSources(left.Sources, right.Sources) && sameWorktreeMergeSources(left.PreservedSources, right.PreservedSources)
+		sameWorktreeMergeSources(left.Sources, right.Sources) && sameWorktreeMergeSources(left.PreservedSources, right.PreservedSources) && sameRetiredSourceProofs(left.LandedSources, right.LandedSources)
 }
 
 func persistUnpublishedValidationFailureAcknowledgement(path string, ack WorktreeMergeUnpublishedValidationFailureAcknowledgement) error {
@@ -271,7 +343,7 @@ func readUnpublishedValidationFailureAcknowledgement(path string, receipt Worktr
 	if receipt.Status == WorktreeMergePreparing && ack.CandidateCleanupBacklog == "" {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("unpublished-validation-failure acknowledgement %s lacks discarded candidate cleanup evidence", path)
 	}
-	if len(ack.PreservedSources) != len(receipt.Sources) {
+	if err := validateUnpublishedSourceProofCoverage(ack, receipt); err != nil {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("unpublished-validation-failure acknowledgement %s lacks preserved descendant source evidence", path)
 	}
 	return ack, nil

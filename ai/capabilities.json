@@ -16581,8 +16581,8 @@
                 "--reason"
               ],
               "modes": [
-                "Accepts only an unpublished prepare/validation_failed receipt with no landing SHA, pull request, or published candidate SHA",
-                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed",
+                "Accepts an unpublished prepare/validation_failed, interrupted prepare/preparing, or retired land/validation_failed receipt with no recorded landing SHA, pull request, or published candidate SHA",
+                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed or has exact cleanup and independent pull-request landing proof",
                 "Writes only an append-only acknowledgement; the receipt, candidate, sources, branches, and Work Logs remain unchanged while a different source set may acquire the lane"
               ]
             }

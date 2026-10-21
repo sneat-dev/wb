@@ -888,11 +888,11 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(inv *mergeInvoca
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
-		Short: "Retire an unpublished failed or discarded prepare attempt while preserving its sources",
-		Long: `Prove that an exact prepare receipt never published or landed its candidate
-and that every receipted source still exists as a clean, actively claimed
-worktree at the exact recorded SHA. A validation_failed attempt retains its
-clean candidate. An interrupted preparing attempt may instead name an absent
+		Short: "Retire an unpublished failed attempt with verified source evidence",
+		Long: `Prove that the receipt never published its candidate branch and that its
+original source work remains preserved in clean, actively claimed worktrees
+or is independently proven landed and retired. A prepare/validation_failed
+attempt retains its clean candidate. An interrupted preparing attempt may instead name an absent
 candidate only when WB's private lifecycle backlog proves that exact checkout
 and local branch were deliberately discarded to completion. WB freshly checks
 that the candidate branch has no remote ref and the candidate is not reachable
@@ -900,7 +900,14 @@ from the current remote target. It then records a separate append-only
 acknowledgement so another source set can own the repository target lane.
 Receipted sources may have advanced only as clean descendants of their
 immutable recorded SHAs; the acknowledgement records the observed descendant
-heads. The
+heads. An unpublished land/validation_failed receipt may name a retired
+candidate only when its exact ordinary cleanup terminal and outbox corroborate
+removal, the checkout and local registration/branch are absent, and GitHub has
+no pull request in the candidate branch's all-state history. The
+source may instead be absent only when exact cleanup-sealed claim,
+terminal and outbox evidence plus an exact cleanup receipt and fresh GitHub
+proof establish its separate pull-request landing on the current target.
+That independent landing is recorded explicitly, rather than as preservation. The
 historical receipt and Work Logs remain unchanged. This is a dry-run by default;
 --apply requires --actor and --reason.`,
 		Args: cobra.ExactArgs(1),
