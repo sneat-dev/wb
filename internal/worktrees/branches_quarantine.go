@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
@@ -469,18 +469,15 @@ func openPullRequestUsingBranchAsBase(ctx context.Context, worktree, repository,
 }
 
 func quarantineMetadataCommit(ctx context.Context, path, parent, message string) (string, error) {
-	treeCommand := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--verify", parent+"^{tree}")
-	treeOutput, err := treeCommand.Output()
+	tree, err := git(ctx, path, "rev-parse", "--verify", parent+"^{tree}")
 	if err != nil {
 		return "", fmt.Errorf("read preserved tree: %w", err)
 	}
-	command := exec.CommandContext(ctx, "git", "-C", path, "commit-tree", strings.TrimSpace(string(treeOutput)), "-p", parent, "-F", "-")
-	command.Stdin = strings.NewReader(message)
-	output, err := command.CombinedOutput()
+	output, err := runGitWithInput(ctx, path, []byte(message), "commit-tree", tree, "-p", parent, "-F", "-")
 	if err != nil {
-		return "", fmt.Errorf("git commit-tree: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("git commit-tree: %w: %s", err, output)
 	}
-	sha := strings.TrimSpace(string(output))
+	sha := strings.TrimSpace(output)
 	if !isGitObjectID(sha) {
 		return "", fmt.Errorf("git commit-tree returned invalid object id %q", sha)
 	}
@@ -488,22 +485,32 @@ func quarantineMetadataCommit(ctx context.Context, path, parent, message string)
 }
 
 func atomicLocalBranchRetirement(ctx context.Context, path, source, destination, expected, replacement string) error {
-	command := exec.CommandContext(ctx, "git", "-C", path, "update-ref", "--stdin")
-	command.Stdin = strings.NewReader("start\ncreate refs/heads/" + destination + " " + replacement + "\ndelete refs/heads/" + source + " " + expected + "\nprepare\ncommit\n")
-	output, err := command.CombinedOutput()
+	output, err := runGitWithInput(ctx, path, []byte("start\ncreate refs/heads/"+destination+" "+replacement+"\ndelete refs/heads/"+source+" "+expected+"\nprepare\ncommit\n"), "update-ref", "--stdin")
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("%v: %s", err, output)
 	}
 	return nil
 }
 
 func atomicLocalRetiredAnnotation(ctx context.Context, path, ref, expected, replacement string) error {
-	command := exec.CommandContext(ctx, "git", "-C", path, "update-ref", "refs/heads/"+ref, replacement, expected)
-	output, err := command.CombinedOutput()
+	output, err := runGitWithInput(ctx, path, nil, "update-ref", "refs/heads/"+ref, replacement, expected)
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("%v: %s", err, output)
 	}
 	return nil
+}
+
+func runGitWithInput(ctx context.Context, path string, input []byte, args ...string) (string, error) {
+	commandRunner, ok := ctx.Value(gitRunnerContextKey{}).(runner.Runner)
+	if !ok {
+		commandRunner = runner.New()
+	}
+	result, err := commandRunner.RunWithInput(ctx, path, input, "git", append([]string{"-C", path}, args...)...)
+	output := strings.TrimSpace(result.Stdout + result.Stderr)
+	if err != nil && output == "" {
+		output = err.Error()
+	}
+	return output, err
 }
 
 // writeQuarantineReportInjected publishes every durable checkpoint through the
