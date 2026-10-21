@@ -14,7 +14,8 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
-func TestQuarantineMetadataCommitAndAtomicRetirementRejectInvalidOrChangedRefs(t *testing.T) {
+//nolint:paralleltest // newGitFixture pins process environment for repository isolation.
+func TestE2EQuarantineMetadataCommitAndAtomicRetirementRejectInvalidOrChangedRefs(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "branch", "feature/old")
 	original := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
@@ -36,7 +37,8 @@ func TestQuarantineMetadataCommitAndAtomicRetirementRejectInvalidOrChangedRefs(t
 	}
 }
 
-func TestBranchQuarantineAnnotatesExactRetiredRefWithTreeIdenticalCommit(t *testing.T) {
+//nolint:paralleltest // newGitFixture and the private gh executable pin process environment.
+func TestE2EBranchQuarantineAnnotatesExactRetiredRefWithTreeIdenticalCommit(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
 	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
@@ -76,9 +78,8 @@ func TestBranchQuarantineAnnotatesExactRetiredRefWithTreeIdenticalCommit(t *test
 	}
 }
 
-//nolint:paralleltest // fixture owns Git configuration and a private gh executable.
-
-func TestBranchQuarantineAnnotationCASFailureKeepsReceiptAndCompetingRef(t *testing.T) {
+//nolint:paralleltest // newGitFixture and the private gh executable pin process environment.
+func TestE2EBranchQuarantineAnnotationCASFailureKeepsReceiptAndCompetingRef(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
 	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {

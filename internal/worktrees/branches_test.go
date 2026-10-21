@@ -517,7 +517,7 @@ func TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision(t *t
 	}
 }
 
-//nolint:paralleltest // fixture configures Git identity for real local commits.
+//nolint:paralleltest // fixture and private gh executable use process-wide environment overrides.
 func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
@@ -614,7 +614,6 @@ func TestQuarantineGitMutationHelpersReportCommandFailures(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // fixture owns Git configuration and a private gh executable.
 func TestReserveQuarantineReportDirCreatesFreshDefaultParentAndRefusesReuse(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "fresh", "reports", "branch-quarantine", "run")
 	if err := reserveQuarantineReportDir(dir); err != nil {

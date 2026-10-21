@@ -2267,7 +2267,6 @@ internal/worktrees::TestBranchListExactRepositoryAndBranchSelectorsDoNotUseFilte
 internal/worktrees::TestBranchListReportsPullRequestQueryFailureOnRemoteRow	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestBranchListWithPRsIncludesInUseRemoteBranch	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestBranchNamingPrecedenceReadsTargetBaseObject	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/worktrees::TestBranchQuarantinePlansAndAppliesWithDurableReport	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/worktrees::TestBranchValidationErrorSeparatesUnusableGitFromInvalidName	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestCanonicalPolicyReaderIsReadOnlyAndDescriptorBound	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/worktrees::TestCanonicalPolicyReaderRejectsCanonicalGitDirectorySwapBeforeRead	serial pending case-by-case review (sneat-dev/wb#623 baseline)
