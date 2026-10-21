@@ -398,3 +398,15 @@ func TestSourceInventoryScopesDiagnosticsAndFailsClosedOnRegistryOrIdentityError
 		})
 	}
 }
+
+//nolint:paralleltest // prepareFinalizedTask configures process-wide native Git environment.
+func TestSourceInventoryAdmitsPublishedSuccessfulFinalizeWithoutOptionalReport(t *testing.T) {
+	fixture, producer, head := prepareFinalizedTask(t, "source-finalized-no-report", "ready for independent landing")
+	listed, err := ListSourceWithDiagnostics(t.Context(), SourceListOptions{
+		ProjectsRoot: fixture.projectsRoot, Repository: "acme/app", Branch: producer.Branch,
+		HeadSHA: strings.TrimSpace(head),
+	})
+	if err != nil || len(listed.Diagnostics) != 0 || len(listed.Results) != 1 || !listed.Results[0].Clean || listed.Results[0].WorktreeDir != producer.WorktreeDir {
+		t.Fatalf("published successful finalize source = %+v, %v", listed, err)
+	}
+}

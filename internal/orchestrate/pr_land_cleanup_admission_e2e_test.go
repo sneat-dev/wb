@@ -7,6 +7,7 @@ import (
 	"flag"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"os/exec"
@@ -635,4 +636,68 @@ func (r *landingRegistryMismatchRunner) RunOpts(ctx context.Context, dir string,
 		result.Stdout = strings.ReplaceAll(result.Stdout, before, after)
 	}
 	return result, err
+}
+
+//nolint:paralleltest // newLandFixture and WB creation configure process-wide test environment.
+func TestE2ELandingAdmitsFinalizedPublishedSourceThroughNormalCleanup(t *testing.T) {
+	fixture := newLandFixture(t, "feature/finalized-source", "feature.txt")
+	created, err := worktrees.Create(t.Context(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "finalized-source", Branch: "feature/finalized-source",
+		BranchChosen: true, Resume: true, WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create published producer: %+v %v", created, err)
+	}
+	producer := created[0]
+	if _, err := worktrees.LogFinalize(t.Context(), worktrees.LogFinalizeOptions{
+		ProjectsRoot: fixture.projects, Worktree: producer.WorktreeDir,
+		Result: "success", Report: []byte("Published for independent review; landing pending.\n"), Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	options := landOptions(fixture)
+	options.Keep = false
+	view := orchCovPullRequestView(t, `{"head":{"ref":"feature/finalized-source","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	view.Head.SHA = fixture.headSHA
+	if refusal := preflightLandingCleanup(t.Context(), options, view, "7", false); refusal != nil {
+		t.Fatalf("successful sealed producer refused before landing: %+v", refusal)
+	}
+	wrongHead := view
+	wrongHead.Head.SHA = fixture.baseSHA
+	if refusal := preflightLandingCleanup(t.Context(), options, wrongHead, "7", false); refusal == nil || refusal.code != "cleanup-unverifiable" || fixture.readState(t, "merged") != "false" {
+		t.Fatalf("wrong reviewed head reached merge: %+v", refusal)
+	}
+	review := filepath.Join(t.TempDir(), "independent-review.md")
+	if err := os.WriteFile(review, []byte("Approved after independent review.\n\nReviewed-Head: "+fixture.headSHA+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	options.ApprovedBy = review
+	home, err := wbhome.Root(fixture.projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := filepath.Glob(filepath.Join(home, "worklogs", "finalized-source", "outbox", "*-sealed.json"))
+	if err != nil || len(sealed) != 1 {
+		t.Fatalf("sealed outbox fixture = %v, %v", sealed, err)
+	}
+	if err := os.Rename(sealed[0], sealed[0]+".held"); err != nil {
+		t.Fatal(err)
+	}
+	refused, err := LandPullRequest(t.Context(), options)
+	if err != nil || refused.RefusalCode != "cleanup-unverifiable" || fixture.readState(t, "merged") != "false" {
+		t.Fatalf("missing immutable outbox reached remote merge: %+v %v", refused, err)
+	}
+	if err := os.Rename(sealed[0]+".held", sealed[0]); err != nil {
+		t.Fatal(err)
+	}
+	landed, err := LandPullRequest(t.Context(), options)
+	if err != nil || landed.Outcome != LandSuccess || len(landed.CleanedTasks) != 1 || landed.CleanedTasks[0] != "finalized-source" {
+		t.Fatalf("normal finalized-source landing/cleanup: %+v %v", landed, err)
+	}
+	if fixture.readState(t, "merged") != "true" {
+		t.Fatalf("remote merge not confirmed: %+v", landed)
+	}
+	if _, err := os.Stat(producer.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("source worktree not retired after landing: %v", err)
+	}
 }
