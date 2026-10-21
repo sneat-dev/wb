@@ -746,7 +746,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
-	if code != exitFindings || output.Status != "pending" || !strings.Contains(output.Reason, "merge-group check observation") {
+	if code != exitFindings || output.Status != "pending" || !strings.Contains(output.Reason, "requires GitHub's merge queue, so no source-head receipt can authorize a merge") || !strings.Contains(output.Reason, "wb pr land") {
 		t.Fatalf("merge-queue source-head receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
 	}
 }

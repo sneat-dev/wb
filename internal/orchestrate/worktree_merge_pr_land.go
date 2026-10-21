@@ -35,6 +35,18 @@ func failWorktreeMergePRLand(receipt WorktreeMergeReceipt, status WorktreeMergeS
 	return receipt, "", err
 }
 
+// failWorktreeMergePRLandRead classifies a failed GitHub read. A transient
+// failure is not a verdict on the candidate: it leaves the receipt pending and
+// retryable, the same way every other transient read in this area (ciwait.go)
+// is treated as "ask again", not "judged".
+func failWorktreeMergePRLandRead(receipt WorktreeMergeReceipt, err error) (WorktreeMergeReceipt, string, error) {
+	if githubobserver.IsTransientReadFailure(err) {
+		return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+			fmt.Errorf("%w; resume with wb worktree merge resume %s", err, receipt.ReceiptPath))
+	}
+	return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, err)
+}
+
 // recordDeferredValidationCheckSkippedFinding is round 3's non-blocking
 // replacement for round 2's strict required-check gating (sneat-dev/wb#591
 // red-team follow-up, findings B1/B2). It runs only here, on the
@@ -103,9 +115,17 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	if textErr != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("prepare pull-request merge text: %w", textErr))
 	}
-	method, methodErr := repositoryPullRequestMergeMethod(ctx, receipt.Repository)
-	if methodErr != nil {
-		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, methodErr)
+	queue, queueErr := githubchecks.TargetMergeQueue(ctx, receipt.Repository, receipt.Target)
+	if queueErr != nil {
+		return failWorktreeMergePRLandRead(receipt, queueErr)
+	}
+	var method string
+	if queue != nil {
+		// The queue merges with its own method; asking for another would be
+		// a request GitHub silently ignores.
+		method = queue.MergeMethod
+	} else if method, err = repositoryPullRequestMergeMethod(ctx, receipt.Repository); err != nil {
+		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, err)
 	}
 
 	slice := options.checkWaitSlice()
@@ -121,12 +141,14 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		OperationProgress:   options.Progress,
 		Lane:                options.Lane,
 		git:                 options.resolveGit(),
+		mergeQueue:          queue,
 		headUpdated: func(previous, updated string) error {
 			return adoptWorktreeMergeUpdateBranchAdvance(ctx, options.resolveGit(), options.resolveRunner(), &receipt, previous, updated)
 		},
 	}
 
 	evidence := map[string]string{}
+	deadline := waitDeadline(landOptions)
 	updatedView, waited, autoMergeArmed, mergedByGitHub, updateRefusal, err := awaitLandablePullRequest(ctx, landOptions, view, number, title, body, evidence)
 	receipt.AutoMergeArmed = receipt.AutoMergeArmed || autoMergeArmed
 	if err != nil {
@@ -136,11 +158,7 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		// must leave the receipt pending and retryable, not Conflict, the
 		// same way every other transient read in this area (ciwait.go) is
 		// treated as "ask again", not "judged".
-		if githubobserver.IsTransientReadFailure(err) {
-			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
-				fmt.Errorf("%w; resume with wb worktree merge resume %s", err, receipt.ReceiptPath))
-		}
-		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, err)
+		return failWorktreeMergePRLandRead(receipt, err)
 	}
 	if updateRefusal != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict,
@@ -204,16 +222,37 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 			fmt.Errorf("published pull request head advanced to %s during the wait without being recorded on the receipt (still %s); resume with wb worktree merge resume %s",
 				head, receipt.Candidate.SHA, receipt.ReceiptPath))
 	}
-	_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
-	if mergeErr != nil {
-		return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
-			fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
-	}
-	if mergeRefusal != nil {
-		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("%s", mergeRefusal.reason))
-	}
-	if merged := evidence["merged_by"]; merged != "" {
-		receipt.MergedBy = merged
+	if queue != nil {
+		var queued MergeQueueReceipt
+		outcome, queueErr := enqueueAndAwaitMergeQueue(ctx, landOptions, number, head, receipt.Target, deadline, &queued)
+		switch {
+		case queueErr != nil:
+			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+				fmt.Errorf("%w; resume with wb worktree merge resume %s", queueErr, receipt.ReceiptPath))
+		case outcome.pending:
+			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+				fmt.Errorf("%s; resume with wb worktree merge resume %s", outcome.reason, receipt.ReceiptPath))
+		case outcome.refusal != nil:
+			status := WorktreeMergeConflict
+			if outcome.refusal.code == LandRefusalMergeGroupFailed {
+				status = WorktreeMergeChecksFailed
+			}
+			return failWorktreeMergePRLand(receipt, status,
+				fmt.Errorf("%s: %s; resume with wb worktree merge resume %s", outcome.refusal.code, outcome.refusal.reason, receipt.ReceiptPath))
+		}
+		receipt.MergedBy = "github merge queue"
+	} else {
+		_, mergeRefusal, mergeErr := mergeOrAdoptAutoMerge(ctx, landOptions, number, head, method, title, body, autoMergeArmed, mergedByGitHub, evidence)
+		if mergeErr != nil {
+			return failWorktreeMergePRLand(receipt, WorktreeMergeChecksPending,
+				fmt.Errorf("%w; resume with wb worktree merge resume %s", mergeErr, receipt.ReceiptPath))
+		}
+		if mergeRefusal != nil {
+			return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("%s", mergeRefusal.reason))
+		}
+		if merged := evidence["merged_by"]; merged != "" {
+			receipt.MergedBy = merged
+		}
 	}
 
 	serverLanding, isMerged, receiptErr := pullRequestLandingReceipt(ctx, receipt, options)

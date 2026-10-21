@@ -33,6 +33,10 @@ wb pr land sneat-co/sneat-go#1041 --approved-by opus@codex@run-42 \
 wb pr land specscore/specscore#63 --waive-check "Workers Builds: specscore-md" \
   --waive-reason "fails on target tip and is not required by main"
 
+# A target that requires a merge queue: enqueued and observed, never merged
+# directly (see below).
+wb pr land datatug/datatug-apps#480
+
 # Machine-readable envelope for an agent.
 wb pr land sneat-co/sneat-go#1041 --format json
 ```
@@ -68,6 +72,34 @@ with `--keep-commits` (WB merges a rebuilt branch), or on a target without a
 strict up-to-date policy unless `--allow-unfenced` is explicit. `--no-auto-merge`
 and `--no-update-branch` opt out. A pending result with auto-merge armed lands
 without WB; retire the worktree afterwards with `wb worktree cleanup <task> --apply`.
+
+## Merge-queue targets are enqueued, never merged
+
+When the target's active rules include a `merge_queue` rule, `wb pr land`:
+
+- waits for the pull request's own required checks as usual, but performs no
+  update-branch (the queue builds its merge group on the current target, so a
+  behind candidate costs no extra CI cycle) and arms no auto-merge;
+- adds the pull request with GraphQL `enqueuePullRequest`, pinned to the head it
+  observed green, and watches the queue until GitHub merges it, removes it, or
+  the `--timeout` budget runs out;
+- never calls a merge endpoint, even when the caller is a ruleset bypass actor
+  (an organization admin with bypass mode `always`) who could merge around the
+  queue and land a head never tested on top of the current target;
+- verifies the merge commit is on the base, then syncs and cleans up as for any
+  landing, recording `merged_by: github merge queue` and a `merge_queue` receipt.
+
+The queue merges with its own configured method and message, so an explicit
+`--merge-method` that differs from it, `--subject`, or `--keep-commits` is
+refused before anything is written. Once the pull request is queued WB releases
+its landing lane, because the queue now serializes the target. `wb worktree
+land` routes a queue target through the same pull-request path.
+
+Detection reads the target's active ruleset rules (`rules/branches/<target>`);
+when they cannot be read the landing stops rather than guessing, except for a
+plan-limited 403 under explicit `--allow-unfenced`, which is recorded on the
+receipt. A queue required through classic branch protection rather than a
+ruleset is not detected yet.
 
 ## Cleanup is the default
 
@@ -319,6 +351,11 @@ The receipt records each waived check's name, head conclusion, target tip SHA, a
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
 | `update-branch-conflict` | the candidate is behind and updating it conflicts; auto-merge stays armed | resolve the conflict on the branch, push, rerun `wb pr land …` |
+| `merge-queue-option-conflict` | the target's merge queue overrides `--merge-method`, `--subject` or `--keep-commits` | rerun the printed command, which drops the overridden flags |
+| `merge-queue-enqueue-rejected` | GitHub refused to add the pull request to the merge queue | open the pull request, fix what GitHub names, rerun `wb pr land …` |
+| `merge-group-failed` | exit 1: the queue removed the pull request because its merge group's checks failed or timed out; the finding names the failing checks | push a fix (a newer head is enqueued again automatically), or run the printed command, which adds `--requeue`, to retry the same head |
+| `merge-queue-dequeued` | exit 1: the pull request left the queue unmerged for another reason (a manual removal, say) | run the printed command, which adds `--requeue`, once a retry is intended |
+| `merge-queue-pending` | exit 1: still queued when the budget ran out; GitHub merges it without WB if the merge group passes | run the printed resume command in the background; it finds the pull request already queued and only observes, verifies and cleans up. If the queue removed it meanwhile, the resume reports that removal instead of enqueuing the same head again |
 | `checks-pending` | exit 1, not a refusal: the work is not ready | run the printed resume command in the background, not in the foreground - it carries a `--timeout` budget (at least 45 minutes) above the harness's ~10-minute foreground ceiling, and every flag the original invocation used (`--no-auto-merge`, `--allow-unfenced`, `--approved-by`, `--keep-commits`/`--reason`) |
 | `checks-failed` | exit 1, not a refusal: a check is red | the finding names the failing check(s) and their first error line; the sanctioned command opens the failing job (or its log) directly, not the PR page |
 | `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |

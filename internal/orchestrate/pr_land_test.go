@@ -234,7 +234,9 @@ case "$*" in
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
     if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
     printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
-  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100')
+    if [ -f "$S/rules-403" ]; then echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1; fi
+    if [ -f "$S/rules" ]; then cat "$S/rules"; else printf '%s\n' '[]'; fi ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     printf '{"object":{"sha":"%s"}}\n' "$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)" ;;
   'api repos/acme/app/git/ref/heads/'*)
@@ -379,6 +381,34 @@ case "$*" in
           printf 'closed' >"$S/pr-state"
         fi
         printf '{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-09-18T00:00:00Z"}}}}}\n' ;;
+      *enqueuePullRequest*)
+        # GitHub's merge queue: the fixture records the pinned head and
+        # queues the pull request; queue-outcome decides what the queue does
+        # on its next observation (see the isInMergeQueue case).
+        printf '%s' "$*" >"$S/enqueue-args"
+        printf '1' >"$S/queued"
+        printf '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED","position":1}}}}\n' ;;
+      *isInMergeQueue*)
+        if [ -f "$S/queued" ]; then
+          case "$(cat "$S/queue-outcome" 2>/dev/null)" in
+            merge)
+              tip=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)
+              group=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$head^{tree}")" -p "$tip" -p "$head" -m "Merge pull request #7")
+              git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$group"
+              rm -f "$S/queued"; printf 'true' >"$S/merged"; printf 'closed' >"$S/pr-state"; merged=true ;;
+            fail)
+              rm -f "$S/queued"; printf 'failed_checks' >"$S/queue-removed" ;;
+          esac
+        fi
+        gstate=OPEN; queued=false; entry=null; nodes='[]'; commit=null
+        if [ "$merged" = true ]; then gstate=MERGED; commit="{\"oid\":\"$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)\"}"; fi
+        if [ -f "$S/queued" ]; then
+          queued=true; entry='{"state":"AWAITING_CHECKS","position":1}'; nodes='[{"__typename":"AddedToMergeQueueEvent"}]'
+        elif [ -f "$S/queue-removed" ]; then
+          nodes="[{\"__typename\":\"RemovedFromMergeQueueEvent\",\"reason\":\"$(cat "$S/queue-removed")\"}]"
+        fi
+        printf '{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest7","state":"%s","merged":%s,"headRefOid":"%s","isInMergeQueue":%s,"mergeCommit":%s,"mergeQueueEntry":%s,"timelineItems":{"nodes":%s}}}}}\n' \
+          "$gstate" "$merged" "$head" "$queued" "$commit" "$entry" "$nodes" ;;
       *) echo "unexpected graphql: $*" >&2; exit 2 ;;
     esac ;;
   'api --method PUT repos/acme/app/pulls/7/update-branch'*)

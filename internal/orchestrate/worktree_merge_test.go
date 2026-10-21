@@ -2276,7 +2276,7 @@ func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotecte
 		{name: "ruleset pull request", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[{"type":"pull_request","ruleset_id":7,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]`, want: WorktreeMergeRoutePullRequest},
 		{name: "incomplete branch policy", branchJSON: `{}`, rulesJSON: `[]`, want: WorktreeMergeRoutePullRequest},
 		{name: "incomplete rules policy", branchJSON: `{"protected":false,"protection":{}}`, rulesJSON: `{}`, want: WorktreeMergeRoutePullRequest},
-		{name: "merge queue unsupported", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[{"type":"merge_queue","ruleset_id":9,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]`, want: WorktreeMergeRouteUnsupported},
+		{name: "merge queue routes through a pull request", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[{"type":"merge_queue","ruleset_id":9,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]`, want: WorktreeMergeRoutePullRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			installWorktreeMergeGH(t, test.branchJSON, test.rulesJSON)

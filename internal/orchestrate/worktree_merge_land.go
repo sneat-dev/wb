@@ -585,9 +585,6 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, planErr, save)
 	}
 	decision := plan.Route
-	if decision.Route == WorktreeMergeRouteUnsupported {
-		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("unsupported target policy: %s", decision.Reason), save)
-	}
 	reportWorktreeMergeProgress(options.Progress, "resolve_route", progress.Completed, string(decision.Route)+": "+decision.Reason)
 	receipt.Phase, receipt.Route = WorktreeMergePhaseLand, decision
 	if receipt.PreviousTargetSHA == "" {

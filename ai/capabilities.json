@@ -1167,7 +1167,7 @@
               ]
             }
           ],
-          "limitation": "Merge-queue merge-group SHA discovery and check observation are not implemented; source-head PR waits fail closed when a merge-queue rule applies."
+          "limitation": "A source-head PR wait fails closed when a merge-queue rule applies: the merge group exists only once the PR is enqueued, which this read-only waiter never does. wb pr land and wb worktree land enqueue and observe it."
         },
         "help": {
           "status": "Full",
@@ -1184,7 +1184,7 @@
                 "fully enumerated policy is empty",
                 "server-enforced strict policy",
                 "target advance rejects",
-                "merge-queue PRs fail closed",
+                "merge-queue target fails closed",
                 "required-check policy",
                 "terminal reread",
                 "future optional workflow"
@@ -1340,30 +1340,80 @@
       "feature_refs": [
         "spec/plans/work-log-recovery.md"
       ],
-      "since": null,
+      "since": "unreleased",
       "surfaces": {
         "runtime": {
-          "status": "Planned",
-          "commands": [],
-          "limitation": "WB does not discover a merge-group SHA, observe its checks, enqueue it, or verify its eventual target landing."
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb pr land",
+              "flags": [],
+              "modes": [
+                "Detects a merge_queue rule among the target's active rules and stops with an error, rather than guessing, when the rules cannot be read (a plan-limited 403 is a recorded gap only under explicit --allow-unfenced)",
+                "Enqueues the exact observed head with GraphQL enqueuePullRequest and observes the queue entry, its merge-group SHA and the newest added/removed timeline event until merged, removed or the budget ends",
+                "Never calls a merge endpoint or arms auto-merge on a queue target, so a ruleset bypass actor cannot merge around the queue",
+                "Names the failing merge-group checks on removal, never re-enqueues a head the queue already removed without --requeue or a newer push, releases the landing lane once queued, and verifies the merge commit is on the base before syncing and cleaning up"
+              ]
+            },
+            {
+              "path": "wb worktree land",
+              "flags": [],
+              "modes": [
+                "Routes a merge-queue target through the pull-request route, which enqueues instead of merging; --route direct is refused"
+              ]
+            }
+          ],
+          "limitation": "wb ci wait stays fail-closed on a queue target by design: it is a read-only source-head receipt and the merge group exists only once a PR is enqueued. Queues configured through classic branch protection rather than a ruleset are not detected."
         },
         "help": {
-          "status": "Planned",
-          "anchors": [],
-          "limitation": "No merge-group receipt mode is advertised."
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr land --help",
+              "contains": [
+                "MERGE QUEUE TARGETS ARE ENQUEUED, NEVER MERGED",
+                "enqueuePullRequest"
+              ]
+            }
+          ],
+          "limitation": null
         },
         "ai_skill": {
-          "status": "Planned",
-          "skills": [],
-          "limitation": "The merger skill explicitly fails closed instead of claiming unsupported synthetic-SHA authority."
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge-queue targets are enqueued, never merged",
+              "examples": [
+                "wb pr land datatug/datatug-apps#480"
+              ]
+            }
+          ],
+          "limitation": null
         },
         "tests": {
-          "status": "Planned",
-          "references": [],
-          "limitation": "No merge-group webhook/API lifecycle and landing E2E exists."
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_land_merge_queue_e2e_test.go",
+              "name": "TestLandOnAMergeQueueTargetEnqueuesAndNeverMergesDirectlyEvenAsABypassActor",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_pr_land_merge_queue_test.go",
+              "name": "TestWorktreeLandOnAMergeQueueTargetEnqueuesThroughThePullRequestRoute",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_merge_queue_test.go",
+              "name": "TestMergeQueueReportsAFailedMergeGroupWithItsFailingChecks",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
         }
       },
-      "notes": "A future implementation must observe the authoritative merge-group SHA and checks, enqueue through GitHub's merge queue, and confirm the exact target receipt after landing."
+      "notes": "Landing on a merge-queue target hands the merge to GitHub's queue, which tests the merge group (current target plus the queued pull requests) before merging; WB's receipt is the pull request's own green checks, the pinned enqueue, and the merge commit verified on the base."
     },
     {
       "id": "wb.clone-layout.audit",
@@ -8072,6 +8122,7 @@
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
+                "--requeue",
                 "--review-comment",
                 "--review-comment-file",
                 "--subject",
@@ -8097,6 +8148,7 @@
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
                 "Auto-merge is armed before any wait, so the pull request lands even if the invoking process, session or host dies; a failed check refuses the invocation but never disarms, because CI is the gate and a pushed fix lands once the required checks pass. --no-auto-merge opts out",
                 "A candidate behind the target is brought up to date through GitHub update-branch with the observed head as expected_head_sha, then its checks are waited on again inside one --timeout budget, repeating when the target moves mid-wait; a conflicting update refuses with update-branch-conflict, and --no-update-branch refuses a behind candidate instead",
+                "On a merge_queue target the PR's own checks are waited on without update-branch or auto-merge, the exact head is enqueued with GraphQL enqueuePullRequest, and the queue is observed until merged, removed (merge-group-failed, merge-queue-dequeued) or out of budget (merge-queue-pending, resumable without a second enqueue); no merge endpoint is called, so a bypass actor cannot land around the queue",
                 "After each successful update-branch, a local WB worktree holding the PR's head branch is fast-forwarded to the new head, best effort: clean and an ancestor of it is fast-forwarded and recorded on local_sync, otherwise it is left untouched with a note; never blocks the landing",
                 "Exit 0 landed, 1 the work is not ready, 2 a guard refused; --format json emits the envelope with refusal_code, sanctioned_command, evidence and the saved-call figures"
               ]
@@ -8118,7 +8170,8 @@
                 "gh api",
                 "AUTO-MERGE IS ARMED FIRST",
                 "BEHIND IS NOT A REFUSAL",
-                "--no-update-branch"
+                "--no-update-branch",
+                "MERGE QUEUE TARGETS ARE ENQUEUED, NEVER MERGED"
               ]
             }
           ],

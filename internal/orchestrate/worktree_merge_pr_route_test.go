@@ -53,9 +53,26 @@ func TestWorktreeMergeValidationDeferralEligible(t *testing.T) {
 		branchJSON        string
 		classicDetailJSON string
 		rulesJSON         string
+		mergeQueue        bool
 		wantEligible      bool
 		wantReasonHas     string
 	}{
+		{
+			name:          "merge queue fences an unstrict non-empty policy",
+			branchJSON:    `{"protected":true,"protection":{}}`,
+			rulesJSON:     `[{"type":"required_status_checks","ruleset_id":3,"parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"CI"}]}},{"type":"merge_queue","ruleset_id":3,"parameters":{"merge_method":"MERGE"}}]`,
+			mergeQueue:    true,
+			wantEligible:  true,
+			wantReasonHas: "github merge queue",
+		},
+		{
+			name:          "merge queue with no required checks stays local",
+			branchJSON:    `{"protected":true,"protection":{}}`,
+			rulesJSON:     `[{"type":"merge_queue","ruleset_id":3,"parameters":{"merge_method":"MERGE"}}]`,
+			mergeQueue:    true,
+			wantEligible:  false,
+			wantReasonHas: "no required status checks",
+		},
 		{
 			name:              "authoritative non-empty fenced policy defers",
 			branchJSON:        `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
@@ -100,7 +117,7 @@ func TestWorktreeMergeValidationDeferralEligible(t *testing.T) {
 			} else {
 				installWorktreeMergeDeferralGH(t, test.branchJSON, test.classicDetailJSON, test.rulesJSON)
 			}
-			eligible, reason := worktreeMergeValidationDeferralEligible(context.Background(), "acme/app", "main")
+			eligible, reason := worktreeMergeValidationDeferralEligible(context.Background(), "acme/app", "main", test.mergeQueue)
 			if eligible != test.wantEligible {
 				t.Fatalf("eligible = %t, reason = %q, want eligible=%t", eligible, reason, test.wantEligible)
 			}

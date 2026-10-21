@@ -64,13 +64,15 @@ const (
 	WorktreeMergeRouteAuto        WorktreeMergeRoute = "auto"
 	WorktreeMergeRouteDirect      WorktreeMergeRoute = "direct"
 	WorktreeMergeRoutePullRequest WorktreeMergeRoute = "pr"
-	WorktreeMergeRouteUnsupported WorktreeMergeRoute = "unsupported"
 )
 
 type WorktreeMergeRouteDecision struct {
 	Requested WorktreeMergeRoute `json:"requested"`
 	Route     WorktreeMergeRoute `json:"route"`
 	Reason    string             `json:"reason"`
+	// MergeQueue records that the target requires GitHub's merge queue, so
+	// the pull-request route enqueues instead of merging.
+	MergeQueue bool `json:"merge_queue,omitempty"`
 }
 
 type WorktreeMergeSource struct {

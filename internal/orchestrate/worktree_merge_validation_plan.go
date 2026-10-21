@@ -52,9 +52,11 @@ func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, r
 			}
 		}
 	}
-	decision := WorktreeMergeRouteDecision{Requested: requested}
-	if mergeQueue {
-		decision.Route, decision.Reason = WorktreeMergeRouteUnsupported, "target requires a merge queue, whose merge-group receipt is not implemented"
+	decision := WorktreeMergeRouteDecision{Requested: requested, MergeQueue: mergeQueue}
+	if mergeQueue && requested != WorktreeMergeRouteDirect {
+		// Only a pull request can enter the queue; a direct push would go
+		// around it, and the direct branch below refuses any active rule.
+		decision.Route, decision.Reason = WorktreeMergeRoutePullRequest, "target requires a merge queue; the pull-request route enqueues it and GitHub's queue merges it"
 		return decision, nil
 	}
 	if requested == WorktreeMergeRouteDirect {
@@ -154,7 +156,7 @@ func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target 
 	if validateLocally || allowUnfenced || decision.Route != WorktreeMergeRoutePullRequest {
 		return plan, nil
 	}
-	eligible, reason := worktreeMergeValidationDeferralEligible(ctx, repository, target)
+	eligible, reason := worktreeMergeValidationDeferralEligible(ctx, repository, target, decision.MergeQueue)
 	plan.Defer, plan.Reason = eligible, reason
 	return plan, nil
 }
@@ -163,11 +165,15 @@ func resolveWorktreeMergeValidationPlan(ctx context.Context, repository, target 
 // route may defer local candidate validation to CI (red-team finding B2). It
 // requires the target's required-check policy to have been read
 // authoritatively (never under an AllowUnfenced fallback), to be non-empty,
-// and to be fenced by a server-enforced strict up-to-date policy. Any of an
-// unreadable policy, zero required checks, or an unfenced policy keeps
-// validation local.
-func worktreeMergeValidationDeferralEligible(ctx context.Context, repository, target string) (bool, string) {
-	checks, freshness, reason := githubchecks.RequiredChecks(ctx, repository, target, true)
+// and to be fenced by a server-enforced strict up-to-date policy, or by the
+// target's merge queue, which runs the required checks on the merge group it
+// builds from the current target before merging. Any of an unreadable
+// policy, zero required checks, or an unfenced policy keeps validation local.
+func worktreeMergeValidationDeferralEligible(ctx context.Context, repository, target string, mergeQueue bool) (bool, string) {
+	checks, freshness, reason := githubchecks.RequiredChecks(ctx, repository, target, !mergeQueue)
+	if mergeQueue && reason == "" {
+		freshness = strings.Trim(freshness+"+"+githubchecks.MergeQueueFreshnessAuthority, "+")
+	}
 	if reason != "" {
 		return false, fmt.Sprintf("required-check policy for %s is unreadable, so validation stays local: %s", target, reason)
 	}
