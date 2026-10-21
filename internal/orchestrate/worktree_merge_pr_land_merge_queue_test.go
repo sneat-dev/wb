@@ -40,6 +40,7 @@ func assertWorktreeMergeNeverMergedDirectly(t *testing.T, gh *wmEngineGH) {
 	}
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestWorktreeLandOnAMergeQueueTargetEnqueuesThroughThePullRequestRoute(t *testing.T) {
 	_, gh, options := prepareQueuedWorktreeMerge(t, "queue-lands", "merge")
 	landed, err := ResumeWorktreeMerge(context.Background(), options)
@@ -55,6 +56,7 @@ func TestWorktreeLandOnAMergeQueueTargetEnqueuesThroughThePullRequestRoute(t *te
 	assertWorktreeMergeNeverMergedDirectly(t, gh)
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestWorktreeLandOnAMergeQueueTargetReportsEachUnmergedOutcome(t *testing.T) {
 	for _, test := range []struct {
 		name, outcome, marker string
@@ -66,6 +68,7 @@ func TestWorktreeLandOnAMergeQueueTargetReportsEachUnmergedOutcome(t *testing.T)
 		{name: "still queued", outcome: "pending", status: WorktreeMergeChecksPending, want: "GitHub merges it without WB"},
 		{name: "queue unreadable", outcome: "pending", marker: "queue-state-fails", status: WorktreeMergeChecksPending, want: "HTTP 401"},
 	} {
+		//nolint:paralleltest // Rows share the process-wide fixture environment and private lane evidence.
 		t.Run(test.name, func(t *testing.T) {
 			_, gh, options := prepareQueuedWorktreeMerge(t, "queue-"+test.outcome, test.outcome)
 			if test.marker != "" {
@@ -82,6 +85,7 @@ func TestWorktreeLandOnAMergeQueueTargetReportsEachUnmergedOutcome(t *testing.T)
 	}
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestWorktreeLandFailsClosedWhenTheMergeQueueRuleIsUnreadable(t *testing.T) {
 	_, gh, options := prepareQueuedWorktreeMerge(t, "queue-rules-unreadable", "merge")
 	gh.writeState(t, "rules", `[{"type":"merge_queue","ruleset_id":12,"parameters":{"merge_method":"OCTOPUS"}}]`)

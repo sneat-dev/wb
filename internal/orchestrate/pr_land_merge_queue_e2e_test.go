@@ -38,6 +38,7 @@ func assertNoDirectLanding(t *testing.T, fixture *landFixture) {
 	}
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetEnqueuesAndNeverMergesDirectlyEvenAsABypassActor(t *testing.T) {
 	fixture := newMergeQueueLandFixture(t, "bump/queued", "merge")
 	// Another landing reaches main while this candidate's checks run. Without
@@ -71,6 +72,7 @@ func TestLandOnAMergeQueueTargetEnqueuesAndNeverMergesDirectlyEvenAsABypassActor
 	}
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetReportsAFailedMergeGroupWithAResumeCommand(t *testing.T) {
 	fixture := newMergeQueueLandFixture(t, "bump/queue-fails", "fail")
 
@@ -90,6 +92,7 @@ func TestLandOnAMergeQueueTargetReportsAFailedMergeGroupWithAResumeCommand(t *te
 	assertNoDirectLanding(t, fixture)
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetResumesAQueuedPullRequestWithoutEnqueuingAgain(t *testing.T) {
 	fixture := newMergeQueueLandFixture(t, "bump/queue-resume", "pending")
 	options := landOptions(fixture)
@@ -119,6 +122,7 @@ func TestLandOnAMergeQueueTargetResumesAQueuedPullRequestWithoutEnqueuingAgain(t
 	assertNoDirectLanding(t, fixture)
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetRefusesAMergeMethodTheQueueWouldOverride(t *testing.T) {
 	fixture := newMergeQueueLandFixture(t, "bump/queue-method", "merge")
 	options := landOptions(fixture)
@@ -136,6 +140,7 @@ func TestLandOnAMergeQueueTargetRefusesAMergeMethodTheQueueWouldOverride(t *test
 	}
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetFailsClosedWhenTheRulesAreUnreadable(t *testing.T) {
 	fixture := newMergeQueueLandFixture(t, "bump/queue-unreadable", "merge")
 	fixture.writeState(t, "rules", "{")
@@ -147,6 +152,7 @@ func TestLandOnAMergeQueueTargetFailsClosedWhenTheRulesAreUnreadable(t *testing.
 	assertNoDirectLanding(t, fixture)
 }
 
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetRecordsAPlanLimitedRulesReadUnderAllowUnfenced(t *testing.T) {
 	fixture := newLandFixture(t, "bump/queue-plan-limited", "go.mod", "go.sum")
 	fixture.writeState(t, "rules-403", "1")
