@@ -28,6 +28,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 // Options selects and drives one clean run.
@@ -450,6 +451,11 @@ func nonTerminalClaims(projectsRoot, slug string) ([]string, error) {
 			return nil, err
 		}
 		for _, path := range matches {
+			// A claim landed through a pull request keeps a WB-written
+			// binding sidecar beside it; the claim itself is checked here.
+			if strings.HasSuffix(path, worktreeclaims.PullRequestBindingSuffix) {
+				continue
+			}
 			raw, err := os.ReadFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("read claim %s: %w", path, err)
