@@ -109,6 +109,17 @@ func (p BindingPorts) ListRegisteredPullRequestBindingsInHome(home string) ([]Re
 	return result, nil
 }
 
+// ValidatePullRequestBindingEntry proves that name, listed in a claims
+// directory whose entries are claimFiles, is the registered pull request
+// sidecar of a listed sibling claim, read below the held descriptor.
+func ValidatePullRequestBindingEntry(claims *os.File, name string, claimFiles map[string]bool, readJSON func(*os.File, string, any) error) error {
+	claimID := strings.TrimSuffix(name, PullRequestBindingSuffix)
+	if name != claimID+PullRequestBindingSuffix || !ValidClaimID(claimID) || !claimFiles[claimID+".json"] || readJSON == nil {
+		return fmt.Errorf("orphaned or unsafe pull request binding %q", name)
+	}
+	return readValidatedClaimPullRequestBinding(claims, claimID, readJSON)
+}
+
 // readValidatedClaimPullRequestBinding reads only below the caller's held
 // claims descriptor and proves that owned metadata belongs to its sibling.
 func readValidatedClaimPullRequestBinding(claims *os.File, claimID string, readJSON func(*os.File, string, any) error) error {
