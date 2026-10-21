@@ -38,3 +38,35 @@ func TestOperationClaimLayoutBindsRunRepositoryAndExactCheckout(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationLifecycleBacklogBindsRepositoryRunAndRoot(t *testing.T) {
+	t.Parallel()
+	projectsRoot := t.TempDir()
+	root := t.TempDir()
+	for _, relative := range []string{"acme/widget", "github.com/acme/widget"} {
+		result := ListResult{Task: "campaign-test.acme-widget", Repository: "acme/widget", CanonicalDir: filepath.Join(projectsRoot, "acme", "widget"), WorktreesRoot: root, WorktreeDir: filepath.Join(root, "campaign-test", filepath.FromSlash(relative)), Branch: "wb/campaign-test", Base: "main", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+		record := newLifecycleBacklogRecord(projectsRoot, result, "removed")
+		if err := validateLifecycleBacklog(record); err != nil {
+			t.Fatalf("operation backlog rejected: %v", err)
+		}
+		for _, mode := range []string{"foreign run", "foreign repository", "foreign root", "unbound effort", "relative path"} {
+			bad := result
+			switch mode {
+			case "foreign run":
+				bad.WorktreeDir = filepath.Join(root, "other", filepath.FromSlash(relative))
+			case "foreign repository":
+				bad.Repository = "acme/other"
+				bad.CanonicalDir = filepath.Join(projectsRoot, "acme", "other")
+			case "foreign root":
+				bad.WorktreesRoot = filepath.Join(root, "other")
+			case "unbound effort":
+				bad.Task = "campaign-test.unrelated"
+			case "relative path":
+				bad.WorktreeDir = filepath.FromSlash("campaign-test/" + relative)
+			}
+			if err := validateLifecycleBacklog(newLifecycleBacklogRecord(projectsRoot, bad, "removed")); err == nil {
+				t.Fatalf("accepted %s operation backlog", mode)
+			}
+		}
+	}
+}

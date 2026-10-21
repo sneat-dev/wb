@@ -287,7 +287,16 @@ func validateLifecycleBacklogWithRel(record lifecycleBacklogRecord, relative fun
 		// corroborated the Git common directory; recovery only needs to prove this
 		// private path remained inside the exact managed task hierarchy.
 		if !managedPath && !hostedPath && !legacyPath {
-			return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+			// This durable journal was created after inventory corroborated the
+			// immutable claim and Git identity. It must remain readable after
+			// sealing that claim and removing the checkout. Reuse the exact
+			// operation geometry without requiring a live active claim.
+			claim := workLogClaim{Task: record.Task, EffortID: record.Task, RunID: parts[0],
+				Repository: record.Repository, Worktree: record.WorktreeDir}
+			layout, layoutErr := claimedSharedWorktreeLayout(record.WorktreeDir, claim)
+			if layoutErr != nil || filepath.Clean(layout.WorktreesRoot) != filepath.Clean(record.WorktreesRoot) {
+				return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+			}
 		}
 	}
 	if record.Detached {
