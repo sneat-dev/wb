@@ -17,6 +17,7 @@ type PublicationPorts struct {
 	OpenPrivateChild     func(*os.File, string, bool) (*os.File, error)
 	ReadClaimAt          func(*os.File, string) (Claim, error)
 	ReadClaimNames       func(*os.File) ([]string, error)
+	ReadJSONAt           func(*os.File, string, any) error
 	CorroborateExisting  func(Claim) error
 	RequiredSessionID    string
 	WriteJSONImmutableAt func(*os.File, string, any, bool) error
@@ -101,9 +102,23 @@ func (p PublicationPorts) PublishClaim(home string, runDir *os.File, runPath str
 		if listErr != nil {
 			return receipt, fmt.Errorf("list immutable work-log claims: %w", listErr)
 		}
+		claimFiles := make(map[string]bool, len(names))
+		for _, name := range names {
+			claimFiles[name] = true
+		}
 		for _, name := range names {
 			if strings.HasPrefix(name, ".") {
 				continue // incomplete atomic-write scratch, never authority
+			}
+			if strings.HasSuffix(name, PullRequestBindingSuffix) {
+				boundID := strings.TrimSuffix(name, PullRequestBindingSuffix)
+				if !ValidClaimID(boundID) || !claimFiles[boundID+".json"] || p.ReadJSONAt == nil {
+					return receipt, fmt.Errorf("unsafe immutable work-log claim entry %q", name)
+				}
+				if err := readValidatedClaimPullRequestBinding(claims, boundID, p.ReadJSONAt); err != nil {
+					return receipt, fmt.Errorf("read immutable work-log pull request binding %q: %w", name, err)
+				}
+				continue
 			}
 			otherID := strings.TrimSuffix(name, ".json")
 			if name != otherID+".json" || !ValidClaimID(otherID) {

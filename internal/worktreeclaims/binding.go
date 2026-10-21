@@ -108,3 +108,20 @@ func (p BindingPorts) ListRegisteredPullRequestBindingsInHome(home string) ([]Re
 	}
 	return result, nil
 }
+
+// readValidatedClaimPullRequestBinding reads only below the caller's held
+// claims descriptor and proves that owned metadata belongs to its sibling.
+func readValidatedClaimPullRequestBinding(claims *os.File, claimID string, readJSON func(*os.File, string, any) error) error {
+	var binding ClaimPullRequestBinding
+	if err := readJSON(claims, claimID+PullRequestBindingSuffix, &binding); err != nil {
+		return err
+	}
+	var boundClaim Claim
+	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
+		return err
+	}
+	if boundClaim.ClaimID != claimID || strings.TrimSpace(binding.Repository) == "" || binding.Repository != boundClaim.Repository || binding.PullRequest <= 0 || strings.TrimSpace(binding.URL) == "" || binding.RecordedAt.IsZero() {
+		return fmt.Errorf("invalid pull request binding for claim %s", claimID)
+	}
+	return nil
+}
