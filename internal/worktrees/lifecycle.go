@@ -1897,17 +1897,26 @@ func claimedSharedWorktreeLayout(path string, claim workLogClaim) (wbhome.Layout
 		return wbhome.Layout{}, fmt.Errorf("managed registry claim has invalid repository or task identity")
 	}
 	cleaned := filepath.Clean(path)
+	task := claim.Task
+	// Operation materialization groups repositories under the run directory,
+	// while its immutable per-repository effort appends the owner/name segment.
+	// Accept that geometry only when all claim identities bind this exact path.
+	if validSafeSegment(claim.RunID) && claim.EffortID == claim.Task &&
+		claim.Task == claim.RunID+"."+strings.Trim(owner+"-"+repository, ".-_") &&
+		filepath.Clean(claim.Worktree) == cleaned {
+		task = claim.RunID
+	}
 	// The right-hand shape is fixed: <owner>/<repository>. The task sits
 	// immediately above it in the legacy shared layout, and one literal host
 	// level above that in the central store.
 	ownerPath := filepath.Dir(cleaned)
 	candidate := filepath.Dir(ownerPath)
-	if filepath.Base(candidate) == claim.Task && filepath.Clean(filepath.Join(candidate, owner, repository)) == cleaned {
+	if filepath.Base(candidate) == task && filepath.Clean(filepath.Join(candidate, owner, repository)) == cleaned {
 		return wbhome.Layout{WorktreesRoot: filepath.Dir(candidate)}, nil
 	}
 	if host := filepath.Base(candidate); repopath.IsForgeHost(host) {
 		taskPath := filepath.Dir(candidate)
-		if filepath.Base(taskPath) == claim.Task && filepath.Clean(filepath.Join(taskPath, host, owner, repository)) == cleaned {
+		if filepath.Base(taskPath) == task && filepath.Clean(filepath.Join(taskPath, host, owner, repository)) == cleaned {
 			return wbhome.Layout{WorktreesRoot: filepath.Dir(taskPath)}, nil
 		}
 	}
@@ -3724,7 +3733,21 @@ func (i *lifecycleInspection) locate() error {
 		return err
 	}
 	if location.Task != i.task {
-		return fmt.Errorf("WB worktree %s belongs to task %q, not %q", i.worktree, location.Task, i.task)
+		// Task-scoped operation inventory names the repository effort, while
+		// the path-derived task is the shared run. Re-read authoritative claim
+		// evidence instead of treating a suffix or a local manifest as authority.
+		claim, _, _, claimErr := activeWorkLogClaim(i.home, i.worktree)
+		if claimErr != nil {
+			if head, headErr := git(i.ctx, i.worktree, "rev-parse", "HEAD"); headErr == nil {
+				claim, claimErr = sealedSuccessSourceClaimReadOnly(i.home, i.worktree, head)
+			}
+		}
+		if claimErr != nil || claim.Task != i.task || claim.RunID != location.Task {
+			return fmt.Errorf("WB worktree %s belongs to task %q, not %q", i.worktree, location.Task, i.task)
+		}
+		if _, err := claimedSharedWorktreeLayoutFromClaim(i.home, i.worktree, claim); err != nil {
+			return err
+		}
 	}
 	i.slug = location.Owner + "/" + location.Repository
 	i.canonical = location.canonicalPath(i.projectsRoot)

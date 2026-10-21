@@ -1905,7 +1905,8 @@ func defaultSealedSuccessSourcePorts() sealedSuccessSourcePorts {
 }
 
 // sealedSuccessSourceClaimReadOnly accepts only the original producer's exact
-// successful finalize, with its immutable claim, terminal, and outbox agreeing.
+// successful finalize or completed landing seal, with its immutable claim,
+// terminal, and outbox agreeing. Cleanup still independently re-proves landing.
 // It never repairs a projection or takes cleanup's mutating claim lock.
 func sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit string) (workLogClaim, error) {
 	return defaultSealedSuccessSourcePorts().sealedSuccessSourceClaimReadOnly(home, worktree, finalCommit)
@@ -1941,8 +1942,10 @@ func (p sealedSuccessSourcePorts) sealedSuccessSourceClaimReadOnly(home, worktre
 	if err := validateExistingCleanupTerminalRecord(*terminal, claim, finalCommit); err != nil {
 		return workLogClaim{}, err
 	}
-	if terminal.Disposition != "landed" || terminal.Landed != nil || terminal.FinalizeReport != nil && terminal.FinalizeReport.Result != "success" {
-		return workLogClaim{}, fmt.Errorf("immutable terminal is not an exact successful finalize")
+	successfulFinalize := terminal.Landed == nil && (terminal.FinalizeReport == nil || terminal.FinalizeReport.Result == "success")
+	successfulCleanup := terminal.FinalizeReport == nil && worktreeclaims.ValidLandedEvidence(terminal.Landed) && validBranch(context.Background(), terminal.Landed.Target)
+	if terminal.Disposition != "landed" || !successfulFinalize && !successfulCleanup {
+		return workLogClaim{}, fmt.Errorf("immutable terminal is not an exact successful finalize or cleanup")
 	}
 	if err := p.validateOutbox(home, claim, *terminal); err != nil {
 		return workLogClaim{}, err
