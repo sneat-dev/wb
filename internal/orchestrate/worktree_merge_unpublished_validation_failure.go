@@ -96,7 +96,12 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	}
 	gitRoot := receipt.Candidate.Worktree
 	candidateCleanupBacklog := ""
-	if receipt.Status == WorktreeMergePreparing {
+	if receipt.Phase == WorktreeMergePhaseLand {
+		gitRoot, err = requireRetiredUnpublishedLandCandidate(ctx, options.ProjectsRoot, receipt, run, resolveCanonical)
+		if err != nil {
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
+		}
+	} else if receipt.Status == WorktreeMergePreparing {
 		proof, proofErr := worktrees.FindDiscardedLifecycleBacklogProof(ctx, options.ProjectsRoot, receipt.Repository, receipt.Target,
 			receipt.Candidate.Task, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA)
 		if proofErr != nil {
@@ -188,12 +193,51 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 	return ack, nil
 }
 
+// A failed land call can have sealed and retired its unpublished candidate.
+// Authenticate that exact removal before using the canonical repository to
+// observe publication and target state; empty receipt fields are not proof.
+func requireRetiredUnpublishedLandCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, run runner.Runner, resolveCanonical func(string, string) (string, error)) (string, error) {
+	if _, err := os.Lstat(receipt.Candidate.Worktree); !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("retired candidate checkout must be absent: %v", err)
+	}
+	expectation := worktrees.TerminalWorkLogExpectation{Task: receipt.Candidate.Task, Repository: receipt.Repository,
+		Worktree: receipt.Candidate.Worktree, Branch: receipt.Candidate.Branch, FinalCommit: receipt.Candidate.SHA}
+	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, []worktrees.TerminalWorkLogExpectation{expectation}); err != nil {
+		return "", fmt.Errorf("authenticate retired candidate terminal: %w", err)
+	}
+	canonical, err := resolveCanonical(projectsRoot, receipt.Repository)
+	if err != nil {
+		return "", err
+	}
+	registered, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", fmt.Errorf("inspect retired candidate registration: %w", err)
+	}
+	for _, field := range strings.Split(registered, "\x00") {
+		if strings.HasPrefix(field, "worktree ") && filepath.Clean(strings.TrimPrefix(field, "worktree ")) == filepath.Clean(receipt.Candidate.Worktree) {
+			return "", errors.New("retired candidate checkout remains registered")
+		}
+	}
+	branch, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "for-each-ref", "--format=%(refname)", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return "", fmt.Errorf("inspect retired candidate local branch: %w", err)
+	}
+	if strings.TrimSpace(branch) != "" {
+		return "", errors.New("retired candidate branch still exists locally")
+	}
+	if err := requireZeroDeltaCandidateWithoutPullRequest(ctx, canonical, receipt); err != nil {
+		return "", err
+	}
+	return canonical, nil
+}
+
 func validateUnpublishedValidationFailureReceipt(receipt WorktreeMergeReceipt, receiptPath string) error {
+	validPhase := receipt.Phase == WorktreeMergePhasePrepare || receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeValidationFailed
 	if receipt.ReceiptPath != receiptPath || receipt.ID == "" || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) ||
-		receipt.Phase != WorktreeMergePhasePrepare || (receipt.Status != WorktreeMergeValidationFailed && receipt.Status != WorktreeMergePreparing) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+		!validPhase || (receipt.Status != WorktreeMergeValidationFailed && receipt.Status != WorktreeMergePreparing) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
 		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || len(receipt.Sources) == 0 {
-		return fmt.Errorf("receipt %s is not an exact unpublished prepare/validation_failed receipt", receiptPath)
+		return fmt.Errorf("receipt %s is not an exact unpublished prepare or failed-land receipt", receiptPath)
 	}
 	for _, source := range receipt.Sources {
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {

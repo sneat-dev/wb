@@ -888,8 +888,8 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(inv *mergeInvoca
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-retired-unpublished-validation-failure <merge-receipt>",
-		Short: "Retire an unpublished failed or discarded prepare attempt while preserving its sources",
-		Long: `Prove that an exact prepare receipt never published or landed its candidate
+		Short: "Retire an unpublished failed attempt while preserving its sources",
+		Long: `Prove that an exact unpublished failed receipt never landed its candidate
 and that every receipted source still exists as a clean, actively claimed
 worktree at the exact recorded SHA. A validation_failed attempt retains its
 clean candidate. An interrupted preparing attempt may instead name an absent
@@ -900,7 +900,10 @@ from the current remote target. It then records a separate append-only
 acknowledgement so another source set can own the repository target lane.
 Receipted sources may have advanced only as clean descendants of their
 immutable recorded SHAs; the acknowledgement records the observed descendant
-heads. The
+heads. An unpublished land/validation_failed receipt may name a retired
+candidate only when its exact ordinary cleanup terminal and outbox corroborate
+removal, the checkout and local registration/branch are absent, and GitHub has
+no pull request in the candidate branch's all-state history. The
 historical receipt and Work Logs remain unchanged. This is a dry-run by default;
 --apply requires --actor and --reason.`,
 		Args: cobra.ExactArgs(1),

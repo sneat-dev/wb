@@ -33,7 +33,7 @@ func TestE2EUnpublishedOwnerReadAdmissionAndReleasedLockContracts(t *testing.T) 
 				}
 				actual, err := readWorktreeMergeReceipt(path)
 				if err == nil && (stage == "first validation" && calls == 1 || stage == "second validation" && calls == 2) {
-					actual.Phase = WorktreeMergePhaseLand
+					actual.Status = WorktreeMergeLanded
 				}
 				return actual, err
 			}

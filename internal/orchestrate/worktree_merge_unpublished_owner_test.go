@@ -20,6 +20,11 @@ func TestUnpublishedOwnerReceiptPolicyContracts(t *testing.T) {
 			t.Fatalf("supported policy: %v", err)
 		}
 	}
+	land := r
+	land.Phase = WorktreeMergePhaseLand
+	if err := validateUnpublishedValidationFailureReceipt(land, path); err != nil {
+		t.Fatalf("failed land policy: %v", err)
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*WorktreeMergeReceipt)
@@ -27,7 +32,8 @@ func TestUnpublishedOwnerReceiptPolicyContracts(t *testing.T) {
 	}{
 		{"path", func(r *WorktreeMergeReceipt) { r.ReceiptPath = "different" }, "exact unpublished"},
 		{"lane", func(r *WorktreeMergeReceipt) { r.Lane = "different" }, "exact unpublished"},
-		{"phase", func(r *WorktreeMergeReceipt) { r.Phase = WorktreeMergePhaseLand }, "exact unpublished"},
+		{"phase", func(r *WorktreeMergeReceipt) { r.Phase = "unknown" }, "exact unpublished"},
+		{"unfinished land", func(r *WorktreeMergeReceipt) { r.Phase = WorktreeMergePhaseLand; r.Status = WorktreeMergePreparing }, "exact unpublished"},
 		{"status", func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergePrepared }, "exact unpublished"},
 		{"landing", func(r *WorktreeMergeReceipt) { r.LandingSHA = r.TargetSHA }, "exact unpublished"},
 		{"pr", func(r *WorktreeMergeReceipt) { r.PullRequest = "17" }, "exact unpublished"},
