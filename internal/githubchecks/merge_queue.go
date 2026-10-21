@@ -33,9 +33,11 @@ func TargetMergeQueue(ctx context.Context, repository, target string) (*MergeQue
 	return mergeQueueFromRules(pages, target)
 }
 
-// IsPolicyUnavailableByPlan reports a target-policy read GitHub refused
-// with a plan-limited 403. Under an explicit --allow-unfenced that is an
-// accepted, recorded gap rather than a failure, as it is for required checks.
+// IsPolicyUnavailableByPlan reports a target-policy read GitHub refused with
+// a 403, the same class requiredChecksReceipt accepts as unavailable policy
+// under an explicit --allow-unfenced. That flag then also gives up merge-queue
+// detection: the receipt records the gap, and a caller that must never merge
+// around a queue does not pass it.
 func IsPolicyUnavailableByPlan(err error) bool {
 	return err != nil && isGitHubPolicyPlan403(err.Error())
 }

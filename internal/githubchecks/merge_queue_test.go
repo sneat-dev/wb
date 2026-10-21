@@ -116,3 +116,20 @@ func TestSourceHeadWaitStillRejectsACandidateBehindTheTargetWithoutTheQueue(t *t
 		t.Fatalf("result = %+v, err = %v", result, err)
 	}
 }
+
+func TestOnlyARefusedPolicyReadIsAnAcceptedMergeQueuePolicyGap(t *testing.T) {
+	t.Parallel()
+	for message, want := range map[string]bool{
+		"read active branch rules for target main: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)": true,
+		"read active branch rules for target main: Resource not accessible by integration (HTTP 403)":                                       true,
+		"read active branch rules for target main: HTTP 502":                                                                                false,
+		`merge queue ruleset 4 on main names merge method "OCTOPUS", which WB does not recognise`:                                           false,
+	} {
+		if got := IsPolicyUnavailableByPlan(errors.New(message)); got != want {
+			t.Errorf("IsPolicyUnavailableByPlan(%q) = %t, want %t", message, got, want)
+		}
+	}
+	if IsPolicyUnavailableByPlan(nil) {
+		t.Error("a nil error is not a policy gap")
+	}
+}

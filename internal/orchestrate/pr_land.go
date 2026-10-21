@@ -425,6 +425,10 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 	// resume command must carry the posted comment's URL, never the
 	// identity and review text again — copy-running it must not post a
 	// second comment re-approving whatever head is current when it runs.
+	if result.MergeQueue != nil && result.MergeQueue.Enqueued {
+		// --requeue was spent by this attempt's enqueue (pr_land_merge_queue.go).
+		options.Requeue = false
+	}
 	if strings.TrimSpace(result.ReviewCommentURL) != "" {
 		options.ApprovedBy = result.ReviewCommentURL
 		options.ReviewComment = ""

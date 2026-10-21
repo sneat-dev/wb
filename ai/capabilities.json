@@ -1349,7 +1349,7 @@
               "path": "wb pr land",
               "flags": [],
               "modes": [
-                "Detects a merge_queue rule among the target's active rules and stops with an error, rather than guessing, when the rules cannot be read (a plan-limited 403 is a recorded gap only under explicit --allow-unfenced)",
+                "Detects a merge_queue rule among the target's active rules and stops with an error, rather than guessing, when the rules cannot be read (a 403 on that read is a recorded gap only under explicit --allow-unfenced, which then gives up queue detection)",
                 "Enqueues the exact observed head with GraphQL enqueuePullRequest and observes the queue entry, its merge-group SHA and the newest added/removed timeline event until merged, removed or the budget ends",
                 "Never calls a merge endpoint or arms auto-merge on a queue target, so a ruleset bypass actor cannot merge around the queue",
                 "Names the failing merge-group checks on removal, never re-enqueues a head the queue already removed without --requeue or a newer push, releases the landing lane once queued, and verifies the merge commit is on the base before syncing and cleaning up"

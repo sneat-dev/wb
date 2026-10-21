@@ -97,13 +97,14 @@ type mergeQueueState struct {
 	Merged         bool
 	HeadSHA        string
 	MergeCommitSHA string
-	// HeadCommittedAt is the head commit's committer date, which tells a head
-	// pushed after the last removal from the head that removal was about.
-	HeadCommittedAt string
-	InQueue         bool
-	EntryState      string
-	Position        int
-	MergeGroupSHA   string
+	// HeadSeenAt is when GitHub first saw the head commit: its earliest
+	// check suite's creation, or its committer date when it has none. It tells
+	// a head pushed after the last removal from the head that removal was about.
+	HeadSeenAt    string
+	InQueue       bool
+	EntryState    string
+	Position      int
+	MergeGroupSHA string
 	// LastQueueEvent is the type of the newest added/removed merge-queue
 	// timeline event. When it is a removal, RemovalReason is GitHub's token
 	// for it (merged, failed_checks, manual, ...), RemovedAt its time and
@@ -114,10 +115,13 @@ type mergeQueueState struct {
 	RemovalGroupSHA string
 }
 
-const removedFromMergeQueueEvent = "RemovedFromMergeQueueEvent"
+const (
+	addedToMergeQueueEvent     = "AddedToMergeQueueEvent"
+	removedFromMergeQueueEvent = "RemovedFromMergeQueueEvent"
+)
 
 const mergeQueueStateQuery = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){" +
-	"id state merged headRefOid isInMergeQueue mergeCommit{oid} commits(last:1){nodes{commit{committedDate}}} mergeQueueEntry{state position headCommit{oid}} " +
+	"id state merged headRefOid isInMergeQueue mergeCommit{oid} commits(last:1){nodes{commit{committedDate checkSuites(first:1){nodes{createdAt}}}}} mergeQueueEntry{state position headCommit{oid}} " +
 	"timelineItems(last:1,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on RemovedFromMergeQueueEvent{reason createdAt beforeCommit{oid}}}}}}}"
 
 type graphQLCommitRef struct {
@@ -145,6 +149,11 @@ func readMergeQueueState(ctx context.Context, repository, number string) (mergeQ
 						Nodes []struct {
 							Commit struct {
 								CommittedDate string `json:"committedDate"`
+								CheckSuites   struct {
+									Nodes []struct {
+										CreatedAt string `json:"createdAt"`
+									} `json:"nodes"`
+								} `json:"checkSuites"`
 							} `json:"commit"`
 						} `json:"nodes"`
 					} `json:"commits"`
@@ -177,7 +186,11 @@ func readMergeQueueState(ctx context.Context, repository, number string) (mergeQ
 		state.MergeCommitSHA = view.MergeCommit.OID
 	}
 	if commits := view.Commits.Nodes; len(commits) > 0 {
-		state.HeadCommittedAt = commits[len(commits)-1].Commit.CommittedDate
+		commit := commits[len(commits)-1].Commit
+		state.HeadSeenAt = commit.CommittedDate
+		if suites := commit.CheckSuites.Nodes; len(suites) > 0 && suites[0].CreatedAt != "" {
+			state.HeadSeenAt = suites[0].CreatedAt
+		}
 	}
 	if entry := view.MergeQueueEntry; entry != nil {
 		state.InQueue = true
@@ -227,12 +240,12 @@ func (state mergeQueueState) removed(kind string) bool {
 }
 
 // headPredatesRemoval reports that the newest removal was about the current
-// head: nothing was committed after it. An unreadable date counts as "same
+// head: GitHub saw no newer head after it. An unreadable date counts as "same
 // head", so WB asks before retrying rather than retrying silently.
 func (state mergeQueueState) headPredatesRemoval() bool {
 	removedAt, removedErr := time.Parse(time.RFC3339, state.RemovedAt)
-	committedAt, committedErr := time.Parse(time.RFC3339, state.HeadCommittedAt)
-	return removedErr != nil || committedErr != nil || !committedAt.After(removedAt)
+	seenAt, seenErr := time.Parse(time.RFC3339, state.HeadSeenAt)
+	return removedErr != nil || seenErr != nil || !seenAt.After(removedAt)
 }
 
 const mergeQueueEnqueueMutation = "mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{state position}}}"
@@ -306,14 +319,18 @@ func enqueueAndAwaitMergeQueue(ctx context.Context, options PullRequestLandOptio
 		return outcome, nil
 	}
 	recordMergeQueueEntry(receipt, state)
+	// A removal ends the wait only once the pull request has been seen queued,
+	// or when it is a newer removal than the one this read already showed: a
+	// read that predates GitHub reporting a fresh entry still shows the old one.
+	priorRemovedAt := state.RemovedAt
 	// Already queued, or removed by the queue's own merge that GitHub has not
 	// yet reported as merged: observe, never enqueue a second time.
 	seenQueued := state.InQueue || state.removed(mergeQueueRemovedMerging)
 	if !seenQueued {
-		if state.LastQueueEvent == removedFromMergeQueueEvent && !options.Requeue && state.headPredatesRemoval() {
-			// The queue already removed this exact head while nobody was
-			// watching. Enqueuing it again would re-run the same merge group
-			// on every resume; report the removal and let the caller choose.
+		if state.removed(mergeQueueRemovedFailed) && !options.Requeue && state.headPredatesRemoval() {
+			// The queue's checks already failed this exact head while nobody
+			// was watching. Enqueuing it again would re-run the same failing
+			// merge group on every resume; report it and let the caller choose.
 			return mergeQueueRemoval(ctx, options, number, target, state, receipt), nil
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "enqueue_pull_request", progress.Started, shortMergeRevision(head), 0, 0)
@@ -330,7 +347,9 @@ func enqueueAndAwaitMergeQueue(ctx context.Context, options PullRequestLandOptio
 				return mergeQueueOutcome{}, enqueueErr
 			}
 		}
-		receipt.Enqueued, seenQueued = true, true
+		// This invocation's own request is spent: a resume printed from here
+		// on must not carry it into a later, unwatched removal.
+		receipt.Enqueued, options.Requeue = true, false
 		reportPullRequestLandProgress(options.OperationProgress, "enqueue_pull_request", progress.Completed, shortMergeRevision(head), 0, 0)
 	}
 
@@ -363,11 +382,14 @@ func enqueueAndAwaitMergeQueue(ctx context.Context, options PullRequestLandOptio
 			return mergeQueueOutcome{}, err
 		}
 		recordMergeQueueEntry(receipt, state)
+		if state.InQueue || state.LastQueueEvent == addedToMergeQueueEvent {
+			seenQueued = true
+		}
 		if state.InQueue {
 			reportPullRequestLandProgress(options.OperationProgress, "merge_queue", progress.Waiting,
 				fmt.Sprintf("%s, position %d", strings.ToLower(state.EntryState), state.Position), 0, 0)
 		}
-		if outcome, done := judgeMergeQueueState(state, options, number, head, seenQueued); done {
+		if outcome, done := judgeMergeQueueState(state, options, number, head, seenQueued || state.RemovedAt != priorRemovedAt); done {
 			if outcome.findings {
 				outcome = mergeQueueRemoval(ctx, options, number, target, state, receipt)
 			}
@@ -377,10 +399,9 @@ func enqueueAndAwaitMergeQueue(ctx context.Context, options PullRequestLandOptio
 }
 
 // judgeMergeQueueState decides whether one observation ends the landing. A
-// removal counts only once the pull request has been seen queued, so a read
-// that predates GitHub reporting the new entry is not mistaken for one, and a
+// removal counts only when removalCounts says it belongs to this wait, and a
 // removal by the queue's own merge only ever waits for the merge.
-func judgeMergeQueueState(state mergeQueueState, options PullRequestLandOptions, number, head string, seenQueued bool) (mergeQueueOutcome, bool) {
+func judgeMergeQueueState(state mergeQueueState, options PullRequestLandOptions, number, head string, removalCounts bool) (mergeQueueOutcome, bool) {
 	switch {
 	case state.Merged:
 		return mergeQueueOutcome{merged: true}, true
@@ -396,7 +417,7 @@ func judgeMergeQueueState(state mergeQueueState, options PullRequestLandOptions,
 			reason:  fmt.Sprintf("the pull request head moved from %s to %s, which takes it out of the merge queue", shortMergeRevision(head), shortMergeRevision(state.HeadSHA)),
 			command: pullRequestLandResumeCommand(options, number, ""),
 		}}, true
-	case seenQueued && (state.removed(mergeQueueRemovedFailed) || state.removed(mergeQueueRemovedOther)):
+	case removalCounts && (state.removed(mergeQueueRemovedFailed) || state.removed(mergeQueueRemovedOther)):
 		return mergeQueueOutcome{findings: true}, true
 	}
 	return mergeQueueOutcome{}, false
@@ -460,7 +481,7 @@ func mergeQueueRemovalRefusal(options PullRequestLandOptions, number, target str
 	requeue.Requeue = true
 	return &landRefusal{
 		code:    code,
-		reason:  reason + "; push a fix to enqueue the new head, or re-run with --requeue to retry this same head",
+		reason:  reason + "; push a fix to enqueue the new head, or retry this same head",
 		command: pullRequestLandResumeCommand(requeue, number, prLandResumeTimeoutFlag(options.Slice)),
 	}
 }
@@ -474,6 +495,10 @@ func landThroughMergeQueue(ctx context.Context, options PullRequestLandOptions, 
 	if err != nil {
 		// LandPullRequest appends the resume command to a transient failure.
 		return result, err
+	}
+	if result.MergeQueue.Enqueued {
+		// See enqueueAndAwaitMergeQueue: --requeue is spent once enqueued.
+		options.Requeue = false
 	}
 	switch {
 	case outcome.pending:

@@ -96,9 +96,11 @@ its landing lane, because the queue now serializes the target. `wb worktree
 land` routes a queue target through the same pull-request path.
 
 Detection reads the target's active ruleset rules (`rules/branches/<target>`);
-when they cannot be read the landing stops rather than guessing, except for a
-plan-limited 403 under explicit `--allow-unfenced`, which is recorded on the
-receipt. A queue required through classic branch protection rather than a
+when they cannot be read the landing stops rather than guessing. The one
+exception is a 403 on that read under explicit `--allow-unfenced`, the same
+policy gap that flag already accepts for required checks: the landing proceeds
+without queue detection and records the gap on the receipt, so never pass
+`--allow-unfenced` where a queue must not be bypassed. A queue required through classic branch protection rather than a
 ruleset is not detected yet.
 
 ## Cleanup is the default

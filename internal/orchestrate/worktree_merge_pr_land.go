@@ -142,6 +142,10 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 		Lane:                options.Lane,
 		git:                 options.resolveGit(),
 		mergeQueue:          queue,
+		// A worktree-merge receipt pins one candidate head, and resuming it is
+		// already the explicit request to try again: there is no new head to
+		// wait for, so a removed candidate is enqueued again on resume.
+		Requeue: true,
 		headUpdated: func(previous, updated string) error {
 			return adoptWorktreeMergeUpdateBranchAdvance(ctx, options.resolveGit(), options.resolveRunner(), &receipt, previous, updated)
 		},

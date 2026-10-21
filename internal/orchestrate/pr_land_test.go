@@ -405,7 +405,7 @@ case "$*" in
         if [ -f "$S/queued" ]; then
           queued=true; entry='{"state":"AWAITING_CHECKS","position":1}'; nodes='[{"__typename":"AddedToMergeQueueEvent"}]'
         elif [ -f "$S/queue-removed" ]; then
-          nodes="[{\"__typename\":\"RemovedFromMergeQueueEvent\",\"reason\":\"$(cat "$S/queue-removed")\"}]"
+          nodes="[{\"__typename\":\"RemovedFromMergeQueueEvent\",\"reason\":\"$(cat "$S/queue-removed")\",\"createdAt\":\"2026-10-21T12:00:00Z\"}]"
         fi
         printf '{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest7","state":"%s","merged":%s,"headRefOid":"%s","isInMergeQueue":%s,"mergeCommit":%s,"mergeQueueEntry":%s,"timelineItems":{"nodes":%s}}}}}\n' \
           "$gstate" "$merged" "$head" "$queued" "$commit" "$entry" "$nodes" ;;

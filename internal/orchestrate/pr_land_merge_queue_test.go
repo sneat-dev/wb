@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -20,7 +21,7 @@ const queueHead = "1111111111111111111111111111111111111111"
 // queueRead is one scripted answer to the merge-queue state query.
 type queueRead struct {
 	state, head, entryState, group, event, reason string
-	removedAt, removedGroup, committedAt          string
+	removedAt, removedGroup, committedAt, suiteAt string
 	merged, inQueue                               bool
 	position                                      int
 	fail                                          error
@@ -60,7 +61,11 @@ func (read queueRead) body(t *testing.T) string {
 	}
 	pull["timelineItems"] = map[string]any{"nodes": nodes}
 	if read.committedAt != "" {
-		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]string{"committedDate": read.committedAt}}}}
+		commit := map[string]any{"committedDate": read.committedAt}
+		if read.suiteAt != "" {
+			commit["checkSuites"] = map[string]any{"nodes": []map[string]string{{"createdAt": read.suiteAt}}}
+		}
+		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": commit}}}
 	}
 	encoded, err := json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": pull}}})
 	if err != nil {
@@ -178,7 +183,7 @@ func TestMergeQueueReportsAFailedMergeGroupWithItsFailingChecks(t *testing.T) {
 	if !slices.Equal(inspector.heads, []string{"rebuilt-group-sha"}) || !slices.Equal(receipt.FailedChecks, []string{"test", "e2e"}) || receipt.RemovalReason != "failed_checks" {
 		t.Fatalf("inspector heads = %v, receipt = %+v", inspector.heads, receipt)
 	}
-	for _, want := range []string{"removed the pull request without merging it (failed_checks)", "failed test, e2e", "re-run with --requeue to retry this same head"} {
+	for _, want := range []string{"removed the pull request without merging it (failed_checks)", "failed test, e2e", "or retry this same head"} {
 		if !strings.Contains(outcome.refusal.reason, want) {
 			t.Fatalf("reason %q lacks %q", outcome.refusal.reason, want)
 		}
@@ -448,16 +453,19 @@ func TestMergeQueueReportsARemovalNobodyWatchedInsteadOfEnqueuingTheSameHeadAgai
 func TestMergeQueueEnqueuesARemovedHeadAgainOnlyWhenAskedOrPushedSince(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		committedAt string
-		requeue     bool
+		name, reason, committedAt, suiteAt string
+		requeue                            bool
 	}{
-		{name: "explicit requeue", committedAt: "2026-10-15T13:00:00Z", requeue: true},
-		{name: "new head pushed after the removal", committedAt: "2026-10-15T14:00:00Z"},
+		{name: "explicit requeue", reason: "failed_checks", committedAt: "2026-10-15T13:00:00Z", requeue: true},
+		{name: "new head committed after the removal", reason: "failed_checks", committedAt: "2026-10-15T14:00:00Z"},
+		// A fix committed before the removal but pushed after it: the check
+		// suite GitHub created on push, not the commit date, tells it apart.
+		{name: "new head pushed after the removal", reason: "failed_checks", committedAt: "2026-10-15T13:00:00Z", suiteAt: "2026-10-15T13:45:00Z"},
+		{name: "a manual removal is retried without asking", reason: "manual", committedAt: "2026-10-15T13:00:00Z"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			removed := queueRead{event: "RemovedFromMergeQueueEvent", reason: "manual", removedAt: "2026-10-15T13:41:14Z", committedAt: test.committedAt}
+			removed := queueRead{event: "RemovedFromMergeQueueEvent", reason: test.reason, removedAt: "2026-10-15T13:41:14Z", committedAt: test.committedAt, suiteAt: test.suiteAt}
 			script := &queueScript{t: t, reads: []queueRead{removed, {merged: true, state: "MERGED"}}}
 			options := queueLandOptions(nil)
 			options.Requeue = test.requeue
@@ -509,5 +517,45 @@ func TestMergeQueueRemovalKindUsesGitHubsTokens(t *testing.T) {
 		if got := mergeQueueRemovalKind(reason); got != want {
 			t.Errorf("mergeQueueRemovalKind(%q) = %q, want %q", reason, got, want)
 		}
+	}
+}
+
+func TestMergeQueueIgnoresTheEarlierRemovalAStaleReadStillShowsAfterEnqueuing(t *testing.T) {
+	t.Parallel()
+	earlier := queueRead{event: "RemovedFromMergeQueueEvent", reason: "failed_checks", removedAt: "2026-10-15T13:41:14Z", committedAt: "2026-10-15T13:00:00Z"}
+	script := &queueScript{t: t, reads: []queueRead{earlier, earlier, {inQueue: true}, {merged: true, state: "MERGED"}}}
+	options := queueLandOptions(nil)
+	options.Requeue = true
+	outcome, _, err := awaitQueue(t, script, options, time.Now().Add(time.Minute))
+	if err != nil || !outcome.merged || script.writes != 1 {
+		t.Fatalf("outcome = %+v, err = %v, writes = %d", outcome, err, script.writes)
+	}
+}
+
+func TestMergeQueueReportsANewRemovalBeforeTheEntryWasEverSeen(t *testing.T) {
+	t.Parallel()
+	fast := queueRead{event: "RemovedFromMergeQueueEvent", reason: "failed_checks", removedAt: "2026-10-15T13:42:00Z"}
+	script := &queueScript{t: t, reads: []queueRead{{}, fast}}
+	outcome, _, err := awaitQueue(t, script, queueLandOptions(&mergeGroupInspector{}), time.Now().Add(time.Minute))
+	if err != nil || !outcome.findings || outcome.refusal.code != LandRefusalMergeGroupFailed {
+		t.Fatalf("outcome = %+v, err = %v", outcome, err)
+	}
+}
+
+func TestMergeQueueSpendsRequeueOnceEnqueued(t *testing.T) {
+	t.Parallel()
+	script := &queueScript{t: t, reads: []queueRead{{}, {inQueue: true}}}
+	options := queueLandOptions(nil)
+	options.Requeue, options.CheckPollInterval = true, 20*time.Millisecond
+	result := PullRequestLandResult{ManualEquivalent: make([]string, 8), Evidence: map[string]string{}, MergeQueue: &MergeQueueReceipt{}}
+	view := githubchecks.PullRequestView{}
+	view.Head.SHA, view.Base.Ref = queueHead, "main"
+	landed, err := landThroughMergeQueue(script.context(), options, result, view, "7", time.Now().Add(100*time.Millisecond))
+	if err != nil || landed.RefusalCode != LandRefusalMergeQueuePending || strings.Contains(landed.SanctionedCommand, "--requeue") {
+		t.Fatalf("result = %+v, err = %v", landed, err)
+	}
+	guided := withPullRequestLandResumeGuidance(fmt.Errorf("%w: lost", githubobserver.ErrTransientMutationOutcomeUnknown), options, landed)
+	if strings.Contains(guided.Error(), "--requeue") || !strings.Contains(guided.Error(), "resumable: wb pr land acme/app#7") {
+		t.Fatalf("resume guidance = %v", guided)
 	}
 }
