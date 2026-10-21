@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 // A sealed producer may be inspected while its projection or private evidence
@@ -16,11 +18,24 @@ func TestSealedSourceAdmissionRefusesChangedOrUnavailableEvidence(t *testing.T) 
 	for _, stage := range []string{
 		"projection unavailable", "projection active", "terminal disappeared",
 		"private run unavailable", "immutable claim unreadable", "claim identity contradicted",
-		"projection changed", "projection reread unavailable", "verified",
+		"projection changed", "projection reread unavailable", "verified", "verified cleanup", "invalid cleanup proof", "invalid cleanup target", "failed finalize cleanup", "wrong cleanup head",
 	} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
 			projection, claim, terminal, _ := testTerminalCleanupAuthority(t)
+			if strings.Contains(stage, "cleanup") {
+				terminal.Landed = &worktreeclaims.LandedEvidence{Target: "main", LandedSHA: strings.Repeat("a", 40), Proof: worktreeclaims.LandedProofContained}
+				switch stage {
+				case "invalid cleanup proof":
+					terminal.Landed.Proof = "unknown"
+				case "invalid cleanup target":
+					terminal.Landed.Target = "../main"
+				case "failed finalize cleanup":
+					terminal.FinalizeReport = &workLogFinalizeReport{Result: "failure"}
+				case "wrong cleanup head":
+					terminal.FinalCommit = "other"
+				}
+			}
 			beforeProjection, beforeTerminal := projection, terminal
 			failure := errors.New("injected " + stage)
 			projectionReads, claimReads, outboxReads := 0, 0, 0
@@ -76,7 +91,7 @@ func TestSealedSourceAdmissionRefusesChangedOrUnavailableEvidence(t *testing.T) 
 				},
 			}
 			got, err := ports.sealedSuccessSourceClaimReadOnly("home", "worktree", "sealed")
-			if stage == "verified" {
+			if stage == "verified" || stage == "verified cleanup" {
 				if err != nil || !reflect.DeepEqual(got, claim) || outboxReads != 1 || projectionReads != 2 {
 					t.Fatalf("verified source = %+v, %v; outbox reads=%d projection reads=%d", got, err, outboxReads, projectionReads)
 				}
@@ -92,7 +107,7 @@ func TestSealedSourceAdmissionRefusesChangedOrUnavailableEvidence(t *testing.T) 
 					if !strings.Contains(err.Error(), failure.Error()) {
 						t.Fatalf("%s refusal lost the original read error: %v", stage, err)
 					}
-				} else if !errors.Is(err, failure) {
+				} else if !strings.Contains(stage, "cleanup") && !errors.Is(err, failure) {
 					t.Fatalf("%s refusal lost the original read/identity error: %v", stage, err)
 				}
 				if stage != "projection changed" && stage != "projection reread unavailable" && outboxReads != 0 {
