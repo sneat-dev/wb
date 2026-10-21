@@ -251,7 +251,11 @@ jobs:
     # this job budget stay at their raised size regardless, so setup and
     # failure diagnostic upload remain outside the inner budget and a timeout
     # still leaves evidence.
-    timeout-minutes: 45
+    # Raised from 20m/45m on 2026-10-21 (founder decision): a change under
+    # .wb/ selects the whole module, and its default and e2e variants run in
+    # sequence inside one --timeout, which ran out in the last orchestrate
+    # shard. The baseline and head measurements each get 30m.
+    timeout-minutes: 70
     permissions:
       contents: read
       actions: read
@@ -285,7 +289,7 @@ jobs:
           fi
           go run ./cmd/wb coverage . \
             --changed --affected-packages --target "$target" \
-            --baseline-timeout 20m --timeout 20m --include-e2e \
+            --baseline-timeout 30m --timeout 30m --include-e2e \
             --coverage-profile profile.cov --report-dir coverage-diagnostics \
             --format json --non-interactive
       - name: Require zero uncovered statements in the selected coverage scope
