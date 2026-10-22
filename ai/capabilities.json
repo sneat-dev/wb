@@ -16712,6 +16712,84 @@
       "notes": "This recovers a land/conflict receipt whose own landing-result read failed on I/O or environment error, typically because the candidate worktree was already removed before a resume could confirm the server landing. Unlike acknowledge-landed-failed it depends on no local worktree at all; containment is proved purely against GitHub's remote state and rechecked live under the lane lock at apply time."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-target-absorbed",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-target-absorbed",
+              "flags": [
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode"
+              ],
+              "modes": [
+                "Proves every recorded source, candidate, and landing commit of a non-complete receipt is an ancestor of the freshly fetched remote target",
+                "Records an immutable acknowledgement bound to the receipt's exact bytes so the receipt no longer owns its merger lane, without rewriting it"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-target-absorbed --help",
+              "contains": [
+                "separate immutable acknowledgement",
+                "--apply",
+                "--initiator",
+                "--mode"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-target-absorbed [merge-receipt...] --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_test.go",
+              "name": "TestPrepareReleasesLaneHeldByPreparedReceiptWhoseCandidateAlreadyLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_test.go",
+              "name": "TestSweepTargetAbsorbedReceiptsDryRunThenApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdworktree/merge_target_absorbed_test.go",
+              "name": "TestAcknowledgeTargetAbsorbedReportsEachSweptReceipt",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The merge prepare and land lane scan writes the same acknowledgement on demand; this verb only clears lanes before their next lander. Live candidate branch heads must be on the target too; landed receipts need passed post-target CI for the exact landing and a 15-minute quiet period; preparing and landed_post_target_ci_failed receipts are never released, and any proof or write failure keeps the lane blocked."
+    },
+    {
       "id": "wb.worktree.merge.adopt-published-candidate",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
