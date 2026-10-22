@@ -65,3 +65,43 @@ func TestActionsRunsForHeadRefusesAnIncompleteCheckRunReceipt(t *testing.T) {
 		t.Fatalf("suites=%v runs=%v reason=%q", bySuite, runs, reason)
 	}
 }
+
+// Another workflow's omitted suite neither enters an explicit contract's
+// receipt nor stalls it: a recovered failing job is filtered out, and a suite
+// whose recovered run cannot be proved is skipped rather than refused, while
+// an unprovable suite of the contract's own workflow still refuses.
+func TestExpectedActionChecksIgnoreOtherWorkflowsOmittedSuites(t *testing.T) {
+	t.Parallel()
+	const listed = `{"total_count":1,"workflow_runs":[{"id":15,"workflow_id":300,"head_sha":"head","head_branch":"integration","event":"pull_request","status":"completed","conclusion":"success","created_at":"2026-09-27T09:00:00Z","check_suite_id":305,"pull_requests":[{"number":17,"base":{"ref":"main"}}]}]}`
+	const checkRuns = `{"total_count":2,"check_runs":[{"id":90,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"check_suite":{"id":305}},{"id":91,"name":"Unrelated workflow job","status":"completed","conclusion":"failure","app":{"slug":"github-actions"},"check_suite":{"id":999}}]}`
+	for _, tc := range []struct{ name, recovered, want string }{
+		{"recovered failing job is filtered out", `{"id":16,"workflow_id":301,"head_sha":"head","event":"push","status":"completed","conclusion":"failure","created_at":"2026-09-27T09:05:00Z","check_suite_id":999}`, ""},
+		{"unprovable suite is skipped", `{"id":16,"workflow_id":301,"head_sha":"head","event":"push","created_at":"2026-09-27T09:05:00Z","check_suite_id":1000}`, ""},
+		{"unprovable contract suite still refuses", `{"id":16,"workflow_id":300,"head_sha":"head","event":"pull_request","created_at":"2026-09-27T09:05:00Z","check_suite_id":1000}`, "exact-head workflow-run receipt omitted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := contractReadContext(t, map[string]string{
+				"repos/acme/app/commits/head/check-runs?per_page=100":    checkRuns,
+				"repos/acme/app/actions/runs?head_sha=head&per_page=100": listed,
+				"repos/acme/app/actions/jobs/91":                         `{"run_id":16}`,
+				"repos/acme/app/actions/runs/16":                         tc.recovered,
+			}, nil)
+			expected := &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: []string{"build"}}
+			checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: "head", ExpectedActionChecks: expected})
+			if tc.want != "" {
+				if checks != nil || pending || !strings.Contains(reason, tc.want) {
+					t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+				}
+				return
+			}
+			if reason != "" || pending {
+				t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+			}
+			relevant := relevantExpectedActionChecks(checks, expected, nil)
+			if len(relevant) != 1 || relevant[0].Name != "check-run:build" || relevant[0].Conclusion != "success" {
+				t.Fatalf("relevant=%+v from checks=%+v", relevant, checks)
+			}
+		})
+	}
+}

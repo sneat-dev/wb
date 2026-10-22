@@ -1168,6 +1168,9 @@ func recoverOmittedActionsRuns(ctx context.Context, options PullRequestWaitOptio
 			return nil, omitted + "; " + reason
 		}
 		if run.HeadSHA != options.Head || run.CheckSuiteID != check.CheckSuite.ID {
+			if expected := options.ExpectedActionChecks; expected != nil && (run.WorkflowID != expected.WorkflowID || run.Event != expected.Event) {
+				continue // another workflow cannot invalidate or stall this explicit contract
+			}
 			return nil, fmt.Sprintf("%s; its workflow run %d names head %q and suite %d", omitted, run.ID, run.HeadSHA, run.CheckSuiteID)
 		}
 		listed[run.CheckSuiteID] = true
