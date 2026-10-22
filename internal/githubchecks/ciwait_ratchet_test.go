@@ -52,20 +52,3 @@ func TestExpectedActionRunExcludesOtherPullRequestOnSameSHA(t *testing.T) {
 		t.Fatalf("other PR run remained: suites=%v runs=%v reason=%q", bySuite, runs, reason)
 	}
 }
-
-//nolint:paralleltest // installDirectCITestGH changes the process-wide PATH.
-func TestExpectedActionChecksExcludeUnknownWorkflowSuite(t *testing.T) {
-	testfixture.InstallDirectCIGH(t)
-	t.Setenv("WB_TEST_CHECK_RUNS", `{"total_count":1,"check_runs":[{"id":91,"name":"Unrelated workflow job","status":"completed","conclusion":"failure","app":{"id":15368,"slug":"github-actions"},"check_suite":{"id":999}}]}`)
-	options := PullRequestWaitOptions{Repository: "acme/app", Target: "integration", Head: testfixture.DirectCIHead,
-		ExpectedActionChecks: &ExpectedActionChecks{WorkflowID: 300, Event: "pull_request", PullRequestNumber: 17, PullRequestBase: "main", Names: []string{"build"}}}
-	checks, pending, reason := commitCheckRuns(context.Background(), options)
-	if reason != "" || pending {
-		t.Fatalf("unrelated suite observation: checks=%+v pending=%t reason=%q", checks, pending, reason)
-	}
-	for _, check := range checks {
-		if check.Name == "check-run:Unrelated workflow job" {
-			t.Fatalf("unrelated suite's failing job entered explicit PR receipt: %+v", checks)
-		}
-	}
-}

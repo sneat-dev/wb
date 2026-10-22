@@ -79,7 +79,7 @@ func TestRequiredPolicyRejectsIncompleteAuthority(t *testing.T) {
 
 func TestActionsReceiptRetainsCoLatestRunsAndRejectsMissingSuite(t *testing.T) {
 	t.Parallel()
-	ctx := contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push"}]}`}, nil)
+	ctx := contractReadContext(t, map[string]string{"repos/acme/app/commits/head/check-runs?per_page=100": `{"total_count":0,"check_runs":[]}`, "repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push"}]}`}, nil)
 	options := PullRequestWaitOptions{Repository: "acme/app", Head: "head"}
 	bySuite, runs, reason := ActionsRunsForHead(ctx, options)
 	if reason != "" || len(bySuite) != 2 || len(runs) != 2 || runs[0].ID != 1 || runs[1].ID != 2 {
@@ -214,7 +214,7 @@ func TestCommitCheckRunsRetainsPendingCoLatestRunWithoutCheckRuns(t *testing.T) 
 
 func TestActionsReceiptSortsDistinctEventsOfOneWorkflow(t *testing.T) {
 	t.Parallel()
-	ctx := contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"pull_request"}]}`}, nil)
+	ctx := contractReadContext(t, map[string]string{"repos/acme/app/commits/head/check-runs?per_page=100": `{"total_count":0,"check_runs":[]}`, "repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":2,"workflow_runs":[{"id":1,"workflow_id":300,"check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"push"},{"id":2,"workflow_id":300,"check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"pull_request"}]}`}, nil)
 	_, runs, reason := ActionsRunsForHead(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"})
 	if reason != "" || len(runs) != 2 || runs[0].Event != "pull_request" || runs[1].Event != "push" {
 		t.Fatalf("runs=%v reason=%q", runs, reason)

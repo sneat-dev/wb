@@ -1032,28 +1032,11 @@ func sortRequiredChecks(checks []RequiredRemoteCheck) {
 }
 
 func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
-	outputResponse, err := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(options.Repository), Target: strings.TrimSpace(options.Target), Head: strings.TrimSpace(options.Head), Endpoint: "repos/" + options.Repository + "/commits/" + options.Head + "/check-runs?per_page=100", FreshWindow: 0})
-	output := outputResponse.Body
-	if err != nil {
-		return nil, false, err.Error()
-	}
-	var response githubCheckRunsResponse
-	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, false, fmt.Sprintf("decode GitHub check runs for %s: %v", options.Head, err)
-	}
-	if response.TotalCount > len(response.CheckRuns) {
-		return nil, false, fmt.Sprintf("GitHub returned only %d of %d observed check runs for %s; refusing an incomplete CI receipt", len(response.CheckRuns), response.TotalCount, options.Head)
-	}
-	listedRuns, reason := listActionsRunsForHead(ctx, options)
+	checkRuns, reason := readCommitCheckRuns(ctx, options)
 	if reason != "" {
 		return nil, false, reason
 	}
-	if options.ExpectedActionChecks == nil {
-		if listedRuns, reason = recoverOmittedActionsRuns(ctx, options, response.CheckRuns, listedRuns); reason != "" {
-			return nil, false, reason
-		}
-	}
-	actionsBySuite, latestActionsRuns, reason := indexActionsRuns(listedRuns, options)
+	actionsBySuite, latestActionsRuns, reason := recoveredActionsRunsForHead(ctx, options, checkRuns)
 	if reason != "" {
 		return nil, false, reason
 	}
@@ -1068,9 +1051,9 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 		latestActionRunIDs[run.ID] = true
 	}
 	observedActionsRuns := make(map[int64]int, len(latestActionsRuns))
-	checks := make([]RemoteCheck, 0, len(response.CheckRuns)+len(latestActionsRuns))
+	checks := make([]RemoteCheck, 0, len(checkRuns)+len(latestActionsRuns))
 	pending := false
-	for _, check := range response.CheckRuns {
+	for _, check := range checkRuns {
 		var actionsRun ActionsRun
 		if strings.EqualFold(check.App.Slug, "github-actions") {
 			if check.ID <= 0 || check.CheckSuite.ID <= 0 {
@@ -1078,8 +1061,8 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			}
 			run, ok := actionsBySuite[check.CheckSuite.ID]
 			if !ok {
-				// Only an explicit contract leaves a suite unindexed: without one,
-				// recoverOmittedActionsRuns proved every suite or refused.
+				// recoverOmittedActionsRuns proved every suite or refused, so only an
+				// explicit contract's filter leaves one unindexed.
 				continue // unrelated PR run excluded from this explicit contract
 			}
 			if !latestActionRunIDs[run.ID] {
@@ -1123,9 +1106,42 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	return checks, pending, ""
 }
 
+// ActionsRunsForHead indexes the exact head's workflow runs, recovering any
+// the eventually consistent head_sha listing omitted, so a newer run it left
+// out cannot let an older listed run stand as latest.
 func ActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions) (map[int64]ActionsRun, []ActionsRun, string) {
+	checkRuns, reason := readCommitCheckRuns(ctx, options)
+	if reason != "" {
+		return nil, nil, reason
+	}
+	return recoveredActionsRunsForHead(ctx, options, checkRuns)
+}
+
+func readCommitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]githubCheckRun, string) {
+	outputResponse, err := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(options.Repository), Target: strings.TrimSpace(options.Target), Head: strings.TrimSpace(options.Head), Endpoint: "repos/" + options.Repository + "/commits/" + options.Head + "/check-runs?per_page=100", FreshWindow: 0})
+	if err != nil {
+		return nil, err.Error()
+	}
+	var response githubCheckRunsResponse
+	if err := json.Unmarshal(outputResponse.Body, &response); err != nil {
+		return nil, fmt.Sprintf("decode GitHub check runs for %s: %v", options.Head, err)
+	}
+	if response.TotalCount > len(response.CheckRuns) {
+		return nil, fmt.Sprintf("GitHub returned only %d of %d observed check runs for %s; refusing an incomplete CI receipt", len(response.CheckRuns), response.TotalCount, options.Head)
+	}
+	return response.CheckRuns, ""
+}
+
+// recoveredActionsRunsForHead lists the head's workflow runs and recovers the
+// suites its check runs name but the listing omitted. Recovery runs under an
+// explicit contract too: indexActionsRuns filters recovered runs exactly as it
+// filters listed ones, so another PR's run on the same SHA still drops out.
+func recoveredActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions, checkRuns []githubCheckRun) (map[int64]ActionsRun, []ActionsRun, string) {
 	runs, reason := listActionsRunsForHead(ctx, options)
 	if reason != "" {
+		return nil, nil, reason
+	}
+	if runs, reason = recoverOmittedActionsRuns(ctx, options, checkRuns, runs); reason != "" {
 		return nil, nil, reason
 	}
 	return indexActionsRuns(runs, options)
