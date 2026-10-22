@@ -33,6 +33,7 @@ type MergeOperations struct {
 	ResumeWorktreeMerge                            func(ctx context.Context, options orchestrate.WorktreeMergeLandOptions) (orchestrate.WorktreeMergeReceipt, error)
 	RunWorktreeMerge                               func(ctx context.Context, prepare orchestrate.WorktreeMergePrepareOptions, land orchestrate.WorktreeMergeLandOptions) (orchestrate.WorktreeMergeReceipt, error)
 	SupersedeValidationFailedWorktreeMerge         func(ctx context.Context, options orchestrate.WorktreeMergeValidationFailureSupersessionOptions) (orchestrate.WorktreeMergeValidationFailureSupersession, error)
+	SweepTargetAbsorbedWorktreeMergeReceipts       func(ctx context.Context, options orchestrate.WorktreeMergeTargetAbsorbedSweepOptions) (orchestrate.WorktreeMergeTargetAbsorbedSweep, error)
 }
 
 func DefaultMergeOperations() MergeOperations {
@@ -58,6 +59,7 @@ func DefaultMergeOperations() MergeOperations {
 		ResumeWorktreeMerge:                            orchestrate.ResumeWorktreeMerge,
 		RunWorktreeMerge:                               orchestrate.RunWorktreeMerge,
 		SupersedeValidationFailedWorktreeMerge:         orchestrate.SupersedeValidationFailedWorktreeMerge,
+		SweepTargetAbsorbedWorktreeMergeReceipts:       orchestrate.SweepTargetAbsorbedWorktreeMergeReceipts,
 	}
 }
 

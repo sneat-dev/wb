@@ -95,6 +95,11 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 		if rebatched {
 			continue
 		}
+		// A recorded target absorption already proved this receipt's work
+		// is on its target; this read-only scan never proves one itself.
+		if _, _, absorbedErr := readWorktreeMergeTargetAbsorbedAcknowledgement(receipt); absorbedErr == nil {
+			continue
+		}
 		lane := receipt.Lane
 		if lane == "" {
 			lane = worktreeMergeLaneID(receipt.Repository, receipt.Target)

@@ -12,6 +12,7 @@ wb worktree merge resume <candidate-worktree-or-receipt> --progress --format jso
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-target-absorbed [merge-receipt...] --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>
@@ -175,6 +176,25 @@ asset is absent. Applying with an actor and reason writes a separate immutable
 acknowledgement. A subsequent `merge resume --cleanup` revalidates the receipt,
 target ancestry, acknowledgement, and absent assets before completing. It never
 creates replacement Work Logs or weakens cleanup for live or partial assets.
+
+A non-complete receipt whose every recorded source, candidate, and landing
+commit is already an ancestor of the freshly fetched remote target has nothing
+left to land, for example a `prepared` candidate later merged through an
+ordinary pull request. `merge prepare` and `land` no longer stay refused behind
+it: the lane scan proves that ancestry, writes an immutable
+`<receipt>.<sha12>.target-absorbed.ack.json` bound to the receipt's exact
+bytes, and moves on without rewriting the receipt. Live heads of the
+candidate branch, local and remote, must be on the target too, so work
+committed on the candidate after prepare keeps the lane. A landed receipt
+qualifies only once post-target CI passed for its exact landing commit and it
+has been untouched for 15 minutes. A failed fetch, a missing object, or an
+unwritable acknowledgement keeps the lane blocked as before. `preparing` and
+`landed_post_target_ci_failed` receipts are never released this way, and a
+squash- or rebase-merged pull request never proves ancestry, so its receipt
+still needs an explicit acknowledgement. `acknowledge-target-absorbed` runs the same proof ahead of the next
+lander, for named receipts or the whole report store; it is a dry-run unless
+`--apply` is passed with `--actor` and `--reason`, which every written
+acknowledgement records.
 
 When post-target CI fails but a forward fix is preferable to a revert, commit
 the fix on the same preserved source and rerun `merge prepare`. WB accepts only
