@@ -85,9 +85,100 @@ func TestActionsReceiptRetainsCoLatestRunsAndRejectsMissingSuite(t *testing.T) {
 	if reason != "" || len(bySuite) != 2 || len(runs) != 2 || runs[0].ID != 1 || runs[1].ID != 2 {
 		t.Fatalf("co-latest runs: suites=%v runs=%v reason=%q", bySuite, runs, reason)
 	}
-	ctx = contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":0,"workflow_runs":[]}`, "repos/acme/app/commits/head/check-runs?per_page=100": `{"total_count":1,"check_runs":[{"id":1,"name":"build","app":{"slug":"github-actions"},"check_suite":{"id":11}}]}`}, nil)
+	ctx = contractReadContext(t, map[string]string{"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":0,"workflow_runs":[]}`, "repos/acme/app/commits/head/check-runs?per_page=100": `{"total_count":1,"check_runs":[{"id":1,"name":"build","app":{"slug":"github-actions"},"check_suite":{"id":11}}]}`, "repos/acme/app/actions/jobs/1": `{"run_id":7}`, "repos/acme/app/actions/runs/7": `{"id":7,"workflow_id":300,"head_sha":"head","check_suite_id":12,"created_at":"2026-09-27T09:00:00Z","event":"push"}`}, nil)
 	if _, _, reason := commitCheckRuns(ctx, options); !strings.Contains(reason, "exact-head workflow-run receipt omitted") {
 		t.Fatalf("missing suite=%q", reason)
+	}
+}
+
+// GitHub's head_sha run listing is eventually consistent: it can list no runs
+// while the head's check runs already exist (#877). The suite each check run
+// names is then resolved through the direct job and run reads.
+func TestCommitCheckRunsRecoversSuitesTheRunListingOmitted(t *testing.T) {
+	t.Parallel()
+	const run = `{"id":7,"workflow_id":300,"head_sha":"head","check_suite_id":11,"created_at":"2026-09-27T09:00:00Z","event":"pull_request","status":"completed","conclusion":"success"}`
+	for _, tc := range []struct {
+		name, checkRuns string
+		wantBuckets     []string
+		wantPending     bool
+	}{
+		{"skipped jobs pass", `[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions"},"check_suite":{"id":11}},{"id":2,"name":"bump","status":"completed","conclusion":"skipped","app":{"slug":"github-actions"},"check_suite":{"id":11}},{"id":3,"name":"scan","status":"completed","conclusion":"success","app":{"slug":"scanner"},"check_suite":{"id":99}}]`, []string{"pass", "skipping", "pass"}, false},
+		{"failing job still fails", `[{"id":1,"name":"build","status":"completed","conclusion":"failure","app":{"slug":"github-actions"},"check_suite":{"id":11}}]`, []string{"fail"}, false},
+		{"pending job still pends", `[{"id":1,"name":"build","status":"in_progress","app":{"slug":"github-actions"},"check_suite":{"id":11}}]`, []string{"pending"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := contractReadContext(t, map[string]string{
+				"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":0,"workflow_runs":[]}`,
+				"repos/acme/app/commits/head/check-runs?per_page=100":    `{"total_count":0,"check_runs":` + tc.checkRuns + `}`,
+				"repos/acme/app/actions/jobs/1":                          `{"run_id":7}`,
+				"repos/acme/app/actions/runs/7":                          run,
+			}, nil)
+			checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"})
+			if reason != "" || pending != tc.wantPending {
+				t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+			}
+			buckets := make([]string, 0, len(checks))
+			for _, check := range checks {
+				if check.Name == "workflow-run:300:pull_request" {
+					continue
+				}
+				buckets = append(buckets, check.Bucket)
+			}
+			if !reflect.DeepEqual(buckets, tc.wantBuckets) {
+				t.Fatalf("buckets=%v want %v (checks=%+v)", buckets, tc.wantBuckets, checks)
+			}
+		})
+	}
+}
+
+func TestCommitCheckRunsRefusesIncompleteOrMalformedReceipts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, checkRuns, runs, want string }{
+		{"truncated check runs", `{"total_count":2,"check_runs":[]}`, `{"total_count":0,"workflow_runs":[]}`, "only 0 of 2 observed check runs"},
+		{"malformed listed run", `{"total_count":0,"check_runs":[]}`, `{"total_count":1,"workflow_runs":[{"id":7}]}`, "malformed exact-head workflow-run identity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			answers := map[string]string{"repos/acme/app/commits/head/check-runs?per_page=100": tc.checkRuns, "repos/acme/app/actions/runs?head_sha=head&per_page=100": tc.runs}
+			ctx := contractReadContext(t, answers, nil)
+			if checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"}); checks != nil || pending || !strings.Contains(reason, tc.want) {
+				t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+			}
+		})
+	}
+}
+
+func TestCommitCheckRunsRefusesAnOmittedSuiteItCannotProve(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, job, run, want string }{
+		{"job read fails", "", "", "lost job"},
+		{"job undecodable", `{`, "", "decode repos/acme/app/actions/jobs/1"},
+		{"job names no run", `{"run_id":0}`, "", "named no workflow run"},
+		{"run undecodable", `{"run_id":7}`, `{`, "decode repos/acme/app/actions/runs/7"},
+		{"run on another head", `{"run_id":7}`, `{"id":7,"head_sha":"other","check_suite_id":11}`, `names head "other" and suite 11`},
+		{"run in another suite", `{"run_id":7}`, `{"id":7,"head_sha":"head","check_suite_id":12}`, `names head "head" and suite 12`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			answers := map[string]string{
+				"repos/acme/app/actions/runs?head_sha=head&per_page=100": `{"total_count":0,"workflow_runs":[]}`,
+				"repos/acme/app/commits/head/check-runs?per_page=100":    `{"total_count":1,"check_runs":[{"id":1,"name":"bump","status":"completed","conclusion":"skipped","app":{"slug":"github-actions"},"check_suite":{"id":11}}]}`,
+				"repos/acme/app/actions/jobs/1":                          tc.job,
+				"repos/acme/app/actions/runs/7":                          tc.run,
+			}
+			ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+				body := answers[request.Endpoint]
+				if body == "" {
+					return githubobserver.Response{}, errors.New("lost job")
+				}
+				return githubobserver.Response{Body: []byte(body)}, nil
+			}})
+			checks, pending, reason := commitCheckRuns(ctx, PullRequestWaitOptions{Repository: "acme/app", Head: "head"})
+			if checks != nil || pending || !strings.Contains(reason, "exact-head workflow-run receipt omitted") || !strings.Contains(reason, tc.want) {
+				t.Fatalf("checks=%+v pending=%t reason=%q", checks, pending, reason)
+			}
+		})
 	}
 }
 
