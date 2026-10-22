@@ -66,8 +66,8 @@ merges the pull request into its target, or cleans up the worktree.`,
 }
 
 func NewLand(runtime shared.Runtime, deps Dependencies) *cobra.Command {
-	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile, waiveReason string
-	var keepCommits, waiveChecks []string
+	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile, waiveReason, waiveBaseline string
+	var keepCommits, waiveChecks, waiveAggregates []string
 	var keep, allowUnfenced, nonInteractive, takeOverLane bool
 	var pollInterval, totalTimeout time.Duration
 	var noUpdateBranch, noAutoMerge, requeue bool
@@ -161,8 +161,14 @@ on the candidate, is not required by the target branch's server-enforced policy,
 and fails with the exact same conclusion on the target branch's current tip,
 it may be waived with --waive-check <name> (repeatable) and a mandatory
 --waive-reason "<text>". Both the check and the target branch tip SHA are
-verified authoritatively before landing, and recorded on the receipt. A target
-with no server-enforced required checks cannot use waivers.
+verified authoritatively before landing, and recorded on the receipt. A waived
+check still running is waited for, never judged (waived-check-pending). When
+the target tip has no concluded run of it, WB names the nearest first-parent
+ancestor (within 20 commits) that failed the same way; pass it as
+--waive-baseline <sha>. --waive-aggregate <name> waives an aggregator job whose
+needs: are all green or waived. A required check is never waived. A target with
+no server-enforced required checks accepts waivers only with --allow-unfenced,
+and WB then merges itself after the verdict instead of arming auto-merge.
 
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
@@ -199,11 +205,15 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
 				return runtime.ExitError(shared.ExitUsage, "--review-comment and --review-comment-file are mutually exclusive")
 			}
-			if len(splitCommaSeparated(waiveChecks)) > 0 && strings.TrimSpace(waiveReason) == "" {
+			waivers := len(splitCommaSeparated(waiveChecks)) + len(splitCommaSeparated(waiveAggregates))
+			if waivers > 0 && strings.TrimSpace(waiveReason) == "" {
 				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason")
 			}
-			if strings.TrimSpace(waiveReason) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
+			if strings.TrimSpace(waiveReason) != "" && waivers == 0 {
 				return runtime.ExitError(shared.ExitUsage, "--waive-reason was given without any --waive-check")
+			}
+			if strings.TrimSpace(waiveBaseline) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
+				return runtime.ExitError(shared.ExitUsage, "--waive-baseline requires --waive-check")
 			}
 			repository, number, err := prselector.Parse(args[0])
 			if err != nil {
@@ -232,6 +242,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				AllowUnfenced:       allowUnfenced,
 				WaiveChecks:         splitCommaSeparated(waiveChecks),
 				WaiveReason:         waiveReason,
+				WaiveBaseline:       waiveBaseline,
+				WaiveAggregates:     splitCommaSeparated(waiveAggregates),
 				Slice:               totalTimeout,
 				NoUpdateBranch:      noUpdateBranch,
 				NoAutoMerge:         noAutoMerge,
@@ -292,6 +304,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
 	command.Flags().StringSliceVar(&waiveChecks, "waive-check", nil, "GitHub check name whose failure to waive when it is not required by target policy and fails on target tip with the same conclusion (repeatable)")
 	command.Flags().StringVar(&waiveReason, "waive-reason", "", "why the waived checks are safe to ignore; required with --waive-check")
+	command.Flags().StringVar(&waiveBaseline, "waive-baseline", "", "first-parent ancestor of the target tip (within 20 commits) to judge waived checks against when the tip has no concluded run of them")
+	command.Flags().StringSliceVar(&waiveAggregates, "waive-aggregate", nil, "aggregator check to waive when every input in its workflow job's needs: passed or is waived (repeatable)")
 	command.Flags().DurationVar(&pollInterval, "poll-interval", githubchecks.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", shared.DefaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -368,7 +382,7 @@ func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequest
 			}
 		}
 		for _, waived := range result.WaivedChecks {
-			if _, err := fmt.Fprintf(out, "waived check %q (conclusion %q, target SHA %s): %s\n", waived.Name, waived.Conclusion, shortSHAForDisplay(waived.TargetSHA), waived.Reason); err != nil {
+			if _, err := fmt.Fprintf(out, "waived check %q (conclusion %q, target SHA %s%s): %s\n", waived.Name, waived.Conclusion, shortSHAForDisplay(waived.TargetSHA), waivedCheckBasis(waived), waived.Reason); err != nil {
 				return err
 			}
 		}
@@ -400,4 +414,16 @@ func shortSHAForDisplay(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// waivedCheckBasis names what a waiver was judged on beyond the target tip.
+func waivedCheckBasis(waived orchestrate.WaivedCheck) string {
+	switch {
+	case waived.WaivedBy != "":
+		return ", waived by " + waived.WaivedBy + " of " + strings.Join(waived.Inputs, ", ")
+	case waived.BaselineSHA != "" && !waived.BaselineIsTip:
+		return ", baseline " + shortSHAForDisplay(waived.BaselineSHA)
+	default:
+		return ""
+	}
 }

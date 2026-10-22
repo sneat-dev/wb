@@ -335,8 +335,9 @@ func TestE2ELandWaiverRefusedWhenTargetUnfenced(t *testing.T) {
 	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
 
 	fixture.writeState(t, "check-runs", `{
-		"total_count": 1,
+		"total_count": 2,
 		"check_runs": [
+			{"name": "CI", "status": "completed", "conclusion": "success", "app": {"id": 42}},
 			{"name": "optional-lint", "status": "completed", "conclusion": "failure", "app": {"id": 100}}
 		]
 	}`)
@@ -582,8 +583,9 @@ func TestE2ELandChecksFailedDiagnosticsVariations(t *testing.T) {
 func TestE2ELandWaiverInspectorErrors(t *testing.T) {
 	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
 	fixture.writeState(t, "check-runs", `{
-		"total_count": 1,
+		"total_count": 2,
 		"check_runs": [
+			{"name": "CI", "status": "completed", "conclusion": "success", "app": {"id": 42}},
 			{"name": "Workers Builds", "status": "completed", "conclusion": "failure", "app": {"id": 100}}
 		]
 	}`)
@@ -632,7 +634,7 @@ func TestE2ELandWaiverConclusionFallbackAndNotFailedBucket(t *testing.T) {
 
 	//nolint:paralleltest // Rows share the process-wide fixture environment and private lane evidence.
 	t.Run("head-not-failed-empty-conclusion-falls-back-to-bucket", func(t *testing.T) {
-		fixture.writeState(t, "check-runs", `{"total_count": 0, "check_runs": []}`)
+		fixture.writeState(t, "check-runs", `{"total_count": 1, "check_runs": [{"name": "CI", "status": "completed", "conclusion": "success", "app": {"id": 42}}]}`)
 		fixture.writeState(t, "statuses", `{
 			"total_count": 1,
 			"statuses": [

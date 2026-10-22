@@ -8128,6 +8128,8 @@
                 "--subject",
                 "--take-over-lane",
                 "--timeout",
+                "--waive-aggregate",
+                "--waive-baseline",
                 "--waive-check",
                 "--waive-reason"
               ],
