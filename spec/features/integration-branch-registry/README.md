@@ -25,7 +25,10 @@ default.
 ## Behavior
 
 The gate is always server-enforced: WB records policy for routing and
-reporting, and never acts as the only enforcer of a gate.
+reporting, and never acts as the only enforcer of a gate. The strict
+up-to-date rule this requires means a lane that lands directly, outside a
+batch, pays the fence refresh again; that is intended — batching is the
+cheap path.
 
 ### REQ: integration-create-enforces-gate
 
@@ -67,8 +70,10 @@ integration-create-enforces-gate, then open or update the one PR from the
 integration branch to promote-to with merge method `merge`, and land it via
 `wb pr land`. With promote gate `all`, every observed check on the PR head
 must pass, auto-merge is not armed, and any `--waive-*` flag is a usage error
-(exit `2`); with a list, each listed check must pass and other checks obey
-[PR Land Waivers](../pr-land-waivers/README.md). Promotion appends the
+(exit `2`). With a list, every listed check must be server-required on
+promote-to, else it refuses `promote-gate-not-enforced` printing the
+ruleset JSON (or creates it with `--apply-ruleset`); each listed check must
+pass and other checks obey [PR Land Waivers](../pr-land-waivers/README.md). Promotion appends the
 promoted SHA to the policy ref history.
 
 ## Acceptance Criteria
@@ -83,6 +88,15 @@ main --promote-gate all` runs
 **Then** it refuses `integration-gate-not-enforced` and prints the ruleset
 JSON; with `--apply-ruleset` it creates the ruleset and registers.
 
+### AC: create-makes-the-branch
+
+**Requirements:** integration-branch-registry#req:integration-create-enforces-gate
+
+**Given** no `public-demo` branch on origin
+**When** `wb integration create ... --apply-ruleset` runs
+**Then** `origin/public-demo` equals `origin/main` and its ruleset requires
+the gate with strict up-to-date.
+
 ### AC: policy-shared-through-ref
 
 **Requirements:** integration-branch-registry#req:integration-policy-ref
@@ -90,8 +104,8 @@ JSON; with `--apply-ruleset` it creates the ruleset and registers.
 **Given** a registered `public-demo`
 **When** a second clone runs `wb integration show o/r public-demo`
 **Then** it prints the policy, no branch tree contains `policy.yaml`, an
-identical rerun makes no commit, and a changed rerun without `--update`
-refuses.
+identical rerun makes no commit, a changed rerun without `--update`
+refuses, and with `--update` the new policy commit's parent is the old one.
 
 ### AC: integration-lane-targets-and-enrolls-on-request
 
@@ -104,6 +118,14 @@ opens its PR, it is reviewed, and `wb pr land --batch` runs
 `public-demo`, the PR is in a batch rather than merged, and `wb worktree
 summary` shows `in batch 1`; plain `wb pr land` still lands it directly;
 `--integration` naming an unregistered branch creates nothing.
+
+### AC: promote-list-gate-must-be-enforced
+
+**Requirements:** integration-branch-registry#req:integration-promote
+
+**Given** promote gate `e2e` that `main` does not require
+**When** `wb integration promote` runs
+**Then** it refuses `promote-gate-not-enforced` before any PR is armed.
 
 ### AC: promote-all-gate
 

@@ -29,8 +29,8 @@ the reviewer only the conflict resolutions or attributed a failure to a lane.
 ### Command surface
 
 ```text
-wb pr batch create <owner/repo> --target <branch> <#pr@sha=review-url>...
-wb pr batch add    <batch> <#pr@sha=review-url>...
+wb pr batch create <owner/repo> --target <branch> <pr@sha=review-url>...
+wb pr batch add    <batch> [<pr@sha=review-url>...]
 wb pr batch resume <batch>
 wb pr batch delta  <batch> [--format text|json]
 wb pr batch status <batch> [--format text|json]
@@ -38,8 +38,9 @@ wb pr land <batch-pr>          # unchanged verb; batch rules apply (REQ batch-la
 ```
 
 `<batch>` is the batch branch name (`public-demo-batch-1`) or its PR. A pin
-is `#<number>@<sha>=<review-comment-url>`; the review is named explicitly,
-never discovered.
+is `<number>@<sha>=<review-comment-url>` (no `#`, which starts a shell
+comment; a quoted leading `#` is accepted); the review is named explicitly,
+never discovered. Every command WB prints quotes its pins.
 
 ### What is reused, and what is not
 
@@ -64,7 +65,9 @@ created:
 2. its current head equals the pin; a short pin must be a unique prefix of
    it (`batch-source-head-moved`);
 3. the pinned head is not already contained in the target
-   (`batch-source-already-landed`);
+   (`batch-source-already-landed`), nor in the batch or in another pin of the
+   same invocation (`batch-source-already-included`), so every pin gets a
+   merge commit of its own;
 4. the review URL is a comment on that PR whose `Reviewed-Head:` line equals
    the pinned head (`batch-source-unreviewed`);
 5. the comment's declared reviewer identity has no `unknown` part and its
@@ -74,6 +77,8 @@ created:
 
 The receipt records, per source, the comment id, `ReviewDigest` of its body,
 and the identity with `identity: declared` — WB does not claim to prove it.
+The batch also records the session of every WB invocation that mutated it
+(`built_by`).
 
 ### REQ: batch-construction
 
@@ -112,7 +117,12 @@ holding repository, target, base SHA, merge options, and per source: PR,
 pinned head, review comment id and digest, declared reviewer, merge commit,
 state. WB's private-state receipt is an append-only cache: each mutation
 writes a new revision, never rewriting an old one; a missing or stale cache
-is rebuilt from origin. Pushing the batch branch and opening its one PR
+is rebuilt from origin. Because anyone with write access can edit the body
+block or push to the branch, nothing in them is trusted as given: REQ
+batch-merge-provenance re-verifies it before delta and landing. A push
+rejected as non-fast-forward (another machine moved the batch) is refused
+`batch-moved`; WB rebuilds its state from origin and the operator reruns —
+it never force-pushes. Pushing the batch branch and opening its one PR
 (merge method `merge`) happens after the last source merges; every later
 mutation regenerates the PR body. A rerun of a completed step creates no
 second PR and no duplicate merge.
@@ -126,6 +136,18 @@ commit (conflicts handled as in REQ batch-conflict-stop-resume), then merge
 the new sources, push without force, and regenerate the body. Adding to a
 merged or closed batch refuses `batch-closed`. `wb pr batch add <batch>` with
 no pins performs only the target refresh.
+
+### REQ: batch-merge-provenance
+
+Before printing a delta and before landing, WB MUST verify every merge
+commit on `git rev-list --first-parent <base>..<head>`. Its second parent
+must be either (a) a pin recorded in the body block whose review comment,
+re-read from GitHub by id, still has the recorded `ReviewDigest` and a
+`Reviewed-Head:` equal to that pin, or (b) an ancestor of `origin/<target>`
+(a target refresh). Any other merge commit — one WB did not make, or a pin
+whose review comment changed or vanished — is `unrecorded`: delta prints its
+full diff against its first parent (`kind: unrecorded`), and landing refuses
+`batch-unrecorded-merge` naming the commit.
 
 ### REQ: batch-delta
 
@@ -151,14 +173,20 @@ batch-state-on-origin) and, before arming auto-merge:
 1. require `--approved-by <comment-url>` whose `Reviewed-Head:` is a batch
    head H such that every first-parent commit from H to the current head is a
    target-refresh merge whose delta part is empty; otherwise refuse
-   `batch-delta-unreviewed` naming `wb pr batch delta <batch>`;
-2. not use server-side update-branch: a batch behind its target refuses
+   `batch-delta-unreviewed` naming `wb pr batch delta <batch>`. The review's
+   declared identity must have no `unknown` part and a session different from
+   the operator's and from every `built_by` session
+   (`batch-delta-self-review`);
+2. pass REQ batch-merge-provenance;
+3. not use server-side update-branch: a batch behind its target refuses
    `batch-behind-target` naming `wb pr batch add <batch>`;
-3. land with merge method `merge` under REQ batch-refuses-non-merge-targets.
+4. land with merge method `merge` under REQ batch-refuses-non-merge-targets.
 
 After landing, `reconcileAbsorbedSourcePullRequests` comments on and closes
 every source PR GitHub did not already mark merged, as it does for
-merge-prepare batches, and the receipt records each source PR's final state.
+merge-prepare batches (a source whose head advanced after its pin stays open
+with a comment, as that reconciler already decides), and the receipt records
+each source PR's final state.
 
 ### REQ: batch-failure-attribution
 
@@ -166,7 +194,9 @@ merge-prepare batches, and the receipt records each source PR's final state.
 class: `pre-existing` (it failed on the batch base SHA), `source #<n>` (it
 failed on that source's pinned head and passed on the base), `integration`
 (passed on the base and on every source's pinned head), or `unattributed`
-(a needed run is absent or not terminal). It reads only existing runs — one
+(a needed run is absent or not terminal). When several sources fail the
+check on their pinned heads and it passed on the base, the class lists all of
+them (`source #2, #5`). It reads only existing runs — one
 check read per distinct SHA, cached for the invocation — and starts no CI.
 The batch PR body carries the same table when a batch PR has failed checks
 and the body is regenerated.
@@ -183,7 +213,9 @@ identity is `unknown@unknown@unknown`
 **When** `wb pr batch create` names all four
 **Then** it exits `2` listing `batch-source-head-moved`,
 `batch-source-unreviewed`, `batch-source-not-open` and
-`batch-source-self-review`, and no branch, worktree, receipt or PR exists.
+`batch-source-self-review`, and no branch, worktree, receipt or PR exists;
+**and** a pin that is an ancestor of another pin in the same invocation
+refuses `batch-source-already-included`.
 
 ### AC: lane-author-review-is-self-review
 
@@ -231,7 +263,7 @@ refuses `batch-resolution-invalid`.
 **Requirements:** integration-branch-batches#req:batch-add-and-refresh
 
 **Given** an open batch and a target that advanced by one commit
-**When** `wb pr batch add <batch> #n@sha=url` runs
+**When** `wb pr batch add <batch> '<n>@<sha>=<url>'` runs
 **Then** the branch gains a target-refresh merge then a source merge, as a
 fast-forward of its previous head, the same PR's body lists the new source,
 and adding to a merged batch refuses `batch-closed`.
@@ -246,7 +278,8 @@ the current head while the batch is behind the target, (c) with a review of
 head H followed only by an empty-delta target refresh
 **Then** (a) refuses `batch-delta-unreviewed` before auto-merge is armed,
 (b) refuses `batch-behind-target` naming `wb pr batch add`, (c) lands with a
-merge commit and every source PR ends merged or closed with a comment.
+merge commit and every source PR ends merged, closed with a comment, or —
+when its head advanced after the pin — open with a comment.
 
 ### AC: non-merge-targets-refused
 
@@ -258,6 +291,37 @@ with a merge queue
 **Then** it refuses `batch-merge-commits-disabled` or
 `batch-target-merge-queue`; and `wb pr land <batch-pr> --merge-method squash`
 refuses `batch-merge-method`.
+
+### AC: hand-pushed-merge-is-unrecorded
+
+**Requirements:** integration-branch-batches#req:batch-merge-provenance
+
+**Given** a batch to which someone pushed a clean `git merge <unreviewed-sha>`,
+and separately a batch whose body block names a pin whose review comment was
+edited after the batch was built
+**When** `wb pr batch delta` and `wb pr land` run
+**Then** delta prints each such merge in full as `kind: unrecorded`, and
+landing refuses `batch-unrecorded-merge` naming the commit.
+
+### AC: refresh-only-add-and-refresh-conflict
+
+**Requirements:** integration-branch-batches#req:batch-add-and-refresh, integration-branch-batches#req:batch-conflict-stop-resume
+
+**Given** an open batch whose target advanced with a change conflicting with
+the batch in `b.go`
+**When** `wb pr batch add <batch>` runs with no pins
+**Then** it stops with `batch-conflict` listing `b.go`; after a committed
+resolution `wb pr batch resume` records the refresh as `resolved`, and delta
+shows only that resolution.
+
+### AC: concurrent-add-never-force-pushes
+
+**Requirements:** integration-branch-batches#req:batch-state-on-origin
+
+**Given** two clones adding to the same batch at once
+**When** the second push is rejected as non-fast-forward
+**Then** that clone refuses `batch-moved`, origin keeps the first clone's
+head, and a rerun on the second clone rebuilds from origin and succeeds.
 
 ### AC: batch-continues-on-another-machine
 
@@ -276,7 +340,8 @@ refuses `batch-merge-method`.
 else), and `build` failed with no run on source #1's pin
 **When** `wb pr batch status` runs
 **Then** it reports `test: source #2`, `lint: pre-existing`, `e2e:
-integration`, `build: unattributed`, and dispatches no workflow.
+integration`, `build: unattributed`, and dispatches no workflow; when `test`
+also failed on source #3's pin, it reports `test: source #2, #3`.
 
 ## Open Questions
 

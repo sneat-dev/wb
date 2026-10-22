@@ -82,8 +82,13 @@ not terminal, MAY the waiver be judged against a baseline:
 `--waive-aggregate <check>` (repeatable) MUST waive a failed or cancelled
 aggregator check only when:
 
-1. it is a GitHub Actions job whose workflow file, read at the PR head SHA,
-   declares `needs:`; its inputs are exactly those jobs;
+1. it is a GitHub Actions job whose workflow file — the `path` of its own
+   workflow run, read at the PR head SHA — declares `needs:` for exactly one
+   job matching the check; its inputs are exactly those jobs. A job's check
+   name is its literal `name:` (or its job id when `name:` is absent or holds
+   an expression); a matrix job's legs are the checks named `<name> (...)`.
+   An aggregator or input that is a reusable-workflow call (`uses:`) is not
+   provable and refuses;
 2. every input either passed (or was skipped) on the PR head, or is waived in
    the same invocation under the other REQs;
 3. at least one input is waived;
