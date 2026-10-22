@@ -1044,7 +1044,16 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 	if response.TotalCount > len(response.CheckRuns) {
 		return nil, false, fmt.Sprintf("GitHub returned only %d of %d observed check runs for %s; refusing an incomplete CI receipt", len(response.CheckRuns), response.TotalCount, options.Head)
 	}
-	actionsBySuite, latestActionsRuns, reason := ActionsRunsForHead(ctx, options)
+	listedRuns, reason := listActionsRunsForHead(ctx, options)
+	if reason != "" {
+		return nil, false, reason
+	}
+	if options.ExpectedActionChecks == nil {
+		if listedRuns, reason = recoverOmittedActionsRuns(ctx, options, response.CheckRuns, listedRuns); reason != "" {
+			return nil, false, reason
+		}
+	}
+	actionsBySuite, latestActionsRuns, reason := indexActionsRuns(listedRuns, options)
 	if reason != "" {
 		return nil, false, reason
 	}
@@ -1069,10 +1078,9 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 			}
 			run, ok := actionsBySuite[check.CheckSuite.ID]
 			if !ok {
-				if options.ExpectedActionChecks != nil {
-					continue // unrelated PR run excluded from this explicit contract
-				}
-				return nil, false, fmt.Sprintf("GitHub Actions check run %q names suite %d, which the exact-head workflow-run receipt omitted", check.Name, check.CheckSuite.ID)
+				// Only an explicit contract leaves a suite unindexed: without one,
+				// recoverOmittedActionsRuns proved every suite or refused.
+				continue // unrelated PR run excluded from this explicit contract
 			}
 			if !latestActionRunIDs[run.ID] {
 				continue
@@ -1116,22 +1124,91 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 }
 
 func ActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions) (map[int64]ActionsRun, []ActionsRun, string) {
+	runs, reason := listActionsRunsForHead(ctx, options)
+	if reason != "" {
+		return nil, nil, reason
+	}
+	return indexActionsRuns(runs, options)
+}
+
+// recoverOmittedActionsRuns fills in workflow runs that GitHub's head_sha run
+// listing left out. That listing is eventually consistent and can return no
+// runs for a head whose check runs already exist (#877), so a check run naming
+// an unlisted suite is resolved through the direct job and run reads instead.
+// A recovered run must carry the exact head and the suite the check run names;
+// anything else keeps the fail-closed refusal.
+func recoverOmittedActionsRuns(ctx context.Context, options PullRequestWaitOptions, checkRuns []githubCheckRun, runs []ActionsRun) ([]ActionsRun, string) {
+	listed := make(map[int64]bool, len(runs))
+	for _, run := range runs {
+		listed[run.CheckSuiteID] = true
+	}
+	for _, check := range checkRuns {
+		if !strings.EqualFold(check.App.Slug, "github-actions") || check.ID <= 0 || check.CheckSuite.ID <= 0 || listed[check.CheckSuite.ID] {
+			continue
+		}
+		omitted := fmt.Sprintf("GitHub Actions check run %q names suite %d, which the exact-head workflow-run receipt omitted", check.Name, check.CheckSuite.ID)
+		run, reason := readActionsRunForJob(ctx, options, check.ID)
+		if reason != "" {
+			return nil, omitted + "; " + reason
+		}
+		if run.HeadSHA != options.Head || run.CheckSuiteID != check.CheckSuite.ID {
+			return nil, fmt.Sprintf("%s; its workflow run %d names head %q and suite %d", omitted, run.ID, run.HeadSHA, run.CheckSuiteID)
+		}
+		listed[run.CheckSuiteID] = true
+		runs = append(runs, run)
+	}
+	return runs, ""
+}
+
+func readActionsRunForJob(ctx context.Context, options PullRequestWaitOptions, jobID int64) (ActionsRun, string) {
+	var job struct {
+		RunID int64 `json:"run_id"`
+	}
+	if reason := getActionsJSON(ctx, options, fmt.Sprintf("repos/%s/actions/jobs/%d", options.Repository, jobID), &job); reason != "" {
+		return ActionsRun{}, reason
+	}
+	if job.RunID <= 0 {
+		return ActionsRun{}, fmt.Sprintf("GitHub Actions job %d named no workflow run", jobID)
+	}
+	var run ActionsRun
+	if reason := getActionsJSON(ctx, options, fmt.Sprintf("repos/%s/actions/runs/%d", options.Repository, job.RunID), &run); reason != "" {
+		return ActionsRun{}, reason
+	}
+	return run, ""
+}
+
+func getActionsJSON(ctx context.Context, options PullRequestWaitOptions, endpoint string, target any) string {
+	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(options.Repository), Target: strings.TrimSpace(options.Target), Head: strings.TrimSpace(options.Head), Endpoint: endpoint, FreshWindow: 0})
+	if err != nil {
+		return err.Error()
+	}
+	if err := json.Unmarshal(response.Body, target); err != nil {
+		return fmt.Sprintf("decode %s: %v", endpoint, err)
+	}
+	return ""
+}
+
+func listActionsRunsForHead(ctx context.Context, options PullRequestWaitOptions) ([]ActionsRun, string) {
 	endpoint := "repos/" + options.Repository + "/actions/runs?head_sha=" + url.QueryEscape(options.Head) + "&per_page=100"
 	outputResponse, err := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(options.Repository), Target: strings.TrimSpace(options.Target), Head: strings.TrimSpace(options.Head), Endpoint: endpoint, FreshWindow: 0})
 	output := outputResponse.Body
 	if err != nil {
-		return nil, nil, err.Error()
+		return nil, err.Error()
 	}
 	var response githubActionsRunsResponse
 	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, nil, fmt.Sprintf("decode GitHub Actions runs for %s: %v", options.Head, err)
+		return nil, fmt.Sprintf("decode GitHub Actions runs for %s: %v", options.Head, err)
 	}
 	if response.TotalCount > len(response.WorkflowRuns) {
-		return nil, nil, fmt.Sprintf("GitHub returned only %d of %d Actions runs for %s; refusing an incomplete CI receipt", len(response.WorkflowRuns), response.TotalCount, options.Head)
+		return nil, fmt.Sprintf("GitHub returned only %d of %d Actions runs for %s; refusing an incomplete CI receipt", len(response.WorkflowRuns), response.TotalCount, options.Head)
 	}
-	bySuite := make(map[int64]ActionsRun, len(response.WorkflowRuns))
-	latest := make(map[githubActionsRunIdentity][]ActionsRun, len(response.WorkflowRuns))
-	for _, run := range response.WorkflowRuns {
+	return response.WorkflowRuns, ""
+}
+
+func indexActionsRuns(runs []ActionsRun, options PullRequestWaitOptions) (map[int64]ActionsRun, []ActionsRun, string) {
+	bySuite := make(map[int64]ActionsRun, len(runs))
+	latest := make(map[githubActionsRunIdentity][]ActionsRun, len(runs))
+	for _, run := range runs {
 		if run.ID <= 0 || run.WorkflowID <= 0 || run.CheckSuiteID <= 0 || run.CreatedAt.IsZero() || strings.TrimSpace(run.Event) == "" {
 			return nil, nil, fmt.Sprintf("GitHub Actions returned a malformed exact-head workflow-run identity for %s", options.Head)
 		}
