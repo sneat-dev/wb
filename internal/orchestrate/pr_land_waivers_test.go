@@ -191,7 +191,7 @@ func TestAbsentTipRunSuggestsAndAcceptsTheParentBaseline(t *testing.T) {
 	inspector := fencedInspector(map[string][]githubchecks.RemoteCheck{waiverParent: {waiverFailed("e2e")}})
 	options := waiverOptions(inspector)
 	_, refusal := verifyWaivers(t, options, []githubchecks.RemoteCheck{waiverFailed("e2e")})
-	if refusal == nil || refusal.code != LandRefusalWaivedCheckAbsent || !strings.Contains(refusal.command, "--waive-baseline "+waiverParent) {
+	if refusal == nil || refusal.code != LandRefusalWaivedCheckAbsent || !strings.Contains(refusal.command, "--waive-baseline '"+waiverParent+"'") {
 		t.Fatalf("refusal = %+v, want absent with a baseline command", refusal)
 	}
 	options.WaiveBaseline = waiverParent[:12]
@@ -576,5 +576,29 @@ func TestApplyWaiversFollowsTheWaitStage(t *testing.T) {
 	}
 	if (PullRequestLandOptions{}).resolveReadPullRequest() == nil {
 		t.Fatal("default pull request reader is nil")
+	}
+}
+
+func TestAggregatorInputsComeOnlyFromItsOwnWorkflowRun(t *testing.T) {
+	t.Parallel()
+	inspector := fencedInspector(map[string][]githubchecks.RemoteCheck{waiverTip: {waiverFailed("e2e")}})
+	gate := waiverFailed("deploy-gate")
+	gate.WorkflowRunID = 5
+	ownE2E := waiverFailed("e2e")
+	ownE2E.WorkflowRunID = 5
+	otherBuild := waiverPassed("build")
+	otherBuild.WorkflowRunID = 9
+	head := []githubchecks.RemoteCheck{otherBuild, ownE2E, gate}
+	_, refusal := verifyWaivers(t, aggregateOptions(inspector, []string{"build", "e2e"}, nil), head)
+	if refusal == nil || refusal.code != LandRefusalWaivedAggregateUnproven || !strings.Contains(refusal.reason, `"build" has no check run`) {
+		t.Fatalf("refusal = %+v, want another workflow's build ignored", refusal)
+	}
+}
+
+func TestResumeCommandQuotesTheBaseline(t *testing.T) {
+	t.Parallel()
+	cmd := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app", WaiveChecks: []string{"e2e"}, WaiveBaseline: "abc1234", WaiveReason: "r"}, "7", "")
+	if !strings.Contains(cmd, "--waive-baseline 'abc1234'") {
+		t.Fatalf("command = %q", cmd)
 	}
 }

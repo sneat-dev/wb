@@ -535,7 +535,7 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 		parts = append(parts, "--waive-aggregate", shellSingleQuote(aggregate))
 	}
 	if strings.TrimSpace(options.WaiveBaseline) != "" {
-		parts = append(parts, "--waive-baseline", options.WaiveBaseline)
+		parts = append(parts, "--waive-baseline", shellSingleQuote(options.WaiveBaseline))
 	}
 	if strings.TrimSpace(options.WaiveReason) != "" {
 		parts = append(parts, "--waive-reason", shellSingleQuote(options.WaiveReason))

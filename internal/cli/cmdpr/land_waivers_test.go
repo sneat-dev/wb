@@ -64,3 +64,13 @@ func TestWaivedCheckBasisNamesBaselineOrAggregation(t *testing.T) {
 		}
 	}
 }
+
+func TestPRLandRejectsANonSHABaseline(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	code := executeTest(NewLand(testRuntime(), testDependencies()), []string{"acme/app#7",
+		"--waive-check", "e2e", "--waive-baseline", "main; rm -rf", "--waive-reason", "r"}, &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "7-40 character hex") {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+}

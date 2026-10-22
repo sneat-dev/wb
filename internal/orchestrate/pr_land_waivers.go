@@ -395,7 +395,7 @@ func judgeAggregates(ctx context.Context, options PullRequestLandOptions, histor
 		}
 		waivedInput := false
 		for _, input := range inputs {
-			matches := inputChecks(headChecks, input)
+			matches := inputChecks(headChecks, input, headCheck.WorkflowRunID)
 			if len(matches) == 0 {
 				return nil, unproven(name, fmt.Sprintf("input %q has no check run on the pull request head", input))
 			}
@@ -435,10 +435,14 @@ func judgeAggregates(ctx context.Context, options PullRequestLandOptions, histor
 }
 
 // inputChecks returns the head checks for one needs: input: the job's own
-// check, or every matrix leg named "<input> (...)".
-func inputChecks(checks []githubchecks.RemoteCheck, input string) []githubchecks.RemoteCheck {
+// check, or every matrix leg named "<input> (...)", from the aggregator's own
+// workflow run when it has one, so a same-named job elsewhere never counts.
+func inputChecks(checks []githubchecks.RemoteCheck, input string, workflowRunID int64) []githubchecks.RemoteCheck {
 	var matches []githubchecks.RemoteCheck
 	for _, check := range checks {
+		if workflowRunID != 0 && check.WorkflowRunID != workflowRunID {
+			continue
+		}
 		name := githubchecks.NormalizeCheckName(check.Name)
 		if name == input || strings.HasPrefix(name, input+" (") {
 			matches = append(matches, check)

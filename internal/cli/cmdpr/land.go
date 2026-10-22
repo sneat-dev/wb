@@ -3,6 +3,7 @@ package cmdpr
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -207,13 +208,16 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			}
 			waivers := len(splitCommaSeparated(waiveChecks)) + len(splitCommaSeparated(waiveAggregates))
 			if waivers > 0 && strings.TrimSpace(waiveReason) == "" {
-				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason")
+				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason (as does --waive-aggregate)")
 			}
 			if strings.TrimSpace(waiveReason) != "" && waivers == 0 {
 				return runtime.ExitError(shared.ExitUsage, "--waive-reason was given without any --waive-check")
 			}
 			if strings.TrimSpace(waiveBaseline) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
 				return runtime.ExitError(shared.ExitUsage, "--waive-baseline requires --waive-check")
+			}
+			if baseline := strings.TrimSpace(waiveBaseline); baseline != "" && !waiveBaselinePattern.MatchString(baseline) {
+				return runtime.ExitError(shared.ExitUsage, "--waive-baseline must be a 7-40 character hex commit SHA")
 			}
 			repository, number, err := prselector.Parse(args[0])
 			if err != nil {
@@ -415,6 +419,9 @@ func shortSHAForDisplay(sha string) string {
 	}
 	return sha
 }
+
+// waiveBaselinePattern is the commit SHA shape --waive-baseline accepts.
+var waiveBaselinePattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 // waivedCheckBasis names what a waiver was judged on beyond the target tip.
 func waivedCheckBasis(waived orchestrate.WaivedCheck) string {
