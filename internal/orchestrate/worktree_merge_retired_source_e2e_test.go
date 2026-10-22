@@ -159,7 +159,11 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 			mode = failure
 			viewCalls = 0
 			defer func() { mode = "" }()
-			defer os.WriteFile(cleanupReport, cleanupBytes, 0600)
+			defer func() {
+				if err := os.WriteFile(cleanupReport, cleanupBytes, 0600); err != nil {
+					t.Error(err)
+				}
+			}()
 			switch failure {
 			case "cleanup missing":
 				if err := os.Remove(cleanupReport); err != nil {
@@ -218,22 +222,38 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 			defer func() { mode = "" }()
 			switch failure {
 			case "late source reappearance":
-				defer os.RemoveAll(source.Worktree)
+				defer func() {
+					if err := os.RemoveAll(source.Worktree); err != nil {
+						t.Error(err)
+					}
+				}()
 			case "source reappears":
 				if err := os.MkdirAll(source.Worktree, 0700); err != nil {
 					t.Fatal(err)
 				}
-				defer os.RemoveAll(source.Worktree)
+				defer func() {
+					if err := os.RemoveAll(source.Worktree); err != nil {
+						t.Error(err)
+					}
+				}()
 			case "missing terminal":
 				if err := os.Rename(terminals[0], terminals[0]+".saved"); err != nil {
 					t.Fatal(err)
 				}
-				defer os.Rename(terminals[0]+".saved", terminals[0])
+				defer func() {
+					if err := os.Rename(terminals[0]+".saved", terminals[0]); err != nil {
+						t.Error(err)
+					}
+				}()
 			case "missing outbox":
 				if err := os.Rename(outboxes[0], outboxes[0]+".saved"); err != nil {
 					t.Fatal(err)
 				}
-				defer os.Rename(outboxes[0]+".saved", outboxes[0])
+				defer func() {
+					if err := os.Rename(outboxes[0]+".saved", outboxes[0]); err != nil {
+						t.Error(err)
+					}
+				}()
 			case "wrong terminal head", "invalid landing terminal", "forged outbox", "forged claim":
 				path := terminals[0]
 				if failure == "forged outbox" {
@@ -246,7 +266,11 @@ func TestE2EFailedLandAcknowledgesSeparatelySquashLandedRetiredSource(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer os.WriteFile(path, raw, 0600)
+				defer func() {
+					if err := os.WriteFile(path, raw, 0600); err != nil {
+						t.Error(err)
+					}
+				}()
 				var record map[string]any
 				if err := json.Unmarshal(raw, &record); err != nil {
 					t.Fatal(err)

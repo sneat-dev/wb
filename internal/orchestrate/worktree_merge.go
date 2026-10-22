@@ -1276,6 +1276,7 @@ var worktreeMergeReportSidecarSuffixes = []string{
 	worktreeMergeAbsorbedConflictAcknowledgementSuffix,
 	worktreeMergeRetiredPublicationAcknowledgementSuffix,
 	worktreeMergeUnpublishedValidationFailureAcknowledgementSuffix,
+	worktreeMergeTargetAbsorbedAcknowledgementSuffix,
 }
 
 // isWorktreeMergeReportSidecar reports whether name is a worktree-merge
@@ -2128,93 +2129,112 @@ func activeWorktreeMergeLaneReceiptWithRunner(ctx context.Context, projectsRoot,
 			receiptLane = worktreeMergeLaneID(receipt.Repository, receipt.Target)
 		}
 		if receiptLane == lane && receipt.Status != WorktreeMergeComplete {
-			// A valid immutable missing-cleanup acknowledgement proves the old
-			// landed receipt's assets are already terminal. It releases lane
-			// ownership even when nobody resumed the historical receipt merely to
-			// rewrite its derived status to complete.
-			if receipt.Status == WorktreeMergeLanded && receipt.LandingSHA != "" && receipt.Cleanup {
-				ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
-				if _, statErr := os.Stat(ackPath); statErr == nil {
-					if _, ackErr := validateMissingCleanupAcknowledgement(ctx, projectsRoot, receipt, ackPath, 0, 0); ackErr != nil {
-						return nil, fmt.Errorf("validate missing-cleanup acknowledgement for %s: %w", receipt.ReceiptPath, ackErr)
-					}
-					continue
-				} else if !os.IsNotExist(statErr) {
-					return nil, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
-				}
-			}
-			released, releaseErr := mergeReceiptReleasedByFailureEvidence(ctx, projectsRoot, receipt)
-			if releaseErr != nil {
+			if released, releaseErr := worktreeMergeReceiptReleasedByRecordedEvidence(ctx, projectsRoot, remoteRunner, receipt); releaseErr != nil {
 				return nil, releaseErr
-			}
-			if released {
+			} else if released {
 				continue
 			}
-			rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt)
-			if rebatchErr != nil {
-				// A sidecar that cannot be authenticated is not evidence of an
-				// in-flight merge. Skipping it keeps one abandoned
-				// `.prepared.rebatched.ack.json` from taking the whole
-				// (repository, target) lane offline (wb#319). Land and other
-				// verbs that name this receipt still see the same error.
+			// Work that already reached the remote target has nothing left to
+			// land: prove that, record it, and stop blocking the lane.
+			if worktreeMergeReceiptReleasedByTargetAbsorption(ctx, remoteRunner, projectsRoot, receipt) {
 				continue
-			}
-			if rebatched {
-				continue
-			}
-			strandedAcknowledged, strandedErr := hasStrandedLandingAcknowledgement(receipt)
-			if strandedErr != nil {
-				return nil, strandedErr
-			}
-			if strandedAcknowledged {
-				continue
-			}
-			absorbedAcknowledged, absorbedErr := hasAbsorbedConflictAcknowledgement(receipt)
-			if absorbedErr != nil {
-				return nil, absorbedErr
-			}
-			if absorbedAcknowledged {
-				continue
-			}
-			retiredAcknowledged, retiredErr := hasRetiredPublicationAcknowledgement(receipt)
-			if retiredErr != nil {
-				return nil, retiredErr
-			}
-			if retiredAcknowledged {
-				continue
-			}
-			unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(receipt)
-			if acknowledgementErr != nil {
-				return nil, acknowledgementErr
-			}
-			if unpublishedFailureAcknowledged {
-				continue
-			}
-			// A prepare-time conflict releases this lane only after proving its
-			// candidate was not published. Publication fields can be lost after
-			// an ambiguous push, so the receipt alone is not enough evidence.
-			if receipt.Status == WorktreeMergeConflict && receipt.Phase == WorktreeMergePhasePrepare &&
-				receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" && receipt.Candidate.Branch != "" {
-				if _, adopted, adoptionErr := adoptedPublishedCandidate(ctx, receipt); adoptionErr != nil {
-					return nil, fmt.Errorf("validate published-candidate adoption for %s: %w", receipt.ReceiptPath, adoptionErr)
-				} else if !adopted {
-					canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
-					if canonicalErr != nil {
-						return nil, canonicalErr
-					}
-					remote, _, remoteErr := runCommand(ctx, remoteRunner, 0, 0, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
-					if remoteErr != nil {
-						return nil, fmt.Errorf("verify unpublished conflict candidate %s: %w", receipt.ReceiptPath, remoteErr)
-					}
-					if strings.TrimSpace(remote) == "" {
-						continue
-					}
-				}
 			}
 			return &receipt, nil
 		}
 	}
 	return nil, nil
+}
+
+// worktreeMergeReceiptReleasedByRecordedEvidence reports whether a
+// non-complete receipt already released its merger lane through recorded
+// evidence: a terminal acknowledgement, a supersession, a rebatch, or a
+// proved-unpublished prepare conflict. Lane and sweep scans share this one
+// ordered decision so they can never disagree about which receipts block.
+func worktreeMergeReceiptReleasedByRecordedEvidence(ctx context.Context, projectsRoot string, remoteRunner runner.Runner, receipt WorktreeMergeReceipt) (bool, error) {
+	// A valid immutable missing-cleanup acknowledgement proves the old
+	// landed receipt's assets are already terminal. It releases lane
+	// ownership even when nobody resumed the historical receipt merely to
+	// rewrite its derived status to complete.
+	if receipt.Status == WorktreeMergeLanded && receipt.LandingSHA != "" && receipt.Cleanup {
+		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
+		if _, statErr := os.Stat(ackPath); statErr == nil {
+			if _, ackErr := validateMissingCleanupAcknowledgement(ctx, projectsRoot, receipt, ackPath, 0, 0); ackErr != nil {
+				return false, fmt.Errorf("validate missing-cleanup acknowledgement for %s: %w", receipt.ReceiptPath, ackErr)
+			}
+			return true, nil
+		} else if !os.IsNotExist(statErr) {
+			return false, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
+		}
+	}
+	released, releaseErr := mergeReceiptReleasedByFailureEvidence(ctx, projectsRoot, receipt)
+	if releaseErr != nil {
+		return false, releaseErr
+	}
+	if released {
+		return true, nil
+	}
+	rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt)
+	if rebatchErr != nil {
+		// A sidecar that cannot be authenticated is not evidence of an
+		// in-flight merge. Skipping it keeps one abandoned
+		// `.prepared.rebatched.ack.json` from taking the whole
+		// (repository, target) lane offline (wb#319). Land and other
+		// verbs that name this receipt still see the same error.
+		return true, nil
+	}
+	if rebatched {
+		return true, nil
+	}
+	strandedAcknowledged, strandedErr := hasStrandedLandingAcknowledgement(receipt)
+	if strandedErr != nil {
+		return false, strandedErr
+	}
+	if strandedAcknowledged {
+		return true, nil
+	}
+	absorbedAcknowledged, absorbedErr := hasAbsorbedConflictAcknowledgement(receipt)
+	if absorbedErr != nil {
+		return false, absorbedErr
+	}
+	if absorbedAcknowledged {
+		return true, nil
+	}
+	retiredAcknowledged, retiredErr := hasRetiredPublicationAcknowledgement(receipt)
+	if retiredErr != nil {
+		return false, retiredErr
+	}
+	if retiredAcknowledged {
+		return true, nil
+	}
+	unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(receipt)
+	if acknowledgementErr != nil {
+		return false, acknowledgementErr
+	}
+	if unpublishedFailureAcknowledged {
+		return true, nil
+	}
+	// A prepare-time conflict releases this lane only after proving its
+	// candidate was not published. Publication fields can be lost after
+	// an ambiguous push, so the receipt alone is not enough evidence.
+	if receipt.Status == WorktreeMergeConflict && receipt.Phase == WorktreeMergePhasePrepare &&
+		receipt.PullRequest == "" && receipt.PublishedCandidateSHA == "" && receipt.LandingSHA == "" && receipt.Candidate.Branch != "" {
+		if _, adopted, adoptionErr := adoptedPublishedCandidate(ctx, receipt); adoptionErr != nil {
+			return false, fmt.Errorf("validate published-candidate adoption for %s: %w", receipt.ReceiptPath, adoptionErr)
+		} else if !adopted {
+			canonical, canonicalErr := worktrees.CanonicalRepositoryPath(projectsRoot, receipt.Repository)
+			if canonicalErr != nil {
+				return false, canonicalErr
+			}
+			remote, _, remoteErr := runCommand(ctx, remoteRunner, 0, 0, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+			if remoteErr != nil {
+				return false, fmt.Errorf("verify unpublished conflict candidate %s: %w", receipt.ReceiptPath, remoteErr)
+			}
+			if strings.TrimSpace(remote) == "" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // isExactPublishedValidationFailureReplay proves the only read-only retry
