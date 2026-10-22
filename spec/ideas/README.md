@@ -20,7 +20,7 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [efficient-agent-pipeline](efficient-agent-pipeline.md) | Draft | 2026-09-17 | ai | — |
 | [fleet-liveness-audit](fleet-liveness-audit.md) | Draft | 2026-07-25 | alex | — |
 | [graph-assisted-fleet-optimization](graph-assisted-fleet-optimization.md) | Draft | 2026-09-05 | alex | — |
-| [integration-branch-batch-landing](integration-branch-batch-landing.md) | Specifying | 2026-10-22 | alex | integration-branch-batches |
+| [integration-branch-batch-landing](integration-branch-batch-landing.md) | Specifying | 2026-10-22 | alex | pr-land-waivers, integration-branch-batches, integration-branch-registry |
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | 2026-08-27 | alex | mechanical-worktree-merge |
 | [migration-release-handoff](migration-release-handoff.md) | Draft | 2026-07-21 | alex | — |
 | [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) | Draft | 2026-09-17 | ai | — |

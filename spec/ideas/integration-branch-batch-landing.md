@@ -8,7 +8,7 @@ status: Specifying
 **Status:** Specifying
 **Date:** 2026-10-22
 **Owner:** alex
-**Promotes To:** integration-branch-batches
+**Promotes To:** pr-land-waivers, integration-branch-batches, integration-branch-registry
 **Supersedes:** —
 **Related Ideas:** extends:mechanical-worktree-merge, extends:efficient-agent-pipeline, extends:ci-validation-reuse
 
@@ -63,8 +63,8 @@ Fix the `wb pr land` waiver first, because it is what blocked landing even
 when the batch was built by hand: settle pending checks before judging them,
 accept a pinned baseline on the target's first-parent history when the
 target tip's run is absent or hung, derive an aggregator's waiver from its
-waived inputs, and judge waivers against the registered integration gate when
-the server enforces none — while keeping "never waive a required check" as an
+waived inputs, and judge waivers on an unfenced target only under
+`--allow-unfenced` without arming auto-merge — while keeping "never waive a required check" as an
 absolute rule.
 
 Everything reuses existing evidence code: review binding from `wb pr land`
@@ -106,11 +106,11 @@ attribution follow in later small PRs.
 | Must-be-true | GitHub marks a source PR merged when its exact head becomes reachable from its base through a merge commit. | Land a two-source fixture batch; read both source PRs' `merged` state. |
 | Must-be-true | `git merge-tree --write-tree` of a merge commit's parents reproduces the conflict-free tree, so the committed tree's difference from it is exactly the resolution. | Fixture test with one clean and one conflicted merge; the delta of the clean merge is empty. |
 | Should-be-true | One batch CI run costs less wall time and runner time than N lane runs plus N fence refreshes. | Record CI minutes and elapsed time for public-demo-batch-1 vs the stalled per-lane attempts. |
-| Might-be-true | A custom ref (`refs/wb/integrations/<branch>`) is a durable cross-machine home for integration policy on GitHub. | Push and fetch one from a fixture repository and a real one. |
+| Should-be-true | A custom ref (`refs/wb/integrations/<branch>`) is a durable cross-machine home for integration policy on GitHub; safety never depends on it because the gate is server-enforced. | Push and fetch one from a fixture repository and a real one before the registry Feature is implemented. |
 
 ## SpecScore Integration
 
-- **New Features this would create:** integration-branch-batches
+- **New Features this would create:** pr-land-waivers, integration-branch-batches, integration-branch-registry
 - **Existing Features affected:** mechanical-worktree-merge (new pinned pull-request source kind), worktree-lifecycle (landing target recorded at creation)
 - **Dependencies:** none
 
