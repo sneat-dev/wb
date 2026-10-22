@@ -11,7 +11,7 @@ import (
 
 func newWorktreeMergeAcknowledgeTargetAbsorbedCmd(inv *mergeInvocation) *cobra.Command {
 	var apply bool
-	var format string
+	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-target-absorbed [merge-receipt...]",
 		Short: "Release merger lanes held by receipts whose work already reached the target",
@@ -26,7 +26,7 @@ verb only clears lanes ahead of their next lander. Live candidate branch
 heads must be on the target too; a landed receipt also needs passed
 post-target CI for its exact landing and 15 minutes without updates.
 preparing and landed_post_target_ci_failed receipts are never released.
-Dry-run is the default.`,
+Dry-run is the default; --apply requires --actor and --reason.`,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
 				return err
@@ -36,8 +36,8 @@ Dry-run is the default.`,
 				return err
 			}
 			defer releaseAdmission()
-			results, err := inv.operations.SweepTargetAbsorbedWorktreeMergeReceipts(command.Context(), orchestrate.WorktreeMergeTargetAbsorbedSweepOptions{
-				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipts: args, Apply: apply,
+			sweep, err := inv.operations.SweepTargetAbsorbedWorktreeMergeReceipts(command.Context(), orchestrate.WorktreeMergeTargetAbsorbedSweepOptions{
+				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipts: args, Apply: apply, Actor: actor, Reason: reason,
 			})
 			if err != nil {
 				return err
@@ -45,9 +45,11 @@ Dry-run is the default.`,
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(results)
+				return encoder.Encode(sweep)
 			}
-			for _, result := range results {
+			counts := map[string]int{}
+			for _, result := range sweep.Results {
+				counts[result.Outcome]++
 				line := fmt.Sprintf("%s\t%s\t%s", result.Outcome, result.Status, result.Receipt)
 				if result.AcknowledgementPath != "" {
 					line += "\tacknowledgement: " + result.AcknowledgementPath
@@ -55,15 +57,24 @@ Dry-run is the default.`,
 				if result.Detail != "" {
 					line += "\t" + result.Detail
 				}
-				_, _ = fmt.Fprintln(command.OutOrStdout(), line)
+				if _, err := fmt.Fprintln(command.OutOrStdout(), line); err != nil {
+					return err
+				}
 			}
+			summary := fmt.Sprintf("released: %d, would_release: %d, already_released: %d, not_absorbed: %d, ineligible: %d",
+				counts[orchestrate.WorktreeMergeTargetAbsorbedReleased], counts[orchestrate.WorktreeMergeTargetAbsorbedWouldRelease],
+				counts[orchestrate.WorktreeMergeTargetAbsorbedAlreadyReleased], counts[orchestrate.WorktreeMergeTargetAbsorbedNotAbsorbed],
+				counts[orchestrate.WorktreeMergeTargetAbsorbedIneligible])
 			if !apply {
-				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+				summary += "\ndry-run only, pass --apply to write"
 			}
-			return nil
+			_, err = fmt.Fprintln(command.OutOrStdout(), summary)
+			return err
 		},
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited target-absorbed acknowledgements")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited release reason")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	addMergeAdmissionFlags(command)
 	return command

@@ -16724,10 +16724,12 @@
             {
               "path": "wb worktree merge acknowledge-target-absorbed",
               "flags": [
+                "--actor",
                 "--apply",
                 "--format",
                 "--initiator",
-                "--mode"
+                "--mode",
+                "--reason"
               ],
               "modes": [
                 "Proves every recorded source, candidate, and landing commit of a non-complete receipt is an ancestor of the freshly fetched remote target",
@@ -16745,8 +16747,10 @@
               "contains": [
                 "separate immutable acknowledgement",
                 "--apply",
+                "--actor",
                 "--initiator",
-                "--mode"
+                "--mode",
+                "--reason"
               ]
             }
           ],
@@ -16759,7 +16763,7 @@
               "path": "ai/skills/wb-merge/references/worktree-merge.md",
               "marker": "# Mechanical worktree merge",
               "examples": [
-                "wb worktree merge acknowledge-target-absorbed [merge-receipt...] --apply"
+                "wb worktree merge acknowledge-target-absorbed [merge-receipt...] --apply --actor <operator> --reason <reason>"
               ]
             }
           ],
@@ -16769,14 +16773,19 @@
           "status": "Full",
           "references": [
             {
-              "path": "internal/orchestrate/worktree_merge_target_absorbed_test.go",
-              "name": "TestPrepareReleasesLaneHeldByPreparedReceiptWhoseCandidateAlreadyLanded",
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_e2e_test.go",
+              "name": "TestE2EPrepareReleasesLaneHeldByPreparedReceiptWhoseCandidateAlreadyLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_e2e_test.go",
+              "name": "TestE2ESweepTargetAbsorbedReceiptsDryRunThenApply",
               "kind": "integration"
             },
             {
               "path": "internal/orchestrate/worktree_merge_target_absorbed_test.go",
-              "name": "TestSweepTargetAbsorbedReceiptsDryRunThenApply",
-              "kind": "integration"
+              "name": "TestTargetAbsorptionGateHoldsLandedReceiptsUntilPostTargetCIPassedAndSettled",
+              "kind": "unit"
             },
             {
               "path": "internal/cli/cmdworktree/merge_target_absorbed_test.go",

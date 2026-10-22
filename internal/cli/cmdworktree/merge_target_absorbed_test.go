@@ -20,9 +20,9 @@ func targetAbsorbedInvocation(results []orchestrate.WorktreeMergeTargetAbsorbedS
 	inv.bindings.Admission = func(*cobra.Command, bool) (worktrees.AgentIdentity, func(), error) {
 		return worktrees.AgentIdentity{}, func() {}, admissionErr
 	}
-	inv.operations.SweepTargetAbsorbedWorktreeMergeReceipts = func(_ context.Context, options orchestrate.WorktreeMergeTargetAbsorbedSweepOptions) ([]orchestrate.WorktreeMergeTargetAbsorbedSweepResult, error) {
+	inv.operations.SweepTargetAbsorbedWorktreeMergeReceipts = func(_ context.Context, options orchestrate.WorktreeMergeTargetAbsorbedSweepOptions) (orchestrate.WorktreeMergeTargetAbsorbedSweep, error) {
 		*got = options
-		return results, sweepErr
+		return orchestrate.WorktreeMergeTargetAbsorbedSweep{Results: results}, sweepErr
 	}
 	return inv
 }
@@ -62,12 +62,16 @@ func TestAcknowledgeTargetAbsorbedReportsEachSweptReceipt(t *testing.T) {
 		}
 	}
 
-	out, err = runTargetAbsorbed(targetAbsorbedInvocation(results[:1], nil, nil, &got), "--apply", "--format", "json")
+	if !strings.Contains(out, "released: 0, would_release: 1, already_released: 1, not_absorbed: 1, ineligible: 0") {
+		t.Fatalf("output %q lacks the outcome summary", out)
+	}
+
+	out, err = runTargetAbsorbed(targetAbsorbedInvocation(results[:1], nil, nil, &got), "--apply", "--actor", "operator", "--reason", "drain absorbed lanes", "--format", "json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded []orchestrate.WorktreeMergeTargetAbsorbedSweepResult
-	if err := json.Unmarshal([]byte(out), &decoded); err != nil || len(decoded) != 1 || decoded[0].Receipt != "/r/a.json" || !got.Apply {
+	var decoded orchestrate.WorktreeMergeTargetAbsorbedSweep
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil || len(decoded.Results) != 1 || decoded.Results[0].Receipt != "/r/a.json" || !got.Apply || got.Actor != "operator" || got.Reason != "drain absorbed lanes" {
 		t.Fatalf("json output = %q (%v), apply = %t", out, err, got.Apply)
 	}
 	out, err = runTargetAbsorbed(targetAbsorbedInvocation(nil, nil, nil, &got), "--apply")
@@ -89,5 +93,18 @@ func TestAcknowledgeTargetAbsorbedRefusesBadFormatAdmissionAndSweepFailure(t *te
 	sweep := errors.New("sweep failed")
 	if _, err := runTargetAbsorbed(targetAbsorbedInvocation(nil, sweep, nil, &got)); !errors.Is(err, sweep) {
 		t.Fatalf("sweep failure = %v", err)
+	}
+}
+
+func TestAcknowledgeTargetAbsorbedReturnsAReceiptLineWriteFailure(t *testing.T) {
+	t.Parallel()
+	var got orchestrate.WorktreeMergeTargetAbsorbedSweepOptions
+	results := []orchestrate.WorktreeMergeTargetAbsorbedSweepResult{{Receipt: "/r/a.json", Outcome: orchestrate.WorktreeMergeTargetAbsorbedWouldRelease}}
+	command := newWorktreeMergeAcknowledgeTargetAbsorbedCmd(targetAbsorbedInvocation(results, nil, nil, &got))
+	refused := errors.New("stdout closed")
+	command.SetOut(mergeRefusingWriter{refused})
+	command.SetContext(context.Background())
+	if err := mergeExecute(command); !errors.Is(err, refused) {
+		t.Fatalf("receipt line write failure = %v", err)
 	}
 }

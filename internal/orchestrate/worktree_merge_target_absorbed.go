@@ -39,12 +39,9 @@ const worktreeMergeTargetAbsorbedAcknowledgementSuffix = ".target-absorbed.ack.j
 
 const worktreeMergeTargetAbsorbedSchemaVersion = 1
 
-// Actors recorded on a target-absorbed acknowledgement, naming which path
-// wrote it.
-const (
-	WorktreeMergeTargetAbsorbedScanActor  = "wb merger-lane scan"
-	WorktreeMergeTargetAbsorbedSweepActor = "wb worktree merge acknowledge-target-absorbed"
-)
+// WorktreeMergeTargetAbsorbedScanActor is the actor recorded when the lane
+// scan writes an acknowledgement on demand; a sweep records its operator.
+const WorktreeMergeTargetAbsorbedScanActor = "wb merger-lane scan"
 
 // WorktreeMergeTargetAbsorbedAcknowledgement is the audited proof that every
 // commit a receipt recorded is an ancestor of its freshly fetched remote
@@ -320,6 +317,10 @@ type WorktreeMergeTargetAbsorbedSweepOptions struct {
 	ProjectsRoot string
 	Receipts     []string
 	Apply        bool
+	// Actor and Reason are required with Apply and recorded on every
+	// acknowledgement the sweep writes.
+	Actor  string
+	Reason string
 }
 
 // WorktreeMergeTargetAbsorbedSweepResult is one receipt's sweep outcome.
@@ -333,17 +334,26 @@ type WorktreeMergeTargetAbsorbedSweepResult struct {
 	Detail              string `json:"detail,omitempty"`
 }
 
+// WorktreeMergeTargetAbsorbedSweep is one sweep's per-receipt outcomes.
+type WorktreeMergeTargetAbsorbedSweep struct {
+	Results []WorktreeMergeTargetAbsorbedSweepResult `json:"results"`
+}
+
 // SweepTargetAbsorbedWorktreeMergeReceipts proves, for every eligible
 // non-complete receipt, whether its recorded work already reached the remote
 // target, and with Apply records the same audited acknowledgement the lane
 // scan writes on demand. It never rewrites a receipt, worktree, or branch.
-func SweepTargetAbsorbedWorktreeMergeReceipts(ctx context.Context, options WorktreeMergeTargetAbsorbedSweepOptions) ([]WorktreeMergeTargetAbsorbedSweepResult, error) {
-	return sweepTargetAbsorbedWorktreeMergeReceipts(ctx, defaultRunner, options, time.Now)
+func SweepTargetAbsorbedWorktreeMergeReceipts(ctx context.Context, options WorktreeMergeTargetAbsorbedSweepOptions) (WorktreeMergeTargetAbsorbedSweep, error) {
+	results, err := sweepTargetAbsorbedWorktreeMergeReceipts(ctx, defaultRunner, options, time.Now)
+	return WorktreeMergeTargetAbsorbedSweep{Results: results}, err
 }
 
 func sweepTargetAbsorbedWorktreeMergeReceipts(ctx context.Context, run runner.Runner, options WorktreeMergeTargetAbsorbedSweepOptions, now func() time.Time) ([]WorktreeMergeTargetAbsorbedSweepResult, error) {
 	if strings.TrimSpace(options.ProjectsRoot) == "" {
 		return nil, errors.New("projects root is required")
+	}
+	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
+		return nil, errors.New("--actor and --reason are required with --apply")
 	}
 	options.ProjectsRoot, _ = filepath.Abs(strings.TrimSpace(options.ProjectsRoot))
 	paths, err := targetAbsorbedSweepReceiptPaths(options, wbhome.Root)
@@ -397,8 +407,8 @@ func sweepTargetAbsorbedWorktreeMergeReceipts(ctx context.Context, run runner.Ru
 			results = append(results, result)
 			continue
 		}
-		reason := fmt.Sprintf("swept: every recorded commit is an ancestor of freshly fetched %s at %s; nothing is left to land", receipt.Target, targetSHA)
-		_, ackPath, recordErr := recordWorktreeMergeTargetAbsorbed(receipt, targetSHA, commits, WorktreeMergeTargetAbsorbedSweepActor, reason, now())
+		reason := fmt.Sprintf("%s: every recorded commit is an ancestor of freshly fetched %s at %s; nothing is left to land", strings.TrimSpace(options.Reason), receipt.Target, targetSHA)
+		_, ackPath, recordErr := recordWorktreeMergeTargetAbsorbed(receipt, targetSHA, commits, strings.TrimSpace(options.Actor), reason, now())
 		if recordErr != nil {
 			result.Outcome, result.Detail = WorktreeMergeTargetAbsorbedNotAbsorbed, recordErr.Error()
 			results = append(results, result)
