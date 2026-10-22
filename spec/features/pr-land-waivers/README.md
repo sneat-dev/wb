@@ -83,7 +83,8 @@ not terminal, MAY the waiver be judged against a baseline:
 aggregator check only when:
 
 1. it is a GitHub Actions job whose workflow file — the `path` of its own
-   workflow run, read at the PR head SHA — declares `needs:` for exactly one
+   workflow run, read at that run's own `head_sha` as GitHub reports it —
+   declares `needs:` for exactly one
    job matching the check; its inputs are exactly those jobs. A job's check
    name is its literal `name:` (or its job id when `name:` is absent or holds
    an expression); a matrix job's legs are the checks named `<name> (...)`.

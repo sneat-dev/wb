@@ -139,8 +139,9 @@ no pins performs only the target refresh.
 
 ### REQ: batch-merge-provenance
 
-Before printing a delta and before landing, WB MUST verify every merge
-commit on `git rev-list --first-parent <base>..<head>`. Its second parent
+Before printing a delta and before landing, WB MUST first require the
+recorded `base` to be an ancestor of `origin/<target>` (else refuse
+`batch-base-invalid`), then verify every merge commit on `git rev-list --first-parent <base>..<head>`. Its second parent
 must be either (a) a pin recorded in the body block whose review comment,
 re-read from GitHub by id, still has the recorded `ReviewDigest` and a
 `Reviewed-Head:` equal to that pin, or (b) an ancestor of `origin/<target>`
@@ -301,7 +302,10 @@ and separately a batch whose body block names a pin whose review comment was
 edited after the batch was built
 **When** `wb pr batch delta` and `wb pr land` run
 **Then** delta prints each such merge in full as `kind: unrecorded`, and
-landing refuses `batch-unrecorded-merge` naming the commit.
+landing refuses `batch-unrecorded-merge` naming the commit;
+**and given** the body block's `base` was edited to that hand-pushed merge
+(not an ancestor of `origin/<target>`), delta and landing refuse
+`batch-base-invalid`.
 
 ### AC: refresh-only-add-and-refresh-conflict
 
