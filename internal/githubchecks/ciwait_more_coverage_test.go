@@ -296,7 +296,7 @@ func TestOrchCovGitHubActionsRunsForHeadFailsClosedOnMalformedIdentity(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			answer(test.body)
-			_, _, reason := ActionsRunsForHead(context.Background(), options)
+			_, _, reason := recoveredActionsRunsForHead(context.Background(), options, nil)
 			if test.wantIn == "" {
 				if reason != "" {
 					t.Fatalf("valid receipt reason = %q", reason)
@@ -313,7 +313,7 @@ func TestOrchCovGitHubActionsRunsForHeadFailsClosedOnMalformedIdentity(t *testin
 	state.Answer(t, "body", `{"total_count":0,"workflow_runs":[]}`)
 	state.Answer(t, "exit", "0")
 	state.Answer(t, "not-found", "1")
-	if _, _, reason := ActionsRunsForHead(context.Background(), options); reason == "" {
+	if _, _, reason := recoveredActionsRunsForHead(context.Background(), options, nil); reason == "" {
 		t.Fatal("an unreadable Actions endpoint reported no reason")
 	}
 }
