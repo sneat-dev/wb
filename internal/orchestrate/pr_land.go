@@ -1045,7 +1045,9 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 				if check.Bucket != "fail" && check.Bucket != "cancel" {
 					continue
 				}
-				if checkIsAlreadyWaived(check.Name, result.WaivedChecks) {
+				// A waived check is not a reason this landing failed: the
+				// waivers are judged once the non-waived failures are fixed.
+				if checkNameIn(check.Name, options.waitWaivedChecks()) {
 					continue
 				}
 				failedCount++
@@ -2050,16 +2052,6 @@ func verifyWaivedChecks(
 func isCheckRequiredByPolicy(normalizedName string, appID int64, required []githubchecks.RequiredRemoteCheck) bool {
 	for _, req := range required {
 		if githubchecks.NormalizeCheckName(req.Name) == normalizedName && (req.IntegrationID == 0 || appID == 0 || appID == req.IntegrationID) {
-			return true
-		}
-	}
-	return false
-}
-
-func checkIsAlreadyWaived(name string, waived []WaivedCheck) bool {
-	normalized := githubchecks.NormalizeCheckName(name)
-	for _, w := range waived {
-		if githubchecks.NormalizeCheckName(w.Name) == normalized {
 			return true
 		}
 	}
