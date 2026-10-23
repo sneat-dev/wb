@@ -74,3 +74,49 @@ func TestPRLandRejectsANonSHABaseline(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
 }
+
+func TestPRLandRejectsACheckWaivedTwice(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	code := executeTest(NewLand(testRuntime(), testDependencies()), []string{"acme/app#7",
+		"--waive-check", "e2e", "--waive-aggregate", "e2e", "--waive-reason", "r"}, &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "named more than once") {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+}
+
+func TestPRCreateLandPassesTheNewWaiverFlags(t *testing.T) {
+	t.Parallel()
+	deps := testDependencies()
+	var got orchestrate.PullRequestCreateOptions
+	deps.Create = func(_ context.Context, options orchestrate.PullRequestCreateOptions) (orchestrate.PullRequestCreateResult, error) {
+		got = options
+		return orchestrate.PullRequestCreateResult{Outcome: orchestrate.CreateSuccess}, nil
+	}
+	var out, errOut bytes.Buffer
+	code := executeTest(NewCreate(testRuntime(), deps), []string{"--land", "--approved-by", "review.md",
+		"--waive-check", "e2e", "--waive-aggregate", "deploy-gate", "--waive-baseline", "abc1234", "--waive-reason", "red on public-demo"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if got.LandOptions == nil || got.LandOptions.WaiveBaseline != "abc1234" || strings.Join(got.LandOptions.WaiveAggregates, ",") != "deploy-gate" {
+		t.Fatalf("land options = %+v", got.LandOptions)
+	}
+}
+
+func TestPRCreateRejectsWaiverFlagsWithoutLandOrWithProblems(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string][]string{
+		"aggregate without --land": {"--waive-aggregate", "deploy-gate"},
+		"baseline without --land":  {"--waive-baseline", "abc1234"},
+		"baseline without a check": {"--land", "--approved-by", "r.md", "--waive-aggregate", "g", "--waive-baseline", "abc1234", "--waive-reason", "r"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var out, errOut bytes.Buffer
+			if code := executeTest(NewCreate(testRuntime(), testDependencies()), args, &out, &errOut); code != 2 {
+				t.Fatalf("exit %d: %s", code, errOut.String())
+			}
+		})
+	}
+}

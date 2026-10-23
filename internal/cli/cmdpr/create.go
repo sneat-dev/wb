@@ -16,10 +16,10 @@ import (
 )
 
 func NewCreate(runtime shared.Runtime, deps Dependencies) *cobra.Command {
-	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile, waiveReason string
+	var format, title, body, bodyFile, base, approvedBy, mergeMethod, message, reviewComment, reviewCommentFile, waiveReason, waiveBaseline string
 	var draft, autoMerge, allowUnfenced, commitStaged, commitAll, land, keep bool
 	var timeout time.Duration
-	var add, closes, waiveChecks []string
+	var add, closes, waiveChecks, waiveAggregates []string
 	command := &cobra.Command{
 		Use:   "create [<worktree|task>]",
 		Short: "Push a worktree's branch and open or adopt its pull request",
@@ -157,14 +157,12 @@ wb pr create --format json`,
 				return runtime.ExitError(shared.ExitUsage, "--review-comment/--review-comment-file are only meaningful with --land; "+
 					"--auto-merge alone never posts the review comment, so it would be silently ignored")
 			}
-			if !land && (command.Flags().Changed("waive-check") || command.Flags().Changed("waive-reason")) {
-				return runtime.ExitError(shared.ExitUsage, "--waive-check/--waive-reason are only meaningful with --land")
+			if !land && (command.Flags().Changed("waive-check") || command.Flags().Changed("waive-reason") ||
+				command.Flags().Changed("waive-aggregate") || command.Flags().Changed("waive-baseline")) {
+				return runtime.ExitError(shared.ExitUsage, "--waive-check/--waive-reason/--waive-aggregate/--waive-baseline are only meaningful with --land")
 			}
-			if len(splitCommaSeparated(waiveChecks)) > 0 && strings.TrimSpace(waiveReason) == "" {
-				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason")
-			}
-			if strings.TrimSpace(waiveReason) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
-				return runtime.ExitError(shared.ExitUsage, "--waive-reason was given without any --waive-check")
+			if problem := waiverFlagProblem(waiveChecks, waiveAggregates, waiveBaseline, waiveReason); problem != "" {
+				return runtime.ExitError(shared.ExitUsage, problem)
 			}
 			closesIssues, closesErr := parseIssueNumbers(splitCommaSeparated(closes))
 			if closesErr != nil {
@@ -195,6 +193,8 @@ wb pr create --format json`,
 					AllowUnfenced:       allowUnfenced,
 					WaiveChecks:         splitCommaSeparated(waiveChecks),
 					WaiveReason:         waiveReason,
+					WaiveBaseline:       strings.TrimSpace(waiveBaseline),
+					WaiveAggregates:     splitCommaSeparated(waiveAggregates),
 					Slice:               timeout,
 					CheckPollInterval:   githubchecks.DefaultCheckPollInterval,
 					Progress:            progress.Report,
@@ -277,6 +277,8 @@ wb pr create --format json`,
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "with --auto-merge/--land: arm on a target with no server-enforced strict up-to-date policy")
 	command.Flags().StringSliceVar(&waiveChecks, "waive-check", nil, "with --land: GitHub check name whose failure to waive when it is not required by target policy and fails on target tip with the same conclusion (repeatable)")
 	command.Flags().StringVar(&waiveReason, "waive-reason", "", "with --land: why the waived checks are safe to ignore; required with --waive-check")
+	command.Flags().StringVar(&waiveBaseline, "waive-baseline", "", "with --land: first-parent ancestor of the target tip (within 20 commits) to judge waived checks against when the tip has no concluded run of them")
+	command.Flags().StringSliceVar(&waiveAggregates, "waive-aggregate", nil, "with --land: aggregator check to waive when every input in its workflow job's needs: passed or is waived (repeatable)")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "with --auto-merge/--land: merge (default), squash, or rebase")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	discovery(command, "open create pull request pr push branch worktree adopt draft auto merge cheap fast no build no test commit land")

@@ -112,9 +112,12 @@ func TestWaiverStageJudgesOnlyATerminalWait(t *testing.T) {
 		{"real failure while waived runs", githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Checks: []githubchecks.RemoteCheck{waiverFailed("test"), waiverRunning("deploy-gate")}}, false, waiverStageSkip},
 	}
 	for _, tc := range cases {
-		if got := waiverStageFor(options, tc.waited, tc.merged); got != tc.want {
-			t.Errorf("%s: stage = %d, want %d", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := waiverStageFor(options, tc.waited, tc.merged); got != tc.want {
+				t.Errorf("stage = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -383,14 +386,17 @@ func TestAggregatorRefusals(t *testing.T) {
 		{"no input waived", base, nil, []string{"build"}, nil, LandRefusalWaivedAggregateUnproven, "none of its inputs"},
 	}
 	for _, tc := range cases {
-		inspector := fencedInspector(tip)
-		if tc.required != nil {
-			inspector.required = append(inspector.required, tc.required...)
-		}
-		_, refusal := verifyWaivers(t, aggregateOptions(inspector, tc.inputs, tc.needsErr), tc.head)
-		if refusal == nil || refusal.code != tc.code || !strings.Contains(refusal.reason, tc.reason) {
-			t.Errorf("%s: refusal = %+v, want %s containing %q", tc.name, refusal, tc.code, tc.reason)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inspector := fencedInspector(tip)
+			if tc.required != nil {
+				inspector.required = append(inspector.required, tc.required...)
+			}
+			_, refusal := verifyWaivers(t, aggregateOptions(inspector, tc.inputs, tc.needsErr), tc.head)
+			if refusal == nil || refusal.code != tc.code || !strings.Contains(refusal.reason, tc.reason) {
+				t.Errorf("refusal = %+v, want %s containing %q", refusal, tc.code, tc.reason)
+			}
+		})
 	}
 }
 
@@ -451,15 +457,18 @@ func TestGitHubAggregateNeedsFailures(t *testing.T) {
 		{"workflow has no such job", run, nil, encodedWorkflow("jobs: {}\n"), nil, "ci.yml: 0 jobs"},
 	}
 	for _, tc := range cases {
-		get := func(_ context.Context, _, _, _, _ string, endpoint string) ([]byte, error) {
-			if strings.Contains(endpoint, "/actions/runs/") {
-				return tc.run, tc.runErr
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			get := func(_ context.Context, _, _, _, _ string, endpoint string) ([]byte, error) {
+				if strings.Contains(endpoint, "/actions/runs/") {
+					return tc.run, tc.runErr
+				}
+				return tc.content, tc.fileErr
 			}
-			return tc.content, tc.fileErr
-		}
-		if _, _, err := githubAggregateNeedsWith(context.Background(), get, "acme/app", waiverHead, check); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
-		}
+			if _, _, err := githubAggregateNeedsWith(context.Background(), get, "acme/app", waiverHead, check); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -501,16 +510,19 @@ func TestParseWorkflowNeedsMapsJobIDsToCheckNames(t *testing.T) {
 		{"missing", "", "0 jobs match"},
 	}
 	for _, tc := range cases {
-		got, err := parseWorkflowNeeds(workflow, tc.check)
-		if tc.err != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.err) {
-				t.Errorf("%s: err = %v, want %q", tc.check, err, tc.err)
+		t.Run(tc.check, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseWorkflowNeeds(workflow, tc.check)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Errorf("err = %v, want %q", err, tc.err)
+				}
+				return
 			}
-			continue
-		}
-		if err != nil || strings.Join(got, ",") != tc.want {
-			t.Errorf("%s: got %v err %v, want %s", tc.check, got, err, tc.want)
-		}
+			if err != nil || strings.Join(got, ",") != tc.want {
+				t.Errorf("got %v err %v, want %s", got, err, tc.want)
+			}
+		})
 	}
 	if _, err := parseWorkflowNeeds([]byte("jobs: ["), "x"); err == nil || !strings.Contains(err.Error(), "parse workflow") {
 		t.Fatalf("bad yaml err = %v", err)
@@ -600,5 +612,18 @@ func TestResumeCommandQuotesTheBaseline(t *testing.T) {
 	cmd := pullRequestLandResumeCommand(PullRequestLandOptions{Repository: "acme/app", WaiveChecks: []string{"e2e"}, WaiveBaseline: "abc1234", WaiveReason: "r"}, "7", "")
 	if !strings.Contains(cmd, "--waive-baseline 'abc1234'") {
 		t.Fatalf("command = %q", cmd)
+	}
+}
+
+func TestDuplicateWaiverFindsANameGivenTwice(t *testing.T) {
+	t.Parallel()
+	if got := DuplicateWaiver([]string{"e2e", "lint"}, []string{"deploy-gate"}); got != "" {
+		t.Fatalf("distinct names reported %q", got)
+	}
+	if got := DuplicateWaiver([]string{"e2e"}, []string{"deploy-gate", "check-run:deploy-gate"}); got != "deploy-gate" {
+		t.Fatalf("duplicate aggregate = %q", got)
+	}
+	if got := DuplicateWaiver([]string{"e2e"}, []string{"e2e"}); got != "e2e" {
+		t.Fatalf("check also given as an aggregate = %q", got)
 	}
 }

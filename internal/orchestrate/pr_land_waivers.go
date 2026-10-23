@@ -44,7 +44,25 @@ const (
 	waiverAuthorityServerPolicy  = "server-required-policy"
 	waiverAuthorityAllowUnfenced = "allow-unfenced"
 	waivedByAggregation          = "aggregation"
+
+	// LandRefusalWaivedCheckDuplicate reports a check named more than once
+	// across --waive-check and --waive-aggregate.
+	LandRefusalWaivedCheckDuplicate = "waived-check-duplicate"
 )
+
+// DuplicateWaiver returns the first check named more than once across the
+// waived checks and aggregates, or "".
+func DuplicateWaiver(checks, aggregates []string) string {
+	seen := map[string]bool{}
+	for _, name := range append(append([]string(nil), checks...), aggregates...) {
+		normalized := githubchecks.NormalizeCheckName(name)
+		if seen[normalized] {
+			return normalized
+		}
+		seen[normalized] = true
+	}
+	return ""
+}
 
 // hasWaivers reports whether the landing carries any check waiver.
 func (options PullRequestLandOptions) hasWaivers() bool {
