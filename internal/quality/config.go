@@ -58,6 +58,13 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 		if len(config.IntegrationChecks) == 0 {
 			return base, fmt.Errorf("repository quality policy %s integration_checks must list at least one check", path)
 		}
+		for _, entry := range config.IntegrationChecks {
+			// ParseChecks reads an all-blank list as "use the default";
+			// a recipe entry must name a check.
+			if strings.TrimSpace(entry) == "" {
+				return base, fmt.Errorf("repository quality policy %s integration_checks contains an empty check", path)
+			}
+		}
 		checks, err := ParseChecks(strings.Join(config.IntegrationChecks, ","))
 		if err != nil {
 			return base, fmt.Errorf("repository quality policy %s integration_checks: %w", path, err)

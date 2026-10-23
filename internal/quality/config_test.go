@@ -145,6 +145,7 @@ func TestRepositoryRunOptionsLoadsIntegrationChecks(t *testing.T) {
 		"unknown check": "version: 1\nintegration_checks: [lint, fuzz]\n",
 		"empty list":    "version: 1\nintegration_checks: []\n",
 		"empty entry":   "version: 1\nintegration_checks: [lint, \"\"]\n",
+		"blank only":    "version: 1\nintegration_checks: [\" \"]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

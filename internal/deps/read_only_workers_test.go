@@ -303,3 +303,32 @@ func TestResumeReleaseObservationsObservesReleasesConcurrently(t *testing.T) {
 		}
 	}
 }
+
+func TestRefreshStaleReleaseEventsSkipsLookupsQueuedAfterAFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	var healthyCalls atomic.Int32
+	// Explicitly serial: the first lookup fails and cancels the round, so the
+	// one queued behind it is skipped without a registry round-trip.
+	_, refreshes, err := refreshStaleReleaseEvents(context.Background(), []ReleaseEvent{
+		{Dependency: "example.com/a-broken", Version: "v1.2.0", Source: "observed_release", CheckedAt: now.Add(-10 * time.Minute)},
+		{Dependency: "example.com/b-healthy", Version: "v1.2.0", Source: "observed_release", CheckedAt: now.Add(-10 * time.Minute)},
+	}, BumpOptions{
+		Options:      Options{Parallel: 1, ParallelExplicit: true},
+		RefreshAfter: 5 * time.Minute,
+		Now:          func() time.Time { return now },
+		LatestGoVersion: func(_ context.Context, module string) (string, error) {
+			if module == "example.com/a-broken" {
+				return "", errors.New("registry unavailable")
+			}
+			healthyCalls.Add(1)
+			return "v1.3.0", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "example.com/a-broken@v1.2.0") {
+		t.Fatalf("err = %v", err)
+	}
+	if healthyCalls.Load() != 0 || len(refreshes) != 0 {
+		t.Fatalf("a lookup queued after the failure ran: calls = %d, refreshes = %+v", healthyCalls.Load(), refreshes)
+	}
+}
