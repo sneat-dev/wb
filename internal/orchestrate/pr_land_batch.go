@@ -38,7 +38,7 @@ const (
 
 // batchLandingPorts are the GitHub reads and writes batch landing makes.
 type batchLandingPorts struct {
-	comment     func(ctx context.Context, repository string, id int64) (string, error)
+	comment     func(ctx context.Context, repository string, id int64) (BatchComment, error)
 	parents     func(ctx context.Context, repository, sha string) ([]string, error)
 	contains    func(ctx context.Context, repository, ancestor, descendant string) (bool, string)
 	targetHead  func(ctx context.Context, repository, target string) (string, string)
@@ -100,7 +100,7 @@ func batchLandingGate(ctx context.Context, options *PullRequestLandOptions, view
 		return nil, batchRefusal(LandRefusalBatchDeltaUnreviewed,
 			fmt.Sprintf("the batch review names %s, not the batch head %s", shortMergeRevision(reviewed), shortMergeRevision(view.Head.SHA)), delta), nil
 	}
-	if !identityComplete(reviewer) || reviewer.SelfReview(currentSessionIdentity()) || builtBatch(state, reviewer) {
+	if !identityComplete(reviewer) || strings.EqualFold(reviewer.Session, currentSessionIdentity().Session) || builtByBatch(state, reviewer) {
 		return nil, batchRefusal(LandRefusalBatchDeltaSelfReview,
 			fmt.Sprintf("batch review identity %q is incomplete, yours, or a batch builder's", reviewer.String()), delta), nil
 	}
@@ -128,24 +128,19 @@ func batchReview(ctx context.Context, options PullRequestLandOptions, ports batc
 			"a batch lands only with --approved-by naming a review comment on this pull request whose Reviewed-Head is the batch head", delta)
 	}
 	id, _ := strconv.ParseInt(match[3], 10, 64)
-	body, err := ports.comment(ctx, options.Repository, id)
+	comment, err := ports.comment(ctx, options.Repository, id)
 	if err != nil {
 		return "", ReviewerIdentity{}, batchRefusal(LandRefusalBatchDeltaUnreviewed, err.Error(), delta)
 	}
+	if strconv.Itoa(comment.PullRequest) != number {
+		return "", ReviewerIdentity{}, batchRefusal(LandRefusalBatchDeltaUnreviewed, fmt.Sprintf("review comment %d is on #%d, not this pull request", id, comment.PullRequest), delta)
+	}
+	body := comment.Body
 	reviewed, err := parseReviewedHeadLine(body)
 	if err != nil || reviewed == "" {
 		return "", ReviewerIdentity{}, batchRefusal(LandRefusalBatchDeltaUnreviewed, "the batch review has no full Reviewed-Head line", delta)
 	}
 	return reviewed, declaredReviewer(body), nil
-}
-
-func builtBatch(state BatchState, reviewer ReviewerIdentity) bool {
-	for _, builder := range state.BuiltBy {
-		if reviewer.SelfReview(ParseReviewerIdentity(builder)) || strings.EqualFold(ParseReviewerIdentity(builder).Session, reviewer.Session) {
-			return true
-		}
-	}
-	return false
 }
 
 // batchProvenance applies REQ batch-merge-provenance through GitHub alone:
@@ -190,12 +185,16 @@ func recordedBatchParent(ctx context.Context, ports batchLandingPorts, repositor
 		if step.Head != parent {
 			continue
 		}
-		body, err := ports.comment(ctx, repository, step.ReviewCommentID)
-		if err != nil {
+		comment, err := ports.comment(ctx, repository, step.ReviewCommentID)
+		if err != nil || comment.PullRequest != step.PullRequest {
 			return false, nil
 		}
-		reviewed, parseErr := parseReviewedHeadLine(body)
-		return ReviewDigest(body) == step.ReviewDigest && parseErr == nil && reviewed == parent, nil
+		reviewer := declaredReviewer(comment.Body)
+		if !identityComplete(reviewer) || builtByBatch(state, reviewer) {
+			return false, nil
+		}
+		reviewed, parseErr := parseReviewedHeadLine(comment.Body)
+		return ReviewDigest(comment.Body) == step.ReviewDigest && parseErr == nil && reviewed == parent, nil
 	}
 	refresh, reason := ports.contains(ctx, repository, parent, tip)
 	if reason != "" {

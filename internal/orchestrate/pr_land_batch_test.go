@@ -29,6 +29,7 @@ func batchReviewBody(head string) string {
 // batchWorld is a first-parent history base <- merge1(pin) <- head(fix).
 type batchWorld struct {
 	comments  map[int64]string
+	commentPR map[int64]int
 	parents   map[string][]string
 	ancestors map[string]bool // sha -> is on target history
 	tip       string
@@ -42,7 +43,8 @@ type batchWorld struct {
 
 func newBatchWorld() *batchWorld {
 	return &batchWorld{
-		comments: map[int64]string{1: pinReview(batchPin), 2: batchReviewBody(batchHead)},
+		comments:  map[int64]string{1: pinReview(batchPin), 2: batchReviewBody(batchHead)},
+		commentPR: map[int64]int{},
 		parents: map[string][]string{
 			batchHead:   {batchMerge1},
 			batchMerge1: {batchBase, batchPin},
@@ -56,12 +58,19 @@ func newBatchWorld() *batchWorld {
 
 func (world *batchWorld) ports() *batchLandingPorts {
 	return &batchLandingPorts{
-		comment: func(_ context.Context, _ string, id int64) (string, error) {
+		comment: func(_ context.Context, _ string, id int64) (BatchComment, error) {
 			body, ok := world.comments[id]
 			if !ok {
-				return "", errors.New("comment gone")
+				return BatchComment{}, errors.New("comment gone")
 			}
-			return body, nil
+			pr := 7
+			if id == 1 {
+				pr = 510
+			}
+			if moved, ok := world.commentPR[id]; ok {
+				pr = moved
+			}
+			return BatchComment{Body: body, PullRequest: pr}, nil
 		},
 		parents: func(_ context.Context, _, sha string) ([]string, error) {
 			return world.parents[sha], world.parentErr
@@ -122,17 +131,17 @@ func gateOptions(world *batchWorld) PullRequestLandOptions {
 		ApprovedBy: "https://github.com/acme/app/pull/7#issuecomment-2", batchPorts: world.ports()}
 }
 
-func runGate(t *testing.T, options PullRequestLandOptions, view githubchecks.PullRequestView) (*BatchState, *landRefusal, error, PullRequestLandOptions) {
+func runGate(t *testing.T, options PullRequestLandOptions, view githubchecks.PullRequestView) (*BatchState, *landRefusal, PullRequestLandOptions, error) {
 	t.Helper()
 	state, refusal, err := batchLandingGate(context.Background(), &options, view, "7")
-	return state, refusal, err, options
+	return state, refusal, options, err
 }
 
 func TestBatchGateLandsAReviewedBatchAsAMergeCommitWithoutUpdateBranch(t *testing.T) {
 	t.Parallel()
 	world := newBatchWorld()
 	world.ancestors["head-contains-tip"] = true
-	state, refusal, err, narrowed := runGate(t, gateOptions(world), landingBatchView(batchState()))
+	state, refusal, narrowed, err := runGate(t, gateOptions(world), landingBatchView(batchState()))
 	if err != nil || refusal != nil || state == nil || state.Branch != "public-demo-batch-1" {
 		t.Fatalf("state=%v refusal=%+v err=%v", state, refusal, err)
 	}
@@ -141,7 +150,7 @@ func TestBatchGateLandsAReviewedBatchAsAMergeCommitWithoutUpdateBranch(t *testin
 	}
 	plain := landingBatchView(batchState())
 	plain.Body = "an ordinary pull request"
-	if state, refusal, err, _ := runGate(t, gateOptions(world), plain); state != nil || refusal != nil || err != nil {
+	if state, refusal, _, err := runGate(t, gateOptions(world), plain); state != nil || refusal != nil || err != nil {
 		t.Fatal("an ordinary pull request went through the batch gate")
 	}
 }
@@ -201,6 +210,11 @@ func TestBatchGateRefusals(t *testing.T) {
 			w.comments[1] += "edited\n"
 		}, BatchRefusalUnrecordedMerge},
 		{"pin review deleted", func(w *batchWorld, _ *PullRequestLandOptions, _ *githubchecks.PullRequestView) { delete(w.comments, 1) }, BatchRefusalUnrecordedMerge},
+		{"pin review on another pull request", func(w *batchWorld, _ *PullRequestLandOptions, _ *githubchecks.PullRequestView) { w.commentPR[1] = 999 }, BatchRefusalUnrecordedMerge},
+		{"pin review by a builder", func(w *batchWorld, _ *PullRequestLandOptions, _ *githubchecks.PullRequestView) {
+			w.comments[1] = "**Review by opus@claude-code@builder**\nReviewed-Head: " + batchPin + "\n"
+		}, BatchRefusalUnrecordedMerge},
+		{"batch review on another pull request", func(w *batchWorld, _ *PullRequestLandOptions, _ *githubchecks.PullRequestView) { w.commentPR[2] = 8 }, LandRefusalBatchDeltaUnreviewed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,7 +225,7 @@ func TestBatchGateRefusals(t *testing.T) {
 			view := landingBatchView(batchState())
 			tc.mutate(world, &options, &view)
 			options.batchPorts = world.ports()
-			_, refusal, err, _ := runGate(t, options, view)
+			_, refusal, _, err := runGate(t, options, view)
 			if err != nil || refusal == nil || refusal.code != tc.code {
 				t.Fatalf("refusal = %+v err = %v, want %s", refusal, err, tc.code)
 			}
@@ -225,7 +239,7 @@ func TestBatchGateAcceptsATargetRefreshMergeAndBoundsTheWalk(t *testing.T) {
 	world.ancestors["head-contains-tip"] = true
 	world.ancestors[batchFix] = true // a refresh brings in target history
 	world.parents[batchHead] = []string{batchMerge1, batchFix}
-	if _, refusal, err, _ := runGate(t, gateOptions(world), landingBatchView(batchState())); refusal != nil || err != nil {
+	if _, refusal, _, err := runGate(t, gateOptions(world), landingBatchView(batchState())); refusal != nil || err != nil {
 		t.Fatalf("refresh merge refused: %+v %v", refusal, err)
 	}
 	loop := newBatchWorld()
@@ -248,7 +262,7 @@ func TestBatchGateReportsGitHubReadFailures(t *testing.T) {
 			world := newBatchWorld()
 			world.ancestors["head-contains-tip"] = true
 			mutate(world)
-			if _, _, err, _ := runGate(t, gateOptions(world), landingBatchView(batchState())); err == nil {
+			if _, _, _, err := runGate(t, gateOptions(world), landingBatchView(batchState())); err == nil {
 				t.Fatal("a GitHub read failure was swallowed")
 			}
 		})
@@ -269,7 +283,7 @@ func TestBatchGateReportsGitHubReadFailures(t *testing.T) {
 	}
 	options := gateOptions(refresh)
 	options.batchPorts = ports
-	if _, _, err, _ := runGate(t, options, landingBatchView(batchState())); err == nil {
+	if _, _, _, err := runGate(t, options, landingBatchView(batchState())); err == nil {
 		t.Fatal("a failing base ancestry read was swallowed")
 	}
 	calls = 0
@@ -280,7 +294,7 @@ func TestBatchGateReportsGitHubReadFailures(t *testing.T) {
 		}
 		return contains(ctx, repository, ancestor, descendant)
 	}
-	if _, _, err, _ := runGate(t, options, landingBatchView(batchState())); err == nil {
+	if _, _, _, err := runGate(t, options, landingBatchView(batchState())); err == nil {
 		t.Fatal("a failing merge-parent ancestry read was swallowed")
 	}
 }

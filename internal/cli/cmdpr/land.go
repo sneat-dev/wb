@@ -171,6 +171,15 @@ needs: are all green or waived. A required check is never waived. A target with
 no server-enforced required checks accepts waivers only with --allow-unfenced,
 and WB then merges itself after the verdict instead of arming auto-merge.
 
+BATCH PULL REQUESTS. A pull request whose body carries a wb pr batch block lands
+only as a merge commit, never updated server-side (a batch behind its target is
+refreshed with wb pr batch add), with --approved-by naming a review comment on
+it whose Reviewed-Head is the current batch head from an identity that built
+none of the batch, and only after every first-parent merge is proved to bring
+in a recorded, still-reviewed pin or target history. Source pull requests are
+then recorded: merged, closed with a comment, or left open with a comment when
+their head moved after the pin.
+
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
 retirement, cleanup) did not finish: the change is on the base branch, and the

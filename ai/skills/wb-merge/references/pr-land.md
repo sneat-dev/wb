@@ -354,6 +354,7 @@ wb pr batch delta <owner/repository> --target <branch> --overlap
 ```
 
   It shows conflict resolutions, fix commits, and any merge WB did not record (`batch-unrecorded-merge`); `--overlap` adds each source's own diff of every file more than one source changed. A recorded base that is not on the target is refused (`batch-base-invalid`).
+- `wb pr land <batch-pr> --approved-by <review-comment-url>` lands the batch: only as a merge commit, never update-branched (`batch-behind-target` names `wb pr batch add`), only under an independent review of the current batch head (`batch-delta-unreviewed`, `batch-delta-self-review`), and only after every first-parent merge is proved recorded (`batch-unrecorded-merge`). Each source PR is then recorded as merged, closed with a comment, or left open when its head moved after the pin.
 - `wb pr batch status` attributes every failed check on the batch head as `pre-existing`, `source #n`, `integration` or `unattributed` from existing runs, starting no CI.
 
 ```sh
