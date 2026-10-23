@@ -492,7 +492,7 @@ func TestE2EIntegrationEveryGitOrGitHubFailureIsReportedNotSwallowed(t *testing.
 					options.run = failingIntegrationRunner{Runner: runner.New(), failAt: failAt, calls: &calls}
 				}
 				result, err := steps[stepIndex](options)
-				reached := calls >= failAt || fixture.gh.calls >= failAt
+				reached := (failing == "git" && calls >= failAt) || (failing == "GitHub" && fixture.gh.calls >= failAt)
 				if !reached {
 					break
 				}

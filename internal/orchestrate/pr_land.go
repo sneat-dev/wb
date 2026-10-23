@@ -199,6 +199,8 @@ type PullRequestLandOptions struct {
 	// readPullRequest is the waiver's merged-by-GitHub re-read seam; nil
 	// reads GitHub.
 	readPullRequest func(ctx context.Context, repository, selector string) (githubchecks.PullRequestView, error)
+	// promotePorts is the promotion-landing seam; nil reads GitHub.
+	promotePorts *promoteLandingPorts
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -368,6 +370,9 @@ type PullRequestLandResult struct {
 	// MergeQueue is set when the target requires GitHub's merge queue, which
 	// then performed the merge instead of WB.
 	MergeQueue *MergeQueueReceipt `json:"merge_queue,omitempty"`
+	// Promotion is what WB verified when this pull request promotes an
+	// integration branch.
+	Promotion *PromotionReceipt `json:"promotion,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -937,6 +942,16 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return result, err
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Completed, "commits", len(sourceCommits), len(sourceCommits))
+	// A promotion lands only under its own rules, decided before anything is
+	// armed; the gate also turns off update-branch and auto-merge.
+	if promotion, refusal, promoteErr := promotionLandingGate(ctx, &options, view, number, sourceCommits); promoteErr != nil {
+		return result, promoteErr
+	} else if refusal != nil {
+		return mergeRefusal(result, *refusal), nil
+	} else if promotion != nil {
+		result.Promotion = promotion
+		result.Evidence["promotion"] = fmt.Sprintf("%d reviewed lane(s), head reviewed by %s", len(promotion.Lanes), promotion.Reviewer)
+	}
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
@@ -1810,6 +1825,9 @@ type SourceCommit struct {
 	SHA     string `json:"sha"`
 	Subject string `json:"subject"`
 	Body    string `json:"body,omitempty"`
+	// Parents are read for a promotion's first-parent walk; they stay out of
+	// receipts.
+	Parents []string `json:"-"`
 }
 
 type commitListEntry struct {
@@ -1817,6 +1835,9 @@ type commitListEntry struct {
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
 }
 
 // pullRequestCommits lists the branch's commits in order.
@@ -1836,11 +1857,15 @@ func pullRequestCommits(ctx context.Context, repository, number string) ([]Sourc
 		}
 		for _, entry := range page {
 			subject, body, _ := strings.Cut(strings.TrimSpace(entry.Commit.Message), "\n")
-			commits = append(commits, SourceCommit{
+			commit := SourceCommit{
 				SHA:     entry.SHA,
 				Subject: strings.TrimSpace(subject),
 				Body:    strings.TrimSpace(body),
-			})
+			}
+			for _, parent := range entry.Parents {
+				commit.Parents = append(commit.Parents, parent.SHA)
+			}
+			commits = append(commits, commit)
 		}
 	}
 	return commits, nil

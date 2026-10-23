@@ -139,3 +139,70 @@ func TestIntegrationReportsVerbErrorsAndWriteFailures(t *testing.T) {
 		t.Fatal("an output failure exited 0")
 	}
 }
+
+func promoteDeps(result orchestrate.PromoteResult, err error, got *orchestrate.PromoteOptions) IntegrationDependencies {
+	run := func(_ context.Context, options orchestrate.PromoteOptions) (orchestrate.PromoteResult, error) {
+		*got = options
+		return result, err
+	}
+	return IntegrationDependencies{Delta: run, Promote: run}
+}
+
+func TestPRBatchDeltaAndIntegrationPromotePassTheirOptions(t *testing.T) {
+	t.Parallel()
+	var got orchestrate.PromoteOptions
+	result := orchestrate.PromoteResult{Outcome: orchestrate.LandFindings, RefusalCode: orchestrate.BatchRefusalUnrecordedMerge, Reason: "unrecorded",
+		Delta: []orchestrate.BatchDelta{{Kind: orchestrate.BatchDeltaOverlap, Commit: "abc", Lane: "lane-1", Paths: []string{"a.go"}, Diff: "+x"}}}
+	var out, errOut bytes.Buffer
+	code := executeTest(NewBatch(testRuntime(), promoteDeps(result, nil, &got)), []string{"delta", "acme/app", "--target", "public-demo", "--to", "trunk", "--overlap", "--worktree", "/w"}, &out, &errOut)
+	if code != 1 || got.Integration != "public-demo" || got.To != "trunk" || !got.Overlap || got.Worktree != "/w" {
+		t.Fatalf("exit %d options %+v", code, got)
+	}
+	if !strings.Contains(out.String(), "--- overlap abc lane-1 (a.go)") {
+		t.Fatalf("out = %s", out.String())
+	}
+	out.Reset()
+	code = executeTest(NewIntegration(testRuntime(), promoteDeps(orchestrate.PromoteResult{Outcome: orchestrate.LandSuccess, Verb: "integration promote"}, nil, &got)),
+		[]string{"promote", "acme/app", "public-demo", "--format", "json"}, &out, &errOut)
+	if code != 0 || got.Integration != "public-demo" || got.Worktree == "" || !strings.Contains(out.String(), `"verb": "integration promote"`) {
+		t.Fatalf("exit %d out %s options %+v", code, out.String(), got)
+	}
+}
+
+func TestPromoteVerbUsageAndFailures(t *testing.T) {
+	t.Parallel()
+	var got orchestrate.PromoteOptions
+	deps := promoteDeps(orchestrate.PromoteResult{Outcome: orchestrate.LandSuccess}, nil, &got)
+	for name, args := range map[string][]string{
+		"delta without target":   {"delta", "acme/app"},
+		"delta extra argument":   {"delta", "acme/app", "x", "--target", "y"},
+		"promote missing branch": {"promote", "acme/app"},
+	} {
+		var out, errOut bytes.Buffer
+		root := NewBatch(testRuntime(), deps)
+		if args[0] == "promote" {
+			root = NewIntegration(testRuntime(), deps)
+		}
+		if code := executeTest(root, args, &out, &errOut); code != 2 {
+			t.Errorf("%s: exit %d", name, code)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := executeTest(NewIntegration(testRuntime(), deps), []string{"promote", "acme/app", "x", "--format", "yaml"}, &out, &errOut); code == 0 {
+		t.Fatal("an unsupported format exited 0")
+	}
+	failing := promoteDeps(orchestrate.PromoteResult{}, context.Canceled, &got)
+	if code := executeTest(NewIntegration(testRuntime(), failing), []string{"promote", "acme/app", "x"}, &out, &errOut); code == 0 {
+		t.Fatal("a verb error exited 0")
+	}
+	for _, format := range []string{"text", "json"} {
+		command := NewIntegration(testRuntime(), deps)
+		command.SetOut(failingWriter{})
+		command.SetErr(&errOut)
+		command.SetArgs([]string{"promote", "acme/app", "x", "--format", format})
+		command.SilenceErrors, command.SilenceUsage = true, true
+		if err := command.Execute(); err == nil {
+			t.Fatalf("a %s output failure exited 0", format)
+		}
+	}
+}

@@ -94,3 +94,68 @@ func configArgs(options []string, args ...string) []string {
 	}
 	return append(prefixed, args...)
 }
+
+// githubPromote is the production PromoteGitHub over `gh api`.
+type githubPromote struct{ githubIntegration }
+
+// DefaultPromoteGitHub returns the production adapter.
+func DefaultPromoteGitHub() PromoteGitHub {
+	return githubPromote{githubIntegration{gh: integrationGH}}
+}
+
+func (adapter githubPromote) DefaultBranch(ctx context.Context, repository string) (string, error) {
+	var repo struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	raw, err := adapter.gh(ctx, "api", "repos/"+repository)
+	if err == nil {
+		err = json.Unmarshal(raw, &repo)
+	}
+	if err == nil && repo.DefaultBranch == "" {
+		err = fmt.Errorf("no default branch reported")
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the default branch of %s: %w", repository, err)
+	}
+	return repo.DefaultBranch, nil
+}
+
+func (adapter githubPromote) OpenPullRequest(ctx context.Context, repository, head, base string) (int, string, error) {
+	owner, _, _ := strings.Cut(repository, "/")
+	var pulls []struct {
+		Number int    `json:"number"`
+		Body   string `json:"body"`
+	}
+	raw, err := adapter.gh(ctx, "api", "repos/"+repository+"/pulls?state=open&head="+owner+":"+head+"&base="+base)
+	if err == nil {
+		err = json.Unmarshal(raw, &pulls)
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("find the pull request from %s to %s: %w", head, base, err)
+	}
+	if len(pulls) == 0 {
+		return 0, "", nil
+	}
+	return pulls[0].Number, pulls[0].Body, nil
+}
+
+func (adapter githubPromote) CreatePullRequest(ctx context.Context, repository, head, base, title, body string) (int, error) {
+	var created struct {
+		Number int `json:"number"`
+	}
+	raw, err := adapter.gh(ctx, "api", "-X", "POST", "repos/"+repository+"/pulls", "-f", "head="+head, "-f", "base="+base, "-f", "title="+title, "-f", "body="+body)
+	if err == nil {
+		err = json.Unmarshal(raw, &created)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open the pull request from %s to %s: %w", head, base, err)
+	}
+	return created.Number, nil
+}
+
+func (adapter githubPromote) UpdatePullRequestBody(ctx context.Context, repository string, number int, body string) error {
+	if _, err := adapter.gh(ctx, "api", "-X", "PATCH", "repos/"+repository+"/pulls/"+strconv.Itoa(number), "-f", "body="+body); err != nil {
+		return fmt.Errorf("update %s#%d: %w", repository, number, err)
+	}
+	return nil
+}

@@ -365,7 +365,22 @@ wb integration merge <owner/repository> <integration> <branch@sha=review-url>...
   does only the merges, without checking or pushing.
 - Full CI and a fresh review of the exact head happen once, on the one
   integration → main pull request, which lands under the repository's merge
-  policy.
+  policy:
+
+```sh
+wb integration promote <owner/repository> <integration>
+wb pr batch delta <owner/repository> --target <integration> --overlap
+wb pr land <owner/repo>#<n> --approved-by <review-comment-url>
+```
+
+- `promote` re-proves every lane merge from its `Wb-*` trailers (a merge it
+  cannot prove refuses `batch-unrecorded-merge`) and opens or refreshes the one
+  pull request. The reviewer reads only `delta`: conflict resolutions, fix
+  commits, unrecorded merges, and with `--overlap` each lane's diff of files
+  several lanes changed. An empty delta is still reviewed.
+- `wb pr land` on that pull request needs the review to name its current head,
+  from a session that made none of the lane merges; it never updates the
+  branch or arms auto-merge.
 
 ## Refusals and what resolves each
 

@@ -2,6 +2,7 @@ package cmdpr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,13 +18,16 @@ import (
 // IntegrationDependencies are the integration verbs' orchestration entry
 // points.
 type IntegrationDependencies struct {
-	Add   func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
-	Merge func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
+	Add     func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
+	Merge   func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
+	Delta   func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)
+	Promote func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)
 }
 
 // DefaultIntegrationDependencies wires the production verbs.
 func DefaultIntegrationDependencies() IntegrationDependencies {
-	return IntegrationDependencies{Add: orchestrate.AddToBatch, Merge: orchestrate.MergeIntegration}
+	return IntegrationDependencies{Add: orchestrate.AddToBatch, Merge: orchestrate.MergeIntegration,
+		Delta: orchestrate.DeltaBatch, Promote: orchestrate.PromoteIntegration}
 }
 
 const pinHelp = `Each lane is pinned as <branch>@<sha>=<commit-comment-url>: the lane's pushed
@@ -73,7 +77,9 @@ func NewBatch(runtime shared.Runtime, deps IntegrationDependencies) *cobra.Comma
 	discovery(command, "batch integration branch reviewed lane commit merge commits trailers")
 	add := newIntegrationVerb(runtime, "add <owner/repository> --target <integration> <branch@sha=review-url>...",
 		"Verify pins and merge each lane commit locally with its own merge commit", batchLong, true, deps.Add)
-	command.AddCommand(add)
+	delta := newPromoteVerb(runtime, "delta <owner/repository> --target <integration> [--to <branch>]",
+		"Print only the integration delta a promotion reviewer reads", deltaLong, true, deps.Delta)
+	command.AddCommand(add, delta)
 	return command
 }
 
@@ -83,7 +89,92 @@ func NewIntegration(runtime shared.Runtime, deps IntegrationDependencies) *cobra
 	discovery(command, "integration branch local check push reviewed lane merge commit")
 	merge := newIntegrationVerb(runtime, "merge <owner/repository> <integration> [<branch@sha=review-url>...]",
 		"Merge reviewed lanes, run the local checks, and push without force", integrationLong, false, deps.Merge)
-	command.AddCommand(merge)
+	promote := newPromoteVerb(runtime, "promote <owner/repository> <integration> [--to <branch>]",
+		"Re-prove every lane merge and open or refresh the one pull request to main", promoteLong, false, deps.Promote)
+	command.AddCommand(merge, promote)
+	return command
+}
+
+const deltaLong = `Print only the integration delta of an integration branch against its target.
+
+The delta is what a promotion reviewer reads: every merge's conflict
+resolution (its committed tree against the conflict-free merge of its
+parents), every non-merge fix commit, and the full diff of any merge whose
+trailers do not bind a still-valid review (an unrecorded merge, exit 1).
+Content reviewed at a lane SHA, or brought in from the target, never appears.
+An empty delta still needs the promotion review, because semantic conflicts
+produce no textual one: --overlap adds each lane's own diff of every file more
+than one lane changed. --to defaults to the repository's default branch.
+
+Exit codes: 0 printed, 1 an unrecorded merge, 2 refused.`
+
+const promoteLong = `Re-prove an integration branch and open or refresh its one pull request.
+
+Every merge on the integration branch's first-parent history that its target
+(--to, default the repository's default branch) lacks must bind its second
+parent to a still-valid lane review through its Wb-* trailers, or bring in
+target history; otherwise promotion refuses batch-unrecorded-merge. The pull
+request body lists every lane and carries the promotion marker, so
+"wb pr land" lands it only with a fresh, independent review of its exact head
+(--approved-by), never updating the branch server-side or arming auto-merge,
+under the repository's own merge policy with full CI. A rerun with nothing new
+changes nothing.
+
+Exit codes: 0 opened, refreshed or nothing to promote, 2 refused.`
+
+func newPromoteVerb(runtime shared.Runtime, use, short, long string, batch bool, run func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)) *cobra.Command {
+	var target, to, worktree, format string
+	var overlap bool
+	command := &cobra.Command{
+		Use: use, Short: short, Long: long,
+		Args: func(command *cobra.Command, args []string) error {
+			if want := map[bool]int{true: 1, false: 2}[batch]; len(args) != want {
+				return runtime.ExitError(shared.ExitUsage, "usage: wb "+command.Parent().Name()+" "+use)
+			}
+			return nil
+		},
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			options := orchestrate.PromoteOptions{Repository: args[0], To: to, Worktree: worktree, Overlap: overlap}
+			if batch {
+				if strings.TrimSpace(target) == "" {
+					return runtime.ExitError(shared.ExitUsage, "--target <integration branch> is required")
+				}
+				options.Integration = target
+			} else {
+				options.Integration = args[1]
+			}
+			if strings.TrimSpace(options.Worktree) == "" {
+				options.Worktree, _ = os.Getwd()
+			}
+			result, err := run(command.Context(), options)
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				raw, _ := json.MarshalIndent(result, "", "  ") // a plain struct always marshals
+				_, err = fmt.Fprintln(command.OutOrStdout(), string(raw))
+			} else {
+				_, err = io.WriteString(command.OutOrStdout(), orchestrate.PromoteText(result))
+			}
+			if err != nil {
+				return err
+			}
+			if code := result.ExitCode(); code != 0 {
+				return runtime.ExitError(code, result.Reason)
+			}
+			return nil
+		},
+	}
+	if batch {
+		command.Flags().StringVar(&target, "target", "", "integration branch (required)")
+		command.Flags().BoolVar(&overlap, "overlap", false, "also print each lane's own diff of every file more than one lane changed")
+	}
+	command.Flags().StringVar(&to, "to", "", "promotion target (default: the repository's default branch)")
+	command.Flags().StringVar(&worktree, "worktree", "", "checkout to read from (default: the current directory)")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 

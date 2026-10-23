@@ -132,6 +132,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `pr land` | yes | rejected | rejected | yes |
 | `pr batch add` | yes | rejected | rejected | yes |
 | `integration merge` | yes | rejected | rejected | yes |
+| `pr batch delta` | rejected | rejected | rejected | yes |
+| `integration promote` | rejected | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `create` (root alias), `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |

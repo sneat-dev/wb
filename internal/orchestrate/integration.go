@@ -495,6 +495,26 @@ func (options IntegrationOptions) mergedThroughRecord(ctx context.Context, git b
 	return false, nil
 }
 
+// unrecordedLocalMerge returns the first local first-parent merge, not yet on
+// origin/<integration>, whose trailers do not name its own second parent.
+func (options IntegrationOptions) unrecordedLocalMerge(ctx context.Context, git batchGit) (string, error) {
+	raw, err := git.out(ctx, "log", "--first-parent", "--merges", "--format=%H%x00%P%x00%B%x1e", "^"+options.remoteRef(), "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range strings.Split(raw, "\x1e") {
+		fields := strings.SplitN(strings.TrimLeft(entry, "\n"), "\x00", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		parents := strings.Fields(fields[1])
+		if record, ok := parseLaneTrailers(fields[2]); !ok || len(parents) != 2 || parents[1] != record.SHA {
+			return fields[0], nil
+		}
+	}
+	return "", nil
+}
+
 // laneRecord is what a lane merge commit's trailers claim.
 type laneRecord struct {
 	Branch    string
@@ -669,6 +689,14 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 	if head == remote {
 		result.Outcome, result.Reason = LandSuccess, fmt.Sprintf("origin/%s is already at %s; nothing to check or push", options.Integration, shortMergeRevision(head))
 		return result, nil
+	}
+	// Whatever is pushed must be what WB merged: every local merge carries
+	// trailers naming its own second parent.
+	if unrecorded, err := options.unrecordedLocalMerge(ctx, git); err != nil {
+		return result, err
+	} else if unrecorded != "" {
+		return result.refuse(BatchRefusalUnrecordedMerge,
+			fmt.Sprintf("local merge %s carries no Wb-Lane trailers naming its second parent; nothing was checked or pushed", shortMergeRevision(unrecorded)), ""), nil
 	}
 	checks := options.Checks
 	if len(checks) == 0 {
