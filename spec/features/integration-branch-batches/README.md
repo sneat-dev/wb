@@ -150,8 +150,10 @@ Before printing a delta and before landing, WB MUST first require the
 recorded `base` to be an ancestor of `origin/<target>` (else refuse
 `batch-base-invalid`), then verify every merge commit on `git rev-list --first-parent <base>..<head>`. Its second parent
 must be either (a) a pin recorded in the body block whose review comment,
-re-read from GitHub by id, still has the recorded `ReviewDigest` and a
-`Reviewed-Head:` equal to that pin, or (b) an ancestor of `origin/<target>`
+re-read by id from the repository named on the command line, is on that
+step's pull request, still has the recorded `ReviewDigest` and a
+`Reviewed-Head:` equal to that pin, and declares a complete identity whose
+session built none of the batch, or (b) an ancestor of `origin/<target>`
 (a target refresh). Any other merge commit — one WB did not make, or a pin
 whose review comment changed or vanished — is `unrecorded`: delta prints its
 full diff against its first parent (`kind: unrecorded`), and landing refuses

@@ -50,6 +50,10 @@ func (options BatchOptions) openBatch(ctx context.Context, git batchGit, result 
 		refused := result.refuse(BatchRefusalNotFound, "no batch state for "+branch, "wb pr batch create")
 		return batchView{}, &refused, nil
 	}
+	if !strings.EqualFold(state.Repository, options.Repository) || state.Target != options.Target || state.Branch != branch {
+		refused := result.refuse(BatchRefusalBlockInvalid, fmt.Sprintf("the batch block names %s %s into %s, not %s %s into %s", state.Repository, state.Branch, state.Target, options.Repository, branch, options.Target), "")
+		return batchView{}, &refused, nil
+	}
 	view := batchView{state: state, targetRef: "origin/" + state.Target, number: number}
 	if _, err := git.out(ctx, "fetch", "--quiet", "origin", state.Target); err != nil {
 		return batchView{}, nil, err
@@ -76,20 +80,37 @@ func (options BatchOptions) openBatch(ctx context.Context, git batchGit, result 
 }
 
 // recordedSource reports whether parent is a recorded pin whose review still
-// resolves with the recorded digest and Reviewed-Head.
+// resolves: the comment, read from this repository, is on that step's pull
+// request, keeps the recorded digest and Reviewed-Head, and declares a
+// complete identity that built none of the batch. A forged body step must
+// not turn a hand-pushed merge into a recorded one.
 func (options BatchOptions) recordedSource(ctx context.Context, state BatchState, parent string) (BatchStep, bool) {
 	for _, step := range state.sources() {
 		if step.Head != parent {
 			continue
 		}
-		body, err := options.resolveGitHub().IssueComment(ctx, state.Repository, step.ReviewCommentID)
-		if err != nil || ReviewDigest(body) != step.ReviewDigest {
+		comment, err := options.resolveGitHub().IssueComment(ctx, options.Repository, step.ReviewCommentID)
+		if err != nil || comment.PullRequest != step.PullRequest || ReviewDigest(comment.Body) != step.ReviewDigest {
 			return step, false
 		}
-		reviewed, err := parseReviewedHeadLine(body)
+		reviewer := declaredReviewer(comment.Body)
+		if !identityComplete(reviewer) || builtByBatch(state, reviewer) {
+			return step, false
+		}
+		reviewed, err := parseReviewedHeadLine(comment.Body)
 		return step, err == nil && reviewed == parent
 	}
 	return BatchStep{}, false
+}
+
+// builtByBatch reports whether reviewer's session built any of the batch.
+func builtByBatch(state BatchState, reviewer ReviewerIdentity) bool {
+	for _, builder := range state.BuiltBy {
+		if strings.EqualFold(ParseReviewerIdentity(builder).Session, reviewer.Session) {
+			return true
+		}
+	}
+	return false
 }
 
 // diffPart diffs revisions (one range, or two endpoints) limited to paths.
@@ -162,7 +183,7 @@ func DeltaPullRequestBatch(ctx context.Context, options BatchOptions) (BatchResu
 			unrecorded = append(unrecorded, shortMergeRevision(commit))
 			continue
 		}
-		mechanical, err := git.exec(ctx, configArgs(state.MergeOptions, "merge-tree", "--write-tree", "--no-messages", parents[0], parents[1])...)
+		mechanical, err := git.exec(ctx, configArgs(batchMergeOptions, "merge-tree", "--write-tree", "--no-messages", parents[0], parents[1])...)
 		tree := strings.TrimSpace(strings.SplitN(mechanical.Stdout, "\n", 2)[0])
 		if tree == "" {
 			return result, fmt.Errorf("merge-tree %s %s: %v: %s", shortMergeRevision(parents[0]), shortMergeRevision(parents[1]), err, strings.TrimSpace(mechanical.Stderr))
@@ -294,8 +315,10 @@ func StatusPullRequestBatch(ctx context.Context, options BatchOptions) (BatchRes
 		if checks, ok := cache[sha]; ok {
 			return checks, nil
 		}
-		checks, err := github.CommitChecks(ctx, state.Repository, sha)
-		cache[sha] = checks
+		checks, err := github.CommitChecks(ctx, options.Repository, sha)
+		if err == nil {
+			cache[sha] = checks
+		}
 		return checks, err
 	}
 	headChecks, err := checksAt(view.head)
@@ -343,6 +366,20 @@ func attribute(name string, state BatchState, checksAt func(string) ([]githubche
 		return failed, err
 	}
 	base := checkState(baseChecks, name)
+	// Target history the batch merged in counts as a base too: a check the
+	// refreshed target already failed is pre-existing.
+	for _, step := range state.Steps {
+		if step.Kind != BatchStepRefresh || base == "fail" {
+			continue
+		}
+		refreshChecks, err := checksAt(step.Head)
+		if err != nil {
+			return failed, err
+		}
+		if checkState(refreshChecks, name) == "fail" {
+			base = "fail"
+		}
+	}
 	if base == "fail" {
 		failed.Class = BatchFailurePreExisting
 		return failed, nil

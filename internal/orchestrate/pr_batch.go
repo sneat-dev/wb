@@ -55,6 +55,9 @@ const (
 	// BatchRefusalUnrecordedMerge: a merge commit WB did not record, or whose
 	// review no longer resolves, is on the batch branch.
 	BatchRefusalUnrecordedMerge = "batch-unrecorded-merge"
+	// BatchRefusalBlockInvalid: the batch block names another batch, or
+	// records a step WB did not merge.
+	BatchRefusalBlockInvalid = "batch-block-invalid"
 	// BatchRefusalNotFound: no batch state exists for the named batch.
 	BatchRefusalNotFound = "batch-not-found"
 )
@@ -211,7 +214,27 @@ func ParseBatchBody(body string) (BatchState, bool, error) {
 	if state.Version != 1 {
 		return BatchState{}, true, fmt.Errorf("batch block version %d is not supported", state.Version)
 	}
+	if err := validateBatchState(state); err != nil {
+		return BatchState{}, true, err
+	}
 	return state, true, nil
+}
+
+var fullSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// validateBatchState rejects a body block whose commit identities are not
+// full SHAs: they reach git as revisions, and an edited block must never be
+// able to pass an option or a ref expression there.
+func validateBatchState(state BatchState) error {
+	if !fullSHAPattern.MatchString(state.Base) {
+		return fmt.Errorf("batch block base %q is not a full commit SHA", state.Base)
+	}
+	for i, step := range state.Steps {
+		if !fullSHAPattern.MatchString(step.Head) || (step.MergeCommit != "" && !fullSHAPattern.MatchString(step.MergeCommit)) {
+			return fmt.Errorf("batch block step %d does not name full commit SHAs", i+1)
+		}
+	}
+	return nil
 }
 
 // BatchResult is the envelope every batch verb returns.
