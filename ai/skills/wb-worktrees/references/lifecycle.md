@@ -407,3 +407,19 @@ Git state). `wb worktree log` is the shipped read-only agent bootstrap dump of
 the local journal and original prompt. Later mutating verbs under `log` remain
 planned. Its private local outbox is durable recovery evidence during
 server downtime; it is not an inter-agent Git transport.
+
+## Release an idle landing lane
+
+After interrupting a landing command, release only your registered session's
+claim with one command. This leaves its worktrees, branches and PRs intact.
+
+```sh
+wb lane release owner/repository --target main
+```
+
+An absent lane succeeds. Another owner's lane or a still-running WB operation
+is refused. Stop the owning command before releasing. Legacy claims without an
+operation PID conservatively refuse while any other WB executable runs, even
+for an unrelated repository; retry after that command exits. An unavailable
+process table also refuses legacy release. New claims check only the recorded
+operation PID, separately from the long-lived harness PID.

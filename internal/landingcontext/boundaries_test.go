@@ -35,7 +35,7 @@ func TestOwnerResolutionAndReleaseBoundaries(t *testing.T) {
 		}
 		return session.Record{WBSessionID: "id", PID: 4, Runtime: "runtime", Model: "model"}, true
 	})
-	if owner != (landinglane.Owner{WBSessionID: "id", PID: 4, Runtime: "runtime", Model: "model", Command: "cmd"}) {
+	if owner != (landinglane.Owner{WBSessionID: "id", PID: 4, OperationPID: 4, Runtime: "runtime", Model: "model", Command: "cmd"}) {
 		t.Fatal(owner)
 	}
 	if lane := LaneRequest(t.TempDir(), "command", "because", true, -123); !lane.TakeOver || lane.TakeoverReason != "because" || lane.Owner.WBSessionID != "" {
