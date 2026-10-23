@@ -1,19 +1,23 @@
 package worktrees
 
-import "os"
+import (
+	"os"
 
-// closeIncompleteInheritedFiles releases a partially acquired descriptor set.
-// Complete sets remain owned by the caller until its successful-path defers.
-func closeIncompleteInheritedFiles(files ...*os.File) bool {
-	for _, file := range files {
-		if file == nil {
-			for _, acquired := range files {
-				if acquired != nil {
-					_ = acquired.Close()
-				}
-			}
-			return true
-		}
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
+)
+
+// secureHelperOps varies only fallible operations between authorization phases.
+// Each helper still validates its own inherited descriptors and write roots.
+type secureHelperOps struct {
+	chdir  func(int) error
+	getwd  func() (string, error)
+	retain func(...*os.File) error
+}
+
+func defaultSecureHelperOps() secureHelperOps {
+	return secureHelperOps{
+		chdir:  unix.Fchdir,
+		getwd:  os.Getwd,
+		retain: retainDescriptorsAcrossGitExec,
 	}
-	return false
 }

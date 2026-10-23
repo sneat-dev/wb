@@ -30,11 +30,24 @@ type CoverageBlock struct {
 	Count      int
 }
 
+type coverageBlockLocation struct {
+	file                string
+	startLine, startCol int
+	endLine, endCol     int
+}
+
 // ParseCoverageProfile reads a Go coverage profile (`mode: ...` header
 // followed by `file:startLine.startCol,endLine.endCol numStmt count` rows)
-// into its constituent blocks, preserving line ranges that profileTotals
-// collapses into a single aggregate.
+// into unique source blocks, preserving line ranges for callers that need more
+// than profileTotals' aggregate. Repeated blocks from instrumented test
+// binaries combine execution counts according to the profile mode.
 func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
+	return parseCoverageProfile(profilePath, false)
+}
+
+// requireProfile distinguishes a valid header-only measurement from an empty file
+// using the same open descriptor as the block parser.
+func parseCoverageProfile(profilePath string, requireProfile bool) ([]CoverageBlock, error) {
 	file, err := os.Open(profilePath)
 	if err != nil {
 		return nil, err
@@ -42,6 +55,9 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 	defer func() { _ = file.Close() }()
 
 	var blocks []CoverageBlock
+	seen := make(map[coverageBlockLocation]int)
+	mode := "set"
+	headerSeen := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	lineNumber := 0
@@ -52,16 +68,37 @@ func ParseCoverageProfile(profilePath string) ([]CoverageBlock, error) {
 			continue
 		}
 		if lineNumber == 1 && strings.HasPrefix(line, "mode: ") {
+			headerSeen = true
+			mode = strings.TrimSpace(strings.TrimPrefix(line, "mode: "))
 			continue
 		}
 		block, err := parseCoverageProfileLine(line)
 		if err != nil {
 			return nil, fmt.Errorf("invalid coverage profile %s at line %d: %w", profilePath, lineNumber, err)
 		}
+		location := coverageBlockLocation{file: block.File, startLine: block.StartLine, startCol: block.StartCol, endLine: block.EndLine, endCol: block.EndCol}
+		if index, exists := seen[location]; exists {
+			if blocks[index].Statements != block.Statements {
+				return nil, fmt.Errorf("invalid coverage profile %s at line %d: coverage block %s:%d.%d,%d.%d has statement count %d, want %d",
+					profilePath, lineNumber, block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol, block.Statements, blocks[index].Statements)
+			}
+			if mode == "count" || mode == "atomic" {
+				blocks[index].Count += block.Count
+			} else if blocks[index].Count > 0 || block.Count > 0 {
+				blocks[index].Count = 1
+			} else {
+				blocks[index].Count = 0
+			}
+			continue
+		}
+		seen[location] = len(blocks)
 		blocks = append(blocks, block)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+	if requireProfile && len(blocks) == 0 && !headerSeen {
+		return nil, fmt.Errorf("invalid coverage profile %s at line 1", profilePath)
 	}
 	return blocks, nil
 }
@@ -177,8 +214,12 @@ type UncoveredBlock struct {
 type PackageBaseline struct {
 	SchemaVersion   int                         `json:"schema_version"`
 	SHA             string                      `json:"sha,omitempty"`
+	IncludeE2E      bool                        `json:"include_e2e,omitempty"`
 	Packages        map[string]int              `json:"packages"`
 	UncoveredBlocks map[string][]UncoveredBlock `json:"uncovered_blocks,omitempty"`
+	// RedBase is set when ComputeBaselineAtRef measured a ref whose own
+	// tests were failing; see RedBaseline for what that does to the counts.
+	RedBase *RedBaseline `json:"red_base,omitempty"`
 }
 
 // BaselineFromProfile builds a PackageBaseline from a measured coverage
@@ -591,6 +632,11 @@ type PackageRatchet struct {
 	Changed               bool // true when the PR itself touches a file (including _test.go) in this package
 	NewlyUncoveredChanged []RatchetFinding
 	Pass                  bool
+	// Tolerance and Tolerated are set only when the package passed because
+	// of its configured RatchetTolerance: Tolerance is the configured
+	// statement allowance and Tolerated the statements it let through.
+	Tolerance int                  `yaml:"tolerance,omitempty" json:"tolerance,omitempty"`
+	Tolerated []ToleratedStatement `yaml:"tolerated,omitempty" json:"tolerated,omitempty"`
 }
 
 // EvaluateRatchet applies the per-change coverage ratchet
@@ -618,7 +664,15 @@ type PackageRatchet struct {
 // file is reported as attributable (the original, pre-5a7d0df6 behavior,
 // before the blanket touched-file skip existed — this is the LEAST
 // conservative option, not a conservative one).
-func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string) ([]PackageRatchet, []RatchetWarning) {
+//
+// tolerances (task-3 (b3), from LoadRatchetTolerances on the head checkout)
+// loosens only the count rule, only for the changed packages it names, and
+// only for statements inside the functions an entry lists, on lines the
+// change did not add, modify or move (lineOffsets supplies the moved lines
+// that changed leaves out); see toleratedStatements. A package that passes this way has Rose false and
+// carries Tolerance and Tolerated so the caller can warn about it. Pass nil
+// for the strict ratchet.
+func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles map[string]bool, lineOffsets map[string]FileLineOffsets, baseline PackageBaseline, modulePath string, tolerances RatchetTolerances, changedOwners ...[]string) ([]PackageRatchet, []RatchetWarning) {
 	uncovered := PackageUncoveredCounts(blocks, modulePath)
 	findingsByPackage := make(map[string][]RatchetFinding)
 	reported := make(map[string]map[string]bool) // pkg -> "file:line" already reported
@@ -648,6 +702,11 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 	// `go test`/`go vet` should run over; the ratchet's ownership question
 	// is different and stays as wide as it was before task-19.
 	changedPackages := packageDirsFromFiles(touchedFiles, false)
+	for _, owners := range changedOwners {
+		for _, owner := range owners {
+			changedPackages[strings.TrimPrefix(owner, "./")] = true
+		}
+	}
 
 	blocksByPackage := make(map[string][]CoverageBlock)
 	for _, block := range blocks {
@@ -723,12 +782,14 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 			baselineCount, hasBaseline = 0, true
 		}
 		rose := hasBaseline && count > baselineCount
+		var tolerated []ToleratedStatement
 		if rose {
 			// A count-only rise still needs a file:line an author can act
 			// on (review item B2): every currently-uncovered block in this
 			// package that the baseline did not already record as
 			// uncovered is one of the statements behind the rise.
 			base := baselineBlocks[pkg]
+			var newlyUncovered []CoverageBlock
 			for _, block := range blocksByPackage[pkg] {
 				relativeFile := strings.TrimPrefix(block.File, modulePath+"/")
 				if base[uncoveredBlockKey(block.File, block.StartLine, block.StartCol, block.EndLine, block.EndCol)] {
@@ -738,12 +799,27 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 					continue
 				}
 				if isChangedPkg {
-					report(pkg, relativeFile, block.StartLine, ReasonNewlyUncoveredAtBase)
+					newlyUncovered = append(newlyUncovered, block)
 				} else {
 					warnings = append(warnings, RatchetWarning{Package: pkg, File: relativeFile, Line: block.StartLine, Reason: ReasonNewlyUncoveredAtBase})
 				}
 			}
+			tolerance, configured := tolerances[pkg]
+			tolerated = toleratedStatements(tolerance, configured, count, baselineCount, newlyUncovered, changed, lineOffsets, modulePath)
+			if tolerated != nil {
+				rose = false
+			} else {
+				for _, block := range newlyUncovered {
+					report(pkg, strings.TrimPrefix(block.File, modulePath+"/"), block.StartLine, ReasonNewlyUncoveredAtBase)
+				}
+			}
 		}
+		sort.Slice(tolerated, func(i, j int) bool {
+			if tolerated[i].File != tolerated[j].File {
+				return tolerated[i].File < tolerated[j].File
+			}
+			return tolerated[i].Line < tolerated[j].Line
+		})
 		findings := append([]RatchetFinding(nil), findingsByPackage[pkg]...)
 		sort.Slice(findings, func(i, j int) bool {
 			if findings[i].File != findings[j].File {
@@ -751,7 +827,13 @@ func EvaluateRatchet(blocks []CoverageBlock, changed ChangedLines, touchedFiles 
 			}
 			return findings[i].Line < findings[j].Line
 		})
+		toleranceUsed := 0
+		if tolerated != nil {
+			toleranceUsed = tolerances[pkg].Statements
+		}
 		results = append(results, PackageRatchet{
+			Tolerance:             toleranceUsed,
+			Tolerated:             tolerated,
 			Package:               pkg,
 			Uncovered:             count,
 			BaselineUncovered:     baselineCount,
@@ -791,6 +873,16 @@ func uncoveredBlockKey(file string, startLine, startCol, endLine, endCol int) st
 // worktree so the merge base is measured through the identical
 // .wb/quality.yaml-aware sharded, retried CoverWithOptions runner the head
 // measurement uses (review item 5/non-blocking #1), not a bare `go test`.
+//
+// A ref whose tests fail is still measured, because a base that is red can
+// only be repaired through a pull request this ratchet has to judge: the
+// profile every failing test binary still wrote is used, and the returned
+// baseline names the failed tests in RedBase. Everything else stays fail
+// closed with the same errors as before: a build or setup failure, a test
+// binary that died before writing coverage, a timeout and a missing or
+// unreadable profile. No package is ever given a baseline it was not measured
+// for, so a package absent from the profile is judged by EvaluateRatchet's
+// existing strictest rule (a changed package counts from 0).
 func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout time.Duration, options RunOptions) (PackageBaseline, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -820,7 +912,9 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("git worktree add %s: %w: %s", sha, err, string(output)))
 	}
 	defer func() {
-		removeCmd := exec.Command("git", "worktree", "remove", "--force", worktreeDir)
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancelCleanup()
+		removeCmd := exec.CommandContext(cleanupCtx, "git", "worktree", "remove", "--force", worktreeDir)
 		removeCmd.Dir = repoRoot
 		_ = removeCmd.Run()
 	}()
@@ -835,6 +929,21 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	if err != nil {
 		return PackageBaseline{}, err
 	}
+	if len(options.GoTestPackages) > 0 {
+		selected, err := ExistingCoveragePackages(worktreeDir, options.GoTestPackages)
+		if err != nil {
+			return PackageBaseline{}, err
+		}
+		if len(selected) == 0 {
+			baseline := BaselineFromProfile(nil, modulePath, sha)
+			baseline.IncludeE2E = options.IncludeE2E
+			return baseline, nil
+		}
+		repoOptions = SelectedCoverageOptions(repoOptions, selected)
+	}
+
+	redBase := &redBaseRecorder{}
+	repoOptions.redBase = redBase
 	report := CoverWithOptions(ctx, "merge-base", worktreeDir, repoOptions)
 	if report.Status == StatusFailed {
 		return PackageBaseline{}, refMeasurementError(ctx, ref, timeout, fmt.Errorf("measure coverage at merge base %s: %s", sha, report.Error))
@@ -844,7 +953,10 @@ func ComputeBaselineAtRef(ctx context.Context, repoRoot, ref string, timeout tim
 	if err != nil {
 		return PackageBaseline{}, fmt.Errorf("no coverage profile produced measuring merge base %s (a module with no test files produces none): %w", sha, err)
 	}
-	return BaselineFromProfile(blocks, modulePath, sha), nil
+	baseline := BaselineFromProfile(blocks, modulePath, sha)
+	baseline.IncludeE2E = options.IncludeE2E
+	baseline.RedBase = redBase.baseline(sha)
+	return baseline, nil
 }
 
 // refMeasurementError reports plain as-is unless ctx's own deadline is what

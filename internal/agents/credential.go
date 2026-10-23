@@ -47,7 +47,11 @@ func ResolveCredential(provider Provider) (Credential, error) {
 // on the machine is not a credential, and discovering that at dispatch time is
 // far better than discovering it in a log.
 func ReadCredentialFile(path string) (string, error) {
-	info, err := os.Lstat(path)
+	return readCredentialFileWith(path, os.Lstat, os.ReadFile)
+}
+
+func readCredentialFileWith(path string, inspect func(string) (os.FileInfo, error), read func(string) ([]byte, error)) (string, error) {
+	info, err := inspect(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("provider credential file %s does not exist", path)
@@ -65,7 +69,7 @@ func ReadCredentialFile(path string) (string, error) {
 	if info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("provider credential file %s is readable by group or others (mode %04o); run: chmod 600 %s", path, info.Mode().Perm(), path)
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := read(path)
 	if err != nil {
 		return "", fmt.Errorf("read provider credential file %s: %w", path, err)
 	}

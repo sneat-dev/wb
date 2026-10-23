@@ -456,13 +456,17 @@ type JoinOptions struct {
 // Implements: dependency-streams#req:stream-pushes-use-a-lease-and-a-stream-claim
 // (the join half of the one-stream-per-repository refusal).
 func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResult, error) {
+	return engine.joinWithLoad(ctx, options, engine.Store.Load)
+}
+
+func (engine *Engine) joinWithLoad(ctx context.Context, options JoinOptions, load func(string) (Stream, error)) (StartResult, error) {
 	if err := ValidateName(options.Name); err != nil {
 		return StartResult{}, &Refusal{Code: RefusalUsage, Message: err.Error()}
 	}
 	if err := ValidateRepository(options.Repository); err != nil {
 		return StartResult{}, &Refusal{Code: RefusalUsage, Message: err.Error()}
 	}
-	stream, err := engine.Store.Load(options.Name)
+	stream, err := load(options.Name)
 	if err != nil {
 		return StartResult{}, err
 	}
@@ -495,7 +499,7 @@ func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResul
 		} else if err := engine.reconcileRecordedMemberPullRequestTitle(ctx, options.Name, checkout, member); err != nil {
 			return StartResult{Stream: stream}, err
 		}
-		retried, loadErr := engine.Store.Load(options.Name)
+		retried, loadErr := load(options.Name)
 		if loadErr != nil {
 			return StartResult{}, loadErr
 		}
@@ -577,7 +581,7 @@ func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResul
 			return StartResult{Preflight: preflight}, publishErr
 		}
 	}
-	updated, err := engine.Store.Load(options.Name)
+	updated, err := load(options.Name)
 	if err != nil {
 		return StartResult{Preflight: preflight}, err
 	}

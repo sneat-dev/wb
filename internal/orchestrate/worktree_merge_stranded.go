@@ -8,9 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 )
@@ -96,11 +97,15 @@ type WorktreeMergeStrandedLandingAcknowledgementOptions struct {
 // It never rewrites the historical receipt or any Work Log. This is a
 // dry-run by default; --apply requires --actor and --reason.
 func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options WorktreeMergeStrandedLandingAcknowledgementOptions) (WorktreeMergeStrandedLandingAcknowledgement, error) {
+	return acknowledgeStrandedPullRequestLanding(ctx, options, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, persistStrandedLandingAcknowledgement, githubRead)
+}
+
+func acknowledgeStrandedPullRequestLanding(ctx context.Context, options WorktreeMergeStrandedLandingAcknowledgementOptions, readReceipt func(string) (WorktreeMergeReceipt, error), hash func(string) (string, error), persist func(string, WorktreeMergeStrandedLandingAcknowledgement) error, readPR func(context.Context, string, ...string) (string, error)) (WorktreeMergeStrandedLandingAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
@@ -111,9 +116,6 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 		return WorktreeMergeStrandedLandingAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
 	}
 	lockID := receipt.Lane
-	if lockID == "" {
-		lockID = worktreeMergeLaneID(receipt.Repository, receipt.Target)
-	}
 	lock, err := AcquireOperationLock(options.ProjectsRoot, lockID, true)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
@@ -123,12 +125,12 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	// Every dynamic proof is queried live, under the lane lock: GitHub, never
 	// a local worktree or any evidence gathered before this lock, is
 	// authoritative for whether this candidate landed and still does.
-	landingSHA, currentTarget, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA, proofErr := proveStrandedPullRequestLanding(ctx, receipt)
+	landingSHA, currentTarget, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA, proofErr := proveStrandedPullRequestLandingWithRead(ctx, receipt, readPR)
 	if proofErr != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, proofErr
 	}
 
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hash(receiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
@@ -159,7 +161,7 @@ func AcknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := persistStrandedLandingAcknowledgement(ackPath, ack); err != nil {
+	if err := persist(ackPath, ack); err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
 	return ack, nil
@@ -232,7 +234,7 @@ func recoverAlreadyMergedPublishedWorktreeMerge(ctx context.Context, receipt *Wo
 	// Any stored checks describe the published candidate, not the target after
 	// GitHub merged it. The recursive landed pass must obtain a fresh target
 	// receipt before synchronization or cleanup.
-	receipt.Checks = PullRequestWaitResult{}
+	receipt.Checks = githubchecks.PullRequestWaitResult{}
 	receipt.Status = WorktreeMergeLanded
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
@@ -261,7 +263,11 @@ type strandedPullRequestLandingView struct {
 // this proof may depend on a local worktree, because this receipt shape is
 // defined by that worktree already being gone.
 func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeReceipt) (landingSHA, currentTargetSHA, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA string, err error) {
-	output, readErr := githubRead(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
+	return proveStrandedPullRequestLandingWithRead(ctx, receipt, githubRead)
+}
+
+func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt WorktreeMergeReceipt, readPR func(context.Context, string, ...string) (string, error)) (landingSHA, currentTargetSHA, pullRequestHeadSHA, candidateLanding, candidateLandingTreeSHA string, err error) {
+	output, readErr := readPR(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
 		"--json", "state,mergedAt,mergeCommit,headRefOid,baseRefName")
 	if readErr != nil {
 		return "", "", "", "", "", fmt.Errorf("read pull-request landing state: %w", readErr)
@@ -278,7 +284,7 @@ func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeR
 	}
 	observedPullRequestHead := ""
 	if view.HeadRefOID != receipt.Candidate.SHA {
-		if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID); !contains {
+		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, view.HeadRefOID); !contains {
 			if reason == "" {
 				reason = fmt.Sprintf("pull request %s head %s does not contain exact receipted candidate %s", receipt.PullRequest, view.HeadRefOID, receipt.Candidate.SHA)
 			}
@@ -292,18 +298,18 @@ func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeR
 	if view.MergedAt == "" || view.MergeCommit.OID == "" {
 		return "", "", "", "", "", fmt.Errorf("pull request %s reports MERGED without a merge time or server merge commit", receipt.PullRequest)
 	}
-	currentTarget, headReason := targetHead(ctx, receipt.Repository, receipt.Target)
+	currentTarget, headReason := githubchecks.TargetHead(ctx, receipt.Repository, receipt.Target)
 	if currentTarget == "" {
 		return "", "", "", "", "", fmt.Errorf("read current remote target %s: %s", receipt.Target, headReason)
 	}
-	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, view.MergeCommit.OID, currentTarget); !contains {
+	if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, view.MergeCommit.OID, currentTarget); !contains {
 		if reason == "" {
 			reason = fmt.Sprintf("current remote target %s does not contain proved merge commit %s", currentTarget, view.MergeCommit.OID)
 		}
 		return "", "", "", "", "", errors.New(reason)
 	}
 	if observedPullRequestHead != "" {
-		if contains, reason := candidateContainsTarget(ctx, receipt.Repository, observedPullRequestHead, currentTarget); !contains {
+		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, observedPullRequestHead, currentTarget); !contains {
 			if reason == "" {
 				reason = fmt.Sprintf("current remote target %s does not contain observed pull request head %s", currentTarget, observedPullRequestHead)
 			}
@@ -320,7 +326,7 @@ func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeR
 	// trees from GitHub's own remote state.
 	proofKind := "ancestor"
 	var landingTreeSHA string
-	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, currentTarget); !contains {
+	if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.Candidate.SHA, currentTarget); !contains {
 		identical, treeSHA, treeErr := candidateTreeIdenticalToMergeCommit(ctx, receipt.Repository, view.MergeCommit.OID, receipt.Candidate.SHA)
 		if treeErr != nil {
 			return "", "", "", "", "", treeErr
@@ -334,7 +340,7 @@ func proveStrandedPullRequestLanding(ctx context.Context, receipt WorktreeMergeR
 		proofKind = "tree-identical"
 		landingTreeSHA = treeSHA
 	}
-	if contains, reason := candidateContainsTarget(ctx, receipt.Repository, receipt.TargetSHA, receipt.Candidate.SHA); !contains {
+	if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.TargetSHA, receipt.Candidate.SHA); !contains {
 		if reason == "" {
 			reason = fmt.Sprintf("receipted candidate %s no longer contains its own recorded pre-merge target %s", receipt.Candidate.SHA, receipt.TargetSHA)
 		}
@@ -423,47 +429,15 @@ func persistStrandedLandingAcknowledgement(path string, ack WorktreeMergeStrande
 // its own Injector directly to reach a create/chmod/write/sync/close/rename
 // failure branch deterministically.
 func persistStrandedLandingAcknowledgementInjected(path string, ack WorktreeMergeStrandedLandingAcknowledgement, inj *filewrite.Injector) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".stranded-landing-ack-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Write(temporary, contents, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
-		return err
-	}
-	return filewrite.Rename(temporaryPath, path, inj)
+	return persistMergeAcknowledgement(path, ".stranded-landing-ack-*.tmp", ack, filewrite.Rename, inj)
 }
 
 func readStrandedLandingAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeStrandedLandingAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
+	var ack WorktreeMergeStrandedLandingAcknowledgement
+	if err := readMergeAcknowledgement(path, "stranded-landing acknowledgement", &ack); err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err
 	}
-	var ack WorktreeMergeStrandedLandingAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeStrandedLandingAcknowledgement{}, fmt.Errorf("decode stranded-landing acknowledgement %s: %w", path, err)
-	}
+
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeStrandedLandingAcknowledgement{}, err

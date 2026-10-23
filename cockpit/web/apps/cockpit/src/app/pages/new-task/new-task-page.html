@@ -1,0 +1,91 @@
+<h2 class="title">New task</h2>
+<p class="lead">Fill this in, then copy the commands and run them yourself. Nothing here runs anything.</p>
+
+<form class="form" (submit)="$event.preventDefault()" aria-label="New task">
+  <app-repository-picker [names]="names()" [chosen]="state().repositories" [now]="store.model().now" (added)="add($event)" (removed)="remove($event)" />
+
+  <div class="grid">
+    <div class="field">
+      <label for="new-task-name">Task name</label>
+      <input id="new-task-name" type="text" autocomplete="off" spellcheck="false" placeholder="fix-ci" [value]="state().task" [attr.aria-invalid]="nameError() !== undefined" aria-describedby="new-task-name-hint" (input)="edit({ task: value($event) })" />
+      <p id="new-task-name-hint" class="hint" [class.error]="nameError() !== undefined" [attr.role]="nameError() ? 'alert' : null">
+        @if (nameError(); as problem) {
+          {{ problem }}
+        } @else if (existing(); as task) {
+          A task of this name exists, with {{ task.worktrees }} {{ task.worktrees === 1 ? 'worktree' : 'worktrees' }}: <a [routerLink]="task.link.path" [queryParams]="task.link.query">open it</a>. The commands add to it.
+        } @else {
+          The worktree and the branch name: letters, digits, dots, underscores and hyphens.
+        }
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="new-task-base">Base branch <span class="optional">optional</span></label>
+      <input id="new-task-base" type="text" autocomplete="off" spellcheck="false" [placeholder]="defaultBranch() ?? 'the default branch'" [value]="state().base" (input)="edit({ base: value($event) })" />
+      <p class="hint">
+        @if (defaultBranch(); as branch) {
+          Left empty it is <code>{{ branch }}</code>, the default branch.
+        } @else {
+          Left empty it is each repository's default branch.
+        }
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="new-task-model">Model @if (dispatching()) {<span class="optional">not used with a brief</span>}</label>
+      <input id="new-task-model" type="text" list="new-task-models" autocomplete="off" spellcheck="false" placeholder="opus" [required]="!dispatching()" [value]="state().model" (input)="edit({ model: value($event) })" />
+      <datalist id="new-task-models">
+        @for (model of models(); track model) {
+          <option [value]="model"></option>
+        }
+      </datalist>
+      <p class="hint">
+        @if (dispatching()) {
+          <code>wb agent dispatch</code> takes a profile, not a model: the model is the profile's.
+        } @else {
+          Required to create the worktrees. Pick one or type any; <code>unknown</code> says the model is not known.
+        }
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="new-task-profile">Agent profile <span class="optional">optional</span></label>
+      <input id="new-task-profile" type="text" autocomplete="off" spellcheck="false" placeholder="cheap-coder" [value]="state().profile" (input)="edit({ profile: value($event) })" />
+      <p class="hint">A profile named in <code>wb.yaml</code> (<code>agents.profiles</code>), for <code>wb agent dispatch</code>. Left empty the command has a place to fill it in.</p>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="new-task-brief">Brief</label>
+    <textarea id="new-task-brief" rows="4" placeholder="What the agent should do. It goes to wb agent dispatch --task." [value]="brief()" (input)="brief.set(value($event))"></textarea>
+    <p class="hint">
+      Several lines are fine. It stays on this page and is not put in the address.
+      @if (dispatching()) {
+        With a brief the commands are <code>wb agent dispatch</code>, which creates the worktree itself.
+      } @else {
+        Type a brief to get <code>wb agent dispatch</code> (it creates the worktree itself) in place of <code>wb worktree create</code>.
+      }
+    </p>
+  </div>
+
+  <fieldset class="machines">
+    <legend>Run on</legend>
+    @for (candidate of choices(); track candidate.id ?? '') {
+      <label class="machine">
+        <input type="radio" name="new-task-machine" [value]="candidate.id ?? ''" [checked]="candidate === choice()" (change)="edit({ machine: candidate.id }, true)" />
+        <span class="machine-name">{{ candidate.name }}</span>&ngsp;@let load = loadOf(candidate.metricsId);
+        <app-state-badge kind="load" size="small" [value]="load.state" hint="Whether this machine can take another agent, from its latest sample" />
+        @if (load.stale; as why) {
+          &ngsp;<span class="quiet">{{ why }}</span>
+        }
+      </label>
+    }
+    @if (choices().length === 1) {
+      <p class="hint">Other machines are offered to an owner session that has an SSH route to them.</p>
+    }
+  </fieldset>
+</form>
+
+<section class="output" aria-label="Commands">
+  <app-copy-command-list [entries]="commands()" />
+</section>

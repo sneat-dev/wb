@@ -13,6 +13,7 @@ import (
 )
 
 func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
+	t.Parallel()
 	// Keep this check at the command boundary: these flags are the explicit
 	// contract users select before a backend can inspect WB state or Git.
 	checks := []struct {

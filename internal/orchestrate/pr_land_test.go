@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/gitcli/gitclitest"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -47,17 +51,11 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	}
 	root := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(root, "projects"))
-	seed := filepath.Join(root, "seed")
+	seed := pullRequestGitSeed(t)
 	remote := filepath.Join(root, "remote.git")
 	projects := filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
-	writeEngineFile(t, filepath.Join(seed, "go.mod"), "module example.test/app\n\ngo 1.24\n")
-	runEngineGit(t, seed, "init", "-b", "main")
-	runEngineGit(t, seed, "config", "user.name", "WB Test")
-	runEngineGit(t, seed, "config", "user.email", "wb@example.test")
-	runEngineGit(t, seed, "add", "-A")
-	runEngineGit(t, seed, "commit", "-m", "initial")
-	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	runEngineGit(t, root, "clone", "--bare", "--no-hardlinks", seed, remote)
 	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	// The fake GitHub commits in the remote itself (update-branch, another
 	// landing advancing main), so it needs an identity of its own: a CI runner
@@ -67,7 +65,7 @@ func newLandFixture(t *testing.T, branch string, files ...string) *landFixture {
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runEngineGit(t, root, "clone", remote, canonical)
+	runEngineGit(t, root, "clone", "--no-hardlinks", remote, canonical)
 	runEngineGit(t, canonical, "config", "user.name", "WB Test")
 	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")
 
@@ -153,6 +151,7 @@ func (fixture *landFixture) installGH(t *testing.T, branch string, files []strin
 	fixture.writeState(t, "pr-state", "open")
 	fixture.writeState(t, "merged", "false")
 	fixture.writeState(t, "head", fixture.headSHA)
+	fixture.writeState(t, "head-repository", "acme/app")
 	fixture.writeState(t, "files", string(encodedFiles))
 	fixture.writeState(t, "commits", string(encodedCommits))
 	fixture.writeState(t, "check-conclusion", "success")
@@ -192,8 +191,11 @@ case "$*" in
     fi
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main); fi
-    printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"Summary line.\\n\\n## Details\\nhidden","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
-      "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head"
+    # body is JSON-escaped already; a test may replace it through state.
+    body='Summary line.\n\n## Details\nhidden'
+    if [ -f "$S/body" ]; then body=$(cat "$S/body"); fi
+    printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"%s","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"main","sha":""}}\n' \
+      "$state" "$body" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" "$(cat "$S/head-repository")"
     # M3: a force push that landed in the exact window between the
     # update-branch write and this read must be visible on the NEXT read,
     # never THIS one - the response above already used the head captured at
@@ -208,6 +210,10 @@ case "$*" in
     fi ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
+  'api repos/acme/app/pulls?state=all&per_page=1&base='*|'api repos/acme/app/pulls?state=all&per_page=1&base='*' --include')
+    # Pull requests onto the head branch; a test may name some.
+    if [ -f "$S/open-onto-fail" ]; then printf '{"message":"Server Error"}\n'; exit 1; fi
+    if [ -f "$S/open-onto" ]; then cat "$S/open-onto"; else printf '[]\n'; fi ;;
   'api repos/acme/app/issues/comments/'*)
     # comment-body is written by the test already JSON-escaped (no
     # surrounding quotes), so the shell only has to wrap it.
@@ -235,7 +241,9 @@ case "$*" in
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
     if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
     printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
-  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100')
+    if [ -f "$S/rules-403" ]; then echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1; fi
+    if [ -f "$S/rules" ]; then cat "$S/rules"; else printf '%s\n' '[]'; fi ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     printf '{"object":{"sha":"%s"}}\n' "$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)" ;;
   'api repos/acme/app/git/ref/heads/'*)
@@ -283,10 +291,15 @@ case "$*" in
         printf 'closed' >"$S/pr-state"
       fi
     fi
-    printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")" ;;
+    if [ -f "$S/check-runs" ]; then
+      cat "$S/check-runs"
+    else
+      printf '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"%s","app":{"id":42}}]}\n' "$(cat "$S/check-conclusion")"
+    fi ;;
   'api --method PUT repos/acme/app/pulls/7/merge')
     echo "merge called with no arguments" >&2; exit 2 ;;
-  *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
+  *'/status?per_page=100 --include'|*'/status?per_page=100')
+    if [ -f "$S/statuses" ]; then cat "$S/statuses"; else printf '%s\n' '{"total_count":0,"statuses":[]}'; fi ;;
   'api repos/acme/app/commits/'*' --include'|'api repos/acme/app/commits/'*)
     # A singular commit lookup (#586's parent-shape check), never a
     # /check-runs or /status suffix — those match the patterns above first.
@@ -375,6 +388,34 @@ case "$*" in
           printf 'closed' >"$S/pr-state"
         fi
         printf '{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"autoMergeRequest":{"enabledAt":"2026-09-18T00:00:00Z"}}}}}\n' ;;
+      *enqueuePullRequest*)
+        # GitHub's merge queue: the fixture records the pinned head and
+        # queues the pull request; queue-outcome decides what the queue does
+        # on its next observation (see the isInMergeQueue case).
+        printf '%s' "$*" >"$S/enqueue-args"
+        printf '1' >"$S/queued"
+        printf '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED","position":1}}}}\n' ;;
+      *isInMergeQueue*)
+        if [ -f "$S/queued" ]; then
+          case "$(cat "$S/queue-outcome" 2>/dev/null)" in
+            merge)
+              tip=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)
+              group=$(git --git-dir="$WB_LAND_REMOTE" commit-tree "$(git --git-dir="$WB_LAND_REMOTE" rev-parse "$head^{tree}")" -p "$tip" -p "$head" -m "Merge pull request #7")
+              git --git-dir="$WB_LAND_REMOTE" update-ref refs/heads/main "$group"
+              rm -f "$S/queued"; printf 'true' >"$S/merged"; printf 'closed' >"$S/pr-state"; merged=true ;;
+            fail)
+              rm -f "$S/queued"; printf 'failed_checks' >"$S/queue-removed" ;;
+          esac
+        fi
+        gstate=OPEN; queued=false; entry=null; nodes='[]'; commit=null
+        if [ "$merged" = true ]; then gstate=MERGED; commit="{\"oid\":\"$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)\"}"; fi
+        if [ -f "$S/queued" ]; then
+          queued=true; entry='{"state":"AWAITING_CHECKS","position":1}'; nodes='[{"__typename":"AddedToMergeQueueEvent"}]'
+        elif [ -f "$S/queue-removed" ]; then
+          nodes="[{\"__typename\":\"RemovedFromMergeQueueEvent\",\"reason\":\"$(cat "$S/queue-removed")\",\"createdAt\":\"2026-10-21T12:00:00Z\"}]"
+        fi
+        printf '{"data":{"repository":{"pullRequest":{"id":"PR_kwDOtest7","state":"%s","merged":%s,"headRefOid":"%s","isInMergeQueue":%s,"mergeCommit":%s,"mergeQueueEntry":%s,"timelineItems":{"nodes":%s}}}}}\n' \
+          "$gstate" "$merged" "$head" "$queued" "$commit" "$entry" "$nodes" ;;
       *) echo "unexpected graphql: $*" >&2; exit 2 ;;
     esac ;;
   'api --method PUT repos/acme/app/pulls/7/update-branch'*)
@@ -413,7 +454,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(testfixture.WithEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_LAND_STATE", fixture.state)
@@ -472,32 +513,32 @@ func TestPullRequestLandPartitionsLongTimeoutIntoBoundedSlices(t *testing.T) {
 		t.Fatalf("wait slices = %v, want %v", got, want)
 	}
 	for _, slice := range got {
-		if slice > MaxForegroundCheckWaitSlice {
-			t.Fatalf("slice %s exceeds %s", slice, MaxForegroundCheckWaitSlice)
+		if slice > githubchecks.MaxForegroundCheckWaitSlice {
+			t.Fatalf("slice %s exceeds %s", slice, githubchecks.MaxForegroundCheckWaitSlice)
 		}
 	}
 }
 
 func TestPullRequestLandContinuesPendingBoundedSlicesWithinTotalBudget(t *testing.T) {
 	t.Parallel()
-	options := PullRequestWaitOptions{
+	options := githubchecks.PullRequestWaitOptions{
 		Repository: "acme/app", PullRequest: "7", Target: "main", Head: strings.Repeat("a", 40),
 		Slice: 20 * time.Minute, CheckPollInterval: time.Minute,
 	}
 	var observed []time.Duration
-	result, err := waitForPullRequestLandChecksWith(context.Background(), options, func(_ context.Context, current PullRequestWaitOptions) (PullRequestWaitResult, error) {
+	result, err := waitForPullRequestLandChecksWith(context.Background(), options, func(_ context.Context, current githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
 		observed = append(observed, current.Slice)
-		status := PullRequestWaitPending
+		status := githubchecks.PullRequestWaitPending
 		if len(observed) == 3 {
-			status = PullRequestWaitPassed
+			status = githubchecks.PullRequestWaitPassed
 		}
-		return PullRequestWaitResult{Status: status}, nil
+		return githubchecks.PullRequestWaitResult{Status: status}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != PullRequestWaitPassed {
-		t.Fatalf("status = %s, want %s", result.Status, PullRequestWaitPassed)
+	if result.Status != githubchecks.PullRequestWaitPassed {
+		t.Fatalf("status = %s, want %s", result.Status, githubchecks.PullRequestWaitPassed)
 	}
 	want := []time.Duration{9 * time.Minute, 9 * time.Minute, 2 * time.Minute}
 	if !slices.Equal(observed, want) {
@@ -556,7 +597,7 @@ func TestLandPullRequestResumeReconcilesMergeAfterTransientWriteAndRead(t *testi
 	options.Keep = false
 
 	first, err := LandPullRequest(context.Background(), options)
-	if err == nil || !IsTransientGitHubFailure(err) || !strings.Contains(err.Error(), "resumable: wb pr land acme/app#7") {
+	if err == nil || !githubobserver.IsTransientGitHubFailure(err) || !strings.Contains(err.Error(), "resumable: wb pr land acme/app#7") {
 		t.Fatalf("first landing = %+v err=%v, want resumable transient failure", first, err)
 	}
 	if fixture.readState(t, "merged") != "true" {
@@ -886,7 +927,7 @@ func TestSavingsCountEveryAbsorbedCallAndLabelTheEstimate(t *testing.T) {
 // find it. It used to interpolate the base branch, which named nothing.
 func TestAggregatedBodyNamesTheRepositoryAndNumber(t *testing.T) {
 	t.Parallel()
-	view := PullRequestView{Number: 41, Title: "feat: the change", Body: "Summary."}
+	view := githubchecks.PullRequestView{Number: 41, Title: "feat: the change", Body: "Summary."}
 	view.Base.Ref = "main"
 	view.Base.Repo = &struct {
 		FullName string `json:"full_name"`
@@ -897,88 +938,6 @@ func TestAggregatedBodyNamesTheRepositoryAndNumber(t *testing.T) {
 	}
 	if strings.Contains(body, "main#41") {
 		t.Fatalf("the base branch is not a pull-request identity:\n%s", body)
-	}
-}
-
-// M2: the classification reads the diff, not the filename. A `package.json`
-// holds the scripts CI runs and the overrides that rewrite the whole graph.
-func TestMechanicalIsDecidedFromContent(t *testing.T) {
-	t.Parallel()
-	versionOnly := `@@ -5,7 +5,7 @@
-   "dependencies": {
--    "lodash": "^4.17.20"
-+    "lodash": "^4.17.21"
-   }`
-	scriptsOnly := `@@ -2,7 +2,7 @@
-   "scripts": {
--    "build": "tsc"
-+    "build": "tsc && node scripts/postbuild.js"
-   }`
-	overrides := `@@ -9,7 +9,7 @@
-   "pnpm": {
-     "overrides": {
--      "semver": "7.5.4"
-+      "semver": "7.6.0"
-     }`
-	for _, testCase := range []struct {
-		name  string
-		files []ChangedFile
-		want  bool
-	}{
-		{"a version-only manifest edit", []ChangedFile{{Filename: "package.json", Patch: versionOnly}}, true},
-		{"go.mod and go.sum alone", []ChangedFile{
-			{Filename: "go.mod", Patch: "@@\n-require x v1\n+require x v2\n"},
-			{Filename: "go.sum", Patch: "@@\n-x v1 h1:a=\n+x v2 h1:b=\n"},
-		}, true},
-		{"a scripts edit inside a manifest", []ChangedFile{{Filename: "package.json", Patch: scriptsOnly}}, false},
-		{"a pnpm override", []ChangedFile{{Filename: "package.json", Patch: overrides}}, false},
-		{"a manifest under testdata", []ChangedFile{{Filename: "internal/x/testdata/package.json", Patch: versionOnly}}, false},
-		{"a manifest beside a source file", []ChangedFile{
-			{Filename: "go.mod", Patch: "@@\n-require x v1\n+require x v2\n"},
-			{Filename: "main.go", Patch: "@@\n-a\n+b\n"},
-		}, false},
-		{"a manifest GitHub could not diff", []ChangedFile{{Filename: "pnpm-lock.yaml", Patch: ""}}, false},
-		{"no files at all", nil, false},
-		// The sneat-apps#3494 shape: the only context is in the hunk header, so
-		// skipping it left the section stack empty and a real bump was refused.
-		{"a bump whose section is only in the hunk header", []ChangedFile{{
-			Filename: "package.json",
-			Patch: "@@ -12,7 +12,7 @@   \"dependencies\": {\n" +
-				"     \"@sneat/core\": \"0.68.0\",\n" +
-				"-    \"@sneat/extensions\": \"0.38.3\",\n" +
-				"+    \"@sneat/extensions\": \"0.38.4\",\n" +
-				"     \"rxjs\": \"7.8.1\"",
-		}}, true},
-		// Graph rewrites are never a version bump, in any manifest.
-		{"an npm overrides block", []ChangedFile{{
-			Filename: "package.json",
-			Patch:    "@@ -20,7 +20,7 @@   \"overrides\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
-		}}, false},
-		{"a yarn resolutions block", []ChangedFile{{
-			Filename: "package.json",
-			Patch:    "@@ -20,7 +20,7 @@   \"resolutions\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
-		}}, false},
-		{"a go.mod replace directive", []ChangedFile{{
-			Filename: "go.mod",
-			Patch:    "@@ -8,3 +8,3 @@\n-require github.com/acme/lib v1.2.0\n+require github.com/acme/lib v1.3.0\n+replace github.com/acme/lib => ../lib",
-		}}, false},
-		{"a go directive bump", []ChangedFile{{
-			Filename: "go.mod",
-			Patch:    "@@ -3,1 +3,1 @@\n-go 1.24\n+go 1.25",
-		}}, false},
-		{"a pnpm-workspace overrides block", []ChangedFile{{
-			Filename: "pnpm-workspace.yaml",
-			Patch:    "@@ -1,4 +1,4 @@\n overrides:\n-  semver: 7.5.4\n+  semver: 7.6.0",
-		}}, false},
-		{"a plain go.mod require bump", []ChangedFile{{
-			Filename: "go.mod",
-			Patch:    "@@ -8,1 +8,1 @@\n-\tgithub.com/acme/lib v1.2.0\n+\tgithub.com/acme/lib v1.3.0",
-		}}, true},
-	} {
-		verdict := ClassifyMechanical(testCase.files)
-		if verdict.Mechanical != testCase.want {
-			t.Errorf("%s: mechanical = %t, want %t (%s)", testCase.name, verdict.Mechanical, testCase.want, verdict.Summary())
-		}
 	}
 }
 

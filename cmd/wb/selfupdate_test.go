@@ -1,169 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"errors"
-	"io/fs"
-	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/spf13/cobra"
-	"github.com/strongo/cli-helpers/selfupdate"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
+	"github.com/sneat-dev/wb/internal/wbupdate"
 )
-
-// TestNewSelfUpdateConfigIdentity pins wb's own release identity: the
-// GitHub repository, binary name, and undetermined-version placeholder that
-// must match collectVersion's own fallback (REQ: wb-release-identity,
-// REQ: wb-version-identity).
-func TestNewSelfUpdateConfigIdentity(t *testing.T) {
-	cfg := newSelfUpdateConfig()
-
-	if cfg.BinaryName != "wb" {
-		t.Errorf("BinaryName = %q, want %q", cfg.BinaryName, "wb")
-	}
-	if cfg.Repository != "sneat-dev/wb" {
-		t.Errorf("Repository = %q, want %q", cfg.Repository, "sneat-dev/wb")
-	}
-	// Both spellings of "this build cannot say its version" must be declared,
-	// or the library compares the placeholder as if it were a real version.
-	// "(devel)" is not hypothetical: it is what the Go toolchain stamps into
-	// build.Main.Version for every `go build ./cmd/wb`, and an undeclared
-	// "(devel)" made a locally built wb report an update available FROM a
-	// version that does not exist.
-	for _, want := range []string{"unknown", "(devel)"} {
-		if !slices.Contains(cfg.UndeterminedVersions, want) {
-			t.Errorf("UndeterminedVersions = %v, missing %q", cfg.UndeterminedVersions, want)
-		}
-	}
-	// A Go pseudo-version is a KNOWN version that sorts below its release, so
-	// it must not be swept into the undetermined set.
-	if slices.Contains(cfg.UndeterminedVersions, "v0.23.3-0.20260809071100-889b6d621f76") {
-		t.Error("a Go pseudo-version must not be treated as undetermined")
-	}
-	// wb's placeholders must match what collectVersion actually produces, or a
-	// genuinely unstamped build reports itself "undetermined" to a human while
-	// comparing as a real, sortable version to the library.
-	if cfg.CurrentVersion != collectVersion().Version {
-		t.Errorf("CurrentVersion = %q, want %q (collectVersion().Version)", cfg.CurrentVersion, collectVersion().Version)
-	}
-}
-
-// TestNewSelfUpdateConfigHomebrewOnly pins REQ: wb-homebrew-cask: exactly
-// one manager, Homebrew, with the non-interactive --yes --cask upgrade command wb's cask (not a
-// formula) requires. No Scoop or WinGet — wb publishes no Windows build.
-func TestNewSelfUpdateConfigHomebrewOnly(t *testing.T) {
-	cfg := newSelfUpdateConfig()
-
-	if len(cfg.Managers) != 1 {
-		t.Fatalf("Managers = %d entries, want exactly 1 (Homebrew only)", len(cfg.Managers))
-	}
-	manager := cfg.Managers[0]
-	if manager.Name != "Homebrew" {
-		t.Errorf("Managers[0].Name = %q, want %q", manager.Name, "Homebrew")
-	}
-	if manager.UpgradeCommand != selfUpdateHomebrewUpgradeCommand {
-		t.Errorf("Managers[0].UpgradeCommand = %q, want %q", manager.UpgradeCommand, selfUpdateHomebrewUpgradeCommand)
-	}
-	if manager.UpgradeExecutable != "" || manager.UpgradeArgs != nil {
-		t.Errorf("legacy manager command = %q %v, want ordered steps only", manager.UpgradeExecutable, manager.UpgradeArgs)
-	}
-	if len(manager.UpgradeSteps) != 2 || manager.UpgradeSteps[0].Executable != "brew" ||
-		!slices.Equal(manager.UpgradeSteps[0].Args, []string{"update"}) ||
-		manager.UpgradeSteps[1].Executable != "brew" ||
-		!slices.Equal(manager.UpgradeSteps[1].Args, []string{"upgrade", "--yes", "--cask", "--", "wb"}) {
-		t.Errorf("Managers[0].UpgradeSteps = %+v, want brew update then non-interactive brew cask upgrade", manager.UpgradeSteps)
-	}
-	if !manager.CanExecuteUpgrade() {
-		t.Error("Managers[0] is redirect-only; want executable Homebrew upgrade")
-	}
-}
-
-// TestNewSelfUpdateConfigVersionProbeArgs pins REQ: wb-version-identity: the
-// post-swap probe must use wb's machine-readable spelling, not the library's
-// "--version" default.
-func TestNewSelfUpdateConfigVersionProbeArgs(t *testing.T) {
-	cfg := newSelfUpdateConfig()
-	want := []string{"version", "--json"}
-	if len(cfg.VersionProbeArgs) != len(want) {
-		t.Fatalf("VersionProbeArgs = %v, want %v", cfg.VersionProbeArgs, want)
-	}
-	for i, arg := range want {
-		if cfg.VersionProbeArgs[i] != arg {
-			t.Errorf("VersionProbeArgs[%d] = %q, want %q", i, cfg.VersionProbeArgs[i], arg)
-		}
-	}
-}
-
-// TestNewSelfUpdateConfigSupportedPlatforms pins REQ: wb-release-identity:
-// exactly the darwin/linux x amd64/arm64 matrix .goreleaser.yml publishes —
-// no more, no less, so an unpublished platform is refused by the library
-// rather than attempting a swap wb has no asset for.
-func TestNewSelfUpdateConfigSupportedPlatforms(t *testing.T) {
-	cfg := newSelfUpdateConfig()
-	want := map[selfupdate.Platform]bool{
-		{GOOS: "darwin", GOARCH: "amd64"}: true,
-		{GOOS: "darwin", GOARCH: "arm64"}: true,
-		{GOOS: "linux", GOARCH: "amd64"}:  true,
-		{GOOS: "linux", GOARCH: "arm64"}:  true,
-	}
-	if len(cfg.SupportedPlatforms) != len(want) {
-		t.Fatalf("SupportedPlatforms = %v, want exactly %d entries", cfg.SupportedPlatforms, len(want))
-	}
-	for _, p := range cfg.SupportedPlatforms {
-		if !want[p] {
-			t.Errorf("unexpected platform %+v in SupportedPlatforms", p)
-		}
-		delete(want, p)
-	}
-	if len(want) != 0 {
-		t.Errorf("SupportedPlatforms is missing %v", want)
-	}
-}
-
-// TestNewSelfUpdateConfigDefaultAssetNaming pins the AC that wb's asset
-// naming must match .goreleaser.yml (wb_<version>_<os>_<arch>.tar.gz and
-// wb_<version>_checksums.txt) exactly by NOT overriding AssetName,
-// ChecksumsName, or DownloadURL — the library's own defaults already
-// produce those names (verified against .goreleaser.yml's name_template
-// fields), so an override here would be a silent divergence from the
-// GoReleaser config that publishes the real assets.
-func TestNewSelfUpdateConfigDefaultAssetNaming(t *testing.T) {
-	cfg := newSelfUpdateConfig()
-	if cfg.AssetName != nil {
-		t.Error("AssetName is overridden; wb's naming must match the library's GoReleaser-shaped default")
-	}
-	if cfg.ChecksumsName != nil {
-		t.Error("ChecksumsName is overridden; wb's naming must match the library's GoReleaser-shaped default")
-	}
-	if cfg.DownloadURL != nil {
-		t.Error("DownloadURL is overridden; wb's naming must match the library's GoReleaser-shaped default")
-	}
-}
-
-// TestNewSelfUpdateCmdRegistration pins REQ: command-and-alias: the command
-// is named "self-update" and answers to the "update" alias, with --check,
-// --format json (JSONFormat), --version, and --allow-downgrade all present
-// (registered by cobracmd.New, not reimplemented here).
-func TestNewSelfUpdateCmdRegistration(t *testing.T) {
-	cmd := newSelfUpdateCmd()
-
-	if cmd.Use != "self-update" {
-		t.Errorf("Use = %q, want %q", cmd.Use, "self-update")
-	}
-	if len(cmd.Aliases) != 1 || cmd.Aliases[0] != "update" {
-		t.Errorf("Aliases = %v, want [update]", cmd.Aliases)
-	}
-	for _, flag := range []string{"check", "yes", "version", "allow-downgrade", "dry-run", "format"} {
-		if cmd.Flags().Lookup(flag) == nil {
-			t.Errorf("flag %q is not registered", flag)
-		}
-	}
-}
 
 // TestRootCmdRegistersSelfUpdate pins that the command is actually wired
 // into the root command tree, and that both its canonical name and its
@@ -212,213 +56,6 @@ func TestSelfUpdateVersionFlagNotSwallowedByRoot(t *testing.T) {
 	}
 }
 
-// TestSelfUpdateErrorsFailureMapsToExitFindings pins REQ: exit-code-mapping:
-// every operational failure — release lookup, download, checksum,
-// non-interactive refusal, unknown tag, refused downgrade, and any other
-// non-permission *selfupdate.Failure — is exitFindings (1), never a fourth
-// code.
-func TestSelfUpdateErrorsFailureMapsToExitFindings(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-	}{
-		{"release lookup", &selfupdate.Failure{Kind: selfupdate.KindReleaseLookup, Err: errors.New("network unreachable")}},
-		{"download", &selfupdate.Failure{Kind: selfupdate.KindDownload, Err: errors.New("404")}},
-		{"checksum", &selfupdate.Failure{Kind: selfupdate.KindChecksum, Err: errors.New("mismatch")}},
-		{"non-interactive", &selfupdate.Failure{Kind: selfupdate.KindNonInteractive, Err: errors.New("no tty")}},
-		{"downgrade", &selfupdate.Failure{Kind: selfupdate.KindDowngrade, Err: errors.New("refusing")}},
-		{"unknown tag", &selfupdate.Failure{Kind: selfupdate.KindUnknownTag, Err: errors.New("no such release")}},
-		{"unsupported platform", &selfupdate.Failure{Kind: selfupdate.KindUnsupportedPlatform, Err: errors.New("no asset")}},
-		{"ambiguous", &selfupdate.Failure{Kind: selfupdate.KindAmbiguous, Path: "/opt/wb", Err: errors.New("ambiguous")}},
-		{"unexpected", &selfupdate.Failure{Kind: selfupdate.KindUnexpected, Err: errors.New("boom")}},
-		{"plain error", errors.New("some other failure")},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			mapped := selfUpdateErrors{}.Failure(testCase.err)
-			var coded *exitError
-			if !errors.As(mapped, &coded) {
-				t.Fatalf("Failure(%v) did not return an *exitError: %v", testCase.err, mapped)
-			}
-			if coded.code != exitFindings {
-				t.Errorf("code = %d, want exitFindings (%d)", coded.code, exitFindings)
-			}
-		})
-	}
-}
-
-// TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew pins
-// REQ: permission-remedy-names-brew: a permission failure's message must
-// name the executable path, mention elevated permissions, and give wb's own
-// Homebrew install command as the alternative — the remedy that is
-// specifically wb's own, not the library's.
-func TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew(t *testing.T) {
-	err := &selfupdate.Failure{
-		Kind: selfupdate.KindPermission,
-		Path: "/usr/local/bin/wb",
-		Err:  fs.ErrPermission,
-	}
-
-	mapped := selfUpdateErrors{}.Failure(err)
-	var coded *exitError
-	if !errors.As(mapped, &coded) {
-		t.Fatalf("Failure(%v) did not return an *exitError: %v", err, mapped)
-	}
-	if coded.code != exitFindings {
-		t.Errorf("code = %d, want exitFindings (%d)", coded.code, exitFindings)
-	}
-
-	message := coded.Error()
-	for _, want := range []string{"/usr/local/bin/wb", "elevated permissions", "brew install --cask sneat-dev/tap/wb"} {
-		if !strings.Contains(message, want) {
-			t.Errorf("permission-failure message %q does not contain %q", message, want)
-		}
-	}
-}
-
-// TestSelfUpdateErrorsFailurePermissionWithoutPath covers the defensive
-// fallback when a *selfupdate.Failure of KindPermission somehow carries no
-// Path (the library always sets it today, but the mapper must not print an
-// empty path if that ever changes).
-func TestSelfUpdateErrorsFailurePermissionWithoutPath(t *testing.T) {
-	err := &selfupdate.Failure{Kind: selfupdate.KindPermission, Err: fs.ErrPermission}
-	mapped := selfUpdateErrors{}.Failure(err)
-	var coded *exitError
-	if !errors.As(mapped, &coded) {
-		t.Fatalf("Failure(%v) did not return an *exitError: %v", err, mapped)
-	}
-	if !strings.Contains(coded.Error(), "the wb executable") {
-		t.Errorf("message = %q, want a fallback naming \"the wb executable\"", coded.Error())
-	}
-}
-
-// TestSelfUpdateErrorsUpdateAvailableMapsToExitFindings pins the second half
-// of REQ: exit-code-mapping: an available update under --check is a finding,
-// exitFindings (1), exactly like `wb status` and `wb check` report findings
-// — not a distinct exit code.
-func TestSelfUpdateErrorsUpdateAvailableMapsToExitFindings(t *testing.T) {
-	cases := []selfupdate.CheckResult{
-		{Current: "1.0.0", Latest: "1.1.0", Verdict: selfupdate.UpdateAvailable},
-		{Current: "unknown", Latest: "1.1.0", Verdict: selfupdate.Undetermined},
-	}
-	for _, result := range cases {
-		t.Run(result.Verdict.String(), func(t *testing.T) {
-			mapped := selfUpdateErrors{}.UpdateAvailable(result)
-			var coded *exitError
-			if !errors.As(mapped, &coded) {
-				t.Fatalf("UpdateAvailable(%+v) did not return an *exitError: %v", result, mapped)
-			}
-			if coded.code != exitFindings {
-				t.Errorf("code = %d, want exitFindings (%d)", coded.code, exitFindings)
-			}
-			if !strings.Contains(coded.Error(), result.Current) || !strings.Contains(coded.Error(), result.Latest) {
-				t.Errorf("message %q does not name both current (%q) and latest (%q)", coded.Error(), result.Current, result.Latest)
-			}
-		})
-	}
-}
-
-// fakeSelfUpdateBinary writes an executable POSIX shell script standing in
-// for the exact installed executable identity supplied by the shared provider.
-func fakeSelfUpdateBinary(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "fake-wb")
-	script := "#!/bin/sh\n" + body + "\n"
-	if err := testenv.WriteExecutableFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func successfulSelfUpdate(binary string) selfupdate.AfterUpdate {
-	return selfupdate.AfterUpdate{
-		Outcome: selfupdate.Outcome{
-			Action: selfupdate.ActionManagerExecuted,
-			Result: selfupdate.CheckResult{Current: "0.96.2", Latest: "0.96.3"},
-		},
-		Executable: selfupdate.ExecutableIdentity{Path: binary, ResolvedPath: binary},
-	}
-}
-
-func TestSyncSkillsAfterSelfUpdateUsesProviderExecutableAndReportsVerifiedTarget(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
-	cmd := &cobra.Command{Use: "self-update"}
-	cmd.Flags().String("format", "text", "")
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary)); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"Verified installed wb version: 0.96.3 (was 0.96.2).", "synced: skills sync"} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("stdout = %q, want %q", stdout.String(), want)
-		}
-	}
-	if stderr.Len() != 0 {
-		t.Errorf("stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestSyncSkillsAfterSelfUpdateSkipsAlreadyCurrentAndUnverifiedManagerOutcome(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "unexpected invocation"`)
-	cmd := &cobra.Command{Use: "self-update"}
-	cmd.Flags().String("format", "text", "")
-
-	current := successfulSelfUpdate(binary)
-	current.Outcome.Action = selfupdate.ActionAlreadyCurrent
-	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), current); err != nil {
-		t.Fatalf("already-current callback = %v, want nil", err)
-	}
-
-	stale := successfulSelfUpdate(binary)
-	stale.Outcome.PostSwapWarning = errors.New("installed 0.96.2, want 0.96.3")
-	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), stale)
-	if err == nil || !strings.Contains(err.Error(), "not verified") {
-		t.Fatalf("stale callback error = %v, want verification refusal", err)
-	}
-}
-
-func TestSyncSkillsAfterSelfUpdateReturnsActionableFailure(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "boom" 1>&2; exit 1`)
-	cmd := &cobra.Command{Use: "self-update"}
-	cmd.Flags().String("format", "text", "")
-	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary))
-	if err == nil {
-		t.Fatal("skills sync error = nil, want warning source")
-	}
-	for _, want := range []string{"skills sync failed", "wb skills sync", "boom"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want %q", err, want)
-		}
-	}
-}
-
-func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
-	binary := fakeSelfUpdateBinary(t, `echo "skills-sync-output"`)
-	cmd := &cobra.Command{Use: "self-update"}
-	cmd.Flags().String("format", "text", "")
-	if err := cmd.Flags().Set("format", "json"); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary)); err != nil {
-		t.Fatal(err)
-	}
-	if stdout.Len() != 0 {
-		t.Errorf("stdout = %q, want no nested output in JSON mode", stdout.String())
-	}
-	for _, want := range []string{"Verified installed wb version: 0.96.3", "skills-sync-output"} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Errorf("stderr = %q, want %q", stderr.String(), want)
-		}
-	}
-}
-
 // selfUpdateDaemonHandoffTimeout must always track the daemon package's
 // CURRENT bounds and leave headroom over both of them — the previous fixed
 // 15s constant could cut a supervised wait off partway through, killing the
@@ -426,49 +63,24 @@ func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
 // misleading "could not run" warning instead (sneat-dev/wb#622 review item
 // 11; the bug that motivated this function existing at all).
 func TestSelfUpdateDaemonHandoffTimeoutTracksCurrentBoundsWithHeadroom(t *testing.T) {
-	previousSupervisor := daemonSupervisorRestartTimeout
-	t.Cleanup(func() { daemonSupervisorRestartTimeout = previousSupervisor })
+	bounds := daemonruntime.DefaultLifecycleBounds()
+	timeout := daemonHandoffTimeout(func() daemonruntime.LifecycleBounds { return bounds })
 
-	daemonSupervisorRestartTimeout = 45 * time.Second
-	want := daemonStopTimeout + daemonSupervisorRestartTimeout + selfUpdateDaemonHandoffMargin
-	if got := selfUpdateDaemonHandoffTimeout(); got != want {
-		t.Fatalf("selfUpdateDaemonHandoffTimeout() = %s, want %s", got, want)
+	bounds.SupervisorRestart = 45 * time.Second
+	want := bounds.Stop + bounds.SupervisorRestart + wbupdate.HandoffMargin
+	if got := timeout(); got != want {
+		t.Fatalf("timeout() = %s, want %s", got, want)
 	}
-	if got := selfUpdateDaemonHandoffTimeout(); got <= daemonStopTimeout+daemonSupervisorRestartTimeout {
-		t.Fatalf("timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", got, daemonStopTimeout, daemonSupervisorRestartTimeout)
+	if got := timeout(); got <= bounds.Stop+bounds.SupervisorRestart {
+		t.Fatalf("timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", got, bounds.Stop, bounds.SupervisorRestart)
 	}
 
-	daemonSupervisorRestartTimeout = 5 * time.Second
-	shrunk := selfUpdateDaemonHandoffTimeout()
+	bounds.SupervisorRestart = 5 * time.Second
+	shrunk := timeout()
 	if shrunk >= want {
 		t.Fatalf("timeout did not track a shrunk supervisor bound: %s, want less than %s", shrunk, want)
 	}
-	if shrunk <= daemonStopTimeout+daemonSupervisorRestartTimeout {
-		t.Fatalf("shrunk timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", shrunk, daemonStopTimeout, daemonSupervisorRestartTimeout)
-	}
-}
-
-// A verified update that made no change (ActionAlreadyCurrent), or one whose
-// post-swap version probe already flagged a problem (PostSwapWarning), must
-// never attempt a daemon restart at all — there is nothing to hand a new
-// binary to in the first case, and the second is already reporting its own
-// distinct warning.
-func TestRestartDaemonAfterSelfUpdateSkipsWhenAlreadyCurrentOrPostSwapWarned(t *testing.T) {
-	command := &cobra.Command{Use: "self-update"}
-	var stderr bytes.Buffer
-	command.SetErr(&stderr)
-
-	restartDaemonAfterSelfUpdate(command, context.Background(), selfupdate.AfterUpdate{
-		Outcome: selfupdate.Outcome{Action: selfupdate.ActionAlreadyCurrent},
-	})
-	if stderr.Len() != 0 {
-		t.Fatalf("already-current must not attempt a restart: %q", stderr.String())
-	}
-
-	restartDaemonAfterSelfUpdate(command, context.Background(), selfupdate.AfterUpdate{
-		Outcome: selfupdate.Outcome{Action: selfupdate.ActionUpdated, PostSwapWarning: errors.New("post-swap probe did not confirm the expected version")},
-	})
-	if stderr.Len() != 0 {
-		t.Fatalf("a post-swap warning must not also attempt a restart: %q", stderr.String())
+	if shrunk <= bounds.Stop+bounds.SupervisorRestart {
+		t.Fatalf("shrunk timeout %s does not leave headroom over drain (%s) + supervisor wait (%s)", shrunk, bounds.Stop, bounds.SupervisorRestart)
 	}
 }

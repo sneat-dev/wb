@@ -226,7 +226,11 @@ type dependencies struct {
 }
 
 func defaultDependencies(projectsRoot string) (dependencies, error) {
-	tmuxPath, err := exec.LookPath("tmux")
+	return defaultDependenciesWithLookPath(projectsRoot, exec.LookPath)
+}
+
+func defaultDependenciesWithLookPath(projectsRoot string, lookPath func(string) (string, error)) (dependencies, error) {
+	tmuxPath, err := lookPath("tmux")
 	if err != nil {
 		return dependencies{}, fmt.Errorf("fixed tmux executable is unavailable: %w", err)
 	}
@@ -264,6 +268,10 @@ func PreflightLocal(sourceRuntime string) error {
 	if err != nil {
 		return err
 	}
+	return preflightLocalWithDependencies(sourceRuntime, deps)
+}
+
+func preflightLocalWithDependencies(sourceRuntime string, deps dependencies) error {
 	authority := sessionauthority.Launch{SourceRuntime: sourceRuntime}
 	spec, err := harnessSpecForAuthority(authority, "/")
 	if err != nil {
@@ -296,7 +304,11 @@ func Inspect(ctx context.Context, options Options) (Result, error) {
 // attempt when no launch has been released. It never declares success and
 // never chooses retry policy; Start performs the live-wrapper/abandonment
 // checks again while holding the same aggregate fence.
-func InspectPrepared(_ context.Context, options Options) (PreparedEvidence, error) {
+func InspectPrepared(ctx context.Context, options Options) (PreparedEvidence, error) {
+	return inspectPreparedWithAbsolutePath(ctx, options, filepath.Abs)
+}
+
+func inspectPreparedWithAbsolutePath(_ context.Context, options Options, abs func(string) (string, error)) (PreparedEvidence, error) {
 	resolved, err := resolveAuthority(options)
 	if err != nil {
 		return PreparedEvidence{}, err
@@ -324,8 +336,8 @@ func InspectPrepared(_ context.Context, options Options) (PreparedEvidence, erro
 		}
 		return PreparedEvidence{}, err
 	}
-	worktree, err := filepath.Abs(options.WorktreeDir)
-	if err != nil || filepath.Clean(worktree) != worktree {
+	worktree, err := abs(options.WorktreeDir)
+	if err != nil {
 		return PreparedEvidence{}, fmt.Errorf("successor worktree must be a clean absolute path")
 	}
 	if err := validatePlanForOptions(plan, options, resolved, worktree); err != nil {
@@ -417,6 +429,10 @@ func preparedEvidenceFrom(attempt *launchAttempt, plan launchPlan, ready launche
 }
 
 func startWithDependencies(ctx context.Context, options Options, deps dependencies) (Result, error) {
+	return startWithAbsolutePath(ctx, options, deps, filepath.Abs)
+}
+
+func startWithAbsolutePath(ctx context.Context, options Options, deps dependencies, abs func(string) (string, error)) (Result, error) {
 	resolved, err := resolveAuthority(options)
 	if err != nil {
 		return Result{}, err
@@ -429,12 +445,12 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 	if options.PinnedCommit != authority.PinnedCommit {
 		return Result{}, fmt.Errorf("successor pinned commit %s does not match admitted commit %s", options.PinnedCommit, authority.PinnedCommit)
 	}
-	worktree, err := filepath.Abs(options.WorktreeDir)
-	if err != nil || filepath.Clean(worktree) != worktree {
+	worktree, err := abs(options.WorktreeDir)
+	if err != nil {
 		return Result{}, fmt.Errorf("successor worktree must be a clean absolute path")
 	}
-	storeRoot, err := filepath.Abs(resolved.storeRoot)
-	if err != nil || filepath.Clean(storeRoot) != storeRoot || storeRoot != resolved.storeRoot {
+	storeRoot, err := abs(resolved.storeRoot)
+	if err != nil || storeRoot != resolved.storeRoot {
 		return Result{}, fmt.Errorf("successor handoff store must be a clean absolute path")
 	}
 	handoffAuthority, err := resolved.fence.RetainSessionDir(resolved.storeRoot, authority.AggregateID, authority.AggregateDigest)
@@ -836,6 +852,10 @@ func inspectStarted(ctx context.Context, options Options, deps dependencies, sta
 }
 
 func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
+	return verifyPinnedWorktreeWithGit(ctx, plan, exec.LookPath, launchGitOutput)
+}
+
+func verifyPinnedWorktreeWithGit(ctx context.Context, plan launchPlan, lookPath func(string) (string, error), output func(context.Context, string, ...string) ([]byte, error)) error {
 	mode := sessionauthority.LaunchRootMode(plan.RootMode)
 	if mode == "" {
 		mode = sessionauthority.LaunchRootPinnedClean
@@ -848,7 +868,7 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 		}
 		return nil
 	}
-	gitPath, err := exec.LookPath("git")
+	gitPath, err := lookPath("git")
 	if err != nil {
 		return fmt.Errorf("fixed git executable is unavailable for launch verification: %w", err)
 	}
@@ -856,7 +876,7 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 	if err != nil {
 		return err
 	}
-	head, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}").Output()
+	head, err := output(ctx, gitPath, "-C", plan.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil || string(bytes.TrimSpace(head)) != plan.PinnedCommit {
 		return fmt.Errorf("pinned successor worktree HEAD no longer equals %s", plan.PinnedCommit)
 	}
@@ -864,11 +884,11 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 	if pinnedBranch == "" { // Read compatibility for already-written launch-plan schema v1 artifacts.
 		pinnedBranch = "wb-session/" + plan.HandoffID
 	}
-	branch, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	branch, err := output(ctx, gitPath, "-C", plan.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil || string(bytes.TrimSpace(branch)) != pinnedBranch {
 		return fmt.Errorf("pinned successor worktree is not on its exact WB session branch")
 	}
-	status, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "status", "--porcelain=v1", "--untracked-files=all").Output()
+	status, err := output(ctx, gitPath, "-C", plan.WorktreeDir, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect pinned successor worktree status: %w", err)
 	}
@@ -879,6 +899,10 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 }
 
 func inspectWithDependencies(ctx context.Context, options Options, deps dependencies, replay bool) (Result, error) {
+	return inspectWithAbsolutePath(ctx, options, deps, replay, filepath.Abs)
+}
+
+func inspectWithAbsolutePath(ctx context.Context, options Options, deps dependencies, replay bool, abs func(string) (string, error)) (Result, error) {
 	resolved, err := resolveAuthority(options)
 	if err != nil {
 		return Result{}, err
@@ -905,8 +929,8 @@ func inspectWithDependencies(ctx context.Context, options Options, deps dependen
 		}
 		return Result{}, err
 	}
-	worktree, err := filepath.Abs(options.WorktreeDir)
-	if err != nil || filepath.Clean(worktree) != worktree {
+	worktree, err := abs(options.WorktreeDir)
+	if err != nil {
 		return Result{}, fmt.Errorf("successor worktree must be a clean absolute path")
 	}
 	if err := validatePlanForOptions(plan, options, resolved, worktree); err != nil {
@@ -1178,4 +1202,8 @@ func validatePlanExecutables(plan launchPlan) error {
 		return fmt.Errorf("immutable launch plan has invalid harness executable: %w", err)
 	}
 	return nil
+}
+
+func launchGitOutput(ctx context.Context, executable string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, executable, args...).Output()
 }

@@ -231,14 +231,16 @@ import "os/exec"
 
 func RunSecureHooksGitHelper() { exec.Command("git", "hook-run") }
 
+func runSecureStageGitHelperWithOps() { exec.Command("git", "stage") }
+
 func ordinary() { exec.Command("git", "status") }
 `)
 	matches, err := FindExecSiteMatches(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].Line != 7 {
-		t.Fatalf("matches = %+v, want only the ordinary() call (line 7), not RunSecureHooksGitHelper's", matches)
+	if len(matches) != 1 || matches[0].Line != 9 {
+		t.Fatalf("matches = %+v, want only the ordinary() call (line 9), not either secure helper's", matches)
 	}
 }
 
@@ -717,5 +719,32 @@ func TestFormatExecSitesPendingUsesItsOwnHeaderNotUnitTierPendings(t *testing.T)
 	}
 	if formatted == FormatUnitTierPending(entries) {
 		t.Fatal("FormatExecSitesPending must not render identically to FormatUnitTierPending")
+	}
+}
+
+// Resolver seams still launch the same descriptor-inheriting secure helpers.
+// A similarly named ordinary function must remain visible to the detector.
+func TestFindExecSiteMatchesKeepsSecureResolverSeamsExempt(t *testing.T) {
+	t.Parallel()
+	root := execSiteFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing.go"), `package pkg
+
+import "os/exec"
+
+func setHooksPathAtResolved() { exec.Command("git", "status") }
+func runCanonicalGitBytesWithExecutable() { exec.Command("git", "status") }
+func runSecureStageHelperWithExecutable() { exec.Command("git", "status") }
+func runSecureStageCanonicalGitHelperWithExecutable() { exec.Command("git", "status") }
+func runSecureRenameGitWithObservation() { exec.Command("git", "status") }
+func runSecureCleanupGitHelperWithExecutables() { exec.Command("git", "status") }
+
+func runSecureCleanupGitHelperWithExecutablesOrdinary() { exec.Command("git", "status") }
+`)
+	matches, err := FindExecSiteMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Pattern != ExecSitePatternGitLiteral || !strings.Contains(matches[0].Detail, "git") {
+		t.Fatalf("matches = %+v, want only the similarly named ordinary function", matches)
 	}
 }

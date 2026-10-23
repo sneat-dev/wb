@@ -74,11 +74,6 @@ const (
 	KindRaceOrCover
 )
 
-// IsHeavy reports whether kind is "heavy" under the adaptive (N >= 8)
-// model — lead design (sneat-dev/wb#621): a heavy job is a broad Go/Node
-// test or build, or any coverage or race run.
-func (kind Kind) IsHeavy() bool { return kind == KindBroad || kind == KindRaceOrCover }
-
 // Classify reports what kind of governed work argv is. KindNone means argv
 // is not CPU-governed at all.
 func Classify(argv []string) Kind {
@@ -88,6 +83,8 @@ func Classify(argv []string) Kind {
 	tool := strings.ToLower(filepath.Base(argv[0]))
 	arguments := argv[1:]
 	switch tool {
+	case "wb", "wb.exe":
+		return classifyWBCoverage(arguments)
 	case "go":
 		return classifyGo(arguments)
 	case "golangci-lint":
@@ -471,17 +468,6 @@ func (lease *Lease) Release() {
 	}
 }
 
-// Heartbeat refreshes this Lease's holder record(s) immediately, on top of
-// the automatic background heartbeat armHeartbeat already runs. Safe to call
-// on a nil Lease or one with nothing to refresh; callers no longer need to
-// call this on a timer themselves.
-func (lease *Lease) Heartbeat() {
-	if lease == nil || lease.heartbeat == nil {
-		return
-	}
-	lease.heartbeat()
-}
-
 // Acquire waits for units from one projects-root budget-sum lease pool
 // (the small-machine table, and any other caller — e.g.
 // internal/repositoryevents — sharing plain unit-weighted capacity). Each
@@ -555,11 +541,15 @@ type Admission struct {
 // exactly once, regardless of outcome; Forget on a nil Ticket is a safe
 // no-op.
 func RegisterForAdmission(projectsRoot string, argv []string, self Participant) *Ticket {
+	return registerForAdmissionOnMachine(projectsRoot, argv, self, smallMachine())
+}
+
+func registerForAdmissionOnMachine(projectsRoot string, argv []string, self Participant, small bool) *Ticket {
 	kind := Classify(argv)
 	switch {
 	case kind == KindNone:
 		return nil
-	case smallMachine():
+	case small:
 		// Review finding (PR #628 re-review, Minor 1): on a small machine
 		// every governed kind — KindFocused included — goes through the
 		// same legacy Acquire pool as any other small-machine job (see
@@ -572,10 +562,10 @@ func RegisterForAdmission(projectsRoot string, argv []string, self Participant) 
 		return Register(projectsRoot, self)
 	case kind == KindFocused:
 		return nil
-	case kind.IsHeavy():
-		return RegisterHeavy(projectsRoot, self)
 	default:
-		return Register(projectsRoot, self)
+		// Classify returns only None, Focused, Broad, or RaceOrCover.
+		// The first two were handled above, leaving exactly the heavy kinds.
+		return RegisterHeavy(projectsRoot, self)
 	}
 }
 

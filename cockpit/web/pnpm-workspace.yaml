@@ -1,0 +1,13 @@
+# A single-package Nx workspace. The file exists for pnpm's build-script
+# allowlist: only these packages may run install scripts.
+packages:
+  - '.'
+
+allowBuilds:
+  '@parcel/watcher': true
+  '@swc/core': true
+  esbuild: true
+  less: true
+  lmdb: true
+  msgpackr-extract: true
+  nx: true

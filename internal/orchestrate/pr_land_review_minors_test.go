@@ -12,8 +12,8 @@ import (
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
-// TestLandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate and
-// TestLandDoesNotLeakLocalSyncIntoEvidence moved to
+// TestE2ELandRecordsLocalSyncEvenWhenTheWaitFailsAfterUpdate and
+// TestE2ELandDoesNotLeakLocalSyncIntoEvidence moved to
 // pr_land_review_minors_e2e_test.go (spec/plans/coverage-to-100 task-17):
 // the local-sync fast-forward path now runs through orchestrateGit
 // (internal/runner), which task-24's runtime guard blocks outside the e2e
@@ -326,7 +326,7 @@ func TestAdoptWorktreeMergeUpdateBranchAdvanceRefusesAHeadItDidNotHold(t *testin
 	}
 }
 
-// TestAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable
+// TestE2EAdoptWorktreeMergeUpdateBranchAdvanceSurfacesATransientProofFailureAsRetryable
 // moved to pr_land_review_minors_e2e_test.go (spec/plans/coverage-to-100
 // task-17): verifyUpdateBranchMergeProof now resolves through orchestrateGit
 // (internal/runner), which task-24's runtime guard blocks outside the e2e

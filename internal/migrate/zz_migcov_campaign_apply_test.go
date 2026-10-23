@@ -159,10 +159,7 @@ func TestMigCovRepositoryComponentLayersSortsPeerComponents(t *testing.T) {
 			"github.com/acme/second": {repository: second.repository},
 		},
 	}
-	layers, err := c.repositoryComponentLayers()
-	if err != nil {
-		t.Fatalf("repositoryComponentLayers() = %v", err)
-	}
+	layers := c.repositoryComponentLayers()
 	if len(layers) != 1 || len(layers[0]) != 2 {
 		t.Fatalf("layers = %+v, want one layer with two peer components", layers)
 	}

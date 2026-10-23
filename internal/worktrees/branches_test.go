@@ -3,13 +3,17 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func writeAndCommit(t *testing.T, dir, name, content, message string) string {
@@ -168,6 +172,58 @@ func TestArchiveReviewedBranchRestoresExactHeadOutsideSourceClone(t *testing.T) 
 	if manifest.RestoredHead != head || manifest.VerifiedAt.IsZero() {
 		t.Fatalf("manifest does not record independent restore verification: %#v", manifest)
 	}
+	if manifest.Head != head || manifest.BundleSHA256 == "" || manifest.ReceiptSHA256 != digest || manifest.Receipt != "supersession.json" {
+		t.Fatalf("manifest lost exact recovery identities: %#v", manifest)
+	}
+	for _, name := range []string{"source.bundle", "supersession.json", "manifest.json"} {
+		path := filepath.Join(dir, name)
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("archive file %s mode=%v", name, info.Mode())
+		}
+	}
+	if info, statErr := os.Stat(dir); statErr != nil {
+		t.Fatal(statErr)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Fatalf("recovery directory mode=%v", info.Mode())
+	}
+	if content, readErr := os.ReadFile(filepath.Join(dir, "supersession.json")); readErr != nil || string(content) != "{}\n" {
+		t.Fatalf("copied receipt content=%q err=%v", content, readErr)
+	}
+	results := []BranchCleanupResult{{BranchEntry: BranchEntry{
+		Repository: "acme/app", Branch: "feature/recovery", Base: "missing-target", Scope: BranchScopeLocal,
+		SHA: head, TargetSHA: head, SupersededAtOrigin: true, SupersessionReceipt: receipt, SupersessionSHA256: digest,
+	}, Eligible: true, Outcome: "planned"}}
+	applyBranchCleanup(context.Background(), results, map[string]string{"acme/app": fixture.canonical},
+		BranchCleanupOptions{ReportDir: t.TempDir()}, time.Now())
+	if results[0].RecoveryBundle == "" || results[0].Applied || results[0].Outcome != "failed" {
+		t.Fatalf("archive-before-delete result = %#v", results[0])
+	}
+	if _, err := os.Stat(filepath.Join(results[0].RecoveryBundle, "manifest.json")); err != nil {
+		t.Fatalf("archive was not durable before target refusal: %v", err)
+	}
+	ref, err := os.ReadFile(filepath.Join(fixture.canonical, ".git", "refs", "heads", "feature", "recovery"))
+	if err != nil || strings.TrimSpace(string(ref)) != head {
+		t.Fatalf("failed apply changed the source ref: %q, %v", ref, err)
+	}
+	if _, err := archiveReviewedBranch(context.Background(), t.TempDir(), fixture.canonical, BranchCleanupResult{
+		BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/recovery", SHA: strings.Repeat("0", 40), TargetSHA: head,
+			SupersessionReceipt: receipt, SupersessionSHA256: digest},
+	}); err == nil || !strings.Contains(err.Error(), "restored head") {
+		t.Fatalf("wrong planned head was archived: %v", err)
+	}
+	if err := os.WriteFile(receipt, []byte("changed after planning\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveReviewedBranch(context.Background(), t.TempDir(), fixture.canonical, BranchCleanupResult{
+		BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/recovery", SHA: head, TargetSHA: head,
+			SupersessionReceipt: receipt, SupersessionSHA256: digest},
+	}); err == nil || !strings.Contains(err.Error(), "receipt bytes changed") {
+		t.Fatalf("changed receipt was archived: %v", err)
+	}
 }
 
 func TestArchiveReviewedBranchRefusesUnsafeRecoveryLocations(t *testing.T) {
@@ -275,7 +331,7 @@ func TestReviewedCleanupOptionsAndPlanFailClosed(t *testing.T) {
 		{Repository: "acme/app", Branch: "feature/x", Scope: BranchScopeRemote, Disposition: "", SupersededAtOrigin: true},
 		{Repository: "acme/app", Branch: "feature/y", Scope: BranchScopeRemote, Disposition: BranchSuperseded, SupersededAtOrigin: true},
 	}
-	planned := planBranchCleanup(entries, branchSweepOptions{})
+	planned := worktreebranches.PlanBranchCleanup(entries, branchSweepOptions{}.branchPolicyOptions())
 	if planned[0].Eligible {
 		t.Fatal("empty disposition was eligible for reviewed cleanup")
 	}
@@ -365,7 +421,7 @@ func TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination(t *testing.T) 
 }
 
 func TestRetiredBranchDestinationFlattensTheSourceName(t *testing.T) {
-	got := retiredBranchDestination(time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC), "feature/old/name", "0123456789abcdef")
+	got := worktreebranches.RetiredBranchDestination(time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC), "feature/old/name", "0123456789abcdef")
 	if got != "retired/20260923-feature-old-name-0123456789ab" {
 		t.Fatalf("destination = %q", got)
 	}
@@ -441,21 +497,27 @@ func TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision(t *t
 	head := writeAndCommit(t, fixture.canonical, "old.txt", "old\n", "old branch")
 	gitTest(t, fixture.canonical, "checkout", "main")
 	destination := "retired/20260923-feature-old-" + shortSHA(head)
-	if err := atomicLocalBranchRename(context.Background(), fixture.canonical, "feature/old", destination, head); err != nil {
+	metadata, err := quarantineMetadataCommit(context.Background(), fixture.canonical, head, quarantineCommitMessage(BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", Reason: "obsolete"}, head, "wb-quarantine-test", time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicLocalBranchRetirement(context.Background(), fixture.canonical, "feature/old", destination, head, metadata); err != nil {
 		t.Fatal(err)
 	}
 	if gitRefExists(fixture.canonical, "refs/heads/feature/old") {
 		t.Fatal("source remains after quarantine")
 	}
 	got := gitTestOutput(t, fixture.canonical, "rev-parse", "refs/heads/"+destination)
-	if got != head {
-		t.Fatalf("retired head = %s, want %s", got, head)
+	if got != metadata || gitTestOutput(t, fixture.canonical, "rev-parse", metadata+"^{tree}") != gitTestOutput(t, fixture.canonical, "rev-parse", head+"^{tree}") {
+		t.Fatalf("retired head %s does not preserve original tree %s", got, head)
 	}
-	if err := atomicLocalBranchRename(context.Background(), fixture.canonical, "main", destination, gitTestOutput(t, fixture.canonical, "rev-parse", "main")); err == nil {
+	main := gitTestOutput(t, fixture.canonical, "rev-parse", "main")
+	if err := atomicLocalBranchRetirement(context.Background(), fixture.canonical, "main", destination, main, main); err == nil {
 		t.Fatal("destination collision was accepted")
 	}
 }
 
+//nolint:paralleltest // fixture and private gh executable use process-wide environment overrides.
 func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
 	fixture := newGitFixture(t)
 	bin := t.TempDir()
@@ -482,11 +544,73 @@ func TestBranchQuarantinePlansAndAppliesWithDurableReport(t *testing.T) {
 	if applied.Results[0].Outcome != "quarantined" || applied.ReportPath == "" {
 		t.Fatalf("apply = %#v", applied)
 	}
+
 	if _, err := os.Stat(applied.ReportPath); err != nil {
 		t.Fatalf("durable report: %v", err)
 	}
 	if gitRefExists(fixture.canonical, "refs/heads/feature/quarantine") {
 		t.Fatal("source was not quarantined")
+	}
+}
+
+func TestQuarantineGitMutationHelpersUseRunnerForPreservingCAS(t *testing.T) {
+	t.Parallel()
+	const (
+		path        = "/projects/acme/app"
+		parent      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		tree        = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		metadata    = "cccccccccccccccccccccccccccccccccccccccc"
+		replacement = "dddddddddddddddddddddddddddddddddddddddd"
+	)
+	ctx := context.Background()
+	run := runnertest.New(t)
+	run.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: tree + "\n"}, nil)
+	run.Expect(func(call runnertest.Call) bool {
+		return call.Op == "RunWithInput" && strings.Join(call.Argv(), "\x00") == strings.Join([]string{"git", "-C", path, "commit-tree", tree, "-p", parent, "-F", "-"}, "\x00") && string(call.Input) == "retirement receipt\n"
+	}, runner.Result{Stdout: metadata + "\n"}, nil)
+	got, err := quarantineMetadataCommit(withGitRunner(ctx, run), path, parent, "retirement receipt\n")
+	if err != nil || got != metadata {
+		t.Fatalf("quarantineMetadataCommit = %q, %v", got, err)
+	}
+	retireInput := "start\ncreate refs/heads/retired/old " + metadata + "\ndelete refs/heads/feature/old " + parent + "\nprepare\ncommit\n"
+	run.Expect(func(call runnertest.Call) bool {
+		return call.Op == "RunWithInput" && strings.Join(call.Argv(), "\x00") == strings.Join([]string{"git", "-C", path, "update-ref", "--stdin"}, "\x00") && string(call.Input) == retireInput
+	}, runner.Result{}, nil)
+	if err := atomicLocalBranchRetirement(withGitRunner(ctx, run), path, "feature/old", "retired/old", parent, metadata); err != nil {
+		t.Fatalf("atomicLocalBranchRetirement = %v", err)
+	}
+	run.Expect(func(call runnertest.Call) bool {
+		return call.Op == "RunWithInput" && strings.Join(call.Argv(), "\x00") == strings.Join([]string{"git", "-C", path, "update-ref", "refs/heads/retired/old", replacement, metadata}, "\x00")
+	}, runner.Result{}, nil)
+	if err := atomicLocalRetiredAnnotation(withGitRunner(ctx, run), path, "retired/old", metadata, replacement); err != nil {
+		t.Fatalf("atomicLocalRetiredAnnotation = %v", err)
+	}
+}
+
+func TestQuarantineGitMutationHelpersReportCommandFailures(t *testing.T) {
+	t.Parallel()
+	const path, parent = "/projects/acme/app", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	readFailure := runnertest.New(t)
+	readFailure.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: "missing object"}, errors.New("exit status 128"))
+	if _, err := quarantineMetadataCommit(withGitRunner(context.Background(), readFailure), path, parent, "receipt"); err == nil || !strings.Contains(err.Error(), "read preserved tree") {
+		t.Fatalf("missing preserved tree error = %v", err)
+	}
+	commitFailure := runnertest.New(t)
+	commitFailure.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, nil)
+	commitFailure.ExpectArgv([]string{"git", "-C", path, "commit-tree", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "-p", parent, "-F", "-"}, runner.Result{Stderr: "object write failed"}, errors.New("exit status 128"))
+	if _, err := quarantineMetadataCommit(withGitRunner(context.Background(), commitFailure), path, parent, "receipt"); err == nil || !strings.Contains(err.Error(), "object write failed") {
+		t.Fatalf("metadata creation error = %v", err)
+	}
+	invalidObject := runnertest.New(t)
+	invalidObject.ExpectArgv([]string{"git", "-C", path, "rev-parse", "--verify", parent + "^{tree}"}, runner.Result{CombinedOutput: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, nil)
+	invalidObject.ExpectArgv([]string{"git", "-C", path, "commit-tree", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "-p", parent, "-F", "-"}, runner.Result{Stdout: "not-an-object-id\n"}, nil)
+	if _, err := quarantineMetadataCommit(withGitRunner(context.Background(), invalidObject), path, parent, "receipt"); err == nil || !strings.Contains(err.Error(), "invalid object id") {
+		t.Fatalf("invalid metadata object id error = %v", err)
+	}
+	casFailure := runnertest.New(t)
+	casFailure.ExpectArgv([]string{"git", "-C", path, "update-ref", "refs/heads/retired/old", parent, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, runner.Result{}, errors.New("exit status 128"))
+	if err := atomicLocalRetiredAnnotation(withGitRunner(context.Background(), casFailure), path, "retired/old", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", parent); err == nil || !strings.Contains(err.Error(), "exit status 128") {
+		t.Fatalf("annotation CAS error = %v", err)
 	}
 }
 
@@ -509,13 +633,13 @@ func TestRetiredCountHonoursExactBranchAndAgeSelectors(t *testing.T) {
 	// The count helper's selector predicate is shared for both scopes; this
 	// table protects the no-double-count presentation contract independently of
 	// repository discovery.
-	if !retiredRefSelected(sweep, branchRef{Name: "retired/one", CommitterDate: now.Add(-2 * time.Hour)}) {
+	if !worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), branchRef{Name: "retired/one", CommitterDate: now.Add(-2 * time.Hour)}) {
 		t.Fatal("matching retired ref was excluded")
 	}
-	if retiredRefSelected(sweep, branchRef{Name: "retired/two", CommitterDate: now.Add(-2 * time.Hour)}) {
+	if worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), branchRef{Name: "retired/two", CommitterDate: now.Add(-2 * time.Hour)}) {
 		t.Fatal("exact branch selector was ignored")
 	}
-	if retiredRefSelected(sweep, branchRef{Name: "retired/one", CommitterDate: now.Add(-time.Minute)}) {
+	if worktreebranches.RetiredRefSelected(sweep.branchPolicyOptions(), branchRef{Name: "retired/one", CommitterDate: now.Add(-time.Minute)}) {
 		t.Fatal("age selector was ignored")
 	}
 }
@@ -609,46 +733,6 @@ func TestRetiredNamespaceListsAndCountsTagsSeparately(t *testing.T) {
 				t.Fatalf("tag entry = %#v", entry)
 			}
 		}
-	}
-}
-
-func TestRemoteRetiredTagFetchesMetadataAndHonoursAge(t *testing.T) {
-	fixture := newGitFixture(t)
-	gitTest(t, fixture.canonical, "checkout", "-b", "tag-source")
-	sha := writeAndCommit(t, fixture.canonical, "remote-tag.txt", "remote only\n", "remote retired tag source")
-	gitTest(t, fixture.canonical, "tag", "retired/remote-metadata", sha)
-	gitTest(t, fixture.canonical, "push", "origin", "refs/tags/retired/remote-metadata")
-	gitTest(t, fixture.canonical, "checkout", "main")
-	gitTest(t, fixture.canonical, "branch", "-D", "tag-source")
-	gitTest(t, fixture.canonical, "tag", "-d", "retired/remote-metadata")
-	gitTest(t, fixture.canonical, "gc", "--prune=now")
-	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
-	beforeFetchHead, beforeFetchHeadErr := os.ReadFile(fetchHeadPath)
-	refs, diagnostic := listRetiredTags(context.Background(), fixture.canonical, true, true)
-	if diagnostic != "" || len(refs) != 1 || refs[0].CommitterDate.IsZero() || refs[0].Title != "remote retired tag source" {
-		t.Fatalf("temporary remote tag metadata = %#v, diagnostic=%q", refs, diagnostic)
-	}
-	if gitRefExists(fixture.canonical, "refs/tags/retired/remote-metadata") {
-		t.Fatal("remote metadata fetch created a local tag ref")
-	}
-	afterFetchHead, afterFetchHeadErr := os.ReadFile(fetchHeadPath)
-	if (beforeFetchHeadErr == nil) != (afterFetchHeadErr == nil) || (beforeFetchHeadErr == nil && string(beforeFetchHead) != string(afterFetchHead)) {
-		t.Fatalf("remote metadata fetch changed caller FETCH_HEAD: before=%q/%v after=%q/%v", beforeFetchHead, beforeFetchHeadErr, afterFetchHead, afterFetchHeadErr)
-	}
-
-	outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(outcome.Entries) != 1 || outcome.Entries[0].CommitterDate.IsZero() || outcome.Entries[0].Title != "remote retired tag source" {
-		t.Fatalf("remote tag metadata = %#v", outcome)
-	}
-	aged, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*", OlderThan: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(aged.Entries) != 0 || aged.RetiredTagNames != 0 {
-		t.Fatalf("young remote tag bypassed age filter: %#v", aged)
 	}
 }
 
@@ -849,13 +933,34 @@ func TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 
 	// Advance feature/moves now, simulating a race after planning.
 	gitTest(t, fixture.canonical, "checkout", "feature/moves")
 	writeAndCommit(t, fixture.canonical, "race.txt", "v2\n", "advanced after plan")
 	gitTest(t, fixture.canonical, "checkout", "main")
 	gitTest(t, fixture.canonical, "push", "origin", "feature/moves")
+	blockedAttempted := false
+	for _, candidate := range results {
+		if candidate.Branch != "feature/stays" {
+			continue
+		}
+		blockedAttempted = true
+		blocked := candidate
+		blockedContext := withCanonicalGitInterceptor(ctx, func(_ context.Context, args []string, run func() ([]byte, error)) ([]byte, error) {
+			if len(args) > 0 && args[0] == "update-ref" {
+				return nil, errors.New("injected local compare-and-delete failure")
+			}
+			return run()
+		})
+		applyLocalBranchDeletion(blockedContext, fixture.canonical, &blocked, options)
+		if blocked.Applied || blocked.Outcome != "failed" || !strings.Contains(blocked.Error, "compare-and-delete") {
+			t.Fatalf("local CAS failure was not reported: %#v", blocked)
+		}
+	}
+	if !blockedAttempted {
+		t.Fatal("contained sibling was unavailable for local CAS failure proof")
+	}
 
 	applyBranchCleanup(ctx, results, paths, options, time.Now())
 
@@ -931,7 +1036,7 @@ func TestBranchCleanupUnreadableSkipRowNamesRepositoryAndUnderlyingReason(t *tes
 		t.Fatalf("evidence = %q, want it to name the failed fetch", entry.Evidence)
 	}
 
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 	if len(results) != 1 {
 		t.Fatalf("cleanup results = %d, want exactly 1", len(results))
 	}
@@ -963,11 +1068,95 @@ func TestBranchCleanupAppliesRemoteDeletionWhenNoOpenPullRequestExists(t *testin
 	installMergedPullRequestFixturesWithMerge(t, nil, nil, time.Time{}) // empty gh payload: no PR at all
 
 	gitTest(t, fixture.canonical, "checkout", "-b", "feature/clean-remote")
-	writeAndCommit(t, fixture.canonical, "clean.txt", "v1\n", "clean remote work")
+	head := writeAndCommit(t, fixture.canonical, "clean.txt", "v1\n", "clean remote work")
 	gitTest(t, fixture.canonical, "checkout", "main")
 	gitTest(t, fixture.canonical, "merge", "--no-ff", "-m", "merge feature/clean-remote", "feature/clean-remote")
 	gitTest(t, fixture.canonical, "push", "origin", "main", "feature/clean-remote")
-
+	mainRef, err := os.ReadFile(filepath.Join(fixture.canonical, ".git", "refs", "heads", "main"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "main", Base: "main", Scope: BranchScopeRemote, SHA: strings.TrimSpace(string(mainRef)), Disposition: BranchContained}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &protected, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
+	if protected.Applied || protected.Outcome != "failed" || !strings.Contains(protected.Error, "protected") {
+		t.Fatalf("remote default-branch guard = %#v", protected)
+	}
+	unproved := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchReceipted}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &unproved, BranchCleanupOptions{ProjectsRoot: fixture.projectsRoot})
+	if unproved.Applied || unproved.Outcome != "failed" || !strings.Contains(unproved.Error, "no landing commit") {
+		t.Fatalf("remote receipt proof guard = %#v", unproved)
+	}
+	peer := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchContained}}
+	applyRemoteBranchDeletion(ctx, fixture.canonical, &peer, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Repository: "acme/app", Branch: peer.Branch,
+		PeerEvidence: []string{filepath.Join(t.TempDir(), "missing-peer.json")}, RequireHosts: []string{"peer"}, Now: time.Now,
+	})
+	if peer.Applied || peer.Outcome != "failed" || !strings.Contains(peer.Error, "recheck peer evidence") {
+		t.Fatalf("remote peer recheck = %#v", peer)
+	}
+	missingCanonical := t.TempDir()
+	fake := runnertest.New(t)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"}, runner.Result{}, nil)
+	expectExactRetirementTargetAt(fake, missingCanonical, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "ls-remote", "--heads", "origin", "refs/heads/feature/clean-remote"}, runner.Result{CombinedOutput: head + "\trefs/heads/feature/clean-remote\n"}, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "rev-parse", "--abbrev-ref", "HEAD"}, runner.Result{CombinedOutput: "main\n"}, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "worktree", "list", "--porcelain"}, runner.Result{}, nil)
+	fake.ExpectArgv([]string{"git", "-C", missingCanonical, "merge-base", "--is-ancestor", head, retirementTarget}, runner.Result{}, nil)
+	missing := BranchCleanupResult{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/clean-remote", Base: "main", Scope: BranchScopeRemote, SHA: head, Disposition: BranchContained}}
+	applyRemoteBranchDeletion(withGitRunner(ctx, fake), missingCanonical, &missing, BranchCleanupOptions{})
+	if missing.Applied || missing.Outcome != "failed" || !strings.Contains(missing.Error, "open canonical repository") {
+		t.Fatalf("missing canonical refusal = %#v", missing)
+	}
+	peerOptions := BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: BranchScopeRemote, Apply: true, OlderThan: 0,
+		Repository: "acme/app", Branch: "feature/clean-remote", ReportDir: t.TempDir(),
+		PeerEvidence: []string{filepath.Join(t.TempDir(), "missing-peer.json")}, RequireHosts: []string{"peer"}, Now: time.Now,
+	}
+	peerOutcome, err := BranchCleanup(ctx, peerOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var peerRefused bool
+	for _, result := range peerOutcome.Results {
+		if result.Branch == "feature/clean-remote" && result.Outcome == "failed" && strings.Contains(result.Error, "read peer evidence") {
+			peerRefused = true
+		}
+	}
+	if !peerRefused || peerOutcome.ReportPath == "" || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("peer refusal did not preserve the exact remote head: %#v", peerOutcome)
+	}
+	writes := 0
+	peerOptions.ReportDir = t.TempDir()
+	_, err = branchCleanupWithPorts(ctx, peerOptions, branchCleanupCoordinatorPorts{
+		writeReport: func(dir string, options BranchCleanupOptions, at time.Time, results []BranchCleanupResult) (string, error) {
+			writes++
+			if writes == 2 {
+				return "", errors.New("injected peer rewrite failure")
+			}
+			return writeBranchCleanupReport(dir, options, at, results)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected peer rewrite failure") || writes != 2 || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("peer report rewrite: writes=%d err=%v", writes, err)
+	}
+	_, err = BranchCleanup(ctx, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: BranchScopeRemote, Apply: true,
+		ReportDir: fixture.canonical, Repository: "acme/app", Branch: "feature/clean-remote",
+	})
+	if err == nil || !strings.Contains(err.Error(), "inside source repository") || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("report-inside-source refusal: %v", err)
+	}
+	_, err = branchCleanupWithPorts(ctx, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: BranchScopeRemote, Apply: true,
+		ReportDir: t.TempDir(), Repository: "acme/app", Branch: "feature/clean-remote",
+	}, branchCleanupCoordinatorPorts{
+		writeReport: func(string, BranchCleanupOptions, time.Time, []BranchCleanupResult) (string, error) {
+			return "", errors.New("injected first report failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected first report failure") || remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != head {
+		t.Fatalf("report-before-remote-deletion refusal: %v", err)
+	}
 	outcome, err := BranchCleanup(ctx, BranchCleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: "remote", Apply: true, OlderThan: 0,
 	})
@@ -1066,4 +1255,44 @@ func installOpenPullRequestFixture(t *testing.T, head string) {
 	t.Helper()
 	payload := `[{"number":9,"html_url":"https://example.test/pull/9","state":"open","head":{"ref":"feature/open-pr","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}]`
 	installPullRequestResponses(t, payload, "")
+}
+
+func TestRemoteRetiredTagFetchesMetadataAndHonoursAge(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "tag-source")
+	sha := writeAndCommit(t, fixture.canonical, "remote-tag.txt", "remote only\n", "remote retired tag source")
+	gitTest(t, fixture.canonical, "tag", "retired/remote-metadata", sha)
+	gitTest(t, fixture.canonical, "push", "origin", "refs/tags/retired/remote-metadata")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "branch", "-D", "tag-source")
+	gitTest(t, fixture.canonical, "tag", "-d", "retired/remote-metadata")
+	gitTest(t, fixture.canonical, "gc", "--prune=now")
+	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
+	beforeFetchHead, beforeFetchHeadErr := os.ReadFile(fetchHeadPath)
+	refs, diagnostic := branchInventoryService().ListRetiredTags(context.Background(), fixture.canonical, true, true)
+	if diagnostic != "" || len(refs) != 1 || refs[0].CommitterDate.IsZero() || refs[0].Title != "remote retired tag source" {
+		t.Fatalf("temporary remote tag metadata = %#v, diagnostic=%q", refs, diagnostic)
+	}
+	if gitRefExists(fixture.canonical, "refs/tags/retired/remote-metadata") {
+		t.Fatal("remote metadata fetch created a local tag ref")
+	}
+	afterFetchHead, afterFetchHeadErr := os.ReadFile(fetchHeadPath)
+	if (beforeFetchHeadErr == nil) != (afterFetchHeadErr == nil) || (beforeFetchHeadErr == nil && string(beforeFetchHead) != string(afterFetchHead)) {
+		t.Fatalf("remote metadata fetch changed caller FETCH_HEAD: before=%q/%v after=%q/%v", beforeFetchHead, beforeFetchHeadErr, afterFetchHead, afterFetchHeadErr)
+	}
+
+	outcome, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Entries) != 1 || outcome.Entries[0].CommitterDate.IsZero() || outcome.Entries[0].Title != "remote retired tag source" {
+		t.Fatalf("remote tag metadata = %#v", outcome)
+	}
+	aged, err := BranchList(context.Background(), BranchListOptions{ProjectsRoot: fixture.projectsRoot, Scope: BranchScopeRemote, Name: "retired/*", OlderThan: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aged.Entries) != 0 || aged.RetiredTagNames != 0 {
+		t.Fatalf("young remote tag bypassed age filter: %#v", aged)
+	}
 }

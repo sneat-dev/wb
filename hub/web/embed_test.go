@@ -184,3 +184,22 @@ func TestContentTypeCoversEveryExtensionTheBuildEmits(t *testing.T) {
 		}
 	}
 }
+
+// Every response of the bench dashboard carries its own policy, which the
+// daemon's stricter one does not replace: the Astro build emits inline scripts.
+// It still refuses plugins and a foreign base address.
+func TestBenchDashboardResponsesCarryTheirOwnPolicy(t *testing.T) {
+	t.Parallel()
+	for _, need := range []string{"default-src 'self'", "script-src 'self' 'unsafe-inline'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'"} {
+		if !strings.Contains(PagePolicy, need) {
+			t.Errorf("the policy %q lacks %q", PagePolicy, need)
+		}
+	}
+	for name, handler := range map[string]http.Handler{"built": handlerFor(builtTree(), true), "not built": handlerFor(fstest.MapFS{".gitkeep": {}}, false)} {
+		for _, target := range []string{MountPath, MountPath + "dashboard/", MountPath + "dashboard", MountPath + "nothing/here.html"} {
+			if got := get(t, handler, target).Header.Get("Content-Security-Policy"); got != PagePolicy {
+				t.Errorf("%s %s: policy = %q, want %q", name, target, got, PagePolicy)
+			}
+		}
+	}
+}

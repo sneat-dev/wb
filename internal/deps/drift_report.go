@@ -138,14 +138,12 @@ func WriteDriftReports(directory string, report DriftReport) error {
 	if err := writeAtomic(filepath.Join(directory, "deps-drift.md"), []byte(report.Markdown()), 0o644); err != nil {
 		return err
 	}
-	raw, err := report.YAML()
-	if err != nil {
-		return err
-	}
+	// This concrete report has no fallible YAML marshalers; time.Time uses yaml timev.
+	raw, _ := report.YAML()
 	if err := writeAtomic(filepath.Join(directory, "deps-drift.yaml"), raw, 0o644); err != nil {
 		return err
 	}
-	raw, err = report.JSON()
+	raw, err := report.JSON()
 	if err != nil {
 		return err
 	}

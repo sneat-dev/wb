@@ -23,6 +23,10 @@ import (
 // Nothing is inferred: a missing or unindexable lockfile produces a
 // declared-fallback selection carrying the reason, never a guessed version.
 func inspectNpmDriftRepository(ctx context.Context, repository Repository, options DriftOptions, observedAt time.Time, latest *npmLatestVersions) (DriftRepository, error) {
+	return inspectNpmDriftRepositoryWithLockScopes(ctx, repository, options, observedAt, latest, readNpmLockScopes)
+}
+
+func inspectNpmDriftRepositoryWithLockScopes(ctx context.Context, repository Repository, options DriftOptions, observedAt time.Time, latest *npmLatestVersions, readLocks func(string) (map[string]npmLockScope, error)) (DriftRepository, error) {
 	report := DriftRepository{
 		Repository: repository.Slug,
 		Path:       repository.Path,
@@ -33,7 +37,7 @@ func inspectNpmDriftRepository(ctx context.Context, repository Repository, optio
 	if err != nil {
 		return DriftRepository{}, err
 	}
-	lockScopes, err := readNpmLockScopes(repository.Path)
+	lockScopes, err := readLocks(repository.Path)
 	if err != nil {
 		return DriftRepository{}, err
 	}

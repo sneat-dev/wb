@@ -1,0 +1,10 @@
+<p class="back"><a routerLink="/tasks">&larr; Tasks</a></p>
+@if (found(); as name) {
+  <app-task-panel [name]="name" [page]="true" />
+} @else if (store.warmingUp() || !store.loaded()) {
+  <p class="muted">Waiting for the fleet snapshot…</p>
+} @else if (task() === undefined) {
+  <p>No task was named. Open one from the Tasks list.</p>
+} @else {
+  <p>This task is not in the fleet document; its worktrees may have been removed.</p>
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/process"
@@ -71,6 +72,10 @@ func DefaultOwnerDeps() OwnerDeps {
 // state. It is the process that outlives the dispatching CLI, so everything a
 // later `status` or `await` can learn about the run is written here.
 func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) error {
+	return runOwnerWithSave(ctx, store, agentID, deps, store.Save, maxLogBytes)
+}
+
+func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps OwnerDeps, save func(Record) error, logLimit int64) error {
 	if deps.LookPath == nil {
 		deps.LookPath = exec.LookPath
 	}
@@ -90,7 +95,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		defer cancel()
 	}
 	record.OwnerPID = os.Getpid()
-	if err := store.Save(record); err != nil {
+	if err := save(record); err != nil {
 		return err
 	}
 
@@ -101,7 +106,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		if !record.StartedAt.IsZero() {
 			record.DurationMS = record.FinishedAt.Sub(record.StartedAt).Milliseconds()
 		}
-		return store.Save(record)
+		return save(record)
 	}
 
 	credential, err := ResolveCredential(record.Resolved.Routing)
@@ -139,7 +144,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		return finish(StateFailed, fmt.Sprintf("open run log: %v", err))
 	}
 	defer func() { _ = logFile.Close() }()
-	log := &boundedLog{writer: logFile, remaining: maxLogBytes}
+	log := &boundedLog{writer: logFile, remaining: logLimit}
 
 	// The harness reads the task from stdin, so task text never appears in the
 	// process table, and the command line stays free of it in every log.
@@ -153,7 +158,11 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		return finish(StateFailed, fmt.Sprintf("start %s: %v", record.Resolved.Harness, err))
 	}
 	record.WorkerPID = command.Process.Pid
-	if err := store.Save(record); err != nil {
+	if err := save(record); err != nil {
+		// No durable record owns this child yet. Cancel through the same tree-owned
+		// process boundary and reap it even when the caller supplied no timeout.
+		_ = command.Cancel()
+		_ = command.Wait()
 		return err
 	}
 
@@ -294,6 +303,10 @@ func OwnerCLI(arguments []string, deps OwnerDeps) int {
 // the private owner argument, so a dispatched run needs no daemon and survives
 // the dispatching CLI exiting.
 func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
+	return spawnOwnerWithNull(runDir, executable, func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_RDWR, 0) })
+}
+
+func spawnOwnerWithNull(runDir string, executable func() (string, error), openNull func() (*os.File, error)) (int, error) {
 	path, err := executable()
 	if err != nil {
 		return 0, fmt.Errorf("locate the wb executable for the run owner: %w", err)
@@ -301,7 +314,7 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 	command := exec.Command(path, OwnerArgument, "--run-dir", runDir) //nolint:gosec // current wb executable and fixed arguments
 	command.Env = os.Environ()
 	process.ConfigureDetached(command)
-	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	null, err := openNull()
 	if err != nil {
 		return 0, err
 	}
@@ -311,9 +324,9 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 		return 0, err
 	}
 	pid := command.Process.Pid
-	if err := command.Process.Release(); err != nil {
-		return 0, err
-	}
+	// Go 1.27 Release only errors on Windows when called a second time.
+	// This fresh, locally owned Process has not escaped or been released.
+	_ = command.Process.Release()
 	return pid, nil
 }
 
@@ -322,6 +335,10 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 // so a stopped run reports a real outcome instead of vanishing into
 // "abandoned".
 func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
+	return stopRunWithSignal(store, agentID, deps, terminateOwner)
+}
+
+func stopRunWithSignal(store Store, agentID string, deps OwnerDeps, terminate func(int, syscall.Signal) error) (Record, error) {
 	record, err := store.Load(agentID)
 	if err != nil {
 		return Record{}, err
@@ -338,7 +355,7 @@ func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
 	// Graceful first, then hard: a worker that ignores SIGTERM must still be
 	// stopped, because stop's contract is "terminate the worker and everything
 	// it started", not "ask it politely".
-	if err := terminateOwner(record.WorkerPID, terminationSignal()); err != nil {
+	if err := terminate(record.WorkerPID, terminationSignal()); err != nil {
 		return record, err
 	}
 	deadline := deps.Now().Add(deps.StopGrace)
@@ -346,7 +363,7 @@ func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
 		return processAlive(record.WorkerPID)
 	})
 	if !exited {
-		return record, terminateOwner(record.WorkerPID, killSignal())
+		return record, terminate(record.WorkerPID, killSignal())
 	}
 	return record, nil
 }

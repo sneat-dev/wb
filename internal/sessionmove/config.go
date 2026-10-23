@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/hubaddress"
 )
 
 // Courier names the configured delivery adapter. Machine identity remains the
@@ -72,13 +75,44 @@ func (c SynchestraConfig) Validate() error {
 	return validateFixedArgument("synchestra.runner", c.Runner)
 }
 
+// HTTPConfig is the optional address of a machine's daemon-hosted hub, where
+// another machine's daemon reads its Cockpit export envelope
+// (cockpit-views#req:remote-http-fetch). It is not a Courier: no session is
+// delivered through it, and default_courier never names it.
+//
+// TokenFile is the private file holding the machine bearer credential for that
+// hub. It may be omitted only for the machine whose URL is the hub this
+// machine is already enrolled with (remote.url), whose remote.token_file is
+// then used; the reader decides that, not this package.
+type HTTPConfig struct {
+	URL       string `yaml:"url" json:"url"`
+	TokenFile string `yaml:"token_file,omitempty" json:"token_file,omitempty"`
+}
+
+// Validate holds the URL to the one rule for an address a machine credential
+// is sent to (hubaddress.Valid, which remotestate.ValidateHubURL also applies):
+// an https origin, or http only on a loopback host, with no user information,
+// query, fragment or path. A token file, when named, is an absolute path.
+func (c HTTPConfig) Validate() error {
+	if !hubaddress.Valid(c.URL) {
+		// The value is not echoed: an address with user information holds a password.
+		return errors.New("http.url must be an https origin, or an http origin on a loopback host (localhost, 127.0.0.1 or ::1), with no user information, path, query or fragment")
+	}
+	if c.TokenFile != "" && !filepath.IsAbs(c.TokenFile) {
+		return fmt.Errorf("http.token_file %q must be an absolute path", c.TokenFile)
+	}
+	return nil
+}
+
 // TargetConfig is one WB machine and its separate courier addresses. Machine
 // is populated from the targets map key and is never decoded from an address.
+// HTTP is not a courier address: it is where the machine's export is read.
 type TargetConfig struct {
 	Machine        string            `yaml:"-" json:"machine"`
 	DefaultCourier Courier           `yaml:"default_courier" json:"default_courier"`
 	SSH            *SSHConfig        `yaml:"ssh,omitempty" json:"ssh,omitempty"`
 	Synchestra     *SynchestraConfig `yaml:"synchestra,omitempty" json:"synchestra,omitempty"`
+	HTTP           *HTTPConfig       `yaml:"http,omitempty" json:"http,omitempty"`
 }
 
 // Config is the session_move section of ~/.config/wb/wb.yaml.
@@ -159,6 +193,11 @@ func validateTarget(target TargetConfig) error {
 	}
 	if target.Synchestra != nil {
 		if err := target.Synchestra.Validate(); err != nil {
+			return err
+		}
+	}
+	if target.HTTP != nil {
+		if err := target.HTTP.Validate(); err != nil {
 			return err
 		}
 	}

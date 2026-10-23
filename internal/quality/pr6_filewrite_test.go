@@ -195,10 +195,7 @@ func TestSaveValidationCacheInjectedHonoursInjectedFailures(t *testing.T) {
 			if !errors.Is(err, errBoomPR6) {
 				t.Fatalf("saveValidationCacheInjected(%s failure) = %v, want errBoomPR6", step, err)
 			}
-			digest, digestErr := validationCacheKeyDigest(key)
-			if digestErr != nil {
-				t.Fatal(digestErr)
-			}
+			digest := validationCacheKeyDigest(key)
 			if _, statErr := os.Stat(filepath.Join(dir, digest+".json")); !os.IsNotExist(statErr) {
 				t.Fatalf("failed save published a visible cache entry: %v", statErr)
 			}

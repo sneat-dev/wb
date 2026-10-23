@@ -8,9 +8,15 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	testenv.IsolateProcess()
 	// Disable git's detached gc/maintenance for every git this binary
 	// starts, including this package's own fixture clones and pushes, so

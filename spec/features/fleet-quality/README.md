@@ -56,6 +56,10 @@ Fleet coverage MUST aggregate Go coverage by covered statements divided by all i
 
 The Workbench Hub MUST subscribe to `workflow_run.completed` GitHub webhook events on default branches, download the `wb-coverage-summary` artifact using the GitHub App token, and persist the coverage record to the repository coverage store.
 
+#### REQ: host-independent-deadcode
+
+`wb deadcode` MUST give the same verdict on every host. It MUST analyse each supported platform (`linux`, `darwin`, `windows`) with a fixed architecture and cgo disabled, and MUST report a function as unreachable only when it is unreachable on every one of them. Functions that exist in files built for a single OS, or that are reachable only with cgo enabled, are therefore not reported.
+
 #### REQ: fleet-metrics-web-dashboard
 
 The Workbench daemon/hub server MUST serve an interactive web dashboard at `/metrics` (and redirect `/coverage` to `/metrics?type=test_coverage`) displaying test coverage and registered fleet metrics across repositories. For test coverage, the dashboard MUST display per-repository status, statements, covered statements, and an expandable hierarchical breakdown by Go package.
@@ -183,6 +187,14 @@ without emitting a graduation receipt.
 **Given** a repository coverage summary artifact published by GitHub Actions on push/merge to default branch and harvested by Workbench Hub into the coverage store
 **When** `wb coverage [repo] --ci` or `wb fleet coverage` is executed
 **Then** latest test coverage statements and percentage are reported instantaneously (<100ms) without executing local `go test` runs.
+
+### AC: deadcode-same-verdict-on-every-host
+
+**Requirements:** fleet-quality#req:host-independent-deadcode
+
+**Given** a function reachable only from a Linux-only file and unreachable on the other supported platforms
+**When** `wb deadcode` runs on any host
+**Then** the function is not reported, and a function unreachable on all three supported platforms is.
 
 ### AC: fleet-metrics-web-dashboard
 

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // This exercises the quarantine safety decisions without starting git or gh.
@@ -62,7 +64,7 @@ func TestPlanBranchQuarantineWithFakeOperations(t *testing.T) {
 				calls = append(calls, "source")
 			case "rev-parse --abbrev-ref HEAD":
 				calls = append(calls, "head")
-			case "rev-parse --verify refs/heads/" + retiredBranchDestination(now, ref, sha):
+			case "rev-parse --verify refs/heads/" + worktreebranches.RetiredBranchDestination(now, ref, sha):
 				calls = append(calls, "destination")
 			default:
 				t.Fatalf("unexpected git query %q", command)

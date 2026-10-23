@@ -111,6 +111,10 @@ type PeerSummary struct {
 // prints one row per peer with a verdict and the evidence behind it. Nothing
 // is installed and nothing is written.
 func InspectPeers(ctx context.Context, options PeerOptions) (PeerReport, error) {
+	return inspectPeersWithAbsolute(ctx, options, filepath.Abs)
+}
+
+func inspectPeersWithAbsolute(ctx context.Context, options PeerOptions, absolutePath func(string) (string, error)) (PeerReport, error) {
 	pkg := strings.TrimSpace(options.Package)
 	if pkg == "" {
 		return PeerReport{}, fmt.Errorf("deps peers requires a published package name, e.g. @sneat/core or @sneat/core@0.31.0")
@@ -119,7 +123,7 @@ func InspectPeers(ctx context.Context, options PeerOptions) (PeerReport, error) 
 	if against == "" {
 		return PeerReport{}, fmt.Errorf("deps peers requires --against <repository-path>: the checkout whose installed versions the peers are judged against")
 	}
-	absolute, err := filepath.Abs(against)
+	absolute, err := absolutePath(against)
 	if err != nil {
 		return PeerReport{}, err
 	}
@@ -231,11 +235,15 @@ type peerEvidence struct {
 // install that a later dependency change can move without warning. Both are
 // reported, and the source column says which is which.
 func installedNpmVersions(root string) (map[string]peerEvidence, string, error) {
+	return installedNpmVersionsWithLockScopes(root, readNpmLockScopes)
+}
+
+func installedNpmVersionsWithLockScopes(root string, readLocks func(string) (map[string]npmLockScope, error)) (map[string]peerEvidence, string, error) {
 	packageManifests, _, err := npmManifestFiles(root)
 	if err != nil {
 		return nil, "", err
 	}
-	lockScopes, err := readNpmLockScopes(root)
+	lockScopes, err := readLocks(root)
 	if err != nil {
 		return nil, "", err
 	}

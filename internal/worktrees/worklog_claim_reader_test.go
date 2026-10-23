@@ -46,7 +46,7 @@ func TestReadWorkLogRecordsRejectsMissingAndMalformedRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantTerminal := workLogTerminalRecord{workLogClaim: want, Disposition: "landed"}
+	wantTerminal := workLogTerminalRecord{Claim: want, Disposition: "landed"}
 	if err := writeJSONImmutableAt(terminals, claimID+".json", wantTerminal, false); err != nil {
 		_ = terminals.Close()
 		t.Fatal(err)

@@ -77,6 +77,9 @@ const (
 	// separate from StepSync so a test can fail the directory fsync
 	// without also failing the regular file's own fsync.
 	StepDirSync Step = "dir_sync"
+	// StepOpenDirectory covers opening the parent directory for the final
+	// durability sync in a path-based atomic write.
+	StepOpenDirectory Step = "open_directory"
 	// StepRename covers a path-based os.Rename publish -- the sequence
 	// this package's cmd/wb call sites use in place of the fd-relative
 	// Linkat every internal/sessionpark/internal/sessionmove call site
@@ -201,8 +204,7 @@ func (e *ShortWriteError) Error() string {
 // O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC. Most write-once-immutable
 // call sites in this repository already used exactly this flag set before
 // migrating here. The two task-9 PR-3 exceptions --
-// internal/worktrees/worklog.go's writeBytesImmutableAtInjected and
-// writeBytesAtomicAtInjected -- previously opened their temp file with a
+// former internal/worktrees/worklog.go injected-write forwarders -- previously opened their temp file with a
 // raw unix.Openat that omitted O_CLOEXEC; routing them through
 // CreateExclusive is a deliberate behaviour change (review-756 B3), not an
 // oversight: it closes a real fd leak, where a child process exec'd while
@@ -377,27 +379,19 @@ func Close(file *os.File, name string, inj *Injector) error {
 	return file.Close()
 }
 
-// SyncDir fsyncs a directory file descriptor via directory.Sync() -- the
-// step that makes a preceding rename or link durable, separate from
-// StepSync so a test can fail the directory fsync without also failing a
+// SyncDir applies the platform directory durability operation, separate
+// from StepSync so a test can fail this step without also failing a
 // regular file's fsync earlier in the same sequence.
 //
-// This is the one real durability change this package introduces: every
-// inline directory sync it replaces (e.g. internal/sessionmove/
-// store.go:publishImmutableAt, before this package existed) called
-// unix.Fsync(fd), plain fsync(2) on every platform including Darwin.
-// directory.Sync() calls Go's os.File.Sync, which on Darwin issues
-// fcntl(F_FULLFSYNC) instead (see Go's internal/poll/fd_fsync_darwin.go)
-// -- a stronger, slower durability guarantee than plain fsync(2). On
-// every other platform os.File.Sync is fsync(2), the same as unix.Fsync
-// was, so this is a Darwin-only behaviour change, and strictly a
-// strengthening (never a weakening) of what the directory sync
-// guarantees.
+// Unix directory syncing uses os.File.Sync, including Darwin's F_FULLFSYNC.
+// Windows validates the handle without an unsupported directory flush.
+// Regular-file syncing and injected directory failures remain separate
+// from this platform-specific directory operation.
 func SyncDir(directory *os.File, inj *Injector) error {
 	if err := inj.run(StepDirSync, directory.Name()); err != nil {
 		return err
 	}
-	return directory.Sync()
+	return unix.SyncDirectory(directory)
 }
 
 // LinkNoReplace hard-links oldName to newName, both fd-relative, failing

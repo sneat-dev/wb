@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 // The server update is a sequence of separately observed identities. A failed
@@ -31,22 +35,22 @@ func TestUpdatePullRequestRecordsEachUnverifiedServerAdvance(t *testing.T) {
 		}, "distinct exact head"},
 		{"updated head cannot be reread", func(ops *pullRequestUpdateOps) {
 			reads := 0
-			ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+			ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 				reads++
 				if reads == 1 {
-					return prUpdateView(t, "old"), nil
+					return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 				}
-				return PullRequestView{}, errors.New("read failed")
+				return githubchecks.PullRequestView{}, errors.New("read failed")
 			}
 		}, "re-read updated PR"},
 		{"updated head changed", func(ops *pullRequestUpdateOps) {
 			reads := 0
-			ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+			ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 				reads++
 				if reads == 1 {
-					return prUpdateView(t, "old"), nil
+					return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 				}
-				return prUpdateView(t, "foreign"), nil
+				return testfixture.PullRequestView[githubchecks.PullRequestView](t, "foreign"), nil
 			}
 		}, "identity/head changed"},
 		{"parents unreadable", func(ops *pullRequestUpdateOps) {
@@ -96,12 +100,12 @@ func TestUpdatePullRequestRecordsEachUnverifiedServerAdvance(t *testing.T) {
 			t.Parallel()
 			options, ops, saved := prUpdateFake(t)
 			reads := 0
-			ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+			ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 				reads++
 				if reads == 1 {
-					return prUpdateView(t, "old"), nil
+					return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 				}
-				return prUpdateView(t, "new"), nil
+				return testfixture.PullRequestView[githubchecks.PullRequestView](t, "new"), nil
 			}
 			ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
 				t.Fatal("unverified head reached local checkout")
@@ -128,13 +132,13 @@ func TestUpdatePullRequestRejectsInvalidPreflightWithoutWritingReceipt(t *testin
 	}{
 		{"invalid number", func(options *PullRequestUpdateOptions, _ *pullRequestUpdateOps) { options.PullRequest = "07" }, "positive decimal"},
 		{"PR read failed", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
-			ops.read = func(context.Context, string, string) (PullRequestView, error) {
-				return PullRequestView{}, errors.New("PR unavailable")
+			ops.read = func(context.Context, string, string) (githubchecks.PullRequestView, error) {
+				return githubchecks.PullRequestView{}, errors.New("PR unavailable")
 			}
 		}, "PR unavailable"},
 		{"closed PR", func(_ *PullRequestUpdateOptions, ops *pullRequestUpdateOps) {
-			ops.read = func(context.Context, string, string) (PullRequestView, error) {
-				view := prUpdateView(t, "old")
+			ops.read = func(context.Context, string, string) (githubchecks.PullRequestView, error) {
+				view := testfixture.PullRequestView[githubchecks.PullRequestView](t, "old")
 				view.State = "closed"
 				return view, nil
 			}
@@ -170,12 +174,12 @@ func TestUpdatePullRequestNoOpRecordsUnverifiedRead(t *testing.T) {
 	options, ops, saved := prUpdateFake(t)
 	ops.contains = func(context.Context, string, string, string) (bool, string) { return true, "" }
 	reads := 0
-	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+	ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 		reads++
 		if reads == 1 {
-			return prUpdateView(t, "old"), nil
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 		}
-		return PullRequestView{}, errors.New("PR reread unavailable")
+		return githubchecks.PullRequestView{}, errors.New("PR reread unavailable")
 	}
 	ops.target = func(context.Context, string, string) (string, string) { return "target", "" }
 	ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
@@ -192,19 +196,19 @@ func TestUpdatePullRequestRejectsDriftedOrIncompletePRIdentity(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
-		change func(*PullRequestView)
+		change func(*githubchecks.PullRequestView)
 	}{
-		{"locked", func(view *PullRequestView) { view.Locked = true }},
-		{"foreign head repository", func(view *PullRequestView) { view.Head.Repo.FullName = "other/app" }},
-		{"missing base repository", func(view *PullRequestView) { view.Base.Repo = nil }},
-		{"missing head SHA", func(view *PullRequestView) { view.Head.SHA = "" }},
-		{"same head and base branch", func(view *PullRequestView) { view.Head.Ref = "main" }},
-		{"target branch drift", func(view *PullRequestView) { view.Base.Ref = "release" }},
-		{"head branch drift", func(view *PullRequestView) { view.Head.Ref = "other" }},
+		{"locked", func(view *githubchecks.PullRequestView) { view.Locked = true }},
+		{"foreign head repository", func(view *githubchecks.PullRequestView) { view.Head.Repo.FullName = "other/app" }},
+		{"missing base repository", func(view *githubchecks.PullRequestView) { view.Base.Repo = nil }},
+		{"missing head SHA", func(view *githubchecks.PullRequestView) { view.Head.SHA = "" }},
+		{"same head and base branch", func(view *githubchecks.PullRequestView) { view.Head.Ref = "main" }},
+		{"target branch drift", func(view *githubchecks.PullRequestView) { view.Base.Ref = "release" }},
+		{"head branch drift", func(view *githubchecks.PullRequestView) { view.Head.Ref = "other" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			view := prUpdateView(t, "head")
+			view := testfixture.PullRequestView[githubchecks.PullRequestView](t, "head")
 			tc.change(&view)
 			if err := validatePullRequestUpdateView(view, "acme/app", "7", "main", "feature"); err == nil {
 				t.Fatalf("untrusted view accepted: %+v", view)
@@ -213,23 +217,15 @@ func TestUpdatePullRequestRejectsDriftedOrIncompletePRIdentity(t *testing.T) {
 	}
 }
 
-func prUpdateView(t *testing.T, head string) PullRequestView {
-	t.Helper()
-	var view PullRequestView
-	data := `{"number":7,"state":"open","head":{"ref":"feature","sha":"` + head + `","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":"target","repo":{"full_name":"acme/app"}}}`
-	if err := json.Unmarshal([]byte(data), &view); err != nil {
-		t.Fatal(err)
-	}
-	return view
-}
-
 func prUpdateFake(t *testing.T) (PullRequestUpdateOptions, pullRequestUpdateOps, *[]PullRequestUpdateResult) {
 	t.Helper()
 	options := PullRequestUpdateOptions{Repository: "acme/app", PullRequest: "7", ProjectsRoot: t.TempDir()}
 	saved := []PullRequestUpdateResult{}
 	targetReads := 0
 	ops := pullRequestUpdateOps{
-		read: func(_ context.Context, _, _ string) (PullRequestView, error) { return prUpdateView(t, "old"), nil },
+		read: func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
+		},
 		target: func(_ context.Context, _, _ string) (string, string) {
 			targetReads++
 			if targetReads == 1 {
@@ -297,12 +293,12 @@ func TestUpdatePullRequestNoOpReportsHeadRaceWithoutLocalSync(t *testing.T) {
 	ops.target = func(context.Context, string, string) (string, string) { return "target", "" }
 	ops.contains = func(context.Context, string, string, string) (bool, string) { return true, "" }
 	reads := 0
-	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+	ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 		reads++
 		if reads == 1 {
-			return prUpdateView(t, "old"), nil
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 		}
-		return prUpdateView(t, "foreign"), nil
+		return testfixture.PullRequestView[githubchecks.PullRequestView](t, "foreign"), nil
 	}
 	ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
 		t.Fatal("stale head was used for local sync")
@@ -318,12 +314,12 @@ func TestUpdatePullRequestNeedsNoLocalCheckout(t *testing.T) {
 	t.Parallel()
 	options, ops, _ := prUpdateFake(t)
 	reads := 0
-	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+	ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 		reads++
 		if reads == 1 {
-			return prUpdateView(t, "old"), nil
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 		}
-		return prUpdateView(t, "new"), nil
+		return testfixture.PullRequestView[githubchecks.PullRequestView](t, "new"), nil
 	}
 	ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
 		return "local sync not applicable: no linked worktree holds feature"
@@ -352,9 +348,9 @@ func TestUpdatePullRequestRejectsUnsafeRepositoryBeforeAnyRead(t *testing.T) {
 	t.Parallel()
 	options, ops, _ := prUpdateFake(t)
 	options.Repository = "../app"
-	ops.read = func(context.Context, string, string) (PullRequestView, error) {
+	ops.read = func(context.Context, string, string) (githubchecks.PullRequestView, error) {
 		t.Fatal("unsafe repository reached GitHub")
-		return PullRequestView{}, nil
+		return githubchecks.PullRequestView{}, nil
 	}
 	if _, err := updatePullRequestWith(context.Background(), options, ops); err == nil {
 		t.Fatal("unsafe repository accepted")
@@ -365,12 +361,12 @@ func TestUpdatePullRequestPinsHeadProvesMergeAndRecordsBeforeLocalSync(t *testin
 	t.Parallel()
 	options, ops, saved := prUpdateFake(t)
 	reads := 0
-	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+	ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 		reads++
 		if reads == 1 {
-			return prUpdateView(t, "old"), nil
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 		}
-		return prUpdateView(t, "new"), nil
+		return testfixture.PullRequestView[githubchecks.PullRequestView](t, "new"), nil
 	}
 	ops.update = func(_ context.Context, repo, number, expected string) (string, string) {
 		if repo != "acme/app" || number != "7" || expected != "old" || len(*saved) != 1 || (*saved)[0].Status != "requested" {
@@ -400,12 +396,12 @@ func TestUpdatePullRequestRefusesUnprovedServerAdvanceBeforeLocalSync(t *testing
 	t.Parallel()
 	options, ops, saved := prUpdateFake(t)
 	reads := 0
-	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+	ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 		reads++
 		if reads == 1 {
-			return prUpdateView(t, "old"), nil
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 		}
-		return prUpdateView(t, "new"), nil
+		return testfixture.PullRequestView[githubchecks.PullRequestView](t, "new"), nil
 	}
 	ops.parents = func(context.Context, string, string) ([]string, error) {
 		return []string{"foreign", "target-parent"}, nil
@@ -424,12 +420,12 @@ func TestUpdatePullRequestReportsDirtyLocalCheckoutAsPartial(t *testing.T) {
 	t.Parallel()
 	options, ops, _ := prUpdateFake(t)
 	reads := 0
-	ops.read = func(_ context.Context, _, _ string) (PullRequestView, error) {
+	ops.read = func(_ context.Context, _, _ string) (githubchecks.PullRequestView, error) {
 		reads++
 		if reads == 1 {
-			return prUpdateView(t, "old"), nil
+			return testfixture.PullRequestView[githubchecks.PullRequestView](t, "old"), nil
 		}
-		return prUpdateView(t, "new"), nil
+		return testfixture.PullRequestView[githubchecks.PullRequestView](t, "new"), nil
 	}
 	ops.syncLocal = func(context.Context, PullRequestUpdateOptions, string, string) string {
 		return "local worktree not fast-forwarded: /checkout: uncommitted changes"

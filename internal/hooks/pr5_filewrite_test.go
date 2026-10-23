@@ -24,11 +24,7 @@ var errBoomPR5 = errors.New("pr5 boom")
 
 func newTestManagedHooksDirectory(t *testing.T, dir string) managedHooksDirectory {
 	t.Helper()
-	handle, err := os.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = handle.Close() })
+	handle := openOwnedHookTestDirectory(t, dir)
 	return managedHooksDirectory{path: dir, commonPath: dir, common: handle, directory: handle}
 }
 

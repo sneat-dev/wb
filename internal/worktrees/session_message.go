@@ -31,33 +31,19 @@ func RecordExternalSourceMessageSent(options ExternalSourceMessageOptions) (Loca
 	if err := validateExternalSourceSession(options.SourceSession, options.Request); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	if err := sessionmove.ValidateMessageForRequest(options.Message, options.Request); err != nil {
-		return LocalWorkLogEvent{}, err
-	}
-	messageRaw, err := sessionmove.EncodeMessage(options.Message)
+	messageDigest, err := validatedExternalMessageDigest(options.Request, options.Message, options.Record, sessionmove.MessageDirectionOutgoing)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
-	}
-	messageDigest := sessionmove.DigestBytes(messageRaw)
-	if options.Record.SchemaVersion != sessionmove.MessageRecordSchemaVersion ||
-		options.Record.Direction != sessionmove.MessageDirectionOutgoing || options.Record.MessageID != options.Message.MessageID ||
-		options.Record.MessageDigest != messageDigest || options.Record.HandoffID != options.Request.HandoffID ||
-		!options.Record.RecordedAt.Equal(options.Message.SentAt.UTC()) {
-		return LocalWorkLogEvent{}, fmt.Errorf("source message Work Log record does not match exact durable outbox")
 	}
 	if err := sessionmove.ValidateMessageReceipt(options.MessageReceipt, options.Message, messageDigest,
 		options.Receipt.TmuxName, options.Receipt.PID); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
 
-	sourceReference, err := sessionmove.ParseWorkLogReference(options.Request.WorkLogReference)
-	if err != nil {
-		return LocalWorkLogEvent{}, err
-	}
-	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(options.Request, options.RequestDigest)
-	if err != nil {
-		return LocalWorkLogEvent{}, err
-	}
+	// ValidateReceiptForRequest already derived the target reference from this
+	// unchanged request and digest, including parsing the source reference.
+	sourceReference, _ := sessionmove.ParseWorkLogReference(options.Request.WorkLogReference)
+	targetReference, _ := sessionmove.ExpectedTargetWorkLogReference(options.Request, options.RequestDigest)
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
@@ -89,21 +75,16 @@ func RecordExternalSourceMessageSent(options ExternalSourceMessageOptions) (Loca
 	if !exists {
 		return LocalWorkLogEvent{}, fmt.Errorf("source Work Log has no immutable completed handoff authority")
 	}
+	extra := externalMessageEventFields(options.Request, options.Message, messageDigest)
+	extra["endpoint"] = "source"
+	extra["source_work_log_reference"] = sourceReference.String()
+	extra["target_work_log_reference"] = targetReference.String()
 	event := LocalWorkLogEvent{
 		ID: externalLocalEventID("source-message-sent", messageDigest, options.Message.MessageID), Type: LocalEventHandoff,
 		At:      options.MessageReceipt.PastedAt.UTC(),
 		Message: "session message acknowledged as durably recorded and pasted; agent processing is not claimed",
 		Result:  "pasted",
-		Extra: map[string]any{
-			"handoff_id": options.Request.HandoffID, "endpoint": "source", "message_id": options.Message.MessageID,
-			"message_digest": string(messageDigest), "message_kind": string(options.Message.Kind),
-			"sender_wb_session_id":      options.Message.SenderWBSessionID,
-			"recipient_wb_session_id":   options.Message.RecipientWBSessionID,
-			"reply_to_wb_session_id":    options.Message.ReplyToWBSessionID,
-			"source_work_log_reference": sourceReference.String(),
-			"target_work_log_reference": targetReference.String(),
-			"acknowledgement_scope":     "durable_record_and_tmux_paste_only",
-		},
+		Extra:   extra,
 	}
 	event, _, err = appendLocalEventWithoutCustody(claim.Worktree, event)
 	return event, err
@@ -128,18 +109,9 @@ func RecordExternalTargetMessageReceived(options ExternalTargetMessageOptions) (
 	if err := sessionmove.ValidateReceiptForRequest(options.Receipt, options.Request, options.RequestDigest); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	if err := sessionmove.ValidateMessageForRequest(options.Message, options.Request); err != nil {
-		return LocalWorkLogEvent{}, err
-	}
-	messageRaw, err := sessionmove.EncodeMessage(options.Message)
+	messageDigest, err := validatedExternalMessageDigest(options.Request, options.Message, options.Record, sessionmove.MessageDirectionIncoming)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
-	}
-	messageDigest := sessionmove.DigestBytes(messageRaw)
-	if options.Record.SchemaVersion != sessionmove.MessageRecordSchemaVersion ||
-		options.Record.Direction != sessionmove.MessageDirectionIncoming || options.Record.MessageID != options.Message.MessageID ||
-		options.Record.MessageDigest != messageDigest || options.Record.HandoffID != options.Request.HandoffID || options.Record.RecordedAt.IsZero() {
-		return LocalWorkLogEvent{}, fmt.Errorf("target message Work Log record does not match exact durable inbox")
 	}
 	worktree, err := SessionReceiveWorktreePath(options.ProjectsRoot, options.Request)
 	if err != nil {
@@ -154,22 +126,55 @@ func RecordExternalTargetMessageReceived(options ExternalTargetMessageOptions) (
 		options.Receipt.AttemptID, options.Receipt.AttemptIndex, options.Receipt.PID, options.Receipt.StartedAt, true); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
+	extra := externalMessageEventFields(options.Request, options.Message, messageDigest)
+	extra["endpoint"] = "target"
+	extra["target_work_log_reference"] = reference.String()
 	event := LocalWorkLogEvent{
 		ID:      externalLocalEventID("target-message-received", messageDigest, options.Message.MessageID),
 		Type:    LocalEventHandoff,
 		At:      options.Record.RecordedAt.UTC(),
 		Message: "session message received and durably recorded for one tmux paste attempt",
 		Result:  "recorded",
-		Extra: map[string]any{
-			"handoff_id": options.Request.HandoffID, "endpoint": "target", "message_id": options.Message.MessageID,
-			"message_digest": string(messageDigest), "message_kind": string(options.Message.Kind),
-			"sender_wb_session_id":      options.Message.SenderWBSessionID,
-			"recipient_wb_session_id":   options.Message.RecipientWBSessionID,
-			"reply_to_wb_session_id":    options.Message.ReplyToWBSessionID,
-			"target_work_log_reference": reference.String(),
-			"acknowledgement_scope":     "durable_record_and_tmux_paste_only",
-		},
+		Extra:   extra,
 	}
 	event, _, err = appendLocalEventWithoutCustody(claim.Worktree, event)
 	return event, err
+}
+
+// validatedExternalMessageDigest binds a caller-owned message to its exact
+// durable record. A valid message can still fail canonical JSON encoding when
+// sent_at has a nonzero year outside JSON's supported time range.
+func validatedExternalMessageDigest(request sessionmove.Request, message sessionmove.Message, record sessionmove.MessageRecord,
+	direction sessionmove.MessageDirection,
+) (sessionmove.Digest, error) {
+	if err := sessionmove.ValidateMessageForRequest(message, request); err != nil {
+		return "", err
+	}
+	raw, err := sessionmove.EncodeMessage(message)
+	if err != nil {
+		return "", err
+	}
+	digest := sessionmove.DigestBytes(raw)
+	validTime := !record.RecordedAt.IsZero()
+	if direction == sessionmove.MessageDirectionOutgoing {
+		validTime = record.RecordedAt.Equal(message.SentAt.UTC())
+	}
+	if record.SchemaVersion != sessionmove.MessageRecordSchemaVersion || record.Direction != direction ||
+		record.MessageID != message.MessageID || record.MessageDigest != digest || record.HandoffID != request.HandoffID || !validTime {
+		if direction == sessionmove.MessageDirectionOutgoing {
+			return "", fmt.Errorf("source message Work Log record does not match exact durable outbox")
+		}
+		return "", fmt.Errorf("target message Work Log record does not match exact durable inbox")
+	}
+	return digest, nil
+}
+
+func externalMessageEventFields(request sessionmove.Request, message sessionmove.Message, digest sessionmove.Digest) map[string]any {
+	return map[string]any{
+		"handoff_id": request.HandoffID, "message_id": message.MessageID,
+		"message_digest": string(digest), "message_kind": string(message.Kind),
+		"sender_wb_session_id": message.SenderWBSessionID, "recipient_wb_session_id": message.RecipientWBSessionID,
+		"reply_to_wb_session_id": message.ReplyToWBSessionID,
+		"acknowledgement_scope":  "durable_record_and_tmux_paste_only",
+	}
 }

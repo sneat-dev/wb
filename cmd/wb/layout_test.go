@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,9 +83,5 @@ func clonePath(t *testing.T, source, dest string) {
 
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, output)
-	}
+	testenv.Git(t, dir, args...)
 }

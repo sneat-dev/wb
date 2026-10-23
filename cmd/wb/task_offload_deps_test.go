@@ -2,48 +2,50 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/taskoffload"
+	"github.com/sneat-dev/wb/internal/taskrun"
 )
 
-// Every existing offload test builds a fake taskOffloadDependencies, never
-// the real one newTaskCmd wires up; this proves the real store and launch
-// closures themselves.
-func TestDefaultTaskOffloadDependenciesStoreOpensUnderProjectsRoot(t *testing.T) {
-	root := t.TempDir()
-	deps := defaultTaskOffloadDependencies(&invocation{projectsRoot: root})
-	store, err := deps.store()
-	if err != nil {
-		t.Fatalf("default task-offload store: %v", err)
-	}
-	// A dropped or empty projectsRoot (mutation M13, sneat-dev/wb#760 review
-	// B5: wbhome.Root("")) resolves this store under the operator's real WB
-	// home instead of the fixture; asserting only "no error" cannot tell the
-	// two apart. The store's own root must actually live under this test's
-	// isolated root, and never under the wbhome default's own directory name.
-	if !strings.HasPrefix(store.Root, root) {
-		t.Fatalf("task-offload store root = %q, want it under the fixture root %q", store.Root, root)
-	}
-	if !strings.HasSuffix(store.Root, taskoffload.DirName) {
-		t.Fatalf("task-offload store root = %q, want it to end in %q", store.Root, taskoffload.DirName)
-	}
-}
-
+// The genuine task factory delegates pickup to the actual session Move service.
+// Its projects root is read during execution rather than snapshotted here.
 func TestDefaultTaskOffloadDependenciesLaunchDelegatesToSessionMove(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
-	deps := defaultTaskOffloadDependencies(&invocation{projectsRoot: root})
-	command := newTaskOffloadCmdWithDeps(&invocation{projectsRoot: root}, deps, false)
-	var out bytes.Buffer
+	deps := taskrun.DefaultDependencies(nil)
+	store, err := deps.Store(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := taskoffload.Record{SchemaVersion: 1, TaskID: "task-abc123", Task: "review-auth", WorktreeDir: filepath.Join(root, "no-such-worktree"), Repository: "acme/app", Status: taskoffload.StatusParked, CreatedAt: time.Unix(10, 0).UTC()}
+	if err := store.Save(record, "Review auth."); err != nil {
+		t.Fatal(err)
+	}
+	inv := testInvocation(t, t.TempDir())
+	command := newTaskCmd(inv)
+	inv.projectsRoot = root
+	var out, diagnostics bytes.Buffer
 	command.SetOut(&out)
-	command.SetErr(&out)
-	err := deps.launch(command, taskLaunchRequest{
-		WorktreeDir: filepath.Join(root, "no-such-worktree"),
-		ContextFile: filepath.Join(root, "handover.md"),
-	})
-	if err == nil {
-		t.Fatal("launch against a nonexistent worktree unexpectedly succeeded")
+	command.SetErr(&diagnostics)
+	command.SetArgs([]string{"pickup", record.TaskID})
+	command.SilenceErrors = true
+	command.SilenceUsage = true
+	err = command.ExecuteContext(t.Context())
+	var unconfigured *remotestate.UnconfiguredError
+	if !errors.As(err, &unconfigured) || !strings.HasPrefix(err.Error(), "resolve this machine for a local move: ") {
+		t.Fatalf("want actual Move-stage machine configuration refusal, got %T: %v", err, err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("failed Move wrote stdout: %q", out.String())
+	}
+	loaded, brief, err := store.Load(record.TaskID)
+	if err != nil || loaded.Status != taskoffload.StatusParked || brief != "Review auth." {
+		t.Fatalf("failed real Move changed saved task: %#v %q %v", loaded, brief, err)
 	}
 }

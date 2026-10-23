@@ -5,129 +5,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/repostatus"
+
 	"github.com/spf13/cobra"
 )
 
 // TestStatusCommandReportsTheFleetWorklistInProcess proves that "wb status"
-// (with no path, the fleet worklist) reaches runRepositoryStatus through the
+// (with no path, the fleet worklist) reaches the shared status collector through the
 // real command tree, threading its invocation into the progress reporter.
 func TestStatusCommandReportsTheFleetWorklistInProcess(t *testing.T) {
 	root := t.TempDir()
 	cwCovCloneWithOrigin(t, t.TempDir(), "app", filepath.Join(root, "acme", "app"))
 	var stdout string
 	var err error
-	stdout = cwCovCaptureStdout(t, func() {
-		_, _, err = cwCovExec(t, root, func() *cobra.Command { return newStatusCmd(&invocation{projectsRoot: root}) }, "--format", "json", "--all")
-	})
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newStatusCmd(&invocation{projectsRoot: root}) }, "--format", "json", "--all")
 	if err != nil {
 		t.Fatalf("wb status: %v\n%s", err, stdout)
 	}
-	var report statusIndex
+	var report repostatus.Index
 	if jsonErr := json.Unmarshal([]byte(stdout), &report); jsonErr != nil {
 		t.Fatalf("status JSON: %v\n%s", jsonErr, stdout)
 	}
 	if len(report.Repositories) != 1 || report.Repositories[0].Repository != "acme/app" || report.Repositories[0].Status != "clean" {
 		t.Fatalf("status report = %+v", report)
-	}
-}
-
-// TestHideCleanRepositoriesKeepsTheWorklist pins the default filter to the
-// rows a caller can act on: clean is noise, attention is work, and error still
-// has to reach statusFailed so the exit code does not change with the filter.
-func TestHideCleanRepositoriesKeepsTheWorklist(t *testing.T) {
-	t.Parallel()
-	report := hideCleanRepositories(statusIndex{SchemaVersion: 1, Repositories: []repositoryStatusInfo{
-		{Repository: "acme/clean", Status: "clean"},
-		{Repository: "acme/dirty", Status: "attention", Summary: "1 modified file"},
-		{Repository: "acme/broken", Status: "error", Error: "not a git repository"},
-		{Repository: "acme/also-clean", Status: "clean"},
-	}})
-	if report.HiddenClean != 2 {
-		t.Errorf("HiddenClean = %d, want 2", report.HiddenClean)
-	}
-	var kept []string
-	for _, repository := range report.Repositories {
-		kept = append(kept, repository.Repository)
-	}
-	if len(kept) != 2 || kept[0] != "acme/dirty" || kept[1] != "acme/broken" {
-		t.Errorf("kept repositories = %v, want [acme/dirty acme/broken]", kept)
-	}
-	if !statusFailed(report) {
-		t.Error("an error row was filtered away; the run would exit 0 despite an uninspectable repository")
-	}
-}
-
-// TestStatusMarkdownAnnouncesHiddenRepositories guards against a silent
-// filter: a shorter report must say what it left out and how to get it back.
-func TestStatusMarkdownAnnouncesHiddenRepositories(t *testing.T) {
-	t.Parallel()
-	partial := statusMarkdown(statusIndex{HiddenClean: 4, Repositories: []repositoryStatusInfo{
-		{Repository: "acme/dirty", Status: "attention", Summary: "1 modified file"},
-	}}, false, "# WB local repository status\n\n")
-	for _, want := range []string{"acme/dirty", "4 clean repositories hidden", "--all"} {
-		if !strings.Contains(partial, want) {
-			t.Errorf("filtered markdown missing %q:\n%s", want, partial)
-		}
-	}
-
-	singular := statusMarkdown(statusIndex{HiddenClean: 1, Repositories: []repositoryStatusInfo{
-		{Repository: "acme/dirty", Status: "attention"},
-	}}, false, "# WB local repository status\n\n")
-	if !strings.Contains(singular, "1 clean repository hidden") {
-		t.Errorf("filtered markdown does not read naturally for one repository:\n%s", singular)
-	}
-}
-
-// TestStatusMarkdownReportsAnAllCleanFleet keeps the empty worklist readable:
-// with every row filtered away, a bare table header would look like a fleet
-// that was never scanned.
-func TestStatusMarkdownReportsAnAllCleanFleet(t *testing.T) {
-	t.Parallel()
-	markdown := statusMarkdown(statusIndex{SchemaVersion: 1, HiddenClean: 12}, false, "# WB local repository status\n\n")
-	if !strings.Contains(markdown, "All 12 inspected repositories are clean.") {
-		t.Errorf("all-clean markdown does not say so:\n%s", markdown)
-	}
-	if strings.Contains(markdown, "| Repository |") {
-		t.Errorf("all-clean markdown still prints an empty table:\n%s", markdown)
-	}
-
-	one := statusMarkdown(statusIndex{SchemaVersion: 1, HiddenClean: 1}, false, "# WB local repository status\n\n")
-	if !strings.Contains(one, "The inspected repository is clean.") {
-		t.Errorf("all-clean markdown does not read naturally for one repository:\n%s", one)
-	}
-}
-
-// TestStatusMarkdownUnfilteredHasNoNote makes sure the note is a consequence
-// of filtering, not decoration on every report.
-func TestStatusMarkdownUnfilteredHasNoNote(t *testing.T) {
-	t.Parallel()
-	markdown := statusMarkdown(statusIndex{SchemaVersion: 1, Repositories: []repositoryStatusInfo{
-		{Repository: "acme/clean", Status: "clean"},
-	}}, false, "# WB local repository status\n\n")
-	if strings.Contains(markdown, "--all") {
-		t.Errorf("an unfiltered report advertises --all:\n%s", markdown)
-	}
-}
-
-func TestStatusMarkdownAttributesUnpushedCommits(t *testing.T) {
-	t.Parallel()
-	markdown := statusMarkdown(statusIndex{Repositories: []repositoryStatusInfo{{
-		Repository: "acme/app",
-		Status:     "attention",
-		Summary:    "1 unpushed commit",
-		Unpushed:   []string{"abc1234 local work"},
-		UnpushedBranches: []gitops.UnpushedBranch{{
-			Branch: "feature", Worktree: "/projects/.wb/worktrees/task/acme/app", Commits: []string{"abc1234 local work"},
-		}},
-	}}}, true, "# Status\n\n")
-	for _, want := range []string{"acme/app — Unpushed", "Branch `feature`", "worktree `/projects/.wb/worktrees/task/acme/app`", "`abc1234 local work`"} {
-		if !strings.Contains(markdown, want) {
-			t.Errorf("attributed markdown missing %q:\n%s", want, markdown)
-		}
 	}
 }
 
@@ -169,12 +71,12 @@ func TestStatusFiltersACleanFleetEndToEnd(t *testing.T) {
 	}
 }
 
-func decodeStatusIndex(t *testing.T, result smokeResult) statusIndex {
+func decodeStatusIndex(t *testing.T, result smokeResult) repostatus.Index {
 	t.Helper()
 	if result.exitCode != exitOK {
 		t.Fatalf("exit code = %d, want %d; stderr: %s", result.exitCode, exitOK, result.stderr)
 	}
-	var report statusIndex
+	var report repostatus.Index
 	if err := json.Unmarshal([]byte(result.stdout), &report); err != nil {
 		t.Fatalf("stdout is not a status index: %v\nstdout: %s", err, result.stdout)
 	}

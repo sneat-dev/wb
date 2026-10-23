@@ -15,6 +15,10 @@ import (
 
 const repositoryCoverageCollection = "workbench_repository_coverage"
 
+// errInvalidCoverageRecord marks a record the store refuses for what it says,
+// as distinct from a store that could not write it.
+var errInvalidCoverageRecord = errors.New("invalid coverage record")
+
 var errRepositoryCoverageStoreUnavailable = errors.New("workbench repository coverage store is unavailable")
 
 // StoredRepositoryCoverage is the persisted coverage record for one repository.
@@ -60,9 +64,12 @@ func (store repositoryCoverageStore) SaveCoverage(ctx context.Context, record St
 	if store.backend == nil {
 		return errRepositoryCoverageStoreUnavailable
 	}
+	if err := validateCoverageRecord(record); err != nil {
+		return err
+	}
 	canonical := canonicalRepository(record.Repository)
 	if canonical == "" || canonical == "github.com/" {
-		return errors.New("repository is required for coverage record")
+		return fmt.Errorf("%w: repository is required", errInvalidCoverageRecord)
 	}
 	record.Repository = canonical
 	parts := strings.Split(strings.TrimPrefix(canonical, "github.com/"), "/")

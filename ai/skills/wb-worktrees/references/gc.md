@@ -101,6 +101,12 @@ skips a proof. `--allow-residue` prints the commits it is about to discard;
 named task, and every head that receipt binds is re-verified before anything is
 retired.
 
+## Legacy task with missing Work Log history
+
+`gc` uses cleanup’s narrow missing-history recovery path when its evidence
+checks pass. See [cleanup’s recovery requirements and receipt](cleanup.md#legacy-task-with-missing-work-log-history);
+no special flag enables it.
+
 ## Residue
 
 ```sh

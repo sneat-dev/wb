@@ -1049,15 +1049,20 @@ func EventsFor(report Report) ([]deps.ReleaseEvent, error) {
 // document to a resume or machine reader. It is intentionally separate from
 // stdout formatting so failure paths keep the same durable receipt.
 func WriteReport(directory string, report Report) error {
+	return writeReportEncoded(directory, report, Report.YAML, Report.JSON)
+}
+
+// writeReportEncoded prepares both representations before publishing either.
+func writeReportEncoded(directory string, report Report, encodeYAML, encodeJSON func(Report) ([]byte, error)) error {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
 	report = report.WithGeneration()
-	yamlReport, err := report.YAML()
+	yamlReport, err := encodeYAML(report)
 	if err != nil {
 		return err
 	}
-	jsonReport, err := report.JSON()
+	jsonReport, err := encodeJSON(report)
 	if err != nil {
 		return err
 	}

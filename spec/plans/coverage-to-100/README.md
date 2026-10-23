@@ -39,6 +39,699 @@ Where things stand on 2026-09-25 (main e0dcfda6, the #768 batch; earlier main 49
 
 **Readiness caveat.** `specscore plan readiness coverage-to-100` reported `ready: true` while this plan's own `Status:` was `Blocked` and task-1 was unmet (before 2026-09-23) — it does not read this Plan's Status field or GitHub PR state (verified 2026-09-23; see task-1). Agents check this plan's `Status:` field and task-1 directly, not `specscore plan readiness`. Filed as [specscore/specscore-cli#216](https://github.com/specscore/specscore-cli/issues/216).
 
+## Orchestration continuation (2026-10-04)
+
+The founder approved proceeding with `internal/orchestrate` after the CLI root
+reached 851/851 native statements across source-matched full and focused
+passing profiles. The first orchestration checkpoint was committed on
+`cli-refactor`; the updated goal accumulates reviewed local commits on
+`coverage-refactor` and defers publication until the coordinated batch.
+Two Sol Medium implementation lanes author disjoint domains in isolated source
+copies of the same committed checkpoint. The coordinator applies their verified
+changes to the managed worktree and owns Git, documentation and package gates;
+Sol High performs independent review. Authors do not run Git or Go checks in
+their source copies. Preserve pending edits before rebinding either lane.
+
+The latest complete nightly baseline (`3e7737d0`, 2026-10-03) records 1,544
+uncovered statements in `internal/orchestrate`. It is prioritization evidence,
+not a new current percentage. Of its 296 partially/uncovered functions, 295
+have byte-identical current bodies at the continuation checkpoint `ca7243d8`.
+The initial refactoring domains are:
+
+- Nine acknowledgement writers: consolidate their repeated JSON/temp-file
+  staging, preserving three rename, five no-replace link and one link plus
+  parent-directory sync publication protocols. Keep schemas, custody checks,
+  primary errors and cleanup ordering.
+- Four resolved-conflict recovery helpers: share canonical-path comparison,
+  common claim identity and final receipt reset. Preserve exact-base versus
+  historical-base policies, native DAG proofs and acknowledgement-before-reset
+  ordering. Four existing command-observation entry points bind the native
+  runner to private implementations; negative tests refuse exact commands and
+  delegate all other commands to real Git. The large public prepare/land
+  functions remain unchanged.
+- Lock-owner metadata contracts: private descriptor tests cover canonical
+  ownership records, oversized/malformed records and unavailable descriptors.
+
+Batch code and tests before execution. New tests use private inputs and run in
+parallel where applicable. After both implementation lanes freeze source, run
+one focused race/profile batch with necessary existing native witnesses; require
+100% of each whole changed function and every new helper. Run scoped lint/vet
+and supported-platform compilation. Measure actual uncovered-statement gain,
+removed duplication and execution time; do not infer a global gain from a
+package move or an old profile. Full-package integration verification remains
+required before eventual publication. Do not lower coverage policy or remove
+native custody/real-Git assertions to make the gate cheaper.
+
+### First orchestration checkpoint
+
+The acknowledgement persistence, resolved-conflict recovery and lock metadata
+batch covers 254/254 statements across 32 whole production declarations,
+including closures. The initial 40-case race/profile run passed in 98.410s;
+three measured gaps were closed by a passing three-case repair in 16.041s.
+Only passing profiles with identical production hashes and exact block/statement
+coordinates were combined for statement reachability; original profiles retain
+their execution counts. A failed first repair exposed a fixture claim-identity
+error and is excluded from the accepted coverage evidence.
+
+The same domains contained 429 statements and 69 uncovered statements in the
+source-matched historical baseline. Consolidating nine writers reduced their
+223 statements to 42 fully covered statements while retaining distinct atomic
+publication protocols. The complete batch removes 175 production statements.
+This is a bounded domain result, not a refreshed package or repository total.
+Native AST comparison proves 114 other merge declarations, including public
+prepare/land, are unchanged. Linux/Windows test compilation, scoped lint/vet
+and specification lint passed. Five retained serial Git journeys account for
+67.990s of the initial run; fixture isolation remains a performance opportunity.
+
+Next, consolidate typed acknowledgement read/decode stages, preserving each
+reader's partial-result policy, validation order and legacy error wrapping.
+Preload published-candidate recovery separately; reuse custody helpers only
+where its authorization policy remains equivalent.
+
+### Acknowledgement readers and published recovery checkpoint
+
+Two isolated author copies were applied byte-for-byte to `coverage-refactor`
+at `958a7f1d`. Fourteen selected cases, including three retained native legacy
+and replay witnesses, passed with the race detector in 64.059s. The first
+profile covers all 129 statements across 13 whole changed/new declarations.
+No repair run was needed. Linux/Windows test compilation, scoped lint/vet and
+specification lint passed.
+
+Nine readers now share native file-read and JSON-decode stages while retaining
+their individual zero/partial return policies. Supersession still validates
+the receipt before decoding; the legacy recovery reader remains unchanged.
+Published recovery uses its supplied runner for both ancestry observations,
+with native positive evidence and exact negative-routing regression tests.
+Its published predecessor, receipt status/failure/time and history/local-sync
+policies remain distinct from unpublished conflict recovery.
+
+These eleven original declarations contained 146 statements and 26 uncovered
+statements in the historical profile, with body hashes verified against the
+committed before-source. The replacement scope contains 129 fully covered
+statements, a net reduction of 17. This remains a domain checkpoint rather than
+a new complete package or repository percentage. The next proposed domain is
+common candidate claim identity, with base and authorization policies retained
+at their individual admission owners.
+
+### Candidate custody and remaining audit persistence checkpoint
+
+Isolated same-base patches were composed on `coverage-refactor` at `4ede4c95`,
+including disjoint acknowledgement-file hunks. Twenty-five selected race
+cases passed in 96.433s. The profile left only the renamed existing conflict
+writer callback unexecuted; its existing native filesystem publication case
+passed in a 3.234s focused run. Passing source-identical, exact-coordinate
+profiles cover 97/97 statements across 15 whole production declarations.
+Two orphaned imports were caught and removed at the initial build, before
+tests ran. Scoped lint/vet, Linux/Windows compilation and spec lint passed.
+
+Candidate admission now shares active claim repository/task/path/branch
+identity. Base and BaseSHA rules, replacement's nonempty task requirement,
+observed-descendant exceptions, native Guard/Work Log proofs and error order
+remain local. Three entry points bind the native runner to private implementations
+for deterministic negative command observations.
+
+Four remaining audit writers reuse the existing typed staging helper. Their
+103 statements become five caller statements, retaining three replacing Rename
+protocols and adoption's no-replace Link plus parent-directory sync. The helper's
+closed document union is widened; the directory-sync publisher has a neutral
+name, with its existing conflict caller and test qualified accordingly. The linked
+destination remains present when subsequent directory open/sync fails.
+
+The complete equivalent before-scope contained 191 statements at the exact
+committed checkpoint; the current scope contains 97, a net reduction of 94.
+This is a bounded code/coverage result, not a refreshed complete package total.
+### Prepare continuation and audit readback checkpoint
+
+The next combined batch passed its first scoped race/profile run: 13 top-level
+cases, including three retained native prepare/land journeys, in 57.812 seconds.
+All 215 statements across 24 whole production declarations are reached. Native
+Go AST bounds and passing raw coverage tuples bind this scope to the held source;
+there are no skipped or failing selected cases. Scoped lint/vet, Linux and Windows
+compilation, and specification lint passed. No complete package run was repeated.
+
+Four continuation entry points retain their native default bindings and share
+one indexed additive-source ancestry decision between two real callers.
+Refresh and post-target repair retain different status/publication checks and
+remote-versus-HEAD observation order; cleanliness refusals remain false/nil.
+Three audit read stages reuse the existing typed decoder. Their digest and
+identity tails, adoption's raw JSON error/partial-result exception, the two large
+Prepare/Land bodies, and original tests remain unchanged. New private test groups
+reuse receipt fixtures and run in parallel; static record tests make no live Git
+ancestry or custody claim.
+
+The equivalent committed before-scope contained 224 statements across 19
+functions; the current scope contains 215 across 24, a net reduction of nine.
+The extra private functions thread per-call runners without shared mutable
+state. This is scoped coverage and reuse evidence, not a refreshed package total.
+Next are source/canonical inspection and route/validation-plan ownership, followed
+by dedicated whole-owner Prepare and Land batches rather than further small
+acknowledgement tails. Remote publication remains deferred.
+
+### Source inspection and validation-plan checkpoint
+
+The fully composed batch passed all 20 selected top-level race cases in
+36.049 seconds: 138/138 statements across 11 whole declarations, with no
+skips or failures. Scoped lint/vet, Linux and Windows compilation, and spec
+validation passed. Source inspection/canonical resolution and Peek now have a
+cohesive producer file; the five route/lazy validation-plan bodies and two types
+moved byte-for-byte into their own file. Existing policy, custody and native
+journeys remain protected. Narrow per-call Runner observations and a directly
+bound filepath.Abs function allow deterministic negative tests without changing
+process cwd or inventing successful Git facts.
+
+Equivalent source before this checkpoint was 135 statements in eight functions;
+the current scope has 138 in 11. Three native wrappers add three statements,
+all covered, for testability rather than a statement reduction. The adjacent
+same-file deletions required composition of exact approved spans. A prematurely
+started partial-source run selected only 16 of 20 cases and was rejected by the
+selector completeness assertion; its observations are archived and excluded.
+The final 20-case profile alone supplies this checkpoint's coverage evidence.
+
+The next substantial batches are the independently reviewed whole Prepare and
+Land owner plans: concrete receipt/continuation phases, consistent existing
+Runner routing, shared timeout persistence, and meaningful native/private fault
+matrices. Their selected-run diagnostics and historical gap counts remain
+separate from complete package coverage. Publication stays deferred.
+
+### Whole Prepare and Land ownership checkpoint
+
+Prepare and Land now have explicit ownership: concrete receipt/continuation
+construction lives beside Prepare, Land lives in its own producer file, and
+validation timeout persistence shares one implementation. Public entry points
+still bind native effects. Private per-call read, Save and existing Runner
+observations reach precise refusals without changing process cwd or replacing
+successful custody, lock, claim, WorkLog, Git or cleanup authority.
+
+The acceptance scope is nine entire production declarations, including closures:
+986/986 statements. Prepare has 41 passing top-level race groups; Land has
+83 across its same-source passing waves. The final two groups passed in
+23.904 seconds. Its evidence combines passing native/race Land waves from
+one unchanged producer with the independently reviewed, byte-identical whole
+Prepare declaration ledger. Failed or skipped runs contribute no coverage, and
+zero-statement closures contribute no missing statements. This is scoped
+acceptance, not a new package or repository coverage percentage.
+
+Three independently proven impossible/redundant branches were removed: an inner
+status test whose two producers already establish Preparing, an adoption error
+branch whose concrete callee never returns an error, and a second resolution of
+the same already-cached validation plan. The refactoring scope before those
+three trims contained 995 statements; current source is 986. Fallible guards remain in place. Existing test assertions
+and every production declaration outside the approved scope remain protected.
+
+Native boundary cases retain durable receipt/error identity and verify physical
+Git refs, actual locks and refusal-before-cleanup. Final fixture corrections
+used real published history, real strict-policy preparation and a restored
+private Git replacement; none weakened an assertion or supplied successful
+custody through a fake. Compile checks for Linux/Windows, scoped lint/vet and
+spec validation passed. Remote publication stays deferred while the approved
+replacement/correction and published-recovery protocol batches are completed.
+
+### Replacement and correction protocol checkpoint
+
+Receipt collisions, failed/conflicted-candidate replacement and self-supersession
+correction now live in two cohesive producer files. Native public entry points
+bind the existing Runner and real receipt/hash observations. The immutable
+claim-base check shares one private Runner implementation between both legacy
+resolvers, while its native wrapper retains the other genuine caller. Late
+claim-hash and canonical-path observations retain their original fallible
+guards, error identity and custody/proof ordering.
+
+One fresh, passing race profile covers **552/552 statements across 22 entire
+production declarations, including closures**. All 41 selected top-level groups
+passed in 216.540 seconds without failures or skips. The first passing run had
+covered 488/545 statements across the original 20-function scope; the current
+scope also includes the native claim-base wrapper and its six-statement shared
+body. All 57 previously missing paths are now reached. Failed runs supplied only
+diagnostics and contribute no accepted coverage. This is complete scoped
+coverage, not a refreshed package or repository percentage.
+
+Three existing fixture recipes now accept an explicitly rooted fixture while
+their environment-setting wrappers remain available to other genuine callers.
+Fifteen retained top-level groups and five independent children can therefore
+run in parallel. The earlier 28-group passing run took 407.139 seconds; the
+current larger selector took 216.540 seconds. This is an observed improvement
+between different selectors, not a controlled benchmark or a sum of overlapping
+test durations. Native provider/environment cases remain serial.
+
+The final cases assert actual late native ancestry, permission refusal,
+restoration, immutable bytes and publication disposition. Cleanup verification
+uses a bounded context that survives cancellation of the test context. An
+earlier fixture-only secure-stage refusal did not reproduce in the unchanged
+targeted cases or the final complete run; its cause remains unconfirmed and its
+failed profile is excluded. Linux/Windows compilation, scoped vet/lint and spec
+validation passed. The 100 previously accepted, disjoint whole declarations
+remain byte-identical; with this cohort the qualified ledger contains 122
+functions and 2,336 covered statements. That ledger is not a total-coverage
+measurement. Continue with published recovery/adoption, then the separately
+reviewed published-terminal domain; remote publication remains deferred.
+
+
+### Published recovery and adoption checkpoint
+
+Published forward repair now carries its immutable input observations in one
+private evidence record. Its owner and revalidation stages share concrete
+per-invocation Runner, receipt-digest and byte-reader bindings at the original
+observation sites. Published adoption similarly delegates its ordered proof
+and materialized-candidate reading to private implementations. Native public
+wrappers retain real locks, held receipt reads, Work Log/Guard checks,
+publication proofs, creation and cleanup. Shared source/root helpers keep their
+genuine external native callers; negative tests refuse exact observations and
+delegate every other command to real Git.
+
+A fresh passing race profile covers **400/400 statements across 23 whole
+production declarations, including closures**, with no unexecuted
+zero-statement blocks. All 33 selected top-level tests passed in 347.578 seconds
+without failures or skips. The first passing 18-test run covered 321/399
+statements; its missing paths were resolved by native fixtures, narrow negative
+observations and two independently proved redundant-guard removals. The singleton Create contract remains native, and every primary/secondary
+cleanup error is retained. The additional private bodies and genuine native wrappers are included
+in the final denominator. Failed profiles supply diagnostics only and are
+excluded from accepted coverage.
+
+Fixture isolation lets independent rows run in parallel, while shared refusal
+rows remain sequential and check their original evidence bytes. Four repeated
+native setups were removed from three retained groups without removing any of
+their 17 original witnesses. The earlier temporal/revalidation fixture changes
+also passed a focused race run with all 21 native leaves. The final larger
+selector took 347.578 seconds versus 814.301 seconds for the initial 18-test run;
+this is an observed difference between selectors and source states, not a
+controlled speed benchmark. A now-unused environment-setting test wrapper was
+deleted after repository-wide consumer inspection and successful compilation.
+
+Early runs found fixture field, identity, stage and cleanup mistakes; those were
+corrected without weakening production assertions. One native secure-stage
+helper refusal occurred during initial fixture creation and did not reproduce
+in the exact unchanged retry or final complete run. The covered test executable
+runs that helper; rebuilding the private CLI does not establish helper binary
+provenance. Its logged paths satisfy current lexical containment, while the
+accompanying coverage-metadata emit error has no confirmed causal explanation.
+No production fix is claimed for this transient.
+
+Linux/Windows test compilation, scoped vet/lint and specification lint passed.
+All 122 previously accepted production declarations remain byte-identical and
+disjoint; the qualified ledger now contains 145 whole functions and 2,736
+covered statements. This is a bounded source-qualified result, not a refreshed
+package or repository percentage. Continue with published-terminal recovery
+and unpublished/retired-candidate owners; publication remains deferred to the
+coordinated boundary.
+
+### Published terminal recovery checkpoint
+
+The retired-publication and stranded-landing owners now expose narrow private
+observation seams while retaining native Git, custody, lane claims, receipt
+persistence and cleanup on their positive paths. Their eligibility policies stay
+separate: a closed unmerged publication and a merged PR with live target
+containment require different proofs. Two redundant empty-lane fallbacks were
+removed only after proving their validators reject that input before use.
+
+A fresh selected race run passed all 12 top-level tests in 123.640 seconds.
+All nine whole production declarations, including closures, covered 205 of 205
+statements with no unexecuted blocks. Linux and Windows test compilation, scoped
+vet and lint, and specification lint passed. New native cases share restored
+fixtures; isolated pure cases run in parallel, and each pushed fixture ref has
+bounded native cleanup registered immediately.
+
+Two unchanged validators (35 statements) were already accepted. The seven new
+identities add 170 accepted statements, bringing the source-qualified local
+ledger to 152 unique declarations and 2,906 statements. This is a bounded local
+checkpoint, not a fresh package or repository coverage percentage. The prior
+145 accepted declaration bodies remain byte-identical. Publication remains
+deferred to the coordinated delivery boundary.
+
+### Unpublished and retired-candidate checkpoint
+
+Unpublished validation-failure acknowledgement and retired prepare-candidate
+acknowledgement now have separate private owners with precise read, hash,
+runner and persistence seams. Their public wrappers retain their original native
+bindings and distinct receipt policies. A shared unpublished-candidate check is
+reused by the genuine absorbed-conflict consumer; no successful custody or
+cleanup proof is replaced with a test substitute. Real claims, Guard, Git DAG,
+backlog discard and persisted acknowledgement replay remain exercised.
+
+One fresh scoped race run passed all 19 top-level tests in 111.673 seconds.
+All 12 whole production declarations, including closures, covered 195 of 195
+statements with every block executed. Linux and Windows test compilation,
+scoped vet and lint, and specification lint passed. New tests run independently
+in parallel where their fixture state is private; shared mutable rows remain
+sequential. Eight original test entry points and all 152 previously accepted
+production declaration bodies remain byte-identical.
+
+The one unchanged validator overlaps six already accepted statements. The 11
+new identities add 189 source-qualified statements: 163 unique declarations
+and 3,095 statements are now accepted locally. This is a qualified cohort ledger,
+not a new total-package coverage measurement or a publication receipt.
+
+### Ancestry-seal checkpoint
+
+The no-content ancestry-seal workflow now has a private owner that reuses the
+existing runner-aware custody and ancestry helpers. Its public wrapper binds the
+native receipt reader, digest and runner. Successful Create, List, Guard, claims,
+source validation and Git remain native. The seal retains its existing policy of
+preserving a managed candidate after later refusal; it does not inherit content
+repair's abort policy. Only a separately proven redundant singleton Create-result
+guard was removed. Exact Work Log, target-tree and temporal guards remain.
+
+A fresh scoped race run passed all 11 top-level tests in 82.626 seconds and
+covered 165 of 165 statements across six whole declarations, including closures.
+Every block executed. Linux and Windows test compilation, scoped vet and lint,
+and specification lint passed. The two original test files remain byte-identical;
+new private native cases run in parallel, while process environment cases stay
+serial with exact environment restoration before native postconditions.
+
+The first run failed two test-premise assertions: a claim ID omitted its native
+Base input and a scratch blocker remained active during subsequent Apple Git
+checks. Test-only repairs retain native authentication and restore the original
+environment. That failed profile is excluded from acceptance; the single fresh
+passing profile covers the entire scope. No production condition was weakened.
+
+These six declarations add 165 statements with no prior scope overlap, bringing
+the source-qualified local ledger to 169 unique declarations and 3,260 statements.
+All prior 163 accepted declaration bodies remain byte-identical. This is a bounded
+local checkpoint, not repository-wide coverage or a remote delivery receipt.
+
+### Conflict-replacement checkpoint
+
+Conflict replacement now uses one private owner with per-invocation observation
+ports at its existing stages. Initial inspection and both temporal revalidations
+reuse the same concrete state and existing runner-aware helpers. Native Create,
+Guard, Work Log, locks, content merge and Abort remain genuine. Refusal retires
+only a newly created candidate; resumed candidates remain. Primary errors and
+secondary native Abort errors preserve their original policy.
+
+The last two production callers of published-forward native bridge wrappers now
+use their existing runner-aware implementations. Both obsolete wrappers were
+removed and their four genuine test calls qualified with the native default
+runner. Other shared production bodies remain byte-identical. Including the new
+private owner, this cutover reduces the package's production declaration count
+by one. The original global-hook test passes its same mutation to the private
+invocation; other original assertions remain unchanged.
+
+A fresh scoped race run passed all 18 top-level tests in 180.774 seconds and
+covered all 169 statements in nine whole declarations, including closures and
+every block. Linux and Windows test compilation, scoped vet and lint, and
+specification lint passed. Independent native groups run in parallel; process
+environment cases restore exact original values before native checks.
+
+The first run failed two test groups: native receipt parsing rejected an invalid
+schema earlier than the expected owner diagnostic, and post-creation fault cases
+waited for a progress event that production does not emit. Test-only corrections
+use the actual creation start plus native List, Guard and Work Log corroboration,
+and add a native locked second-read validation refusal. The failed profile is
+diagnostic only; the fresh passing profile covers the complete scope. No
+production guard was weakened to reach these branches.
+
+The two retired one-statement wrappers are removed from the accepted ledger.
+The other 167 bodies and 3,258 statements stay source-qualified. Adding this scope
+gives 176 unique declarations and 3,427 accepted statements locally. This is a
+bounded cohort ledger, not current repository coverage or remote publication.
+
+### Landed-failure acknowledgement checkpoint
+
+Landed-failure acknowledgement now has a private owner and a shared concrete
+sidecar finalizer for live and terminal-cleaned paths. Each path retains its
+native custody, claim-base, remote-root and ancestry policy. Runner and receipt
+observations are passed per invocation; the native atomic Rename writer remains
+in use. Two redundant guards were removed only after native invariant review.
+
+The first scoped race batch passed but covered 144/156 statements. A test-only
+follow-up closes the remaining filesystem and ancestry refusals with real
+ENOTDIR paths, connected sibling commit DAGs, exact negative Runner slots and
+actual terminal cleanup evidence. Private independent fixtures run in parallel;
+process-wide provider cases reuse a serial native baseline.
+
+A fresh complete scoped race batch passed all 21 top-level tests in 163.545
+seconds and covered 156/156 statements in all five whole refactored declarations,
+including closures and every block. Linux/Windows test compilation, scoped vet,
+lint and specification lint passed. Earlier partial profiles do not establish
+complete coverage. The initial cross-platform compile also caught an invalid
+test enum name; its one-token correction changes no production behavior.
+
+All 176 previously accepted bodies remain source-identical. This scope brings
+the local accepted ledger to 181 unique declarations and 3,583 statements. These
+are bounded source-qualified cohorts, not current repository coverage or remote
+publication. Independent final review and normal hooks precede the local commit.
+
+### Pull-request route checkpoint
+
+Live and resumed pull-request update adoption now share one concrete history
+recording helper. Live UpdatedAt and persistence-before-sync stay in the live
+owner; resume adds neither mutation. Update proof propagates the supplied runner
+through actual Git fetch and ancestry stages. Original native defaults, parent
+ordering, compare-and-swap races and transient/definitive policies remain.
+
+The first race run exposed two test fixture mistakes: shell default expansion
+added a brace to explicit repository JSON, and a stderr-only failed CI-wait was
+mistaken for a typed transient await error. Test-only corrections use the existing
+exact hosted endpoint override, preserve the actual failed-wait checkpoint and
+add a genuine native branch update followed by a typed parent-read refusal.
+That failed profile is diagnostic only. A subsequent passing run covered 215/216
+statements and identified an unreachable definitive merge-error fallback.
+
+Independent source proof verified every concrete merge error wraps the existing
+unknown-mutation sentinel, including cancellation and secondary outcome reads.
+Definitive and head-moved refusals have a separate nil-error return. The owner
+therefore drops its redundant nested classifier and impossible Conflict return,
+while preserving the pending/resume wrapped error and native outcome re-read.
+
+A fresh complete scoped race batch passed all 16 top-level tests in 123.967
+seconds and covered all 214 statements in fourteen whole declarations, including
+closures and every block. Linux/Windows test compilation, scoped vet, lint and
+specification lint passed. Private fixtures run in parallel; process-wide hosted
+provider cases retain explicit serial reasons. Earlier profiles are not used to
+cover the changed body.
+
+All 181 previously accepted bodies remain source-identical. This scope brings
+the local accepted ledger to 195 unique declarations and 3,797 statements. It is
+a bounded cohort ledger, not current repository coverage or remote publication.
+Independent final review and normal hooks precede the local commit.
+
+### Missing-cleanup acknowledgement checkpoint
+
+Missing-cleanup acknowledgement and reauthentication now pass native Runner and
+receipt observations per invocation. The owner, validator and retained Land
+consumers share the actual absent-branch proof. Existing native wrappers retain
+their genuine callers; all custody, partial-acknowledgement returns, ordering and
+append-only Link publication remain. No production guard was removed.
+
+Seven whole refactored functions cover all 104 statements, including closures
+and every block, from two passing scoped race profiles of identical production
+bodies. The original twelve selected groups passed in 138.512 seconds, covering
+96/104. Two new refusal groups passed in 27.450 seconds and close the remaining
+eight statements. Exact native body hashes, complete atomic profile tuple sets,
+original held source bytes and native fixture binary bindings match. Coverage
+bits are combined only for these unchanged bodies. This is fourteen distinct
+passing groups across two runs, not one complete fourteen-group execution.
+
+The follow-up proves native lane contention, an actual append-only collision,
+canonical-coordinate refusal, a late filesystem refusal after genuine inspection,
+and acknowledged-target error/rewind. The filesystem case temporarily replaces
+only a private fixture ancestor with an ordinary file and restores it immediately;
+it requires neither a symlink privilege nor a Windows skip. One failed run reached
+the branches but incorrectly required a PathError wrapper for Go's bare ENOTDIR.
+The assertion now checks the precise error identity. That failed profile is
+excluded entirely; its counters provide no acceptance credit.
+
+Linux/Windows test compilation, scoped vet, lint and specification lint passed.
+Independent source review verified the narrow assertion and passing-profile
+qualification strategy. All 195 previously accepted bodies remain unchanged;
+this scope brings the local accepted ledger to 202 unique declarations and
+3,901 statements. These are bounded source-qualified cohorts, not current
+repository coverage or remote publication. Final independent execution review
+and normal hooks precede the local commit.
+
+### Imported-main evidence checkpoint
+
+Imported-main initial and resumed dead-code attestation now share one concrete
+report-entry lookup and pass the existing Runner per invocation. The native
+wrappers retain their actual Land consumers. Module, check, identity, count and
+lineage distinctions remain explicit, including passed-report nil semantics;
+archive extraction, native Git authority, timeouts and verification ordering
+remain unchanged.
+
+All fourteen whole declarations cover 154/154 statements and every block,
+including closures. Thirteen selected race groups passed in 18.208 seconds,
+covering 153/154. One additional parallel native Git case advances an actual
+private origin after fetch, verifies the physical FETCH_HEAD/remote mismatch,
+and proves refusal before ancestry checks. Its passing profile closes the last
+statement. Coverage bits combine only two passing runs with identical whole
+production bodies, exact complete profile tuples, protected original source
+and the same native fixture binary; no changed-body union is used.
+
+Linux/Windows compilation, scoped vet, lint and specification lint passed.
+The narrow original-test change qualifies the per-call implementation, and one
+new assertion uses equivalent De Morgan form to satisfy lint. Existing positive
+Git/archive/lineage evidence remains genuine; controlled external tool output
+is identified as a transport fixture. Independent review and normal hooks
+precede this local checkpoint. All 202 previously accepted bodies remain
+unchanged, bringing the bounded local ledger to 216 unique declarations and
+4,055 statements. This is not a refreshed repository coverage percentage or
+remote publication.
+
+### Absorbed-source reconciliation checkpoint
+
+Absorbed-source pull-request reconciliation now shares one concrete outcome,
+reason and persistence operation across four real refusal/terminal branches.
+Timestamp assignment and caller-owned Closed/Commented state remain explicit;
+a successful comment is durably recorded before any close request. Head
+discovery threads the existing Runner through real Git queries while its native
+wrapper retains the outer reconciliation consumer. The outer owner and other
+companion functions remain source-identical.
+
+All eleven whole declarations cover 144/144 statements and every block,
+including closures, from two passing profiles of identical source. Seventeen
+selected race groups passed in 16.324 seconds, covering 143/144; one additional
+parallel native ancestor-exclusion group passed in 7.501 seconds. A real private
+Git DAG proves the old recorded source is already contained in the target,
+retains only the genuine new source head, and leaves HEAD unchanged. The
+observation-only Runner delegates every positive Git operation. Full atomic
+tuple sets, held original bytes, whole body hashes and native fixture binary
+match across both profiles; no changed-body or failed-profile credit is used.
+
+Linux/Windows compilation, scoped vet, lint and specification lint passed.
+Pure/native independent fixtures run in parallel; the process-environment
+provider fixture remains serial. Independent review and normal hooks precede
+the local checkpoint. All 216 prior accepted bodies remain unchanged, bringing
+the bounded local ledger to 227 unique declarations and 4,199 statements.
+These cohorts do not constitute current repository coverage or publication.
+
+### Paired Go dependency-evidence checkpoint
+
+Paired dependency-upgrade validation reuses the actual Git blob reader,
+modfile parser and checksum helpers. No new seam, wrapper or general router was
+added. The only production change removes a redundant version-validity guard:
+the pinned parser's actual File.add/parseVersion chain with a nil fixer already
+rejects invalid required versions before constructing these entries. Exact
+parser and full guard bytes are independently bound; native custody consumers
+and the other six whole function bodies remain unchanged.
+
+Seven whole functions cover all 85 statements and every block, including
+closures, in one fresh passing scoped race run: six selected groups passed in
+14.479 seconds. Four new groups and their independent table children run in
+parallel; a real private committed Git seed creates immutable source/target blob
+pairs before read-only subtests. Original dependency and absorbed-conflict
+native witnesses remain selected. Tests cover module identity/directness/path
+changes, parsing, duplicates, upgrades/downgrades, byte-level non-version edits,
+checksum multiplicity, missing native blobs and exact error contracts.
+
+The first run found a new fixture token replacement also matched the prefix in
+the module declaration. The repaired row changes only the require directive and
+retains the intended same-cardinality different-path refusal assertion. No
+production behavior was changed to satisfy the case; the failed profile is
+excluded entirely. Linux/Windows compilation, scoped vet, lint and specification
+lint passed on the repaired source. Independent review and normal hooks precede
+the local checkpoint. All 227 prior accepted bodies remain source-identical;
+the bounded local ledger becomes 234 declarations and 4,284 statements. This
+is not refreshed repository coverage or remote publication.
+
+### Terminal recovery and canonical-sync checkpoint
+
+Terminal cleanup recovery, canonical synchronization, task ordering and terminal
+expectation construction now form one cohesive producer. The existing Runner
+is passed per synchronization invocation through real branch, cleanliness,
+revision, fetch, fast-forward and ancestry observations. The native wrapper
+retains both Land and PR landing consumers. A concrete equality/dedup/append
+helper is shared by the actual source and rebatch expectation loops, preserving
+their distinct Base values, original identity-error order and nil-on-conflict
+result. Terminal recovery and task ordering remain byte-identical.
+
+Six whole functions cover all 119 statements and every block, including
+closures, in a fresh passing scoped race run. Nine selected groups passed in
+116.848 seconds. Native fixtures prove actual target updates, dirty/diverged
+refusals, notification conditions, retained post-HEAD-error ancestry observation,
+terminal/claim/outbox validation, missing-cleanup acknowledgement, partial
+recovery and an actual receipt-destination refusal. Positive custody and cleanup
+evidence remains native. No proof/save callbacks or production guard deletion
+were added; provider environment fixtures stay serial, independently rooted
+native Git and pure contracts run in parallel.
+
+Early compilation caught two orphan imports after extraction; removing exactly
+those imports changes no declaration body. A protected-source manifest had also
+collapsed two receiver methods with the same short name. Its immutable repair
+records all 100 remaining main declarations, including the unchanged LandOptions
+resolver; the full original main complement was already protected. Linux/Windows
+compilation, scoped vet, lint and specification lint passed on the repaired source.
+All 234 prior accepted bodies remain unchanged, bringing the bounded local ledger
+to 240 declarations and 4,403 statements. Independent final review and normal
+hooks precede the local checkpoint; this is not refreshed repository coverage
+or remote publication.
+
+The retained seven-row incomplete-evidence refusal test takes 82.12 seconds and
+creates a fresh genuine landed fixture for each row. Reusing one private sealed
+baseline with exact row restoration is a separate performance candidate; this
+checkpoint preserves that original witness unchanged.
+
+### Failure identity and CI diagnostic checkpoint
+
+Coverage and specification baseline matching now share a concrete identity-subset
+helper while retaining their distinct format, metadata and fallback policies.
+CI diagnostic parsing is grouped separately; annotation and finding caps share
+one rune-truncation helper that preserves their existing sanitization order.
+The remaining native/provider owners and original witness tests are unchanged.
+
+Twenty-four whole functions cover all 208 statements and every block, including
+closures, in a fresh passing scoped race run. All 27 selected groups passed.
+Pure fixtures run in parallel; Linux/Windows compilation, scoped vet, lint and
+specification lint also pass. An initial passing run exposed a redundant parser
+guard. Independent review proved that whitespace normalization and the fixed
+regex already prevent empty captures; the guard was removed, and explicit
+Unicode-whitespace, invalid-UTF8 and malformed-input contracts preserve that
+invariant. Only the fresh passing profile after this change qualifies it.
+
+All 240 previously accepted bodies remain unchanged. The bounded local ledger
+now contains 264 declarations and 4,611 covered statements. These source-bound
+cohorts are not a refreshed package or repository coverage percentage. The batch
+is independently reviewed and committed locally with normal hooks; publication
+remains deferred to the coordinated final boundary.
+
+### Shared terminal refusal fixture checkpoint
+
+The seven incomplete-terminal-evidence refusal cases reuse one genuine landed
+and externally sealed private fixture. Each row retains its original mutation,
+Resume options and refusal assertions. Unaffected custody and target state are
+checked before restoration; exact record bytes/modes and row-owned refs are
+restored and native terminal proof, absence and lock release are verified before
+the next row. The rows remain serial because their environment and baseline
+are shared. Failed rows or incomplete restoration stop the parent.
+
+All seven original children pass with race and coverage instrumentation. The
+observed group runtime fell from 82.12 to 14.81 seconds (82.0% lower);
+this is one before/after observation, not a repeated benchmark or package-wide
+speed claim. Production is unchanged, so no coverage credit is added. Scoped
+platform compilation, vet, lint and specification lint pass. The reviewed change
+is accumulated as a local commit; remote publication remains deferred.
+
+### Validation, commit and check observation checkpoint
+
+Validation regression comparison, PR staging/commit decisions and merge-check
+observation now have cohesive domain owners. Shared identity membership,
+staged-path and secret-path helpers replace repeated decisions. Native Git,
+exact-head/provider verification, heartbeat lifecycle and custody checks retain
+their original authorities and witness tests.
+
+A fresh passing race run covers 487/487 statements across 38 whole declarations:
+34 in orchestrate, three in quality and one in worktrees. All 60 selected test
+groups pass. Native Go AST body hashes and full line/column profile attribution
+include closures and zero-statement blocks; independent review confirms every
+attributed block executed. Failed intermediate profiles are excluded. These are
+scoped results, not a refreshed repository percentage or net coverage gain.
+
+Coverage-profile merging now folds scanned rows directly into unique locations
+instead of retaining every repeated input row. Mode, statement identity, count
+overflow, error precedence and atomic output contracts remain tested. Memory or
+end-to-end timing improvement has not yet been benchmarked.
+
+A native held-directory regression proves that helper stderr must stay separate
+from successful path stdout. Only the single path operation separates streams;
+failure diagnostics and other operations retain their existing contracts.
+The regression fails before the fix, all 16 helper statements execute after it,
+and the formerly failing instrumented migration journey also passes. The test
+forwards covered subprocess counters and checks actual inherited-descriptor
+authority; it does not substitute a successful path observation.
+
+Structural fixture and scheduling repairs are being verified before the next
+full nightly-equivalent measurement. Publication remains deferred to the
+coordinated final boundary.
+
 ## Founder decisions (2026-09-23)
 
 Each was chosen from a multiple-choice question. The chosen option is quoted.
@@ -82,7 +775,7 @@ These are free-text answers, quoted verbatim. They are numbered by topic, not in
 17. **Two test tiers.** "And I think we should have fast unit tests and e2e integration tests. Getting 100% coverage with unit tests should be easy - define interface for external commands caller and git operations and substitute it in test. But e2e testing with real git is also important But. E2E testing is not the way to 100% test coverage. Rework the plan."
     - The coverage target is met by unit tests that use fakes for the command runner and the git operations (task-8).
     - Real-git end-to-end tests form their own tier (task-24, task-23). That tier must pass, but it is not a source of coverage.
-    - At the end (task-20), the unit tier alone produces the coverage profile.
+    - At the end (task-20), the unit tier alone produces the coverage profile. This historical selection was superseded by the 2026-10-01 measurement update below.
 18. **Thin `cmd/wb`.** The coordinator proposed to "add a 'thin `cmd/wb`' task to the plan before task-16. Move the logic out of the biggest files (`fleet_default_branch`, `fleet_merge_policy`, `daemon`, `worktree`, `session_park`) into `internal/` packages behind interfaces, one command family per PR". It then asked "Should I add that task to the plan and route the next free lane to it, starting with `fleet_default_branch`?". The founder answered "Yes, you should."
     - That is task-22. It starts without waiting for task-8.
     - Its first PR (`fleet default-branch`) declares its own consumer-side ports in the destination package. They are backed at first by today's helpers, and switch to task-8's runner when it lands.
@@ -179,7 +872,7 @@ The founder's words are quoted verbatim. *The text after each quote is the plan'
 2. `wb coverage` reports, per package, the uncovered-statement count against the merge-base baseline (the counts go-ci's coverage job published for that exact SHA when it was itself pushed to main — see step 5) and against any line the diff adds or changes that is not a moved, unmodified line. The author sees pass/fail per package plus, on failure, the exact file:line of every newly uncovered statement.
 3. If the PR only moves code (per `git diff --merge-base origin/<base> -U0 --color-moved=plain`), the moved lines are held only to the "uncovered count must not rise" rule — no new 100%-of-the-move requirement. If the PR adds or changes a statement with no covering test, the job fails and names the file:line; the author adds a test and pushes again.
 4. Once the PR is green, it merges. The observable result is that main's published per-package uncovered-count artifact only ever moves down or stays flat for the packages the PR touched.
-5. go-ci's coverage job is the ratchet's one and only baseline producer: task-3 exempts it from the validation-reuse skip on push events, so it runs on every push to main without exception and always uploads the per-package uncovered-count artifact. The nightly job is a separate, independent full-merged-suite run against main on a cron schedule (never on push) — it is the `--minimum=87` (later `=100`) backstop check, not a baseline source.
+5. go-ci's coverage job is the ratchet's one and only baseline producer: task-3 exempts it from the validation-reuse skip on push events, so it runs on every push to main without exception and always uploads the per-package uncovered-count artifact. The nightly job is a separate, independent full-merged-suite run against main on a cron schedule (never on push) — it is the `--minimum=94` (later `=100`) backstop check, not a baseline source.
 6. A separate adversarial reviewer reads each refactor and wave diff before it lands; the reviewer's observable result is a review comment or approval recorded on the PR, not a self-report from the author.
 7. The supervisor (the agent or founder tracking this plan) re-measures coverage independently after each wave lands — never trusting a lane's own "it's green" claim — and updates the plan's task statuses.
 8. Once every package reaches 100% (task-18 lands), the supervisor cuts task-20: the gate becomes specscore-cli's hard 100%-or-fail rule, the ratchet's per-package baseline machinery is retired, and both CI files move together.
@@ -189,14 +882,32 @@ The founder's words are quoted verbatim. *The text after each quote is the plan'
 9. A developer or agent runs `go test ./...` locally. That is the unit tier:
    - It starts no process and uses no external network.
    - It runs in parallel.
-   - Its coverage is what the ratchet and the final gate measure.
+   - Its coverage remains included; CI also merges native coverage under the 2026-10-01 update.
 10. To check integration, they run `go test -tags e2e -run '^Test(E2E|Contract)' ./...`.
     - End-to-end tests build wb and drive it against real git repositories in temporary directories.
     - Contract tests run each fake and the real program through the same cases.
 11. On every PR, CI runs both tiers as separate required jobs.
-    - The coverage job runs the default tier: unit tests, plus any process-starting legacy tests still on task-24's pending list. As that list empties, the coverage profile becomes the unit tier's alone.
+    - The coverage job runs the default tier: unit tests, plus any process-starting legacy tests still on task-24's pending list. It now also measures the native tier separately and merges both profiles under the 2026-10-01 update.
     - The e2e job has no coverage step.
 12. When a fake and real git disagree, a contract test in the e2e job fails and names the operation. The fake is fixed before any unit test that relies on it is trusted.
+
+## Coverage measurement update, 2026-10-01
+
+The later user instruction permits native Git tests, seams or mocks wherever
+they get the repository to 100% more cheaply and quickly. This changes the
+unit-only measurement choice recorded under decision 17; that original quote
+remains historical evidence. CI now requests `wb coverage --include-e2e`: the
+default tier runs unchanged, then native `TestE2E*` and `TestContract*` tests run
+once from the same checkout. Their actual profiles use the same package scope
+and coverage mode, and the existing block merger combines executed statements
+before thresholds, the changed-line ratchet, reports and baseline publication.
+Baseline metadata distinguishes unit-only from combined measurement; a mismatch
+causes the merge base to be measured with the requested tiers. The floor is raised to 94% following the user's 2026-10-01 instruction,
+using the latest reported 95.24% observation with about 1.24 percentage points
+of margin. That observation combines saved source-compatible measurements, not
+a fresh passing full run; the next normal CI run validates the floor. The
+per-package ratchet remains unchanged. The separate required E2E job remains.
+Subprocesses built without coverage instrumentation contribute no coverage.
 
 ## Approach
 
@@ -235,7 +946,7 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
 - Task-7 keeps only the hermetic setup: HOME, umask and the state directory.
 - Task-22 thins `cmd/wb` and starts now (decision 18). Since decision 23, task-16 no longer waits for it.
 - Task-23 builds the real-git e2e suite while the waves run.
-- Task-20 gates the unit tier alone, once every pending list is empty.
+- Task-20 gates combined default and native coverage under the 2026-10-01 update.
 
 **Lane cap (amended 2026-09-24 by founder decisions 14–16; these amendments supersede the original scheduling text below).**
 - At most 3 concurrent lanes, and all 3 may be Go lanes (decision 15).
@@ -250,9 +961,9 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
 **Rules every wave brief carries:**
 - The target is a list of packages, never "raise the total".
 - Every test asserts an observable outcome.
-- Forbidden: deleting behaviour to gain coverage, `coverage:ignore`-style markers, build-tag hiding, and lowering the backstop or any package's ratchet baseline. The backstop stays at 87, is only ever raised, and `go-ci.yml` and `nightly-coverage.yml` move together (see task-3). No package's baseline uncovered count may rise.
+- Forbidden: deleting behaviour to gain coverage, `coverage:ignore`-style markers, build-tag hiding, and lowering the backstop or any package's ratchet baseline. The current backstop is 94 (raised from 87 on 2026-10-01), is only ever raised, and `go-ci.yml` and `nightly-coverage.yml` move together (see task-3). No package's baseline uncovered count may rise.
 - Tests sit beside the code, are named after behaviour, and are safe to run in parallel.
-- Every new test is a unit test, as task-24 defines it (decision 17):
+- New tests use the cheaper meaningful tier under the 2026-10-01 update. Unit tests remain hermetic, as task-24 defines them:
   - it starts no process and uses no external network; in-process `httptest` servers and unix sockets under `t.TempDir()` are allowed;
   - git, gh and other programs through task-8's fakes, files through task-9's injector, time through task-10's clock.
   A wave never adds a process-starting test to the default tier.
@@ -260,7 +971,7 @@ Why agents struggled, ranked. The evidence is in the research report linked unde
   - A package that runs external programs starts its wave only after its task-8 migration PR lands.
   - A package with retry, timeout or backoff code also waits for task-10.
   - Packages that do neither proceed as before.
-- A wave may move a legacy process-starting test to the e2e tier, or delete it as redundant, only in a PR where unit tests keep the package's uncovered count flat. The ratchet enforces this.
+- A wave may move a legacy process-starting test to the e2e tier, or delete it as redundant, only in a PR where combined coverage keeps the package's uncovered count flat. The ratchet enforces this.
 - Only a happy-path journey, or a failure case on task-23's list, moves to the e2e tier (decision 20). A legacy test of any other failure path is rewritten as a unit test, or deleted as redundant.
 - Some code only a real process can reach: the real runner, `internal/process`, task-8's allow-listed launchers, detach and `syscall.Exec` sites, and OS integration such as cgroups. It is tested with Go's helper-process pattern, where the test binary re-runs itself. Task-24 allows this, and it counts toward coverage.
 - The `e2e` build tag on test files (task-24) only selects a test tier. It hides no production code, so the ban on build-tag hiding still applies to production code.
@@ -333,6 +1044,8 @@ As measured 2026-09-23, `wb ci audit --target main --strict` fails with 34 findi
 
 - **(a) Changed statement.** A coverage block that overlaps an added line in `git diff --merge-base origin/<base> -U0 --color-moved=plain` whose lines are not marked as moved. Moved lines are held only to the per-package rule that the uncovered count must not rise. AC: a fixture PR that moves an uncovered function unchanged passes, and a fixture PR that adds one uncovered statement fails and names its file:line.
 - **(b) Baseline.** No committed baseline file. The baseline is the per-package uncovered counts go-ci's coverage job publishes as a build artifact on every push to main — the sole producer. This requires exempting the coverage job from the validation-reuse skip specifically on push events to `main` (`go-ci.yml:267`, currently `... && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')`), so it runs on every push to main without exception instead of being skipped whenever validation-reuse applies; the nightly job (`nightly-coverage.yml`) runs only on `schedule`/`workflow_dispatch`, never on push, so it is not a producer either way. **This exemption is a CI-cost choice, not a free correction:** it means a full 8-shard coverage run (today budgeted at 45 minutes) executes on every push to main, including ones validation-reuse would otherwise have skipped as already-validated — the founder confirmed that cost, not just the baseline's existence (decision 7). When no artifact exists, the job measures the merge base itself, under its own wall-time budget: a hard cap (sized to fit inside the coverage job's existing 45-minute `timeout-minutes` budget), not an open-ended fallback, so a missing artifact cannot silently make every PR pay for a from-scratch merge-base run; if the fallback would exceed its budget the job fails loud instead of hanging, per lesson `a-validation-gate-needs-a-wall-time-budget-before-it-becomes-the-default`. Because the counts come from main, they ratchet down automatically and nobody edits a baseline. `fetch-depth: 0` is added to the coverage job (above). The first baseline this task produces is measured at task-3's own landing SHA on main, not backdated to the 295e503f research snapshot (23 commits behind main as of 2026-09-23) that this Summary's 87.98%/10,577-uncovered figures come from — those figures are the reason for this plan, not the number the ratchet starts from.
+- **(b2) Red merge base (2026-10-02).** A merge base whose own tests fail is still measured, because a base that is red can only be repaired through a pull request and that pull request has to pass this ratchet. A coverage command that fails at the base is accepted only when `go test` exited 1 and every package it reports as failed names at least one failed test and printed its `coverage:` line, and the command's profile is readable; the baseline then uses that profile. The run prints a `WARNING` on stderr and sets `red_base` (`sha`, `failed_tests`) in the JSON report. The counts of the packages with failed tests are an upper bound, so the count-rise rule is looser for them by the statements only the failed tests reach; the changed-statement rule is unaffected. Everything else stays fail closed with the existing error: a build or setup failure, a test binary that panics or exits before writing coverage, a timeout or killed process, and a missing or unreadable profile. No package is given a baseline it was not measured for. The head measurement is unchanged: any failing test at the head fails the command. AC: a fixture PR that repairs a test failing at its merge base passes and reports `red_base`; a fixture PR that leaves that test failing fails.
+- **(b3) Timing tolerance, a stopgap (2026-10-02).** Founder: "Give rachet a tolerance for them for now". Some statements in `internal/orchestrate` are executed or not depending on timing: `ciwait.go:458` (the `context.DeadlineExceeded` branch of the wait loop in `waitForCommitChecksWith`) and `worktree_merge.go:4168` (the fall-through after a validation-cache miss in `verifyWorktreeMergeTargetChecks`). Two consecutive runs on pull request #820, which changes no test in that package, failed on a different one of those lines each time, so pull requests failed at random. Until those branches are made deterministic under test (task-21), `.wb/coverage-ratchet.yaml` lists such packages under `timing_tolerance`, each with `package`, `statements` (N), `functions` and `reason`. The file is read from the checkout being judged, the pull request's head, and never from the merge base; a missing file means no tolerance. **Loader.** Before anything is measured the command fails on: more than 3 entries; a list item that is not a mapping; a `package` that is not a clean directory path relative to the module root spelled exactly as in the directory listing (so not `./x`, `x/`, an absolute or module-qualified path, a path containing `..` or `...`, or a different letter case), or that is repeated; `statements` that is not a plain decimal integer from 1 to 5 (so not `2.9`, `0x5` or a quoted number); a missing or blank `reason`; `functions` that is empty, longer than 5, repeats itself, is not written `file.go:Function` or `file.go:Type.Method` for a non-test Go file of that package, or names a function the head checkout does not declare; an unknown key; a second YAML document; a version other than 1. Functions are resolved by parsing the head file, so a name survives line shifts and a renamed or deleted function fails the run until its entry is corrected. **Rule.** For a changed package with an entry the count-rise rule passes when all of these hold: the uncovered count is at most the baseline plus N; the rise is attributed to at least one newly uncovered statement; every such statement lies wholly inside one of the entry's functions; none of them overlaps a line the pull request added, modified or moved (moved lines are taken from the diff without move detection, because rule (a) deliberately leaves them out); and together they hold at most N statements. If any of these fails the tolerance is withdrawn for the whole package and the failure names every newly uncovered statement, as before. The changed-statement rule (a) is untouched and stays strict, and so do every package without an entry and the warn-only treatment of a package the pull request does not change. **Visibility.** Every use prints one `WARNING:` line on stderr naming the package, the counts, N and the configured reason, followed by one line per tolerated statement with its function, and sets `tolerance` (N) and `tolerated` (`file`, `line`, `function`, `reason`) on that package in the `--format json` report and in `coverage-ratchet.json`. Under `GITHUB_ACTIONS=true` the same use, and the red-base warning of (b2), also emit a `::warning title=...::` workflow command on stderr so a green run carries an annotation; stdout stays one JSON document. A run that needed no tolerance prints nothing and carries neither field. **Pinned.** `TestRepositoryRatchetPolicyIsExactlyTheReviewedTolerance` asserts this repository's policy is exactly the reviewed packages, N and functions, so widening it needs a second deliberate edit in the same pull request. The goal is an empty list: an entry is deleted when its branches are deterministic, and N is never raised to fit. AC: with `internal/orchestrate: 2` and the two functions above, a fixture change that leaves two untouched, previously covered statements inside those functions uncovered passes and reports both under `tolerated`; three such statements fail and all three are named; a count that exceeds baseline + 2 fails even when every attributable statement fits; one such statement on a line the change modified fails; one on a line git reports as moved fails; one outside the listed functions fails; the same rise in a package without an entry fails; a listed package the change does not touch only warns; a policy naming a function that does not exist fails before measuring.
 - **(c) #646 and #629.** Both open PRs must rebase onto the ratchet and pass it once task-3 lands. Both are authored under alex's account (`trakhimenok`); per decision 8, agent lanes of this programme rebase #646 (task-4) and #629 once task-3 merges, each as a Go lane under the lane cap.
 - **(d) Backstop.** `--minimum` stays at 87 in both `.github/workflows/go-ci.yml:292` and `.github/workflows/nightly-coverage.yml:58`. It is only ever raised, and both files move together — never lowered to fit, per lesson `l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit`.
 
@@ -585,7 +1298,7 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 **Status:** planning
 **Verifies:** `internal/orchestrate` reports 0 uncovered statements in the CI coverage profile at each wave's merge SHA.
 
-`internal/orchestrate` to 100%, in task-25's worklist units. `LandWorktreeMerge` and `PrepareWorktreeMerge` are in this package (`internal/orchestrate/worktree_merge.go`). Since decision 23 their error returns are reached by fail-call-N sweeps, and task-12 splits one only if a unit cannot reach 100% without the split. Coverage comes from unit tests against task-8's fakes (decision 17). A test that needs real git belongs in the e2e tier.
+`internal/orchestrate` to 100%, in task-25's worklist units. `LandWorktreeMerge` and `PrepareWorktreeMerge` are in this package (`internal/orchestrate/worktree_merge.go`). Since decision 23 their error returns are reached by fail-call-N sweeps, and task-12 splits one only if a unit cannot reach 100% without the split. Coverage comes from unit tests against task-8's fakes and measured native tests under the 2026-10-01 update. A test that needs real git belongs in the e2e tier.
 
 ### Task 18: Waves W8–W11, `internal/worktrees`
 
@@ -594,7 +1307,7 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 **Status:** planning
 **Verifies:** `internal/worktrees` reports 0 uncovered statements in the CI coverage profile at each wave's merge SHA.
 
-`internal/worktrees` to 100%, in task-25's worklist units (4,585 uncovered at e0dcfda6). Coverage comes from unit tests against task-8's fakes, with fail-call-N sweeps for error returns (decisions 17 and 23). A test that needs real git belongs in the e2e tier. Only the seven allow-listed secure helpers' statements wait for task-11. Task-12 splits a function only if a unit needs it.
+`internal/worktrees` to 100%, in task-25's worklist units (4,585 uncovered at e0dcfda6). Coverage comes from unit tests against task-8's fakes, with fail-call-N sweeps for error returns, and measured native tests under the 2026-10-01 update. A test that needs real git belongs in the e2e tier. Only the seven allow-listed secure helpers' statements wait for task-11. Task-12 splits a function only if a unit needs it.
 
 ### Task 19: Build #570 — `wb run --changed` and `wb coverage --changed`
 
@@ -607,6 +1320,29 @@ Mostly the same seam-free rule as task-14, with one named exception: 52 of these
 
 Promote the changed-package computation that today lives embedded as shell inside the pre-commit hook template (`internal/hooks/config.go:476`) into a first-class, tested Go verb per issue #570, and expose it as `wb run --changed -- <command>`. Wire `wb coverage --changed` to reuse the same changed-package detection so task-20's pre-push invocation has one implementation to call. This is test-scoping (which packages a local run touches), distinct from task-3's changed-*statement* ratchet design — see task-3's citation note.
 
+### Approved CI scope update (2026-10-02)
+
+The current CI implementation measures coverage for changed packages and their
+transitive reverse dependents across the union of merge-base/head default and
+native E2E import and test-import graphs. Baseline and head use the same logical
+selection; absent new/deleted packages contribute no statements at that revision.
+Nested fixtures, embedded assets and generated inputs retain their package's
+uncovered-count ratchet. Shared module/build/workflow inputs select all packages;
+unknown inputs select all and discovery errors fail closed. Different default/
+native package membership selects full-module measurement. Reports retain exact
+base/head revisions, tags, logical package membership and a private hash of the
+effective Go build environment; mismatched versions or flags fail comparison. Changed statements
+still require 100% coverage and changed-package uncovered counts may not rise.
+Selected profiles never establish a repository-global floor or summary and do
+not reuse full-module nightly baselines. A missing selected baseline measures
+only that selection. Main can reuse an exact trusted PR receipt; other events
+compare a resolved earlier revision with the same selected ratchets. Full-module
+coverage, the existing 94% floor, baseline and summary artifacts remain in daily
+nightly coverage and manual nightly dispatch from main. This update supersedes
+Task 3's full-PR/full-main producer policy for the interim ratchet; Task 20's
+future 100% repository-wide goal remains unchanged. No CI latency result is
+claimed; changes to core dependencies can still select much of the module.
+
 ### Task 20: Hard 100% gate
 
 **Id:** task-20
@@ -618,11 +1354,11 @@ Promote the changed-package computation that today lives embedded as shell insid
 3. Every pending list is empty:
    - task-24's `unit_tier.pending`;
    - task-8's `exec_sites.pending`.
-4. So the coverage job runs the unit tier only, and the CI unit job runs with `git` and `gh` removed from `PATH`.
+4. The coverage job measures both tiers separately and merges their actual profiles. The independent unit job can still run with `git` and `gh` removed from `PATH`.
 5. The unit tier of `cmd/wb`, `internal/worktrees` and `internal/orchestrate` each runs in at most 3 minutes on the VM, and the CI coverage job in at most 6.
 6. The e2e tier (task-23, task-24) passes as a separate required job.
 
-The gate measures the unit tier alone (decision 17). No process-starting test contributes coverage, apart from the helper-process tests task-24 allows. The e2e tier stays a required pass/fail job with no coverage threshold.
+The gate merges the unchanged default tier and native E2E/contract coverage under the 2026-10-01 update. The E2E tier also remains a separate required pass/fail job.
 
 Once every package is at 100%, replace the per-change ratchet and its 87 backstop with specscore-cli's gate: 100% or fail, with no exclusions. Per Task 3's decision, both the ratchet and this hard gate live in `wb coverage` — this task does not introduce a separate `scripts/coverage-gate.sh`; CI and the pre-push hook call `wb coverage --minimum=100`, with the pre-push invocation scoped to changed packages via task-19's `wb run --changed -- go test` / `wb coverage --changed`, because the full suite is too slow for a pre-push hook (`.wb/templates/go-sharded-pre-push.sh` has no coverage step today, and the full local suite takes about 27 minutes). `--minimum=87` is removed from both files, replaced by `--minimum=100` — not just lowered or left as dead configuration; this is a cutover per `rule:cutover-verbs-mean-full-cutover`, so this task also lists every workflow reference to the old `--minimum=87` invocation and updates each one. The nightly job keeps its cron schedule and full-merged-suite run; its threshold moves to 100, and since task-24 it also runs the e2e tier, since it stays the independent backstop that catches a regression within 24 hours even though the PR-path gate is now scoped to changed packages. The per-package ratchet and its baseline-publishing machinery (task-3, including the push-event validation-reuse exemption) are retired once this gate lands — a single repo-wide 100% requirement makes a per-package baseline redundant. The hook comment must not suggest `--no-verify`, per `rule:hooks-are-never-bypassed`.
 
@@ -751,7 +1487,7 @@ Adding a case to this list needs a PR that says why no fake can reproduce the be
 **Scope.**
 - Legacy process-starting tests that task-24's pending list assigns to task-23 move here once their package's unit tests cover the same statements.
 - The suite also carries the contract tests of task-8's git adapter. Contract tests are not journeys: they have one case for each error kind a fake emulates (for example a conflict, a missing ref or a rejected push). That keeps the unit tier's failure tests honest. Contract cases count against the same 10-minute budget.
-- This tier is not measured for coverage (decision 17).
+- This tier contributes actual native coverage under the 2026-10-01 update.
 
 ### Task 24: Test tiers: the unit tier and the real-git e2e tier
 
@@ -760,7 +1496,7 @@ Adding a case to this list needs a PR that says why no fake can reproduce the be
 **Status:** in_progress
 **Note:** PR-1 (the tiers, the detector, the pending and allow lists, the e2e job) is in `cov/integration`. Lane `cov-fix-769` taught the detector the `runCommand` and `installFakeGH` wrappers, which raised the pending total from 4,772 to 4,841.
 **Verifies:**
-1. **E2E tier.** It consists of `_test.go` files with `//go:build e2e`, whose tests are named `TestE2E*` or `TestContract*`. CI runs them with `go test -tags e2e -run '^Test(E2E|Contract)' ./...` as their own job. The job is required on every PR (decision 19) and has no coverage step.
+1. **E2E tier.** It consists of `_test.go` files with `//go:build e2e`, whose tests are named `TestE2E*` or `TestContract*`. CI runs them with `go test -tags e2e -run '^Test(E2E|Contract)' ./...` as their own job. The job is required on every PR (decision 19); the coverage job separately includes its measured profile under the 2026-10-01 update.
 2. **Static check.** A check in `internal/quality` fails on any default-tier `_test.go` that uses one of these patterns, beyond the file's count on the pending list:
    - `exec.Command`, `exec.CommandContext` or `os.StartProcess`;
    - `testenv.WriteExecutableFile`;
@@ -816,9 +1552,9 @@ Its rules:
   - Make the guards' Windows build pass: `GOOS=windows go vet ./internal/quality` fails at `quality_test.go:1862` (`syscall.Kill`). Find out why CI's Windows job misses it.
 - A file's count falls in one of three ways:
   - its tests are rewritten as unit tests;
-  - they move to the e2e tier in a PR whose unit tests keep the package's uncovered count flat (the ratchet enforces this);
+  - they move to the e2e tier in a PR whose combined coverage keeps the package's uncovered count flat (the ratchet enforces this);
   - they are deleted as redundant, under the same condition.
-- While the list is non-empty, the coverage profile still includes those legacy tests. When it is empty, the profile is the unit tier's alone, and that is what task-20 gates.
+- While the list is non-empty, the coverage profile still includes those legacy tests. When it is empty, the default profile is the unit tier's alone; task-20 gates its union with the native profile under the 2026-10-01 update.
 
 ### Task 25: Coverage worklists
 
@@ -864,3 +1600,7 @@ The [research report](_research/REPORT.md) and its evidence are in `spec/plans/c
 
 ---
 *This document follows the https://specscore.md/plan-specification*
+
+## Coverage result recorded 2026-10-06
+
+See [the source-bound result and proposed follow-up](RESULTS-2026-10-06.md). The measured Linux source scope reached 103,279/103,279 statements with zero uncovered positive-statement blocks. The report distinguishes that full-module result from the subsequent native fixture repair and its fresh main checks. This result does not close every historical process or architecture task in this plan; their statuses remain unchanged. Final release and task closure evidence belongs in the delivery receipts and WB Work Log.

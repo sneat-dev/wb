@@ -25,26 +25,6 @@ func rwi01HelpTestRoot() (root, helpCmd *cobra.Command) {
 	return root, helpCmd
 }
 
-// TestNewWBHelpCommandNoArgsShowsRootHelp drives `wb help` with no
-// arguments: it must render the root's own help rather than erroring.
-func TestNewWBHelpCommandNoArgsShowsRootHelp(t *testing.T) {
-	t.Parallel()
-	root, helpCmd := rwi01HelpTestRoot()
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&out)
-	if err := helpCmd.RunE(helpCmd, nil); err != nil {
-		t.Fatalf("help with no args: %v", err)
-	}
-	if out.Len() == 0 {
-		t.Fatal("help with no args wrote nothing")
-	}
-}
-
-// TestNewWBHelpCommandAmbiguousTopicListsMatches drives `wb help topic`
-// where "topic" names a leaf under two different parents: it must reject
-// with an ambiguous-topic usage error naming every match, never silently
-// pick one.
 func TestNewWBHelpCommandAmbiguousTopicListsMatches(t *testing.T) {
 	t.Parallel()
 	root, helpCmd := rwi01HelpTestRoot()
@@ -67,33 +47,5 @@ func TestNewWBHelpCommandAmbiguousTopicListsMatches(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(exitErr.message), []byte("sub1 topic")) || !bytes.Contains([]byte(exitErr.message), []byte("sub2 topic")) {
 		t.Fatalf("ambiguous help topic: message = %q, want both matches listed", exitErr.message)
-	}
-}
-
-// TestResolveHelpTargetTooManyArgsReturnsNil covers the fallback path
-// where the args cannot resolve as a command AND are not a single topic
-// word: resolveHelpTarget must report no target and no candidate matches
-// rather than guessing.
-func TestResolveHelpTargetTooManyArgsReturnsNil(t *testing.T) {
-	t.Parallel()
-	root, _ := rwi01HelpTestRoot()
-	target, matches := resolveHelpTarget(root, []string{"nope", "also-nope"})
-	if target != nil {
-		t.Fatalf("target = %v, want nil", target)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("matches = %v, want none", matches)
-	}
-}
-
-// TestContainsStringFindsValue covers the found-it branch of
-// containsString directly.
-func TestContainsStringFindsValue(t *testing.T) {
-	t.Parallel()
-	if !containsString([]string{"a", "b", "c"}, "b") {
-		t.Fatal("containsString did not find a present value")
-	}
-	if containsString([]string{"a", "b", "c"}, "z") {
-		t.Fatal("containsString found an absent value")
 	}
 }

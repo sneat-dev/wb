@@ -9,50 +9,41 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/mergevalidation"
+
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
-const worktreeMergeDeadcodeCommand = "go run ./cmd/wb deadcode"
-
-// WorktreeMergeImportedMainDeadcode binds the one imported main parent to the
-// candidate and the exact target whose validation it may supplement.
-type WorktreeMergeImportedMainDeadcode struct {
-	CandidateSHA string `json:"candidate_sha"`
-	TargetSHA    string `json:"target_sha"`
-	MergeSHA     string `json:"merge_sha"`
-	ImportedSHA  string `json:"imported_sha"`
-	// OriginMainSHA is the authoritative main head at initial validation. It
-	// may be later than ImportedSHA; resumes require it to remain an ancestor
-	// of the freshly fetched authoritative main head.
-	OriginMainSHA string                     `json:"origin_main_sha"`
-	Validation    quality.VerificationReport `json:"validation"`
+func worktreeMergeImportedMainDeadcode(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*mergevalidation.ImportedMainDeadcode, error) {
+	return worktreeMergeImportedMainDeadcodeWithRunner(ctx, defaultRunner, receipt, timeout, retry, checkTimeout)
 }
 
-func worktreeMergeImportedMainDeadcode(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*WorktreeMergeImportedMainDeadcode, error) {
+func worktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run runner.Runner, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) (*mergevalidation.ImportedMainDeadcode, error) {
 	path := receipt.Candidate.Worktree
-	mergeSHA, importedSHA, found, err := worktreeMergeImportedMainGraph(ctx, path, receipt.Candidate.SHA, receipt.TargetSHA)
+	mergeSHA, importedSHA, found, err := worktreeMergeImportedMainGraph(ctx, run, path, receipt.Candidate.SHA, receipt.TargetSHA)
 	if err != nil || !found {
 		return nil, err
 	}
-	attestedMainSHA, err := verifyImportedMainLineage(ctx, path, importedSHA, "", retry)
+	attestedMainSHA, err := verifyImportedMainLineage(ctx, run, path, importedSHA, "", retry)
 	if err != nil {
 		return nil, fmt.Errorf("attest imported main lineage: %w", err)
 	}
-	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, receipt.Repository, path, importedSHA, timeout, retry, checkTimeout)
+	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, run, receipt.Repository, path, importedSHA, timeout, retry, checkTimeout)
 	if err != nil {
 		return nil, err
 	}
-	return &WorktreeMergeImportedMainDeadcode{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: attestedMainSHA, Validation: validation}, nil
+	return &mergevalidation.ImportedMainDeadcode{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, MergeSHA: mergeSHA, ImportedSHA: importedSHA, OriginMainSHA: attestedMainSHA, Validation: validation}, nil
 }
 
 // worktreeMergeImportedMainGraph accepts only a linear candidate suffix above
 // one exact merge whose first parent is the receipt target and whose second
 // parent is the imported main commit.
-func worktreeMergeImportedMainGraph(ctx context.Context, repository, candidate, target string) (mergeSHA, importedSHA string, found bool, err error) {
+func worktreeMergeImportedMainGraph(ctx context.Context, run runner.Runner, repository, candidate, target string) (mergeSHA, importedSHA string, found bool, err error) {
 	current := candidate
 	mergeCount := 0
 	for steps := 0; steps < 256 && current != target; steps++ {
-		out, _, runErr := runCommand(ctx, defaultRunner, 0, 0, repository, "git", "rev-list", "--parents", "-n", "1", current)
+		out, _, runErr := runCommand(ctx, run, 0, 0, repository, "git", "rev-list", "--parents", "-n", "1", current)
 		if runErr != nil {
 			return "", "", false, fmt.Errorf("inspect candidate ancestry at %s: %w", current, runErr)
 		}
@@ -80,7 +71,7 @@ func worktreeMergeImportedMainGraph(ctx context.Context, repository, candidate, 
 	return mergeSHA, importedSHA, true, nil
 }
 
-func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, repository, candidateWorktree, importedSHA string, timeout time.Duration, retry int, checkTimeout time.Duration) (quality.VerificationReport, error) {
+func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, run runner.Runner, repository, candidateWorktree, importedSHA string, timeout time.Duration, retry int, checkTimeout time.Duration) (quality.VerificationReport, error) {
 	if checkTimeout <= 0 || checkTimeout > 2*time.Minute {
 		checkTimeout = 2 * time.Minute
 	}
@@ -90,7 +81,7 @@ func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, repository, ca
 	}
 	defer func() { _ = os.RemoveAll(temporary) }()
 	archivePath := filepath.Join(temporary, "main.tar")
-	if _, _, err := runCommand(ctx, defaultRunner, timeout, retry, candidateWorktree, "git", "archive", "--format=tar", "--output="+archivePath, importedSHA); err != nil {
+	if _, _, err := runCommand(ctx, run, timeout, retry, candidateWorktree, "git", "archive", "--format=tar", "--output="+archivePath, importedSHA); err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("archive imported main %s: %w", importedSHA, err)
 	}
 	snapshot := filepath.Join(temporary, "tree")
@@ -106,7 +97,7 @@ func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, repository, ca
 	}
 	configured := false
 	for _, command := range runOptions.GoLintCommands {
-		if strings.Join(command, " ") == worktreeMergeDeadcodeCommand {
+		if strings.Join(command, " ") == mergevalidation.DeadcodeCommand {
 			configured = true
 			break
 		}
@@ -117,43 +108,23 @@ func verifyWorktreeMergeImportedMainDeadcode(ctx context.Context, repository, ca
 	runOptions.GoLintCommands = [][]string{{"go", "run", "./cmd/wb", "deadcode"}}
 	report := quality.VerifyWithOptions(ctx, repository, snapshot, []quality.Check{quality.CheckLint}, runOptions)
 	report.Path, report.Revision, report.WorkspaceClean = "git:"+importedSHA, importedSHA, true
-	if !validImportedMainDeadcodeReport(report) {
+	if !mergevalidation.ValidImportedMainDeadcodeReport(report) {
 		return report, errors.New("imported main deadcode validation is incomplete or did not run the exact configured command")
 	}
 	return report, nil
 }
 
-func validImportedMainDeadcodeReport(report quality.VerificationReport) bool {
-	count := 0
-	for _, entry := range report.Results {
-		if entry.Language == "go" && entry.Check == quality.CheckLint && entry.Command == worktreeMergeDeadcodeCommand {
-			count++
-			if entry.Status == quality.StatusPassed {
-				continue
-			}
-			if entry.Status != quality.StatusFailed || !entry.Deadcode.Valid() {
-				return false
-			}
-		}
-	}
-	return count == 1
-}
-
-func importedMainDeadcodeIdentities(report quality.VerificationReport, check quality.Check, command, module string) (map[string]bool, bool) {
-	return worktreeMergeDeadcodeIdentitySet(report.Results, "go", check, command, module)
-}
-
-func verifyImportedMainLineage(ctx context.Context, repository, importedSHA, previousAttestedSHA string, retry int) (string, error) {
+func verifyImportedMainLineage(ctx context.Context, run runner.Runner, repository, importedSHA, previousAttestedSHA string, retry int) (string, error) {
 	remoteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, _, err := runCommand(remoteCtx, defaultRunner, 30*time.Second, retry, repository, "git", "fetch", "--no-tags", "origin", "refs/heads/main"); err != nil {
+	if _, _, err := runCommand(remoteCtx, run, 30*time.Second, retry, repository, "git", "fetch", "--no-tags", "origin", "refs/heads/main"); err != nil {
 		return "", fmt.Errorf("fetch origin/main: %w", err)
 	}
-	fetchedOutput, _, err := runCommand(remoteCtx, defaultRunner, 30*time.Second, retry, repository, "git", "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	fetchedOutput, _, err := runCommand(remoteCtx, run, 30*time.Second, retry, repository, "git", "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve fetched origin/main: %w", err)
 	}
-	remoteOutput, _, err := runCommand(remoteCtx, defaultRunner, 30*time.Second, retry, repository, "git", "ls-remote", "--heads", "origin", "refs/heads/main")
+	remoteOutput, _, err := runCommand(remoteCtx, run, 30*time.Second, retry, repository, "git", "ls-remote", "--heads", "origin", "refs/heads/main")
 	if err != nil {
 		return "", fmt.Errorf("read fresh origin/main: %w", err)
 	}
@@ -161,14 +132,14 @@ func verifyImportedMainLineage(ctx context.Context, repository, importedSHA, pre
 	if err != nil {
 		return "", err
 	}
-	if err := requireGitAncestor(remoteCtx, repository, importedSHA, currentSHA); err != nil {
+	if err := requireGitAncestor(remoteCtx, run, repository, importedSHA, currentSHA); err != nil {
 		return "", fmt.Errorf("imported main %s is not an ancestor of current origin/main %s: %w", importedSHA, currentSHA, err)
 	}
 	if previousAttestedSHA != "" {
-		if err := requireGitAncestor(remoteCtx, repository, importedSHA, previousAttestedSHA); err != nil {
+		if err := requireGitAncestor(remoteCtx, run, repository, importedSHA, previousAttestedSHA); err != nil {
 			return "", fmt.Errorf("initially attested origin/main %s is not descended from imported main %s: %w", previousAttestedSHA, importedSHA, err)
 		}
-		if err := requireGitAncestor(remoteCtx, repository, previousAttestedSHA, currentSHA); err != nil {
+		if err := requireGitAncestor(remoteCtx, run, repository, previousAttestedSHA, currentSHA); err != nil {
 			return "", fmt.Errorf("current origin/main %s rewound or diverged from initially attested %s: %w", currentSHA, previousAttestedSHA, err)
 		}
 	}
@@ -187,22 +158,26 @@ func matchedFetchedOriginMain(fetchedOutput, remoteOutput string) (string, error
 	return fetched[0], nil
 }
 
-func requireGitAncestor(ctx context.Context, repository, ancestor, descendant string) error {
+func requireGitAncestor(ctx context.Context, run runner.Runner, repository, ancestor, descendant string) error {
 	if strings.TrimSpace(ancestor) == "" || strings.TrimSpace(descendant) == "" {
 		return errors.New("both ancestry revisions are required")
 	}
-	if _, _, err := runCommand(ctx, defaultRunner, 30*time.Second, 0, repository, "git", "merge-base", "--is-ancestor", ancestor, descendant); err != nil {
+	if _, _, err := runCommand(ctx, run, 30*time.Second, 0, repository, "git", "merge-base", "--is-ancestor", ancestor, descendant); err != nil {
 		return err
 	}
 	return nil
 }
 
 func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) error {
+	return recheckWorktreeMergeImportedMainDeadcodeWithRunner(ctx, defaultRunner, receipt, timeout, retry, checkTimeout)
+}
+
+func recheckWorktreeMergeImportedMainDeadcodeWithRunner(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt, timeout time.Duration, retry int, checkTimeout time.Duration) error {
 	evidence := receipt.ImportedMainDeadcode
 	if evidence == nil {
 		return nil
 	}
-	if evidence.CandidateSHA != receipt.Candidate.SHA || evidence.TargetSHA != receipt.TargetSHA || evidence.OriginMainSHA == "" || evidence.Validation.Revision != evidence.ImportedSHA || !validImportedMainDeadcodeReport(evidence.Validation) {
+	if evidence.CandidateSHA != receipt.Candidate.SHA || evidence.TargetSHA != receipt.TargetSHA || evidence.OriginMainSHA == "" || evidence.Validation.Revision != evidence.ImportedSHA || !mergevalidation.ValidImportedMainDeadcodeReport(evidence.Validation) {
 		return errors.New("imported main deadcode evidence does not bind the exact candidate, target and imported main revision")
 	}
 	ioTimeout := timeout
@@ -210,7 +185,7 @@ func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt Workt
 		ioTimeout = 30 * time.Second
 	}
 	graphCtx, cancelGraph := context.WithTimeout(ctx, ioTimeout)
-	merge, imported, found, err := worktreeMergeImportedMainGraph(graphCtx, receipt.Candidate.Worktree, receipt.Candidate.SHA, receipt.TargetSHA)
+	merge, imported, found, err := worktreeMergeImportedMainGraph(graphCtx, run, receipt.Candidate.Worktree, receipt.Candidate.SHA, receipt.TargetSHA)
 	cancelGraph()
 	if err != nil {
 		return err
@@ -221,19 +196,19 @@ func recheckWorktreeMergeImportedMainDeadcode(ctx context.Context, receipt Workt
 	if receiptCheckTimeout, _ := receiptWorktreeMergeValidationTimeouts(receipt); receiptCheckTimeout > 0 {
 		checkTimeout = receiptCheckTimeout
 	}
-	if err := revalidateImportedMainDeadcodeEvidence(ctx, receipt, evidence, timeout, retry, checkTimeout); err != nil {
+	if err := revalidateImportedMainDeadcodeEvidence(ctx, run, receipt, evidence, timeout, retry, checkTimeout); err != nil {
 		return err
 	}
 	lineageCtx, cancelLineage := context.WithTimeout(ctx, ioTimeout)
 	defer cancelLineage()
-	if _, err := verifyImportedMainLineage(lineageCtx, receipt.Candidate.Worktree, evidence.ImportedSHA, evidence.OriginMainSHA, retry); err != nil {
+	if _, err := verifyImportedMainLineage(lineageCtx, run, receipt.Candidate.Worktree, evidence.ImportedSHA, evidence.OriginMainSHA, retry); err != nil {
 		return fmt.Errorf("recheck imported main lineage against authoritative origin/main: %w", err)
 	}
 	return nil
 }
 
-func revalidateImportedMainDeadcodeEvidence(ctx context.Context, receipt WorktreeMergeReceipt, evidence *WorktreeMergeImportedMainDeadcode, timeout time.Duration, retry int, checkTimeout time.Duration) error {
-	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, receipt.Repository, receipt.Candidate.Worktree, evidence.ImportedSHA, timeout, retry, checkTimeout)
+func revalidateImportedMainDeadcodeEvidence(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt, evidence *mergevalidation.ImportedMainDeadcode, timeout time.Duration, retry int, checkTimeout time.Duration) error {
+	validation, err := verifyWorktreeMergeImportedMainDeadcode(ctx, run, receipt.Repository, receipt.Candidate.Worktree, evidence.ImportedSHA, timeout, retry, checkTimeout)
 	if err != nil {
 		return err
 	}
@@ -244,18 +219,8 @@ func revalidateImportedMainDeadcodeEvidence(ctx context.Context, receipt Worktre
 }
 
 func sameImportedMainDeadcodeEvidence(previous, current quality.VerificationReport) bool {
-	find := func(report quality.VerificationReport) (quality.VerificationEntry, bool) {
-		var match quality.VerificationEntry
-		count := 0
-		for _, entry := range report.Results {
-			if entry.Language == "go" && entry.Check == quality.CheckLint && entry.Command == worktreeMergeDeadcodeCommand {
-				match, count = entry, count+1
-			}
-		}
-		return match, count == 1
-	}
-	old, oldOK := find(previous)
-	now, nowOK := find(current)
+	old, oldOK := mergevalidation.ImportedMainDeadcodeEntry(previous)
+	now, nowOK := mergevalidation.ImportedMainDeadcodeEntry(current)
 	if !oldOK || !nowOK || old.Module != now.Module || old.Status != now.Status {
 		return false
 	}

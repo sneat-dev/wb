@@ -1,75 +1,44 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
-
-	"github.com/spf13/cobra"
-
+	"context"
+	"github.com/sneat-dev/wb/internal/cli/cmdsession"
 	"github.com/sneat-dev/wb/internal/session"
-	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/sessionrun"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
+	"os"
 )
 
+func newSessionDependencies(inv *invocation) cmdsession.Dependencies {
+	return cmdsession.Dependencies{
+		Register: sessionrun.NewRegister(sessionrun.DefaultRegisterDependencies()).Register,
+		Join: func(ctx context.Context, path string) error {
+			service, err := collaborationFactory(inv)()
+			if err != nil {
+				return err
+			}
+			_, err = service.Join(ctx, path)
+			return err
+		},
+		List:           sessionrun.NewList(sessionrun.DefaultListDependencies()).List,
+		Prune:          sessionrun.NewPrune(sessionrun.DefaultPruneDependencies()).Prune,
+		Move:           newSessionMoveService(inv).Move,
+		Park:           sessionrun.NewPark(sessionrun.DefaultParkDependencies()).Park,
+		Resume:         sessionrun.NewResume(sessionrun.DefaultResumeDependencies()).Resume,
+		Receive:        sessionrun.NewReceive(sessionrun.DefaultReceiveDependencies()).Receive,
+		ReceivePark:    sessionrun.NewReceivePark(sessionrun.DefaultReceiveParkDependencies()).ReceivePark,
+		Send:           sessionrun.NewMessage(sessionrun.DefaultMessageDependencies()).Send,
+		ReceiveMessage: sessionrun.NewReceiveMessage(sessionrun.DefaultReceiveMessageDependencies()).ReceiveMessage,
+	}
+}
 func newSessionCmd(inv *invocation) *cobra.Command {
-	command := &cobra.Command{
-		Use:   "session",
-		Short: "Record and inspect the agent sessions running on this machine",
-		Long: `Record and inspect the agent sessions running on this machine.
-
-WB is a short-lived command with no daemon, so it cannot observe a session
-starting. A session announces itself once — from a harness start-up hook, or by
-hand — and everything WB writes afterwards can be attributed to it without each
-command being told again.
-
-A record is a claim, not an observation: WB stores what it was told, adds only
-what it can see for itself (its own version and binary path), and evaluates
-liveness from the declared PID when the record is read.`,
-	}
-	command.AddCommand(newSessionRegisterCmd(inv))
-	command.AddCommand(newSessionListCmd(inv))
-	command.AddCommand(newSessionPruneCmd(inv))
-	command.AddCommand(newSessionMoveCmd(inv))
-	command.AddCommand(newSessionParkCmd(inv))
-	command.AddCommand(newSessionResumeCmd(inv))
-	command.AddCommand(newSessionReceiveCmd(inv))
-	command.AddCommand(newSessionReceiveParkCmd(inv))
-	command.AddCommand(newSessionSendCmd(inv))
-	command.AddCommand(newSessionRequestHandoffCmd(inv))
-	command.AddCommand(newSessionReceiveMessageCmd(inv))
-	return command
+	return cmdsession.New(newCLIRuntime(inv), newSessionDependencies(inv))
 }
 
-// sessionDir resolves where session records live, creating WB's home if it is
-// not there yet so registering works on a fresh machine. Only the registering
-// commands use it.
-func sessionDir(inv *invocation) (string, error) {
-	home, err := wbhome.EnsureRoot(inv.projectsRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, session.DirName), nil
-}
-
-// sessionDirForRead resolves the same location without creating anything.
-// Attribution happens on the write path of unrelated commands, and a command
-// that merely records who is working must not bring WB's home into existence
-// as a side effect.
-func sessionDirForRead(inv *invocation) (string, error) {
-	home, err := wbhome.Root(inv.projectsRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, session.DirName), nil
-}
-
-// installSessionResolver lets the worktree layer attribute a write to a
-// registered session when the environment carries no declaration. Resolution
-// walks this process's ancestors and matches only PIDs that registered
-// themselves, so it confirms a declaration rather than guessing an owner.
 func installSessionResolver(inv *invocation) {
 	worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) {
-		directory, err := sessionDirForRead(inv)
+		directory, err := sessionrun.DirForRead(inv.projectsRoot)
 		if err != nil {
 			return worktrees.AgentIdentity{}, false
 		}

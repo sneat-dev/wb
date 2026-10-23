@@ -314,9 +314,7 @@ func migrateApplyWithDeps(ctx context.Context, root string, options MigrateOptio
 		ObservedAt:    options.Now(),
 		DryRun:        !options.Apply,
 	}
-	if !worktrees.BusyProcessCheckSupported {
-		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
-	}
+	appendBusyProcessNote(&report, worktrees.BusyProcessCheckSupported)
 	// Validated before the migration lock and before anything moves, in
 	// both a dry run and --apply: a typo in --include-task must fail the
 	// whole run with a usage error, never silently include nothing.
@@ -557,6 +555,13 @@ func finalizeKeptOwners(candidates []string) []MigrateKeptOwner {
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Path < kept[j].Path })
 	return kept
+}
+
+// appendBusyProcessNote records the platform capability once per migration report.
+func appendBusyProcessNote(report *MigrateReport, supported bool) {
+	if !supported {
+		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
+	}
 }
 
 // busyProcessUnsupportedNote is the single run-level note migrateApply and
@@ -1095,9 +1100,7 @@ func migrateUndoWithDeps(ctx context.Context, root string, options MigrateOption
 		SchemaVersion: 1, ProjectsRoot: root, ObservedAt: options.Now(),
 		DryRun: !options.Apply, Undo: true, ManifestID: options.UndoID,
 	}
-	if !worktrees.BusyProcessCheckSupported {
-		report.Notes = append(report.Notes, busyProcessUnsupportedNote())
-	}
+	appendBusyProcessNote(&report, worktrees.BusyProcessCheckSupported)
 	var lock *migrationLock
 	if options.Apply {
 		acquired, lockErr := deps.lock(root)

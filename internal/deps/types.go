@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
@@ -240,7 +242,7 @@ type DependencyDelta struct {
 }
 
 // RemoteCheck is the normalized GitHub check state observed before merge.
-type RemoteCheck = orchestrate.RemoteCheck
+type RemoteCheck = githubchecks.RemoteCheck
 
 func sortRepositoryReport(report *RepositoryReport) {
 	sort.Strings(report.ChangedFiles)

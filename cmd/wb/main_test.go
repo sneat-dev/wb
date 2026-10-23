@@ -26,6 +26,11 @@ import (
 var testIsolatedQueueDir string
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	// Every CLI test in this package that invokes `wb run --` or `wb
 	// worktree merge`/`prepare`/`resume` (directly via run()/root.Execute(),
 	// in-process) must never depend on the real host load average: GitHub's
@@ -42,30 +47,29 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
-		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
-	}
 	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
 		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
-		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
-	}
+	// Drop the agent harness's own exports (AI_AGENT, CLAUDE_CODE_*,
+	// CLAUDE_PID, ...) too. testenv.IsolateProcess below removes only
+	// WB_AGENT_*, and a harness's session variables alone make a work-log
+	// claim register the real harness process above this binary as its owner.
+	testenv.IsolateHarnessProcess()
 	// Isolate the whole test binary from ambient ownership/session-identity
 	// state before any test runs: this binary is a subprocess of whichever
 	// agent is operating the shell that launched `go test`, and its
 	// WB_AGENT_* exports would otherwise leak into every worktree/session
 	// assertion below. See internal/testenv and internal/envguard.
 	testenv.IsolateProcess()
+	// Give the whole test binary a private, empty user before anything can
+	// resolve a path: without it wb.yaml is the developer's own (and names
+	// the fleet's real claim store) and the default projects root is their
+	// ~/projects. Running un-isolated is not an option, so a failure exits.
+	removeUserState, userStateErr := testenv.IsolateUserState()
+	if userStateErr != nil {
+		fmt.Fprintf(os.Stderr, "fatal: could not isolate the test user's configuration and state: %v\n", userStateErr)
+		os.Exit(1)
+	}
 	// Disable git's detached gc/maintenance for every git this binary
 	// starts, including remote_test.go's own fixture clones/pushes and any
 	// production git call under test, so no background writer can race
@@ -104,6 +108,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	restoreQueueRoot()
 	_ = os.RemoveAll(queueDir)
+	removeUserState()
 	// #751: cli_smoke_test.go's buildWB compiles the real `wb` binary once
 	// per test binary run into its own os.MkdirTemp("", "wb-smoke-")
 	// directory; smokeBuildDir records that path (empty if no smoke test in
@@ -226,6 +231,7 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 		{name: "filter-version", args: []string{"--filter", "acme", "version"}, want: "--filter is not supported by version"},
 		{name: "filter-ci-direct", args: []string{"--filter", "acme", "ci", "audit"}, want: "--filter requires --fleet for ci audit"},
 		{name: "filter-hooks-direct", args: []string{"--filter", "acme", "hooks", "check"}, want: "--filter requires --fleet for hooks check"},
+		{name: "filter-adopt-path", args: []string{"--filter", "acme/", "worktree", "adopt", "/not-a-worktree"}, want: "--filter requires --all-external for worktree adopt"},
 		{name: "filter-coverage-direct", args: []string{"--filter", "acme", "coverage"}, want: "--filter requires --fleet for coverage"},
 		{name: "root-verify-direct", args: []string{"--projects-root", t.TempDir(), "verify"}, want: "--projects-root requires --fleet for verify"},
 		{name: "root-ci-direct", args: []string{"--projects-root", t.TempDir(), "ci", "audit"}, want: "--projects-root requires --fleet for ci audit"},
@@ -266,6 +272,25 @@ func TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories(t *testing.T) 
 	}
 }
 
+func TestAdoptExternalFleetSelectorsReachEmptySweep(t *testing.T) {
+	projectsRoot := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"--projects-root", projectsRoot, "--filter", "acme/", "worktree", "adopt", "--all-external", "--format", "json"}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s, stderr=%s", args, code, stdout.String(), stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "[]" {
+		t.Fatalf("stdout = %q, want an empty JSON result for the isolated projects root", got)
+	}
+}
+
+func TestSkillCommandExampleRejectsAdoptFilterWithNamedPath(t *testing.T) {
+	err := parseSkillCommandExample("wb --filter acme/ worktree adopt /not-a-worktree")
+	if err == nil || !strings.Contains(err.Error(), "--filter requires --all-external for worktree adopt") {
+		t.Fatalf("parseSkillCommandExample() error = %v, want the adopt fleet-mode guard", err)
+	}
+}
+
 // TestPersistentFlagMatrix exercises every advertised root flag against every
 // leaf command without running the command. A supported cell must reach RunE;
 // every other cell must fail in PersistentPreRunE rather than be ignored.
@@ -275,6 +300,7 @@ func TestPersistentFlagMatrix(t *testing.T) {
 		"filter":          "acme",
 		"org":             "acme",
 		"non-interactive": "true",
+		"quiet":           "true",
 	}
 	for flag, value := range values {
 		for _, commandID := range leafCommandIDs(newRootCmd()) {
@@ -294,6 +320,11 @@ func TestPersistentFlagMatrix(t *testing.T) {
 						if err := command.Flags().Set("fleet", "true"); err != nil {
 							t.Fatal(err)
 						}
+					}
+				}
+				if supported && flag == "filter" && commandID == "worktree adopt" {
+					if err := command.Flags().Set("all-external", "true"); err != nil {
+						t.Fatal(err)
 					}
 				}
 				rejectErr := rejectIgnoredPersistentFlags(command, nil)

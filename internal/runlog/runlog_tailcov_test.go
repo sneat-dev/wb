@@ -417,14 +417,8 @@ func TestTailCovClassifyCoversToolsVerbsAndFallbacks(t *testing.T) {
 
 func TestTailCovNewOperationIDIsUniqueAndWellFormed(t *testing.T) {
 	t.Parallel()
-	first, err := newOperationID()
-	if err != nil {
-		t.Fatalf("newOperationID: %v", err)
-	}
-	second, err := newOperationID()
-	if err != nil {
-		t.Fatalf("newOperationID: %v", err)
-	}
+	first := newOperationID()
+	second := newOperationID()
 	if !strings.HasPrefix(first, "wbo-") {
 		t.Fatalf("operation ID %q is missing the wbo- prefix", first)
 	}

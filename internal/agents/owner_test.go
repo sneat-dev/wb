@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,8 +237,10 @@ func TestRunOwnerTerminatesTheWholeWorkerProcessGroupOnTimeout(t *testing.T) {
 	// only a process-group kill can stop the tree.
 	script := `#!/bin/sh
 trap '' TERM
-sh -c 'trap "" TERM; sleep 600' &
+sh -c 'trap "" TERM; printf ready > grandchild-ready; sleep 600' &
 echo $! > grandchild.pid
+while [ ! -f grandchild-ready ]; do sleep 0.01; done
+printf ready > harness-ready
 sleep 600
 `
 	if err := testenv.WriteExecutableFile(path, []byte(script), 0o700); err != nil {
@@ -246,12 +249,55 @@ sleep 600
 	deps := DefaultOwnerDeps()
 	deps.LookPath = func(string) (string, error) { return path, nil }
 
-	// A generous run bound gives the harness time to install its trap and spawn
-	// the grandchild even on a loaded machine; an 8-minute landing validation
-	// runs this beside several other shards.
-	store, record, worktree := ownedRun(t, "HANG_MODE", 8*time.Second)
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
+	// Expire the caller only after the real harness and grandchild installed
+	// their traps. Startup latency must not stand in for process-tree evidence.
+	store, record, worktree := ownedRun(t, "HANG_MODE", 0)
+	ctx := &ownerFixtureDeadline{Context: context.Background(), done: make(chan struct{})}
+	ownerDone := make(chan error, 1)
+	go func() { ownerDone <- RunOwner(ctx, store, record.AgentID, deps) }()
+	joined := false
+	t.Cleanup(func() {
+		ctx.trigger()
+		if !joined {
+			select {
+			case err := <-ownerDone:
+				joined = true
+				if err != nil {
+					t.Errorf("owner cleanup: %v", err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Error("owner did not join after fixture deadline")
+			}
+		}
+	})
+	readyDeadline := time.Now().Add(30 * time.Second)
+	for {
+		if raw, err := os.ReadFile(filepath.Join(worktree, "harness-ready")); err == nil && string(raw) == "ready" {
+			break
+		}
+		select {
+		case err := <-ownerDone:
+			joined = true
+			t.Fatalf("owner finished before harness readiness: %v", err)
+		default:
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("harness and grandchild did not report readiness")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx.trigger()
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatal("ready harness did not receive caller deadline")
+	}
+	select {
+	case err := <-ownerDone:
+		joined = true
+		if err != nil {
+			t.Fatalf("RunOwner: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("owner did not finish after ready harness deadline")
 	}
 	loaded, err := store.Load(record.AgentID)
 	if err != nil {
@@ -742,3 +788,22 @@ func TestTerminateOwnerIgnoresAnAlreadyGoneProcessGroup(t *testing.T) {
 		t.Fatalf("terminateOwner on a gone group = %v, want nil", err)
 	}
 }
+
+// ownerFixtureDeadline controls only the negative caller-deadline observation;
+// process creation, group cancellation and durable owner state stay native.
+type ownerFixtureDeadline struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *ownerFixtureDeadline) Done() <-chan struct{} { return c.done }
+func (c *ownerFixtureDeadline) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *ownerFixtureDeadline) trigger() { c.once.Do(func() { close(c.done) }) }

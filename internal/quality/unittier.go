@@ -100,7 +100,8 @@ const (
 // Every name below was found in this repository on 2026-09-25 by grepping
 // every function whose body directly invokes exec.Command/exec.CommandContext
 // with a literal "git" argv[0] (production helpers), plus every _test.go
-// helper conventionally named after the same shape. Task-24's Note is that
+// helper conventionally named after the same shape. Later leaf-package entries
+// also include wrappers that reach real Git through gitcli. Task-24's Note is that
 // "the check keeps the full list" -- add a name here, with a short comment
 // naming where it is defined, whenever a new one is found; removing a name
 // is a mechanical no-op once its only caller is gone.
@@ -122,7 +123,7 @@ var UnitTierGitHelperNames = map[string]bool{
 	"gitPathUnchangedFromHEAD":       true, // internal/envguard, internal/locallink
 	"ShowFile":                       true, // internal/gitops/gitops.go
 	"OriginAddress":                  true, // internal/layout/layout.go
-	"OriginSlug":                     true, // internal/layout/layout.go
+	"OriginSlug":                     true, // internal/worktrees/worktrees.go
 	"GitMergeBase":                   true, // internal/quality/changed_packages.go
 	"GitTopLevel":                    true, // internal/quality/changed_packages.go
 	"GitTouchedFiles":                true, // internal/quality/ratchet.go
@@ -132,10 +133,9 @@ var UnitTierGitHelperNames = map[string]bool{
 	"commitPatchIDs":                 true, // internal/worktrees/patchid.go
 	"isAncestor":                     true, // internal/worktrees/lifecycle.go
 	"localBranchExists":              true, // internal/worktrees/worktrees.go
-	"atomicLocalBranchRename":        true, // internal/worktrees/branches_quarantine.go
 	"mergeResultTree":                true, // internal/worktrees/lifecycle.go
-	"retireGitBytes":                 true, // internal/worktrees/retire.go
-	"retireGitObjectSHA":             true, // internal/worktrees/retire.go
+	"GitBytes":                       true, // internal/worktreeretire/archive.go
+	"GitObjectSHA":                   true, // internal/worktreeretire/archive.go
 
 	// Test-local wrapper helpers: each is defined inside a _test.go file
 	// (so its own exec.Command call already trips UnitTierPatternExecStart
@@ -219,9 +219,29 @@ func unitTierSkipDir(name string) bool {
 // require the e2e tag), of a pattern task-24's unit tier bans. Results are
 // sorted by file, then line.
 func FindUnitTierMatches(root string) ([]UnitTierMatch, error) {
-	fset := token.NewFileSet()
 	var matches []UnitTierMatch
-	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+	err := walkGoTestFiles(root, func(fset *token.FileSet, file *ast.File, rel string) {
+		if !fileRequiresE2ETag(file) {
+			matches = append(matches, scanUnitTierFile(fset, file, rel)...)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].File != matches[j].File {
+			return matches[i].File < matches[j].File
+		}
+		return matches[i].Line < matches[j].Line
+	})
+	return matches, nil
+}
+
+// walkGoTestFiles shares parsing, build comments and repository exclusions
+// between default-tier process guards and native test-selection validation.
+func walkGoTestFiles(root string, visit func(*token.FileSet, *ast.File, string)) error {
+	fset := token.NewFileSet()
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -234,41 +254,22 @@ func FindUnitTierMatches(root string) ([]UnitTierMatch, error) {
 		if !strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if parseErr != nil {
-			return fmt.Errorf("parse %s: %w", path, parseErr)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
 		}
-		if fileRequiresE2ETag(file) {
-			return nil
-		}
-		rel := relSlashFor(root, path)
-		matches = append(matches, scanUnitTierFile(fset, file, rel)...)
+		visit(fset, file, relSlashFor(root, path))
 		return nil
 	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("walk %s: %w", root, walkErr)
+	if err != nil {
+		return fmt.Errorf("walk %s: %w", root, err)
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].File != matches[j].File {
-			return matches[i].File < matches[j].File
-		}
-		return matches[i].Line < matches[j].Line
-	})
-	return matches, nil
+	return nil
 }
 
-// fileRequiresE2ETag reports whether file's own leading build constraint (a
-// `//go:build` or legacy `// +build` comment before the package clause) is
-// exactly the bare "e2e" tag -- the one shape task-24 defines the e2e tier
-// by ("_test.go files with //go:build e2e"), and the only shape this
-// repository's own e2e-tagged files use. A more elaborate constraint that
-// merely mentions "e2e" alongside something else (`e2e || windows`, say) is
-// deliberately not treated as e2e-only: working out whether every tag
-// assignment that satisfies it also sets e2e is a harder, unneeded problem
-// while no real file in this repository combines the two, so such a file is
-// conservatively still scanned -- the same "detector, not oracle" stance
-// FindInlineWriteSequences and the other guards in this package take. A
-// file with no build constraint at all is, of course, a default-tier file.
+// fileRequiresE2ETag reports whether a leading build constraint requires e2e.
+// AND constraints require e2e when either operand does; OR constraints require
+// it only when both do. Other expressions remain conservatively scanned.
 func fileRequiresE2ETag(file *ast.File) bool {
 	for _, group := range file.Comments {
 		if group.Pos() >= file.Package {
@@ -282,12 +283,25 @@ func fileRequiresE2ETag(file *ast.File) bool {
 			if err != nil {
 				continue
 			}
-			if tag, ok := expr.(*constraint.TagExpr); ok && tag.Tag == "e2e" {
+			if buildConstraintRequiresE2E(expr) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func buildConstraintRequiresE2E(expr constraint.Expr) bool {
+	switch expr := expr.(type) {
+	case *constraint.TagExpr:
+		return expr.Tag == "e2e"
+	case *constraint.AndExpr:
+		return buildConstraintRequiresE2E(expr.X) || buildConstraintRequiresE2E(expr.Y)
+	case *constraint.OrExpr:
+		return buildConstraintRequiresE2E(expr.X) && buildConstraintRequiresE2E(expr.Y)
+	default:
+		return false
+	}
 }
 
 // unitTierAliasedPackages maps the import path of every package this

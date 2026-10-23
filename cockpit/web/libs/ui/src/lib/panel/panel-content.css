@@ -1,0 +1,169 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+.page {
+  max-width: 56rem;
+}
+
+/* The two blocks that hold the summary and the projected content are transparent: the one column is unchanged. */
+.aside,
+.main {
+  display: contents;
+}
+
+:host(.split) {
+  container-type: inline-size;
+}
+
+@container (min-width: 60rem) {
+  .content.split {
+    display: grid;
+    grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr);
+    gap: var(--space-4) var(--space-6);
+    align-items: start;
+    max-width: none;
+  }
+
+  .content.split > * {
+    grid-column: 1 / -1;
+  }
+
+  .content.split > .aside,
+  .content.split > .main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    grid-column: auto;
+    min-width: 0;
+  }
+}
+
+.head {
+  padding-right: var(--space-6);
+}
+
+.page .head {
+  padding-right: 0;
+}
+
+.kind {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.title {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  outline: none;
+}
+
+h3 {
+  margin: 0 0 var(--space-1);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+dt {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 1.75rem;
+}
+
+dd {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  min-height: 1.75rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.related {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.related a {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  /* A link is a target at least 24 px high (WCAG 2.5.8), as the facts beside it are 28. */
+  min-height: 1.75rem;
+}
+
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* What a page projects above the facts takes no space while nothing is projected. */
+.header-slot:not(:has(*)) {
+  display: none;
+}
+
+/* A fact with several values (repositories, machines) wraps them. */
+dd.many {
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+}
+
+/* The action area is for task 13's slot; it takes no space while nothing is projected into it. */
+.actions:not(:has(*)) {
+  display: none;
+}
+
+summary {
+  width: fit-content;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+pre {
+  max-height: 24rem;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

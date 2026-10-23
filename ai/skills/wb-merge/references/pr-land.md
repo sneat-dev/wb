@@ -29,6 +29,14 @@ wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
 wb pr land sneat-co/sneat-go#1041 --approved-by opus@codex@run-42 \
   --review-comment "the diff is scoped to go.mod/go.sum only"
 
+# Land past a non-required check that is already red on target tip.
+wb pr land specscore/specscore#63 --waive-check "Workers Builds: specscore-md" \
+  --waive-reason "fails on target tip and is not required by main"
+
+# A target that requires a merge queue: enqueued and observed, never merged
+# directly (see below).
+wb pr land datatug/datatug-apps#480
+
 # Machine-readable envelope for an agent.
 wb pr land sneat-co/sneat-go#1041 --format json
 ```
@@ -64,6 +72,36 @@ with `--keep-commits` (WB merges a rebuilt branch), or on a target without a
 strict up-to-date policy unless `--allow-unfenced` is explicit. `--no-auto-merge`
 and `--no-update-branch` opt out. A pending result with auto-merge armed lands
 without WB; retire the worktree afterwards with `wb worktree cleanup <task> --apply`.
+
+## Merge-queue targets are enqueued, never merged
+
+When the target's active rules include a `merge_queue` rule, `wb pr land`:
+
+- waits for the pull request's own required checks as usual, but performs no
+  update-branch (the queue builds its merge group on the current target, so a
+  behind candidate costs no extra CI cycle) and arms no auto-merge;
+- adds the pull request with GraphQL `enqueuePullRequest`, pinned to the head it
+  observed green, and watches the queue until GitHub merges it, removes it, or
+  the `--timeout` budget runs out;
+- never calls a merge endpoint, even when the caller is a ruleset bypass actor
+  (an organization admin with bypass mode `always`) who could merge around the
+  queue and land a head never tested on top of the current target;
+- verifies the merge commit is on the base, then syncs and cleans up as for any
+  landing, recording `merged_by: github merge queue` and a `merge_queue` receipt.
+
+The queue merges with its own configured method and message, so an explicit
+`--merge-method` that differs from it, `--subject`, or `--keep-commits` is
+refused before anything is written. Once the pull request is queued WB releases
+its landing lane, because the queue now serializes the target. `wb worktree
+land` routes a queue target through the same pull-request path.
+
+Detection reads the target's active ruleset rules (`rules/branches/<target>`);
+when they cannot be read the landing stops rather than guessing. The one
+exception is a 403 on that read under explicit `--allow-unfenced`, the same
+policy gap that flag already accepts for required checks: the landing proceeds
+without queue detection and records the gap on the receipt, so never pass
+`--allow-unfenced` where a queue must not be bypassed. A queue required through classic branch protection rather than a
+ruleset is not detected yet.
 
 ## Cleanup is the default
 
@@ -273,6 +311,78 @@ never from the title, author or labels:
 A pull request titled as a Renovate bump whose diff also edits a `.go` or `.ts`
 file is not mechanical, and is refused until a review is recorded.
 
+## Waiving non-required checks already failing on target
+
+When an external build or optional check fails on a pull request, is **not required** by the target branch's server-enforced policy, and **fails with the exact same conclusion on the target branch's current tip**, `wb pr land` permits landing past it via:
+
+```sh
+wb pr land <owner/repo#n> --waive-check "<name>" --waive-reason "<why safe>"
+```
+
+`--waive-check` is repeatable. Every named check is verified authoritatively against exact commit SHAs:
+- The check failed or was cancelled on the PR head.
+- The target branch server-enforced protection policy does not require it.
+- The target branch current tip commit has the check with the same failing conclusion.
+
+If any named check is required by target policy, passed on target tip, had a different conclusion, or was not failing on the head, `wb pr land` refuses.
+
+- **Still running.** A waived check that has not concluded is waited for, never judged: the result is `waived-check-pending` with a resume command. A real failure of a non-waived check wins over it (`checks_failed`), and once GitHub auto-merge merged the PR the waivers are recorded as moot.
+- **No concluded run on the target tip.** WB refuses `waived-check-absent-on-target` (no run) or `waived-check-hung-on-target` (still running) and names the nearest first-parent ancestor within 20 commits that failed the same way; rerun with `--waive-baseline <sha>`. A tip that ran the check green always wins, and a baseline older than a green run is refused (`waived-check-baseline-invalid`).
+- **Aggregators.** `--waive-aggregate deploy-gate` waives an aggregator job when every input in its workflow job's `needs:` (read at the run's own head) passed or is waived, at least one is waived, and neither it nor any input is required; otherwise `waived-aggregate-unproven`.
+- **Unfenced target.** With no server-enforced required checks, waivers need `--allow-unfenced`; WB then does not arm auto-merge and merges itself after the verdict. Without it: `waived-check-target-unfenced`.
+
+The receipt records each waived check's name, head conclusion, target tip SHA, baseline SHA (and whether it was the tip), authority, and reason; an aggregator also records its inputs and workflow file.
+
+## Merge reviewed lanes into an integration branch
+
+Lanes that target an integration branch (for example `public-demo`) push their
+branch and open **no** pull request. A reviewer posts the review as a commit
+comment on the lane SHA, ending `Reviewed-Head: <sha>`:
+
+```sh
+gh api repos/<owner>/<repo>/commits/<sha>/comments -F body=@review.md
+```
+
+The operator merges each reviewed SHA into the integration branch locally, runs
+the local checks and pushes — never by hand:
+
+```sh
+wb worktree create <task> <owner/repo> --base <integration> --model <model> --original-prompt-file -
+wb integration merge <owner/repository> <integration> <branch@sha=review-url>...
+```
+
+- A pin is `<branch>@<sha>=https://github.com/<owner>/<repo>/commit/<sha>#commitcomment-<id>`.
+  Every pin is verified before Git is touched; every refusal is reported at once.
+- Each pinned SHA gets its own `--no-ff` merge commit carrying `Wb-Lane`,
+  `Wb-Review`, `Wb-Review-Digest`, `Wb-Reviewer` and `Wb-Merged-By` trailers.
+  WB never rebases, squashes or force-pushes.
+- The repository's local-check recipe must pass before the push: `--checks`,
+  else `.wb/quality.yaml` `integration_checks: [lint, test, ...]`, else lint,
+  test and build plus `typecheck` where a project defines that script; no CI runs on that push, and the
+  integration branch needs no ruleset.
+- A conflict stops with the files listed: resolve, `git commit --no-edit`
+  (keeps the trailers), rerun the same command. Merged pins are skipped.
+- `wb pr batch add <owner/repository> --target <integration> <branch@sha=review-url>...`
+  does only the merges, without checking or pushing.
+- Full CI and a fresh review of the exact head happen once, on the one
+  integration → main pull request, which lands under the repository's merge
+  policy:
+
+```sh
+wb integration promote <owner/repository> <integration>
+wb pr batch delta <owner/repository> --target <integration> --overlap
+wb pr land <owner/repo>#<n> --approved-by <review-comment-url>
+```
+
+- `promote` re-proves every lane merge from its `Wb-*` trailers (a merge it
+  cannot prove refuses `batch-unrecorded-merge`) and opens or refreshes the one
+  pull request. The reviewer reads only `delta`: conflict resolutions, fix
+  commits, unrecorded merges, and with `--overlap` each lane's diff of files
+  several lanes changed. An empty delta is still reviewed.
+- `wb pr land` on that pull request needs the review to name its current head,
+  from a session that made none of the lane merges; it never updates the
+  branch or arms auto-merge.
+
 ## Refusals and what resolves each
 
 | Refusal code | What it means | Sanctioned next step |
@@ -287,10 +397,26 @@ file is not mechanical, and is refused until a review is recorded.
 | `not-mergeable` | GitHub reports a conflict | `wb worktree merge <task> --route auto` |
 | `head-moved` | the branch moved after its checks were observed | rerun `wb pr land …`; the head SHA is sent as a lease, so a race cannot land an unverified head |
 | `target-has-no-strict-fence` | the target branch has no server-enforced strict up-to-date policy, so green checks prove the head was green, not that it still is | `wb pr land … --allow-unfenced`, recorded on the receipt |
+| `waived-check-required` | a waived check is required by target branch server-enforced policy | fix the failure or change target policy; waivers cannot bypass required checks |
+| `waived-check-green-on-target` | a waived check passed on target tip SHA | investigate the failure on the PR head; the failure is not pre-existing on the target |
+| `waived-check-absent-on-target` | a waived check is not found on target tip SHA | rerun with the suggested `--waive-baseline <sha>`, or run the check on target tip |
+| `waived-check-hung-on-target` | a waived check's run on target tip has not concluded | rerun with the suggested `--waive-baseline <sha>`, or wait for the tip run |
+| `waived-check-baseline-invalid` | `--waive-baseline` is not a first-parent ancestor within 20 commits, did not fail the same way, or is older than a green run | use the baseline WB suggests |
+| `waived-check-pending` | the only checks still running are waived; they are judged once they conclude | run the printed resume command |
+| `waived-aggregate-unproven` | an aggregator's `needs:` inputs do not all pass or carry a waiver | waive the failing input too, or fix it |
+| `waived-check-conclusion-mismatch` | a waived check failed on target tip but with a different conclusion | investigate the differing failure on the PR head |
+| `waived-check-not-failed` | a waived check did not fail or cancel on the PR head | omit the unnecessary waiver flag |
+| `waived-check-target-unfenced` | the target branch has no server-enforced required checks, so non-required checks cannot be waived | `wb pr land … --allow-unfenced` |
+| `waive-reason-empty` | `--waive-check` passed without a non-empty `--waive-reason` (or `--waive-reason` given without `--waive-check`) | add `--waive-reason "<text>"` explaining why the waiver is safe |
 | `keep-commits-without-reason` | `--keep-commits` with no justification | add `--reason "<why these commits stand alone>"` |
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
 | `update-branch-conflict` | the candidate is behind and updating it conflicts; auto-merge stays armed | resolve the conflict on the branch, push, rerun `wb pr land …` |
+| `merge-queue-option-conflict` | the target's merge queue overrides `--merge-method`, `--subject` or `--keep-commits` | rerun the printed command, which drops the overridden flags |
+| `merge-queue-enqueue-rejected` | GitHub refused to add the pull request to the merge queue | open the pull request, fix what GitHub names, rerun `wb pr land …` |
+| `merge-group-failed` | exit 1: the queue removed the pull request because its merge group's checks failed or timed out; the finding names the failing checks | push a fix (a newer head is enqueued again automatically), or run the printed command, which adds `--requeue`, to retry the same head |
+| `merge-queue-dequeued` | exit 1: the pull request left the queue unmerged for another reason (a manual removal, say) | run the printed command, which adds `--requeue`, once a retry is intended |
+| `merge-queue-pending` | exit 1: still queued when the budget ran out; GitHub merges it without WB if the merge group passes | run the printed resume command in the background; it finds the pull request already queued and only observes, verifies and cleans up. If the queue removed it meanwhile, the resume reports that removal instead of enqueuing the same head again |
 | `checks-pending` | exit 1, not a refusal: the work is not ready | run the printed resume command in the background, not in the foreground - it carries a `--timeout` budget (at least 45 minutes) above the harness's ~10-minute foreground ceiling, and every flag the original invocation used (`--no-auto-merge`, `--allow-unfenced`, `--approved-by`, `--keep-commits`/`--reason`) |
 | `checks-failed` | exit 1, not a refusal: a check is red | the finding names the failing check(s) and their first error line; the sanctioned command opens the failing job (or its log) directly, not the PR page |
 | `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |

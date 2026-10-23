@@ -37,6 +37,12 @@ type OverrideConfig struct {
 // (`session_move`, `remote`, ...) is still tolerated untouched, because
 // only the `session` node is ever extracted and re-decoded.
 func LoadOverride(configPath string) (Kind, bool, error) {
+	return loadOverrideWithMarshal(configPath, yaml.Marshal)
+}
+
+// loadOverrideWithMarshal keeps serialization errors observable without
+// replacing the YAML parser or weakening strict section decoding.
+func loadOverrideWithMarshal(configPath string, marshal func(any) ([]byte, error)) (Kind, bool, error) {
 	raw, err := os.ReadFile(configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", false, nil
@@ -55,7 +61,7 @@ func LoadOverride(configPath string) (Kind, bool, error) {
 	if !found || sessionNode.Kind == 0 || sessionNode.Tag == "!!null" {
 		return "", false, nil
 	}
-	sub, err := yaml.Marshal(&sessionNode)
+	sub, err := marshal(&sessionNode)
 	if err != nil {
 		return "", false, fmt.Errorf("parse config %s: %w", configPath, err)
 	}

@@ -79,9 +79,37 @@ func (Real) RunOpts(ctx context.Context, dir string, opts RunOptions, name strin
 		command.WaitDelay = opts.WaitDelay
 	}
 	capture := configureOutputCapture(command, opts.CaptureCombined)
+	var limited *limitedWriter
+	if opts.StdoutLimit > 0 && !opts.CaptureCombined {
+		limited = &limitedWriter{dst: &capture.stdout, max: opts.StdoutLimit}
+		command.Stdout = limited
+	}
+	if opts.DiscardStderr && !opts.CaptureCombined {
+		command.Stderr = nil
+	}
 	runErr := command.Run()
 	result := Result{Stdout: capture.stdout.String(), Stderr: capture.stderr.String(), CombinedOutput: capture.combined.String(), ExitCode: exitCodeOf(runErr)}
+	if limited != nil && limited.exceeded {
+		return result, ErrOutputTooLarge
+	}
 	return withoutSpuriousWaitDelay(command, result, runErr)
+}
+
+// limitedWriter forwards writes to dst until one would pass max bytes in
+// total, then refuses it and every later one, so an oversized output is never
+// held in full.
+type limitedWriter struct {
+	dst      *bytes.Buffer
+	max      int
+	exceeded bool
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.dst.Len()+len(p) > w.max {
+		w.exceeded = true
+		return 0, ErrOutputTooLarge
+	}
+	return w.dst.Write(p)
 }
 
 // outputCapture owns the writers attached to one child. Keeping it alive

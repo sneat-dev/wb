@@ -50,7 +50,7 @@ func TestDqCovProvenanceSameBinaryMatchesIdentityFields(t *testing.T) {
 
 func TestDqCovStateValidRejectsIncompatibleSchemasAndMissingListener(t *testing.T) {
 	t.Parallel()
-	valid := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	valid := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	if err := valid.Valid(); err != nil {
 		t.Fatalf("Valid() on a fresh state = %v", err)
 	}
@@ -86,7 +86,7 @@ func TestDqCovNewStartingRepairsLegacyQueueSchema(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	legacy := State{Queue: Queue{Generation: 41, OwnerToken: "legacy-owner"}}
-	next := NewStarting(&legacy, "127.0.0.1:9000", Provenance{SHA256: "new"}, "new-owner", now)
+	next := NewStartingAt(&legacy, "127.0.0.1:9000", Provenance{SHA256: "new"}, "new-owner", "", "", now)
 	if next.Queue.SchemaVersion != QueueSchemaVersion {
 		t.Fatalf("queue schema = %d, want %d", next.Queue.SchemaVersion, QueueSchemaVersion)
 	}
@@ -104,7 +104,7 @@ func TestDqCovNewStartingRepairsLegacyQueueSchema(t *testing.T) {
 func TestDqCovStateTransitionsRecordStatusPIDAndTimestamp(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", start)
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", start)
 
 	state.MarkStartingPID(4242, start.Add(time.Second))
 	if state.Status != StatusStarting || state.PID != 4242 || !state.UpdatedAt.Equal(start.Add(time.Second)) {
@@ -140,7 +140,7 @@ func TestDqCovStoreLoadReportsMissingCorruptAndUnreadableState(t *testing.T) {
 		t.Fatalf("Load() on corrupt JSON = %t, %v", ok, err)
 	}
 
-	invalid := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	invalid := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	invalid.SchemaVersion = 77
 	contents, err := json.Marshal(invalid)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestDqCovStoreSaveRejectsUnusableDirectories(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	err := (Store{Path: filepath.Join(file, "nested", "state.json")}).Save(state)
 	if err == nil {
 		t.Fatal("Save() succeeded under a regular file")
@@ -198,7 +198,7 @@ func TestDqCovStoreSaveRejectsStateThatCannotBeEncoded(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "state.json")
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	if err := state.Valid(); err != nil {
 		t.Fatalf("baseline state is invalid: %v", err)
 	}

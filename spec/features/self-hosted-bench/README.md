@@ -121,6 +121,56 @@ unaffected: it always called the enrollment service in-process, never over
 HTTP. The hosted instance keeps the HTTP route mounted, gated by its own
 OAuth viewer.
 
+#### REQ: hub-writes-need-a-credential
+
+The rule for everything the daemon's listener serves is the founder's
+(2026-10-02): anything that changes state or returns the content of a file
+requires authentication; listing metadata to a reader on the loopback address
+does not. The fixed local identity answers for every caller, so it MUST NOT be
+what lets a request write. On a daemon-hosted hub these routes MUST be refused
+with status 401 unless the request carries a credential of the host owner:
+
+- `POST /v0/workbench/coverage` and `POST /v0/workbench/metrics`, which write
+  to the hub's store;
+- `POST /v0/workbench/github/installations/connect` and
+  `POST /v0/workbench/github/installations/authorize`, which begin and
+  authorize a GitHub installation connection.
+
+A credential of the host owner is one of two things and nothing else: a
+machine bearer (`Authorization: Bearer <token>`) that the hub's credential
+store resolves to a machine of the local identity and that is not a peer
+credential, or a request Cockpit's owner check accepts
+(cockpit#req:daemon-log-is-owner-only describes that check; the hub asks it
+through one `func(*http.Request) bool` and has no second mechanism). The gate
+fails closed: with no owner check configured only a machine bearer writes, and
+a refused request writes nothing. The 401 body carries the route's existing
+closed code (`coverage_unauthorized`, `metrics_unauthorized`,
+`viewer_unauthorized`).
+
+The reads of the same data (`GET /v0/workbench/coverage`,
+`GET /v0/workbench/metrics` and their per-repository forms) are metadata and
+stay open to a local reader. `GET .../installations/continue`, `.../setup` and
+`.../callback` change state but need no further credential: each acts only on
+a one-time, signed, expiring state that the gated `connect` route issued,
+bound to an `HttpOnly` cookie the same browser received, and `continue` goes
+no further than an inert page until the gated `authorize` route has accepted
+its challenge. They are reached by a browser redirect from GitHub, which can
+carry neither a bearer nor the owner session. On a self-hosted hub they answer
+503 in any case, because no OAuth client is configured.
+
+The hosted instance sets no such gate and is unchanged: its OAuth viewer and
+its machine bearers decide, as before.
+
+#### REQ: hub-write-errors-are-closed-codes
+
+A write the hub cannot store MUST be answered with a closed code and nothing
+else: `{"error": "<code>"}`. A record the store refuses for what it says is
+status 400 with `invalid_coverage_record` or `invalid_metric_record`; a store
+that could not write it is status 503 with `coverage_failed` or
+`metrics_failed`. The store's own error text, which names the repository and
+may carry a path of the engine, MUST NOT reach the caller. This holds for the
+hosted instance too.
+
 ### Polling ingester
 
 For every repository in the machine's published inventory the poller reads
@@ -239,6 +289,29 @@ duplicate and rejected outcomes; the line appears before the HTTP response
 to GitHub is sent for webhooks. No token, secret or payload body appears in
 any line. `--quiet` suppresses the console lines and the log file still
 records them.
+
+### AC: hub-writes-need-a-credential
+
+**Requirements:** self-hosted-bench#req:hub-writes-need-a-credential
+
+Scenario: An anonymous local caller writes to a daemon-hosted hub
+Given a daemon-hosted hub with an empty store
+When `POST /v0/workbench/coverage`, `POST /v0/workbench/metrics`, `POST .../installations/connect` and `POST .../installations/authorize` are requested with no credential, with an unknown bearer, with a machine bearer of another identity, with a peer credential, with no owner check configured, and then with the owner's machine bearer and with a request the owner check accepts
+Then every request but the last two is refused with status 401 and a closed code, the store and the installation states are still empty after them, the anonymous reads of coverage and metrics still answer 200, and the last two are accepted and what they wrote is read back
+
+Scenario: The hosted instance
+Given a hub built with no operator gate, a viewer resolver and a machine bearer resolver
+When its signed-in viewer posts coverage, a metric and an installation connection with no machine bearer
+Then each is accepted as before, and the same requests signed out are refused with status 401
+
+### AC: hub-write-errors-are-closed-codes
+
+**Requirements:** self-hosted-bench#req:hub-write-errors-are-closed-codes
+
+Scenario: The store refuses or fails a write
+Given a hub whose store rejects a record with no repository, and one whose engine fails every write with an error naming a file path
+When coverage and a metric are posted to each
+Then the bodies are exactly `{"error":"invalid_coverage_record"}`, `{"error":"invalid_metric_record"}`, `{"error":"coverage_failed"}` and `{"error":"metrics_failed"}`, with status 400 for the first two and 503 for the others
 
 ### AC: whole-journey-e2e
 

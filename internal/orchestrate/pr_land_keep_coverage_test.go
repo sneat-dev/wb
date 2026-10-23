@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
@@ -83,12 +85,12 @@ func TestOrchCovBuildAtRefusesABuildItCannotInfer(t *testing.T) {
 	}
 }
 
-// TestOrchCovCommitsBetweenAndPatchIdentityDescribeOneCommit,
-// TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit,
-// TestOrchCovMapLandedCommitsPairsKeptSourcesByPatchIdentity,
-// TestOrchCovMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate,
+// TestE2ECommitsBetweenAndPatchIdentityDescribeOneCommit,
+// TestE2EPatchIdentityHasNoIdentityForAMergeCommit,
+// TestE2EMapLandedCommitsPairsKeptSourcesByPatchIdentity,
+// TestE2EMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate,
 // TestOrchCovRewriteBranchForKeptCommits* and
-// TestOrchCovLandKeepingCommitsRewritesThePublishedBranch moved to
+// TestE2ELandKeepingCommitsRewritesThePublishedBranch moved to
 // pr_land_keep_e2e_test.go (spec/plans/coverage-to-100 task-17): each calls
 // a function that now runs real git through orchestrateGit/orchestrateRunner
 // (internal/runner), which task-24's runtime guard blocks outside the e2e
@@ -163,7 +165,7 @@ func TestOrchCovShellQuoteEscapesSingleQuotes(t *testing.T) {
 func TestOrchCovLandKeepingCommitsRefusesWithoutAnIdentifiableCheckout(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt")
 	commits := orchCovSourceCommits(t, fixture.canonical, fixture.baseSHA, fixture.headSHA)
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	options := PullRequestLandOptions{

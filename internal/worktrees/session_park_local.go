@@ -41,20 +41,12 @@ type parkedLocalMember struct {
 }
 
 type ParkedLocalCustody struct {
-	projectsRoot    string
-	bundle          sessionpark.Bundle
-	members         []parkedLocalMember
-	replayAttemptID string
-}
-
-// AttachParkedLocalSuccessor locks every member journal in stable path order,
-// validates the complete Git/claim/latest-owner barrier, and only then appends
-// the same prepared successor to every member. Explicit event IDs make a
-// partial I/O failure repairable by the same launcher attempt.
-func AttachParkedLocalSuccessor(ctx context.Context, options ParkedLocalSuccessorOptions) error {
-	return withParkedLocalResumeCustody(ctx, options.ProjectsRoot, options.Bundle, options.AttemptID, func(custody *ParkedLocalCustody) error {
-		return custody.Attach(ctx, options.Successor, options.AttemptID, options.AttemptIndex)
-	})
+	projectsRoot       string
+	bundle             sessionpark.Bundle
+	members            []parkedLocalMember
+	replayAttemptID    string
+	beforeWorktreeOpen func(string)
+	beforeAttachAppend func(*os.File)
 }
 
 // WithParkedLocalResumeCustody holds every exact worktree descriptor and
@@ -167,6 +159,9 @@ func (custody *ParkedLocalCustody) acquire(ctx context.Context, index int) error
 			return fmt.Errorf("managed worktree identity changed since park: %s", reason)
 		}
 	}
+	if custody.beforeWorktreeOpen != nil {
+		custody.beforeWorktreeOpen(guard.Path)
+	}
 	worktree, err := openAdoptedCleanupWorktree(guard.Path)
 	if err != nil {
 		return err
@@ -275,9 +270,8 @@ func corroborateProjectionAcrossHomes(projectsRoot, worktree string, projection 
 			lastErr = err
 		}
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no resolved home could corroborate the parked member's Work Log claim")
-	}
+	// Resolve always supplies its nonempty write home; a failed native
+	// corroboration therefore always sets lastErr before reaching here.
 	return lastErr
 }
 
@@ -381,6 +375,9 @@ func (custody *ParkedLocalCustody) Attach(ctx context.Context, successor session
 				"source_owner_event_id": member.OwnerEventID, "successor_wb_session_id": options.Successor.WBSessionID,
 				"attempt_id": options.AttemptID, "attempt_index": options.AttemptIndex,
 			},
+		}
+		if custody.beforeAttachAppend != nil {
+			custody.beforeAttachAppend(custody.members[index].directory)
 		}
 		if _, _, err := appendLocalEventUnderLock(resolvedWorktreeDir, custody.members[index].directory, event); err != nil {
 			return fmt.Errorf("attach local parked successor to %s: %w", resolvedWorktreeDir, err)

@@ -1,0 +1,77 @@
+@if (shown()) {
+  <div class="slot" role="group" aria-label="Actions">
+    @for (entry of direct(); track entry.action.id; let i = $index) {
+      <button
+        type="button"
+        class="action"
+        [class.disabled]="entry.reason !== undefined"
+        [attr.aria-disabled]="entry.reason !== undefined ? 'true' : null"
+        [attr.aria-describedby]="entry.reason !== undefined ? uid + '-d' + i : null"
+        (click)="activate(entry)"
+        (mouseenter)="showReason(entry)"
+        (focus)="showReason(entry)"
+        (mouseleave)="hideReason()"
+        (blur)="hideReason()"
+      >
+        {{ entry.action.title }}
+      </button>
+      @if (entry.reason !== undefined) {
+        <span class="visually-hidden" [id]="uid + '-d' + i">{{ entry.reason }}</span>
+      }
+    }
+    @if (overflow().length > 0) {
+      <button
+        #trigger
+        type="button"
+        class="action more"
+        aria-haspopup="menu"
+        aria-label="More actions"
+        [attr.aria-expanded]="open()"
+        [attr.aria-controls]="uid + '-menu'"
+        (click)="toggle(trigger)"
+      >
+        <app-glyph [paths]="more" />
+      </button>
+      <div
+        #menu
+        class="menu"
+        role="menu"
+        tabindex="-1"
+        popover="manual"
+        aria-label="More actions"
+        [id]="uid + '-menu'"
+        [hidden]="!open()"
+        [style.left.px]="position().left"
+        [style.top.px]="position().top ?? null"
+        [style.bottom.px]="position().bottom ?? null"
+        (keydown)="navigate($event)"
+      >
+        @for (entry of overflow(); track entry.action.id; let i = $index) {
+          <button
+            type="button"
+            role="menuitem"
+            class="item"
+            [class.disabled]="entry.reason !== undefined"
+            [attr.aria-disabled]="entry.reason !== undefined ? 'true' : null"
+            [attr.tabindex]="i === active() ? 0 : -1"
+            (focus)="active.set(i)"
+            (click)="choose(entry)"
+          >
+            <span>{{ entry.action.title }}</span>
+            @if (entry.reason !== undefined) {
+              <span class="why"> {{ entry.reason }}</span>
+            }
+          </button>
+        }
+      </div>
+    }
+    @if (shownReason(); as reason) {
+      <p class="note" aria-hidden="true">{{ reason }}</p>
+    }
+  </div>
+}
+@if (!shown()) {
+  @if (copy(); as fallback) {
+    <app-lazy-copy [build]="fallback.build" [label]="fallback.label" [idleWord]="copyWord()" [quiet]="fallback.quiet === true" [iconOnly]="fallback.quiet === true" />
+  }
+}

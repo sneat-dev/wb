@@ -21,11 +21,15 @@ import (
 type Check string
 
 const (
-	CheckLint    Check = "lint"
-	CheckTest    Check = "test"
-	CheckBuild   Check = "build"
-	CheckSpec    Check = "spec"
-	checkInstall Check = "install"
+	CheckLint  Check = "lint"
+	CheckTest  Check = "test"
+	CheckBuild Check = "build"
+	CheckSpec  Check = "spec"
+	// CheckTypecheck runs a Node project's own "typecheck" script; it has
+	// no Go command (build and vet already type-check Go) and is skipped
+	// where the script is not defined.
+	CheckTypecheck Check = "typecheck"
+	checkInstall   Check = "install"
 )
 
 // RunOptions bounds a single external command and retries only failed
@@ -37,6 +41,10 @@ type RunOptions struct {
 	// command attempts and any process-isolated Go shards. Zero leaves the
 	// existing per-command Timeout behavior unchanged.
 	CheckTimeout time.Duration
+	// IntegrationChecks is the repository's own local-check recipe for
+	// `wb integration merge` (.wb/quality.yaml integration_checks); empty
+	// leaves the caller's default.
+	IntegrationChecks []Check
 	// ShardAttemptTimeout bounds one process-isolated Go test shard attempt.
 	// Zero retains Timeout as the shard-attempt bound when Timeout is set.
 	ShardAttemptTimeout time.Duration
@@ -47,8 +55,18 @@ type RunOptions struct {
 	// process invokes it again.
 	GoTestShards int
 	// GoShardPackages are module-relative package patterns such as
-	// ./internal/worktrees. Packages not named here still run exactly once.
+	// ./internal/worktrees. Selected packages not named here still run exactly once.
 	GoShardPackages []string
+	// GoTestPackages limits coverage to these module-relative Go package
+	// patterns. An empty slice retains the default whole-module ./... scope.
+	GoTestPackages []string
+	// ExplicitGoTestSharding records that the caller selected GoTestShards and
+	// GoShardPackages on the command line. Repository policy remains validated
+	// and supplies lint commands, but cannot silently broaden this selection.
+	ExplicitGoTestSharding bool
+	// configGoShardPackages tracks validated repository defaults. Explicit
+	// overrides remain strict even when they copy configuration-derived options.
+	configGoShardPackages bool
 	// GoLintCommands replaces the default `go vet ./...` lint step with the
 	// repository-owned argv sequences from .wb/quality.yaml. Structured argv
 	// keeps exact tool pins reproducible without invoking a shell.
@@ -60,6 +78,14 @@ type RunOptions struct {
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
+	// IncludeE2E merges a separately measured native tier into default coverage.
+	IncludeE2E bool
+	// coverPackages is internal instrumentation scope for a combined run.
+	coverPackages []string
+	// redBase is set only while a per-change ratchet measures its merge base.
+	// It lets a coverage command whose only failure is a failing test still
+	// contribute its profile, and records which tests failed.
+	redBase *redBaseRecorder
 	// CoverageDiagnosticsDir retains raw output from failed process-isolated
 	// coverage jobs beside the durable coverage report. The human-facing error
 	// remains bounded; this private artifact is the lossless recovery path.
@@ -149,13 +175,6 @@ type VerificationEntry struct {
 	Attempts int                      `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
-// Verify runs the requested conventional Go and Node checks. The caller owns
-// cross-repository parallelism; checks within one module run in the requested
-// order to keep output and failures clear.
-func Verify(ctx context.Context, repository, path string, checks []Check) VerificationReport {
-	return VerifyWithOptions(ctx, repository, path, checks, RunOptions{})
-}
-
 // VerifyWithOptions runs the requested checks with per-command reliability
 // controls. The returned report includes every attempted, skipped, passed, or
 // failed command.
@@ -167,7 +186,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 	}
 	for _, module := range modules {
 		for _, check := range checks {
-			if check == CheckSpec {
+			if check == CheckSpec || check == CheckTypecheck {
 				continue
 			}
 			for _, command := range goCommands(check, options) {
@@ -182,7 +201,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		for _, node := range nodes {
 			hasScript := false
 			for _, check := range checks {
-				if check != CheckSpec && (node.Scripts[string(check)] || node.Nx) {
+				if check != CheckSpec && (node.Scripts[string(check)] || (node.Nx && check != CheckTypecheck)) {
 					hasScript = true
 					break
 				}
@@ -197,7 +216,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 				if check == CheckSpec {
 					continue
 				}
-				if !node.Scripts[string(check)] && !node.Nx {
+				if !node.Scripts[string(check)] && (!node.Nx || check == CheckTypecheck) {
 					report.Results = append(report.Results, VerificationEntry{Language: "node", Module: node.Module, Check: check, Status: StatusSkipped, Detail: "script is not defined"})
 					continue
 				}
@@ -208,26 +227,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	if containsCheck(checks, CheckSpec) {
-		specRoot := filepath.Join(path, "spec")
-		if _, err := os.Stat(specRoot); err == nil {
-			report.Results = append(report.Results, specLintOrSkip(ctx, options, path, specRoot))
-		} else if !os.IsNotExist(err) {
-			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)})
-		} else {
-			specConfig := filepath.Join(path, "specscore.yaml")
-			if _, configErr := os.Lstat(specConfig); configErr == nil {
-				report.Results = append(report.Results, VerificationEntry{
-					Language: "specscore",
-					Check:    CheckSpec,
-					Status:   StatusFailed,
-					Detail:   fmt.Sprintf("SpecScore config %q requires root %q, but the root is missing", specConfig, specRoot),
-				})
-			} else if !os.IsNotExist(configErr) {
-				report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)})
-			} else {
-				report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"})
-			}
-		}
+		report.Results = append(report.Results, verifySpecWithMetadata(ctx, options, path, os.Stat, os.Lstat))
 	}
 	if len(report.Results) == 0 {
 		return report
@@ -240,6 +240,31 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	return report
+}
+
+// verifySpecWithMetadata keeps the missing-root/config policy in one place;
+// each observation remains a native filesystem operation in production.
+func verifySpecWithMetadata(ctx context.Context, options RunOptions, path string, stat, lstat func(string) (os.FileInfo, error)) VerificationEntry {
+	specRoot := filepath.Join(path, "spec")
+	if _, err := stat(specRoot); err == nil {
+		return specLintOrSkip(ctx, options, path, specRoot)
+	} else if !os.IsNotExist(err) {
+		return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)}
+	} else {
+		specConfig := filepath.Join(path, "specscore.yaml")
+		if _, configErr := lstat(specConfig); configErr == nil {
+			return VerificationEntry{
+				Language: "specscore",
+				Check:    CheckSpec,
+				Status:   StatusFailed,
+				Detail:   fmt.Sprintf("SpecScore config %q requires root %q, but the root is missing", specConfig, specRoot),
+			}
+		} else if !os.IsNotExist(configErr) {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)}
+		} else {
+			return VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"}
+		}
+	}
 }
 
 func priorNodeInstallPassed(previous *VerificationReport, repository, path, module string, command []string) bool {
@@ -329,10 +354,8 @@ func isExternalPlansStore(path, specRoot string) (bool, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		rel, relErr := filepath.Rel(specRoot, walkPath)
-		if relErr != nil {
-			return relErr
-		}
+		// WalkDir produced a descendant on the same volume and path form.
+		rel, _ := filepath.Rel(specRoot, walkPath)
 		rel = filepath.ToSlash(rel)
 		if !entry.Type().IsRegular() || !externalPlansStorePath(rel) {
 			fits = false
@@ -737,16 +760,7 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 // tool never masquerades as a package path, and is surfaced only through
 // the error.
 func runStdout(ctx context.Context, dir, name string, args ...string) (string, error) {
-	command := process.CommandContext(ctx, name, args...)
-	command.Dir = dir
-	command.Env = commandEnv(dir, name, nil)
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	output, err := command.Output()
-	if err != nil && stderr.Len() > 0 {
-		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return string(output), err
+	return runStdoutWithEnv(ctx, nil, dir, name, args...)
 }
 
 func runWithEnv(ctx context.Context, env []string, dir, name string, args ...string) (string, error) {
@@ -778,24 +792,9 @@ func commandEnv(dir, name string, env []string) []string {
 }
 
 func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, int, error) {
-	attempts := 0
-	for {
-		attempts++
-		attemptCtx := ctx
-		cancel := func() {}
-		if options.Timeout > 0 {
-			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
-		}
-		output, err := runWithEnv(attemptCtx, options.Env, dir, name, args...)
-		timedOut := attemptCtx.Err() == context.DeadlineExceeded
-		cancel()
-		if timedOut {
-			err = fmt.Errorf("timed out after %s", options.Timeout)
-		}
-		if err == nil || attempts > options.Retry || ctx.Err() != nil {
-			return output, attempts, err
-		}
-	}
+	return runCommandAttempts(ctx, options.Timeout, options.Retry, func(attemptCtx context.Context) (string, error) {
+		return runWithEnv(attemptCtx, options.Env, dir, name, args...)
+	})
 }
 
 func commandError(command, output string, err error) string {
@@ -1294,17 +1293,14 @@ func ParseChecks(value string) ([]Check, error) {
 	for _, raw := range strings.Split(value, ",") {
 		check := Check(strings.TrimSpace(raw))
 		switch check {
-		case CheckLint, CheckTest, CheckBuild, CheckSpec:
+		case CheckLint, CheckTest, CheckBuild, CheckSpec, CheckTypecheck:
 		default:
-			return nil, fmt.Errorf("unknown check %q (want lint, test, build, or spec)", raw)
+			return nil, fmt.Errorf("unknown check %q (want lint, test, build, typecheck, or spec)", raw)
 		}
 		if !seen[check] {
 			checks = append(checks, check)
 			seen[check] = true
 		}
-	}
-	if len(checks) == 0 {
-		return nil, fmt.Errorf("requires at least one check")
 	}
 	return checks, nil
 }

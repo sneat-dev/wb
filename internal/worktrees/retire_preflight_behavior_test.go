@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func TestRetireRejectsInvalidRequestsBeforeFindingACheckout(t *testing.T) {
@@ -98,7 +99,7 @@ func TestRetirementReceiptRejectsInvalidOrSubstitutedEvidence(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	date := time.Date(2026, time.September, 28, 0, 0, 0, 0, time.UTC)
 	base := RetireResult{Version: 1, Task: "retire-task", Repository: "acme/app", Branch: "retire-task", SourceSHA: sha, Phase: "planned"}
-	base.RetiredRef = retiredBranchDestination(date, base.Branch, sha)
+	base.RetiredRef = worktreebranches.RetiredBranchDestination(date, base.Branch, sha)
 	base.ArchiveRef = retireArchiveRef(base)
 	for _, tc := range []struct {
 		name   string
@@ -375,7 +376,7 @@ func TestRemovedRetirementResumeRequiresOneMatchingDurableReceipt(t *testing.T) 
 			for i := 0; i < tc.receipts; i++ {
 				receipt := RetireResult{Version: 1, Task: "retire-task", Repository: "acme/app", Branch: "retire-task",
 					SourceSHA: sha, Phase: "complete", EffortID: "effort", RunID: "run", ClaimID: strings.Repeat("b", 64)}
-				receipt.RetiredRef = retiredBranchDestination(date, receipt.Branch, sha)
+				receipt.RetiredRef = worktreebranches.RetiredBranchDestination(date, receipt.Branch, sha)
 				receipt.ArchiveRef = retireArchiveRef(receipt)
 				receipt.ReportPath = filepath.Join(dir, "acme-app.json")
 				if i == 1 {

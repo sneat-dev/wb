@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
@@ -209,9 +210,13 @@ func TestRetirementGuardsRefuseProtectedCheckedOutAndUnreadableState(t *testing.
 }
 
 func expectExactRetirementTarget(fake *runnertest.Fake, fetchError error) {
+	expectExactRetirementTargetAt(fake, retirementRepo, fetchError)
+}
+
+func expectExactRetirementTargetAt(fake *runnertest.Fake, repositoryPath string, fetchError error) {
 	var privateRef string
 	fake.Expect(func(call runnertest.Call) bool {
-		if !ordinaryGitCall(call, retirementRepo, "fetch") || len(call.Args) < 1 {
+		if !ordinaryGitCall(call, repositoryPath, "fetch") || len(call.Args) < 1 {
 			return false
 		}
 		refspec := call.Args[len(call.Args)-1]
@@ -223,12 +228,60 @@ func expectExactRetirementTarget(fake *runnertest.Fake, fetchError error) {
 	}, runner.Result{}, fetchError)
 	if fetchError == nil {
 		fake.Expect(func(call runnertest.Call) bool {
-			return ordinaryGitCall(call, retirementRepo, "rev-parse") && len(call.Args) > 0 && call.Args[len(call.Args)-1] == privateRef+"^{commit}"
+			return ordinaryGitCall(call, repositoryPath, "rev-parse") && len(call.Args) > 0 && call.Args[len(call.Args)-1] == privateRef+"^{commit}"
 		}, runner.Result{CombinedOutput: retirementTarget + "\n"}, nil)
 	}
 	fake.Expect(func(call runnertest.Call) bool {
-		return ordinaryGitCall(call, retirementRepo, "update-ref") && len(call.Args) > 0 && call.Args[len(call.Args)-1] == privateRef
+		return ordinaryGitCall(call, repositoryPath, "update-ref") && len(call.Args) > 0 && call.Args[len(call.Args)-1] == privateRef
 	}, runner.Result{}, nil)
+}
+
+func TestApplyBranchCleanupKeepsLocalFailureScopedToItsCandidate(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	expectExactRetirementTarget(fake, errors.New("target unavailable"))
+	results := []BranchCleanupResult{
+		{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature", Base: "main", Scope: BranchScopeLocal, SHA: retirementHead}, Eligible: true, Outcome: "planned"},
+		{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "skipped", Scope: BranchScopeRemote}, Eligible: false, Outcome: "skipped"},
+	}
+	applyBranchCleanup(withGitRunner(context.Background(), fake), results,
+		map[string]string{"acme/app": retirementRepo}, BranchCleanupOptions{}, time.Now())
+	if results[0].Applied || results[0].Outcome != "failed" || !strings.Contains(results[0].Error, "target unavailable") {
+		t.Fatalf("local candidate failure = %#v", results[0])
+	}
+	if results[1].Outcome != "skipped" || results[1].Applied {
+		t.Fatalf("ineligible candidate changed = %#v", results[1])
+	}
+}
+
+func TestApplyBranchCleanupRefusesLostRepositoryPathPerCandidate(t *testing.T) {
+	t.Parallel()
+	results := []BranchCleanupResult{
+		{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/old", Scope: BranchScopeLocal}, Eligible: true, Outcome: "planned"},
+		{BranchEntry: BranchEntry{Repository: "acme/app", Branch: "feature/skipped", Scope: BranchScopeRemote}, Outcome: "skipped"},
+	}
+	applyBranchCleanup(context.Background(), results, map[string]string{}, BranchCleanupOptions{}, time.Now())
+	if results[0].Applied || results[0].Outcome != "failed" || !strings.Contains(results[0].Error, "repository path was not retained") || results[1].Outcome != "skipped" {
+		t.Fatalf("lost path contaminated candidates: %#v", results)
+	}
+}
+
+func TestLocalBranchRetirementRefusesMissingCanonicalAfterProof(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t)
+	expectExactRetirementTarget(fake, nil)
+	expectRetirementGit(fake, runner.Result{CombinedOutput: retirementHead + "\n"}, nil,
+		"rev-parse", "--verify", "refs/heads/feature")
+	expectRetirementGit(fake, runner.Result{CombinedOutput: "main\n"}, nil, "rev-parse", "--abbrev-ref", "HEAD")
+	expectRetirementGit(fake, runner.Result{}, nil, "worktree", "list", "--porcelain")
+	expectRetirementAncestor(fake, retirementHead, retirementTarget, runner.Result{}, nil)
+	result := BranchCleanupResult{BranchEntry: BranchEntry{
+		Repository: "acme/app", Branch: "feature", Base: "main", SHA: retirementHead, Disposition: BranchContained,
+	}}
+	applyLocalBranchDeletion(withGitRunner(context.Background(), fake), retirementRepo, &result, BranchCleanupOptions{})
+	if result.Applied || result.Outcome != "failed" || !strings.Contains(result.Error, "open canonical repository") {
+		t.Fatalf("missing canonical repository after proof = %#v", result)
+	}
 }
 
 func TestLocalBranchRetirementFailsClosedAtChangingInputs(t *testing.T) {

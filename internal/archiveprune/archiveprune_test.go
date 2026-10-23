@@ -551,6 +551,41 @@ func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
 	}
 }
 
+// A PR binding sidecar sits beside its claim and names the same repository but
+// is not a claim: it must neither block pruning nor hide an active claim.
+func TestNonTerminalClaimsPassesOverPullRequestBindingSidecars(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	run := filepath.Join(root, ".wb", "worklogs", "some-task", "runs", "run-1")
+	claimDir, terminalDir := filepath.Join(run, "claims"), filepath.Join(run, "terminals")
+	for _, dir := range []string{claimDir, terminalDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON := func(path string, value map[string]any) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, path, string(raw))
+	}
+	claimID := "claim-789"
+	claim := map[string]any{"claim_id": claimID, "repository": "acme/widgets", "task": "some-task", "worktree": "/gone", "lifecycle": "active"}
+	writeJSON(filepath.Join(claimDir, claimID+".json"), claim)
+	writeJSON(filepath.Join(claimDir, claimID+".pull_request.json"), map[string]any{
+		"repository": "acme/widgets", "pull_request": 42, "url": "https://github.com/acme/widgets/pull/42", "recorded_at": "2026-10-21T00:00:00Z"})
+	blockers, err := nonTerminalClaims(root, "acme/widgets")
+	if err != nil || len(blockers) != 1 {
+		t.Fatalf("active claim with sidecar: blockers=%v, err=%v", blockers, err)
+	}
+	terminal := map[string]any{"claim_id": claimID, "repository": "acme/widgets", "task": "some-task", "worktree": "/gone", "lifecycle": "terminal"}
+	writeJSON(filepath.Join(terminalDir, claimID+".json"), terminal)
+	if blockers, err := nonTerminalClaims(root, "acme/widgets"); err != nil || len(blockers) != 0 {
+		t.Fatalf("terminal claim with sidecar: blockers=%v, err=%v", blockers, err)
+	}
+}
+
 func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

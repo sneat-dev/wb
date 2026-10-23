@@ -272,7 +272,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"candidate head contains the freshly fetched",
 		"nonempty server-enforced strict",
 		"If the target advances, rebase or reintegrate",
-		"Merge-group observation is planned",
+		"A merge-queue target is the exception: never\n   merge it directly",
 		"keep the PR unmerged",
 		"post-merge target CI",
 		"The primary agent owns landing unless it explicitly delegates",
@@ -718,6 +718,9 @@ func parseSkillCommandExample(example string) error {
 		if err := command.Args(command, command.Flags().Args()); err != nil {
 			return err
 		}
+	}
+	if err := rejectIgnoredPersistentFlags(command, command.Flags().Args()); err != nil {
+		return err
 	}
 	return validateSkillExampleRequiredFlags(command)
 }

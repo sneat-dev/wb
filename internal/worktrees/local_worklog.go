@@ -1,141 +1,73 @@
 package worktrees
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
-	"strings"
-	"time"
 
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreejournal"
 )
 
 const (
-	localWorkLogEventsName     = "events.jsonl"
-	localWorkLogProjectionName = "projection.json"
-	localWorkLogOutboxName     = "outbox.jsonl"
-	localWorkLogLockName       = ".journal.lock"
-
-	LocalEventInit             = "init"
-	LocalEventSteer            = "steer"
-	LocalEventCheckpoint       = "checkpoint"
-	LocalEventRefresh          = "refresh"
-	LocalEventRefreshNeed      = "refresh_required"
-	LocalEventIntegrate        = "integrate"
-	LocalEventHandoff          = "handoff"
-	LocalEventRecover          = "recover"
-	LocalEventBranchReconciled = "branch_reconciled"
-	LocalEventFinalize         = "finalize"
-	LocalEventSyncAttempt      = "sync_attempt"
-	LocalEventArchive          = "archive"
+	localWorkLogEventsName     = worktreejournal.EventsName
+	localWorkLogProjectionName = worktreejournal.ProjectionName
+	localWorkLogOutboxName     = worktreejournal.OutboxName
+	localWorkLogLockName       = worktreejournal.LockName
+	LocalEventInit             = worktreejournal.LocalEventInit
+	LocalEventSteer            = worktreejournal.LocalEventSteer
+	LocalEventCheckpoint       = worktreejournal.LocalEventCheckpoint
+	LocalEventRefresh          = worktreejournal.LocalEventRefresh
+	LocalEventRefreshNeed      = worktreejournal.LocalEventRefreshNeed
+	LocalEventIntegrate        = worktreejournal.LocalEventIntegrate
+	LocalEventHandoff          = worktreejournal.LocalEventHandoff
+	LocalEventRecover          = worktreejournal.LocalEventRecover
+	LocalEventBranchReconciled = worktreejournal.LocalEventBranchReconciled
+	LocalEventFinalize         = worktreejournal.LocalEventFinalize
+	LocalEventSyncAttempt      = worktreejournal.LocalEventSyncAttempt
+	LocalEventArchive          = worktreejournal.LocalEventArchive
 )
 
-// LocalWorkLogEvent is one append-only journal record under .wb/local/worklog/.
-type LocalWorkLogEvent struct {
-	Version    int                  `json:"version"`
-	Seq        int                  `json:"seq"`
-	ID         string               `json:"id"`
-	Type       string               `json:"type"`
-	At         time.Time            `json:"at"`
-	Message    string               `json:"message,omitempty"`
-	NextAction string               `json:"next_action,omitempty"`
-	Prompt     string               `json:"prompt,omitempty"`
-	PromptSHA  string               `json:"prompt_sha256,omitempty"`
-	Git        *LocalGitEvidence    `json:"git,omitempty"`
-	Target     *LocalTargetEvidence `json:"target,omitempty"`
-	Usage      *LocalUsageEvidence  `json:"usage,omitempty"`
-	Result     string               `json:"result,omitempty"`
-	Conflict   string               `json:"conflict,omitempty"`
-	Owner      *OwnerRegistration   `json:"owner,omitempty"`
-	Extra      map[string]any       `json:"extra,omitempty"`
+type LocalWorkLogEvent = worktreejournal.LocalWorkLogEvent
+type LocalGitEvidence = worktreejournal.LocalGitEvidence
+type LocalTargetEvidence = worktreejournal.LocalTargetEvidence
+type LocalUsageEvidence = worktreejournal.LocalUsageEvidence
+type LocalWorkLogProjection = worktreejournal.LocalWorkLogProjection
+
+func localJournalPorts() worktreeclaims.LocalJournalPorts {
+	return worktreeclaims.LocalJournalPorts{
+		EnsureExclude: ensureJournalExclude,
+		OpenDirectory: func(worktree string, create bool) (*os.File, error) {
+			return openJournalSubdirectory(worktree, worklogDirectory, create)
+		},
+		ReadEvents:        readLocalEvents,
+		ReadBytesAt:       readBytesAt,
+		ParseEvents:       parseLocalEvents,
+		EnsureCustody:     ensureCustody,
+		Lock:              lockLocalWorkLog,
+		AppendUnderLock:   appendLocalEventUnderLock,
+		RebuildProjection: rebuildLocalProjection,
+		ReadManifestIdentity: func(worktree string) (worktreeclaims.LocalJournalIdentity, error) {
+			manifest, err := ReadManifest(worktree)
+			return worktreeclaims.LocalJournalIdentity{EffortID: manifest.EffortID, RunID: manifest.RunID, ClaimID: manifest.ClaimID}, err
+		},
+		ReadHybridProjection: func(worktree string) (worktreeclaims.LocalJournalIdentity, error) {
+			projection, err := readWorkLogProjection(worktree)
+			return worktreeclaims.LocalJournalIdentity{EffortID: projection.EffortID, RunID: projection.RunID, ClaimID: projection.ClaimID, Lifecycle: projection.Lifecycle}, err
+		},
+		Git: git,
+	}
 }
 
-// LocalGitEvidence is the public Git fingerprint recorded on checkpoints.
-type LocalGitEvidence struct {
-	Branch    string `json:"branch,omitempty"`
-	Head      string `json:"head,omitempty"`
-	Dirty     bool   `json:"dirty"`
-	StatusSHA string `json:"status_sha256,omitempty"`
-	Status    string `json:"status,omitempty"`
-}
-
-// LocalTargetEvidence records refresh/integrate observations.
-type LocalTargetEvidence struct {
-	Ref       string    `json:"ref,omitempty"`
-	SHA       string    `json:"sha,omitempty"`
-	FetchedAt time.Time `json:"fetched_at,omitempty"`
-	Ahead     int       `json:"ahead"`
-	Behind    int       `json:"behind"`
-	Strategy  string    `json:"strategy,omitempty"`
-}
-
-// LocalUsageEvidence is optional nullable token usage.
-type LocalUsageEvidence struct {
-	Discriminator string   `json:"discriminator"`
-	InputTokens   *int64   `json:"input_tokens,omitempty"`
-	OutputTokens  *int64   `json:"output_tokens,omitempty"`
-	TotalTokens   *int64   `json:"total_tokens,omitempty"`
-	EstimatedCost *float64 `json:"estimated_cost,omitempty"`
-	Currency      string   `json:"currency,omitempty"`
-	ProviderRef   string   `json:"provider_ref,omitempty"`
-}
-
-// LocalWorkLogProjection is the derived current-state cache for the local journal.
-type LocalWorkLogProjection struct {
-	Version        int                  `json:"version"`
-	EffortID       string               `json:"effort_id,omitempty"`
-	RunID          string               `json:"run_id,omitempty"`
-	ClaimID        string               `json:"claim_id,omitempty"`
-	Lifecycle      string               `json:"lifecycle"`
-	LastSeq        int                  `json:"last_seq"`
-	LastEventID    string               `json:"last_event_id,omitempty"`
-	LastType       string               `json:"last_type,omitempty"`
-	LastMessage    string               `json:"last_message,omitempty"`
-	LastNextAction string               `json:"last_next_action,omitempty"`
-	LastCheckpoint *LocalGitEvidence    `json:"last_checkpoint,omitempty"`
-	LastTarget     *LocalTargetEvidence `json:"last_target,omitempty"`
-	Conflict       string               `json:"conflict,omitempty"`
-	UpdatedAt      time.Time            `json:"updated_at"`
+func localJournalStore() worktreejournal.Store {
+	return worktreejournal.Store{OpenDirectory: openLocalWorkLogDir, Project: projectLocalWorkLog}
 }
 
 func openLocalWorkLogDir(worktree string, create bool) (*os.File, error) {
-	if err := ensureJournalExclude(worktree); err != nil {
-		return nil, err
-	}
-	return openJournalSubdirectory(worktree, worklogDirectory, create)
+	return localJournalPorts().OpenLocalWorkLogDir(worktree, create)
 }
 
 func readLocalEvents(worktree string) ([]LocalWorkLogEvent, error) {
-	content, err := readLocalWorkLogBytes(worktree, localWorkLogEventsName)
-	if err != nil || content == nil {
-		return nil, err
-	}
-	return parseLocalEvents(content)
-}
-
-func readLocalWorkLogBytes(worktree, name string) ([]byte, error) {
-	directory, err := openLocalWorkLogDir(worktree, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = directory.Close() }()
-	content, err := readBytesAt(directory, name)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return content, nil
+	return localJournalStore().ReadLocalEvents(worktree)
 }
 
 // readLocalEventsForInspection preserves the strict append/validation path
@@ -145,278 +77,37 @@ func readLocalWorkLogBytes(worktree, name string) ([]byte, error) {
 // valid prefix so owner/cleanup inspection can continue, plus a compatibility
 // marker for diagnostics.
 func readLocalEventsForInspection(worktree string, acceptHistorical func(LocalWorkLogEvent) bool) ([]LocalWorkLogEvent, bool, error) {
-	events, err := readLocalEvents(worktree)
-	if err == nil {
-		return events, false, nil
-	}
-	directory, openErr := openLocalWorkLogDir(worktree, false)
-	if openErr != nil {
-		return nil, false, err
-	}
-	defer func() { _ = directory.Close() }()
-	content, readErr := readBytesAt(directory, localWorkLogEventsName)
-	if readErr != nil {
-		return nil, false, err
-	}
-	parts := bytes.Split(content, []byte{'\n'})
-	if len(parts) < 2 || len(content) == 0 || content[len(content)-1] != '\n' {
-		return nil, false, err
-	}
-	last := bytes.TrimSpace(parts[len(parts)-2])
-	var historical LocalWorkLogEvent
-	if json.Unmarshal(last, &historical) != nil || !historicalParkedCompletionShape(historical) ||
-		acceptHistorical == nil || !acceptHistorical(historical) {
-		return nil, false, err
-	}
-	validPrefix, prefixErr := parseLocalEvents(bytes.Join(parts[:len(parts)-2], []byte{'\n'}))
-	if prefixErr != nil {
-		return nil, false, err
-	}
-	return validPrefix, true, nil
+	return localJournalPorts().ReadLocalEventsForInspection(worktree, acceptHistorical)
 }
 
 // historicalParkedCompletionShape identifies only the immutable event shape
 // produced by the affected receiver release. It is intentionally separate
-// from validateLocalEventForSequence: version 0 remains invalid evidence for
+// from worktreejournal.Store.ValidateLocalEventForSequence: version 0 remains invalid evidence for
 // every append, repair, and authoritative Work Log operation.
-func historicalParkedCompletionShape(event LocalWorkLogEvent) bool {
-	if event.Version != 0 || event.Type != LocalEventHandoff || event.Result != "completed" ||
-		event.Message != "parked successor proved live; target member custody completed" || len(event.Extra) == 0 {
-		return false
-	}
-	for _, key := range []string{
-		"resume_id", "parked_session_id", "member_id", "repository",
-		"predecessor_wb_session_id", "successor_wb_session_id",
-		"source_work_log_reference", "target_work_log_reference", "attempt_id",
-	} {
-		value, ok := event.Extra[key].(string)
-		if !ok || strings.TrimSpace(value) == "" {
-			return false
-		}
-	}
-	return true
-}
-
 func parseLocalEvents(content []byte) ([]LocalWorkLogEvent, error) {
-	events := make([]LocalWorkLogEvent, 0)
-	for _, raw := range bytes.Split(content, []byte{'\n'}) {
-		line := bytes.TrimSpace(raw)
-		if len(line) == 0 {
-			continue
-		}
-		var event LocalWorkLogEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			return nil, fmt.Errorf("parse local work-log event: %w", err)
-		}
-		if err := validateLocalEventForSequence(event, events); err != nil {
-			return nil, err
-		}
-		events = append(events, event)
-	}
-	return events, nil
+	return localJournalStore().ParseLocalEvents(content)
 }
 
 func readLocalProjection(worktree string) (LocalWorkLogProjection, error) {
-	directory, err := openLocalWorkLogDir(worktree, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return LocalWorkLogProjection{}, os.ErrNotExist
-	}
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	defer func() { _ = directory.Close() }()
-	var projection LocalWorkLogProjection
-	if err := readJSONAt(directory, localWorkLogProjectionName, &projection); err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	return projection, nil
+	return localJournalStore().ReadLocalProjection(worktree)
 }
 
 func appendLocalEvent(worktree string, event LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
-	return appendLocalEventWithCustody(worktree, event, true)
+	return localJournalPorts().AppendLocalEvent(worktree, event)
 }
-
-// appendLocalEventWithoutCustody is reserved for evidence whose owner was
-// explicitly authenticated by a higher-level custody transaction. Recording
-// the short-lived wb receiver process as an ambient owner would overwrite the
-// successor/predecessor proof that transaction just established.
 func appendLocalEventWithoutCustody(worktree string, event LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
-	return appendLocalEventWithCustody(worktree, event, false)
+	return localJournalPorts().AppendLocalEventWithoutCustody(worktree, event)
 }
-
-func appendLocalEventWithCustody(worktree string, event LocalWorkLogEvent, recordAmbientCustody bool) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
-	if event.Version == 0 {
-		event.Version = 1
-	}
-	if event.Version != 1 {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("unsupported local work-log event version %d", event.Version)
-	}
-	if strings.TrimSpace(event.Type) == "" {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("local work-log event type is required")
-	}
-	if !event.At.IsZero() {
-		event.At = event.At.UTC()
-	}
-
-	// Every worktree write funnels through here, which makes it the one place
-	// that can keep the owner chain honest. Owner events are excluded, both to
-	// avoid recursing and because they are the custody record itself.
-	if recordAmbientCustody && event.Type != LocalEventOwner {
-		ensureCustody(worktree)
-	}
-
-	directory, err := openLocalWorkLogDir(worktree, true)
-	if err != nil {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-	}
-	defer func() { _ = directory.Close() }()
-	unlock, err := lockLocalWorkLog(directory)
-	if err != nil {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-	}
-	defer unlock()
-	return appendLocalEventUnderLock(worktree, directory, event)
-}
-
 func appendLocalEventUnderLock(worktree string, directory *os.File, event LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
-	existing, journalRepair, err := readLocalEventsForAppend(directory)
-	if err != nil {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-	}
-	if journalRepair {
-		if err := rewriteLocalEventJournal(directory, existing); err != nil {
-			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-		}
-	}
-	requestedID := strings.TrimSpace(event.ID)
-	for _, prior := range existing {
-		if requestedID != "" && prior.ID == requestedID {
-			event.ID = requestedID
-			event.Seq = prior.Seq
-			if event.At.IsZero() {
-				event.At = prior.At
-			}
-			if !sameLocalEvent(prior, event) {
-				return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("local work-log event ID %q already denotes different immutable evidence", requestedID)
-			}
-			projection, repairErr := repairLocalEventDerivatives(worktree, directory, existing)
-			return prior, projection, repairErr
-		}
-	}
-	if event.At.IsZero() {
-		event.At = time.Now().UTC()
-	}
-	event.Seq = len(existing)
-	if requestedID == "" {
-		event.ID = localEventID(existing, event)
-	} else {
-		event.ID = requestedID
-	}
-
-	all := append(existing, event)
-	journal, err := encodeLocalEvents(all)
-	if err != nil {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-	}
-	// The descriptor lock serializes the read/modify/rename transaction. A
-	// whole-file atomic replacement means a crash can expose either the old
-	// journal or the complete new event, never bytes appended behind a torn
-	// suffix and never a lost concurrently appended neighbour.
-	if err := writeBytesAtomicAt(directory, localWorkLogEventsName, journal, 0o600); err != nil {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-	}
-	projection, err := repairLocalEventDerivatives(worktree, directory, all)
-	if err != nil {
-		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
-	}
-	return event, projection, nil
+	return localJournalStore().AppendLocalEventUnderLock(worktree, directory, event)
 }
 
 func sameLocalEvent(first, second LocalWorkLogEvent) bool {
-	firstRaw, firstErr := json.Marshal(first)
-	secondRaw, secondErr := json.Marshal(second)
-	return firstErr == nil && secondErr == nil && bytes.Equal(firstRaw, secondRaw)
-}
-
-// repairLocalEventDerivatives makes the journal event the sole source of
-// truth. A crash after events.jsonl but before either derived write is
-// therefore repaired by replaying the exact explicit event ID.
-func repairLocalEventDerivatives(worktree string, directory *os.File, events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
-	if err := repairLocalOutbox(directory, events); err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	projection, err := projectLocalWorkLog(worktree, events)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	if err := writeJSONAtomicAt(directory, localWorkLogProjectionName, projection, 0o600); err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	return projection, nil
-}
-
-func repairLocalOutbox(directory *os.File, events []LocalWorkLogEvent) error {
-	content, err := readBytesAt(directory, localWorkLogOutboxName)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	journalByID := make(map[string]LocalWorkLogEvent, len(events))
-	for _, event := range events {
-		if _, duplicate := journalByID[event.ID]; duplicate {
-			return fmt.Errorf("local work-log journal event ID %q occurs more than once", event.ID)
-		}
-		journalByID[event.ID] = event
-	}
-	seen := make(map[string]struct{}, len(events))
-	if len(content) != 0 {
-		outbox, _, parseErr := parseLocalEventsForRepair(content)
-		if parseErr != nil {
-			return fmt.Errorf("parse local work-log outbox: %w", parseErr)
-		}
-		for _, existing := range outbox {
-			journalEvent, found := journalByID[existing.ID]
-			if !found {
-				return fmt.Errorf("local work-log outbox event ID %q has no journal authority", existing.ID)
-			}
-			if !sameLocalEvent(existing, journalEvent) {
-				return fmt.Errorf("local work-log outbox event ID %q denotes different immutable evidence", existing.ID)
-			}
-			if _, duplicate := seen[existing.ID]; duplicate {
-				return fmt.Errorf("local work-log outbox event ID %q occurs more than once", existing.ID)
-			}
-			seen[existing.ID] = struct{}{}
-		}
-	}
-	encoded, err := encodeLocalEvents(events)
-	if err != nil {
-		return fmt.Errorf("encode local work-log outbox: %w", err)
-	}
-	if bytes.Equal(content, encoded) {
-		return nil
-	}
-	return writeBytesAtomicAt(directory, localWorkLogOutboxName, encoded, 0o600)
+	return localJournalStore().SameLocalEvent(first, second)
 }
 
 func projectLocalWorkLog(worktree string, events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
-	projection, err := rebuildLocalProjection(events)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	manifest, manifestErr := ReadManifest(worktree)
-	if manifestErr == nil {
-		projection.EffortID = manifest.EffortID
-		projection.RunID = manifest.RunID
-		projection.ClaimID = manifest.ClaimID
-	}
-	if hybrid, err := readWorkLogProjection(worktree); err == nil {
-		projection.EffortID = hybrid.EffortID
-		projection.RunID = hybrid.RunID
-		projection.ClaimID = hybrid.ClaimID
-		if hybrid.Lifecycle != "" {
-			projection.Lifecycle = hybrid.Lifecycle
-		}
-	}
-	return projection, nil
+	return localJournalPorts().ProjectLocalWorkLog(worktree, events)
 }
 
 // repairCurrentLocalProjection replays the authoritative local journal after
@@ -424,218 +115,25 @@ func projectLocalWorkLog(worktree string, events []LocalWorkLogEvent) (LocalWork
 // handoff preparation writes the hybrid pointer last, then calls this helper
 // so the user-facing local cache cannot remain identity-poor after a crash.
 func repairCurrentLocalProjection(worktree string) (LocalWorkLogProjection, error) {
-	directory, err := openLocalWorkLogDir(worktree, true)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	defer func() { _ = directory.Close() }()
-	unlock, err := lockLocalWorkLog(directory)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	defer unlock()
-	events, repair, err := readLocalEventsForAppend(directory)
-	if err != nil {
-		return LocalWorkLogProjection{}, err
-	}
-	if repair {
-		if err := rewriteLocalEventJournal(directory, events); err != nil {
-			return LocalWorkLogProjection{}, err
-		}
-	}
-	return repairLocalEventDerivatives(worktree, directory, events)
-}
-
-var rewriteLocalEventJournalAtomicWrite = writeBytesAtomicAt
-
-func rewriteLocalEventJournal(directory *os.File, events []LocalWorkLogEvent) error {
-	encoded, err := encodeLocalEvents(events)
-	if err != nil {
-		return err
-	}
-	if err := rewriteLocalEventJournalAtomicWrite(directory, localWorkLogEventsName, encoded, 0o600); err != nil {
-		return fmt.Errorf("repair torn local work-log journal: %w", err)
-	}
-	return nil
+	return localJournalStore().RepairCurrentLocalProjection(worktree)
 }
 
 func readLocalEventsForAppend(directory *os.File) ([]LocalWorkLogEvent, bool, error) {
-	content, err := readBytesAt(directory, localWorkLogEventsName)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	return parseLocalEventsForRepair(content)
-}
-
-// parseLocalEventsForRepair accepts only one crash shape: an unterminated
-// final record. Malformed completed lines and every non-final corruption are
-// immutable-evidence conflicts and remain hard failures.
-func parseLocalEventsForRepair(content []byte) ([]LocalWorkLogEvent, bool, error) {
-	parts := bytes.Split(content, []byte{'\n'})
-	terminated := len(content) == 0 || content[len(content)-1] == '\n'
-	events := make([]LocalWorkLogEvent, 0, len(parts))
-	for index, raw := range parts {
-		line := bytes.TrimSpace(raw)
-		if len(line) == 0 {
-			continue
-		}
-		var event LocalWorkLogEvent
-		decodeErr := json.Unmarshal(line, &event)
-		if decodeErr != nil {
-			if index == len(parts)-1 && !terminated {
-				return events, true, nil
-			}
-			return nil, false, fmt.Errorf("parse local work-log event: %w", decodeErr)
-		}
-		if validationErr := validateLocalEventForSequence(event, events); validationErr != nil {
-			return nil, false, validationErr
-		}
-		events = append(events, event)
-	}
-	return events, len(content) > 0 && !terminated, nil
-}
-
-func validateLocalEventForSequence(event LocalWorkLogEvent, existing []LocalWorkLogEvent) error {
-	if event.Version != 1 || event.Seq < 0 || event.Type == "" || event.ID == "" {
-		return fmt.Errorf("invalid local work-log event at seq %d", event.Seq)
-	}
-	wantSeq := len(existing)
-	if event.Seq != wantSeq {
-		if wantSeq == 0 {
-			return fmt.Errorf("local work-log events must start at seq 0")
-		}
-		return fmt.Errorf("local work-log event sequence gap: saw %d after %d", event.Seq, existing[len(existing)-1].Seq)
-	}
-	return nil
-}
-
-func encodeLocalEvents(events []LocalWorkLogEvent) ([]byte, error) {
-	var encoded bytes.Buffer
-	for _, event := range events {
-		line, err := json.Marshal(event)
-		if err != nil {
-			return nil, fmt.Errorf("encode local work-log event: %w", err)
-		}
-		encoded.Write(line)
-		encoded.WriteByte('\n')
-	}
-	return encoded.Bytes(), nil
+	return localJournalStore().ReadLocalEventsForAppend(directory)
 }
 
 func lockLocalWorkLog(directory *os.File) (func(), error) {
-	fd, err := unix.Openat(int(directory.Fd()), localWorkLogLockName, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
-	if errors.Is(err, unix.EEXIST) {
-		fd, err = unix.Openat(int(directory.Fd()), localWorkLogLockName, unix.O_RDWR|unix.O_NOFOLLOW, 0)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open local work-log journal lock: %w", err)
-	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("lock local work-log journal: %w", err)
-	}
-	return func() {
-		_ = unix.Flock(fd, unix.LOCK_UN)
-		_ = unix.Close(fd)
-	}, nil
+	return localJournalStore().LockLocalWorkLog(directory)
 }
 
 func rebuildLocalProjection(events []LocalWorkLogEvent) (LocalWorkLogProjection, error) {
-	projection := LocalWorkLogProjection{
-		Version:   1,
-		Lifecycle: "active",
-		UpdatedAt: time.Now().UTC(),
-	}
-	if len(events) == 0 {
-		return projection, nil
-	}
-	last := events[len(events)-1]
-	projection.LastSeq = last.Seq
-	projection.LastEventID = last.ID
-	projection.LastType = last.Type
-	projection.LastMessage = last.Message
-	projection.LastNextAction = last.NextAction
-	projection.UpdatedAt = last.At
-	resolvedFetchFailure := false
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if (event.Type == LocalEventRefresh || event.Type == LocalEventRefreshNeed) && event.Conflict == "" && event.Target != nil && event.Target.SHA != "" {
-			resolvedFetchFailure = true
-		}
-		switch event.Type {
-		case LocalEventCheckpoint:
-			if projection.LastCheckpoint == nil && event.Git != nil {
-				copyGit := *event.Git
-				projection.LastCheckpoint = &copyGit
-			}
-		case LocalEventRefresh, LocalEventIntegrate:
-			if projection.LastTarget == nil && event.Target != nil {
-				copyTarget := *event.Target
-				projection.LastTarget = &copyTarget
-			}
-		case LocalEventFinalize, LocalEventArchive:
-			projection.Lifecycle = "terminal"
-		case LocalEventHandoff:
-			if event.Result == "offered" {
-				projection.Lifecycle = "handoff"
-			}
-		}
-		if projection.Conflict == "" && event.Conflict != "" && (event.Conflict != "fetch_failed" || !resolvedFetchFailure) {
-			projection.Conflict = event.Conflict
-		}
-	}
-	return projection, nil
-}
-
-func localEventID(existing []LocalWorkLogEvent, event LocalWorkLogEvent) string {
-	payload := struct {
-		Type    string `json:"type"`
-		Message string `json:"message,omitempty"`
-		Prompt  string `json:"prompt_sha256,omitempty"`
-		Git     any    `json:"git,omitempty"`
-		Target  any    `json:"target,omitempty"`
-		Result  string `json:"result,omitempty"`
-	}{
-		Type: event.Type, Message: event.Message, Prompt: event.PromptSHA,
-		Git: event.Git, Target: event.Target, Result: event.Result,
-	}
-	encoded, _ := json.Marshal(payload)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\n%s\n%s", len(existing), event.Type, encoded)))
-	return hex.EncodeToString(sum[:])
+	return localJournalStore().RebuildLocalProjection(events)
 }
 
 func observeLocalGit(ctx context.Context, worktree string) LocalGitEvidence {
-	evidence := LocalGitEvidence{}
-	if branch, err := git(ctx, worktree, "branch", "--show-current"); err == nil {
-		evidence.Branch = strings.TrimSpace(branch)
-	}
-	if head, err := git(ctx, worktree, "rev-parse", "HEAD"); err == nil {
-		evidence.Head = strings.TrimSpace(head)
-	}
-	if status, err := git(ctx, worktree, "status", "--porcelain"); err == nil {
-		trimmed := strings.TrimSpace(status)
-		evidence.Status = trimmed
-		evidence.Dirty = trimmed != ""
-		sum := sha256.Sum256([]byte(trimmed))
-		evidence.StatusSHA = hex.EncodeToString(sum[:])
-	}
-	return evidence
+	return localJournalPorts().ObserveLocalGit(ctx, worktree)
 }
 
 func countLocalOutbox(worktree string) (int, error) {
-	content, err := readLocalWorkLogBytes(worktree, localWorkLogOutboxName)
-	if err != nil || content == nil {
-		return 0, err
-	}
-	count := 0
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	for scanner.Scan() {
-		if len(bytes.TrimSpace(scanner.Bytes())) > 0 {
-			count++
-		}
-	}
-	return count, scanner.Err()
+	return localJournalStore().CountLocalOutbox(worktree)
 }

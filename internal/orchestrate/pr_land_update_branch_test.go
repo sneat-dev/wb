@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 func fixtureMarker(t *testing.T, fixture *landFixture, name string) {
@@ -129,7 +131,7 @@ func TestWaitDeadlineSpendsOneBudgetAcrossUpdates(t *testing.T) {
 	if waitDeadline(later).Sub(start) != 40*time.Minute {
 		t.Fatal("waitDeadline is relative to now, so it must be computed once before the loop")
 	}
-	if waitDeadline(PullRequestLandOptions{Now: func() time.Time { return start }}).Sub(start) != MaxForegroundCheckWaitSlice {
+	if waitDeadline(PullRequestLandOptions{Now: func() time.Time { return start }}).Sub(start) != githubchecks.MaxForegroundCheckWaitSlice {
 		t.Error("a zero budget did not fall back to the bounded slice")
 	}
 }

@@ -2,10 +2,12 @@ package orchestrate
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -13,10 +15,9 @@ import (
 // These cases exercise the second evidence read made under the lane lock. The
 // caller may have inspected a valid repair plan before any of these inputs
 // changed, but must refuse to create a candidate after the change.
-//
-//nolint:paralleltest // publishedForwardRepairFixture calls t.Setenv through newEngineFixture
 func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) {
-	for _, test := range []struct {
+	t.Parallel()
+	tests := []struct {
 		name    string
 		change  func(*testing.T, WorktreeMergeReceipt, *WorktreeMergePublishedForwardRepairOptions)
 		wantErr string
@@ -99,22 +100,114 @@ func TestPublishedForwardRepairRevalidationRefusesChangedEvidence(t *testing.T) 
 			},
 			wantErr: "remote target drifted",
 		},
-	} {
-		//nolint:paralleltest // each subtest builds a fixture that calls t.Setenv
-		t.Run(test.name, func(t *testing.T) {
-			fixture, receipt, _, options := publishedForwardRepairFixture(t)
-			sources, repository, canonical, err := inspectPublishedForwardRepairSources(context.Background(), options.ProjectsRoot, options.Sources, receipt.Target)
+	}
+
+	runCase := func(t *testing.T, index int, fixture engineFixture, receipt WorktreeMergeReceipt, baseOptions WorktreeMergePublishedForwardRepairOptions, shared bool) {
+		t.Helper()
+		test := tests[index]
+		options := baseOptions
+		options.Sources = append([]string(nil), baseOptions.Sources...)
+		options.ExpectedSourceSHAs = append([]string(nil), baseOptions.ExpectedSourceSHAs...)
+		sources, repository, canonical, err := inspectPublishedForwardRepairSourcesWithRunner(context.Background(), defaultRunner, options.ProjectsRoot, options.Sources, receipt.Target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restore func() error
+		if shared {
+			receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			test.change(t, receipt, &options)
-			err = revalidatePublishedForwardRepairEvidence(context.Background(), options, receipt.ReceiptPath,
-				options.ExpectedReceiptSHA256, options.ExpectedImmutableClaimSHA256, options.ExpectedSupersessionSHA256,
-				"", sources, repository, canonical, options.ExpectedCurrentTargetSHA)
-			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-				t.Fatalf("revalidate after %s: %v, want %q", test.name, err, test.wantErr)
+			receiptInfo, err := os.Stat(receipt.ReceiptPath)
+			if err != nil {
+				t.Fatal(err)
 			}
-			assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
+			sidecarPath := validationFailureSupersessionPath(receipt.ReceiptPath)
+			sidecarBytes, err := os.ReadFile(sidecarPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sidecarInfo, err := os.Stat(sidecarPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored := false
+			restore = func() error {
+				for _, record := range []struct {
+					path     string
+					contents []byte
+					mode     os.FileMode
+				}{
+					{receipt.ReceiptPath, receiptBytes, receiptInfo.Mode().Perm()},
+					{sidecarPath, sidecarBytes, sidecarInfo.Mode().Perm()},
+				} {
+					if err := os.WriteFile(record.path, record.contents, record.mode); err != nil {
+						return err
+					}
+					if err := os.Chmod(record.path, record.mode); err != nil {
+						return err
+					}
+					got, err := os.ReadFile(record.path)
+					if err != nil {
+						return err
+					}
+					info, err := os.Stat(record.path)
+					if err != nil {
+						return err
+					}
+					if string(got) != string(record.contents) || info.Mode().Perm() != record.mode {
+						return fmt.Errorf("restored record bytes/mode differ: %s", record.path)
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				baselineSources, baselineRepository, baselineCanonical, err := inspectPublishedForwardRepairSourcesWithRunner(ctx, defaultRunner, baseOptions.ProjectsRoot, baseOptions.Sources, receipt.Target)
+				if err != nil {
+					return err
+				}
+				if err := revalidatePublishedForwardRepairEvidence(ctx, baseOptions, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, receipt.ReceiptPath,
+					baseOptions.ExpectedReceiptSHA256, baseOptions.ExpectedImmutableClaimSHA256, baseOptions.ExpectedSupersessionSHA256,
+					"", baselineSources, baselineRepository, baselineCanonical, baseOptions.ExpectedCurrentTargetSHA); err != nil {
+					return err
+				}
+				restored = true
+				return nil
+			}
+			t.Cleanup(func() {
+				if !restored {
+					if err := restore(); err != nil {
+						t.Errorf("restore shared native baseline: %v", err)
+					}
+				}
+			})
+		}
+		test.change(t, receipt, &options)
+		err = revalidatePublishedForwardRepairEvidence(context.Background(), options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, receipt.ReceiptPath,
+			options.ExpectedReceiptSHA256, options.ExpectedImmutableClaimSHA256, options.ExpectedSupersessionSHA256,
+			"", sources, repository, canonical, options.ExpectedCurrentTargetSHA)
+		if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+			t.Fatalf("revalidate after %s: %v, want %q", test.name, err, test.wantErr)
+		}
+		assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
+		if restore != nil {
+			if err := restore(); err != nil {
+				t.Fatalf("restore shared native baseline: %v", err)
+			}
+		}
+	}
+	t.Run("records and options", func(t *testing.T) {
+		t.Parallel()
+		fixture, receipt, _, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
+		for _, index := range []int{0, 1, 2, 3, 5} {
+			//nolint:paralleltest // These five reversible byte/option rows share one private fixture; restoration completes before the next row.
+			t.Run(tests[index].name, func(t *testing.T) { runCase(t, index, fixture, receipt, options, true) })
+		}
+	})
+	for _, index := range []int{4, 6} {
+		t.Run(tests[index].name, func(t *testing.T) {
+			t.Parallel()
+			fixture, receipt, _, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
+			runCase(t, index, fixture, receipt, options, false)
 		})
 	}
 }
@@ -166,12 +259,12 @@ func TestPublishedForwardRepairRevalidationBindsExistingCorrection(t *testing.T)
 	if !foundReplacement {
 		t.Fatalf("corrected replacement absent from planned roots: %+v", plan.RequiredRoots)
 	}
-	sources, repository, canonical, err := inspectPublishedForwardRepairSources(context.Background(), options.ProjectsRoot, options.Sources, receipt.Target)
+	sources, repository, canonical, err := inspectPublishedForwardRepairSourcesWithRunner(context.Background(), defaultRunner, options.ProjectsRoot, options.Sources, receipt.Target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	revalidate := func() error {
-		return revalidatePublishedForwardRepairEvidence(context.Background(), options, receipt.ReceiptPath,
+		return revalidatePublishedForwardRepairEvidence(context.Background(), options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, receipt.ReceiptPath,
 			receiptHash, claimHash, supersessionHash, correctionHash, sources, repository, canonical, currentTarget)
 	}
 	if err := revalidate(); err != nil {

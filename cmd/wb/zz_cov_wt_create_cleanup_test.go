@@ -187,22 +187,3 @@ func TestCwWtWorktreeCreateJSONAndStdinPromptInProcess(t *testing.T) {
 		t.Fatal("create from blank stdin must fail")
 	}
 }
-
-func TestCwWtRefreshManagedHooksBeforeWorktreeCreate(t *testing.T) {
-	seed := t.TempDir()
-	projects := t.TempDir()
-	clone := filepath.Join(projects, "acme", "app")
-	cwCovCloneWithOrigin(t, seed, "app", clone)
-
-	if err := refreshManagedHooksBeforeWorktreeCreate(&invocation{projectsRoot: projects}, []string{"acme/app"}); err != nil {
-		t.Fatalf("refreshManagedHooksBeforeWorktreeCreate: %v", err)
-	}
-	// A malformed slug cannot be resolved to a canonical repository.
-	if err := refreshManagedHooksBeforeWorktreeCreate(&invocation{projectsRoot: projects}, []string{"not-a-slug"}); err == nil {
-		t.Fatal("a malformed repository slug must fail")
-	}
-	// A well-formed but absent repository cannot be resolved either.
-	if err := refreshManagedHooksBeforeWorktreeCreate(&invocation{projectsRoot: projects}, []string{"acme/absent"}); err == nil {
-		t.Fatal("an absent canonical repository must fail")
-	}
-}

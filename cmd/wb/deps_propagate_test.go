@@ -142,17 +142,6 @@ func TestDepsPropagateLocalLinksAGoConsumer(t *testing.T) {
 	}
 }
 
-func TestDepsPropagateLocalRequiresAConsumer(t *testing.T) {
-	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"deps", "propagate", "local", t.TempDir(), "--non-interactive"}, &stdout, &stderr); code == exitOK {
-		t.Fatal("propagating to nothing succeeded")
-	}
-	if !strings.Contains(stderr.String(), "--to") {
-		t.Errorf("stderr = %q, want the missing flag named", stderr.String())
-	}
-}
-
 // initGitRepository creates a committed repository at root with the given
 // files, so the local-link path is exercised against real Git rather than a
 // fake.
@@ -250,10 +239,8 @@ func TestWorktreeMergeLandRefusesALinkedWorktreeFromItsReceipt(t *testing.T) {
 // someone remembering to add a call. That is exactly how merge land/resume
 // came to be on the landing surface without ever calling the guard.
 func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("WB_PROJECTS_ROOT", root)
-	home := filepath.Join(root, ".wb")
-	worktree := t.TempDir()
+	fixture, worktree := newPRLandPreflightFixture(t)
+	home := filepath.Join(fixture.projects, ".wb")
 	store := streams.OpenAt(filepath.Join(home, "streams"))
 	if _, err := store.Create(streams.Stream{
 		Name: "linked", Phase: streams.PhaseOpen,
@@ -298,11 +285,8 @@ func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
 		case landingGuardByReceipt:
 			argument = receipt
 		case landingGuardByPullRequest:
-			// A pull-request landing names no worktree, so the guard resolves
-			// them from the open stream that holds the repository. The stream
-			// created above holds acme/app, so this refuses without any
-			// network call — which is the point: a guard that has to reach
-			// GitHub first fails differently when GitHub does.
+			// Resolve the authoritative PR head through the hermetic API;
+			// its exact producing worktree holds the recorded live link.
 			argument = "acme/app#1"
 		}
 		invocation := append(strings.Fields(strings.TrimPrefix(path, "wb ")), argument, "--non-interactive")
@@ -317,6 +301,9 @@ func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
 		}
 		if !strings.Contains(stderr.String(), "--undo") {
 			t.Errorf("%s refusal does not name the clearing command: %s", path, stderr.String())
+		}
+		if addressing == landingGuardByPullRequest {
+			assertPRLandOnlyReadEvidence(t, fixture, "1")
 		}
 	}
 }

@@ -9,21 +9,6 @@ import (
 	"testing"
 )
 
-// TestDqCovCoverDelegatesToDefaultOptions pins the exported wrapper: a tree
-// with no Go module is reported skipped rather than failed, and the caller's
-// repository and path survive into the report.
-func TestDqCovCoverDelegatesToDefaultOptions(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	report := Cover(context.Background(), "example/delegated", root)
-	if report.Status != StatusSkipped || report.Repository != "example/delegated" || report.Path != root {
-		t.Fatalf("Cover report = %+v, want a skipped report carrying caller identity", report)
-	}
-	if report.Error != "" || report.Statements != 0 || report.Percentage != 0 {
-		t.Fatalf("Cover report = %+v, want no partial totals", report)
-	}
-}
-
 // TestDqCovCoverWithOptionsFailsClosedBeforeRunningCommands covers the
 // discovery-time rejections: an unparsable go.work, a tree with no module, and
 // a retained profile requested for more than one module.

@@ -1,0 +1,33 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.machines {
+  display: grid;
+  gap: var(--space-2);
+}
+
+h3 {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.muted {
+  margin: 0;
+  color: var(--text-3);
+}
+
+.readme-block {
+  min-width: 0;
+}
+
+/* The README section is another component's: its heading takes the panel's heading style. */
+.readme-block ::ng-deep .section-title {
+  margin: 0 0 var(--space-1);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}

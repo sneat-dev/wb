@@ -131,10 +131,6 @@ func NewHandler(prefix string, source Source, authorize Authorize) http.Handler 
 			writeJSON(writer, http.StatusOK, ListResponse{SchemaVersion: SchemaVersion, Peers: list})
 		case strings.HasPrefix(rest, "/"):
 			id := strings.TrimPrefix(rest, "/")
-			if id == "" {
-				writeError(writer, http.StatusNotFound, "peer_not_found")
-				return
-			}
 			detail, found, err := source.GetPeer(request.Context(), id)
 			if err != nil {
 				writeError(writer, http.StatusServiceUnavailable, "peers_unavailable")

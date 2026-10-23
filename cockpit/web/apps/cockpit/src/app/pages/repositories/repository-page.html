@@ -1,0 +1,8 @@
+<p class="back"><a routerLink="/repositories">&larr; Repositories</a></p>
+@if (row(); as found) {
+  <app-repository-panel [repositoryKey]="found.key" [page]="true" />
+} @else if (store.warmingUp() || !store.loaded()) {
+  <p class="muted">Waiting for the fleet snapshot…</p>
+} @else {
+  <p>This repository is not in the fleet document; it may have been removed.</p>
+}

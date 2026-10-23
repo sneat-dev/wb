@@ -1,0 +1,72 @@
+.panel-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.panel-note,
+.panel-freshness {
+  margin: 0.25rem 0;
+  color: var(--text-3);
+}
+
+/* One line: the freshness and "111 files · 1443 symbols · 4329 edges". */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  align-items: baseline;
+}
+
+.totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+  margin: 0.25rem 0;
+}
+
+.totals div {
+  display: flex;
+  flex-direction: row-reverse;
+  gap: var(--space-1);
+  justify-content: flex-end;
+}
+
+.totals dt {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  text-transform: lowercase;
+}
+
+.totals dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.kinds-title {
+  margin: 0.25rem 0;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.25rem 1.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kinds li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.kind-count {
+  font-variant-numeric: tabular-nums;
+}

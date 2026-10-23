@@ -63,9 +63,10 @@ wb worktree summary <task> --github
 
 ## Trap 1: cleanup only sees WB-managed tasks
 
-`wb worktree cleanup`/`abort` inventory `<projects-root>/.worktrees/<task>/...`. A
-linked worktree created by `git worktree add`, or by an older tool, is not a
-candidate at all — it is silently outside the sweep, not skipped with a
+`wb worktree cleanup`/`abort` discover tasks in the configured shared store and
+in existing repository-local `.worktrees/<task>` stores. A linked worktree
+created outside those WB task stores, such as a plain `git worktree add`, is not
+a candidate at all — it is silently outside the sweep, not skipped with a
 reason. This is the single most common reason a fleet-wide sweep reports far
 fewer eligible tasks than `orphans` reports removable worktrees.
 
@@ -202,18 +203,46 @@ hand-roll either sweep: a `git branch --merged` or `git push --delete` loop
 has no audit trail, no lease protection, and cannot distinguish work that
 landed from work that landed and was then reverted.
 
-## Trap 3: `--base` defaults to `main`
+## Trap 3: which target a head is judged against
 
-`--base` defaults to `main` on `cleanup`, `list`, `orphans`, and `backfill`. A
-task branched from a feature branch is `awaiting_push` against `main` forever
-until you say so:
+`wb worktree cleanup` judges each repository against the base recorded when its
+worktree was created, not against `main`. Two things change that, and the plan
+names the target that proved the work whenever it is not the recorded base
+(`integration_proof` in JSON, in parentheses on the `would remove` line):
+
+- **The recorded base cannot answer.** Origin no longer has it (an integration
+  branch that landed and was deleted), or it is still there and has itself
+  landed in the default branch (a task stacked on another task's branch). The
+  head is then judged against the freshly fetched default branch and is
+  eligible only when it is a plain Git ancestor of it:
+  `contained in origin/main at 0123456789ab, via recorded base cockpit-ux (absent)`.
+  A head that is not contained stays in the plan with the reason; an absent
+  base never hides the task from `list`, `end`, `abort`, or `gc`.
+- **You name `--base <branch>`.** That is then the exact origin target, and
+  nothing else: the recorded base is only reported (`recorded_base`), no other
+  branch is substituted, and a branch origin does not have is an error. The
+  plan line then reads `contained in origin/<branch> at <sha>, the base named
+  with --base`.
 
 ```sh
-wb worktree cleanup <task> --base <feature-branch>
+wb worktree cleanup <task>                    # recorded base, or the default branch as above
+wb worktree cleanup <task> --base <branch>    # exactly this branch
 ```
 
-This is the same rule as `wb worktree cleanup --base`: the receipt is checked
-against the exact origin target you name, and nothing else.
+`--base` left at its default is only the fallback for a worktree with no
+recorded base. `--absorbed-by <pr|commit>` is verified against the target
+actually judged, so a pull request or merge commit into the default branch is
+accepted for a task recorded against an integration branch.
+
+One run that retires a stack (`wb worktree cleanup --all-merged`, or several
+named tasks) finishes each stacked task before the task whose branch it is
+stacked on, so no hand-rolled leaf-first loop is needed. To clean every
+integrated task of one repository in one call:
+
+```sh
+wb --filter <owner/repository> worktree cleanup --all-merged --older-than 0
+wb --filter <owner/repository> worktree cleanup --all-merged --older-than 0 --apply --remote
+```
 
 ## Trap 4: dry run is the default, and `--apply` is not enough
 
@@ -226,23 +255,52 @@ wb worktree cleanup --all-merged --format json
 wb --filter acme worktree cleanup --all-merged
 ```
 
-`cleanup` requires one or more named tasks or `--all-merged`; the two cannot
-be combined. Named tasks default to immediate eligibility
-(`--older-than 0`) because that is its terminalization journey; `--all-merged`
+`cleanup` normally requires one or more named tasks or `--all-merged`; the two
+cannot be combined. `--retire-shells` is a separate sweep that takes no task
+arguments and cannot be combined with `--all-merged`. Named tasks default to
+immediate eligibility (`--older-than 0`) because that is its terminalization
+journey; `--all-merged`
 keeps a 24-hour merged-PR grace window unless `--older-than` overrides it.
 
-For named tasks, `--apply` **refuses without `--remote`**: definition of done
-includes retiring the source remote branch, not only the local worktree and
-branch.
+For named tasks, `--apply` requires `--remote` only while the source branch
+still exists on origin. If the remote branch is already gone, cleanup can retire
+the local worktree and branch without it.
 
 ```sh
 wb worktree cleanup <task> --apply --remote --older-than 0
 wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
 ```
 
-Full flag surface: `--base`, `--all-merged`, `--apply`, `--remote`,
-`--older-than`, `--report-dir`, `--absorbed-by`, `--superseded-by`, `--resume-interrupted`,
-`--format`, plus the root `--filter` and `--projects-root`.
+Command flags: `--base`, `--all-merged`, `--apply`, `--remote`,
+`--older-than`, `--parallel`, `--report-dir`, `--absorbed-by`,
+`--superseded-by`, `--resume-interrupted`, `--recover-stages`,
+`--retire-shells`, `--format`, and `--verbose` (`-v`). Inherited root flags:
+`--filter`, `--projects-root`, `--quiet`, and `--non-interactive`; `-h`/`--help`
+is also available.
+
+`--recover-stages` is named-task-only and cannot be combined with
+`--all-merged` or `--retire-shells`. It inventories exact non-empty retired
+stages; `--apply` archives them and writes a private receipt. Run
+ordinary cleanup again after recovery. `--retire-shells` only removes proven
+empty task directories or retired locks: preview it first, then use
+`wb worktree cleanup --retire-shells --apply` to act.
+
+### Legacy task with missing Work Log history
+
+An older repository-local task can still be cleaned up when its private Work Log
+claim is missing, but only through a narrow recovery path. Cleanup requires a
+consistent immutable created manifest and projection, their deterministic claim
+ID, a clean attached checkout whose exact base-to-head-to-fetched-target
+ancestry verifies, and the existing open-PR preflight to pass. Unverifiable or
+changed evidence remains blocked. No new flag enables this path; ordinary
+`cleanup` and `gc` safety checks still apply.
+
+Before destructive apply, WB writes an immutable
+`legacy_missing_history_retirement` receipt under
+`<projects-root>/.wb/reports/worktree-cleanup/backlog/missing-history/`. It
+records that original history is unavailable; it does not invent the original
+claim, terminal, or prompt archive. The normal cleanup backlog handles an
+interrupted apply.
 
 `--report-dir` overrides the audit directory, which defaults to
 `<projects-root>/.wb/reports/worktree-cleanup/<timestamp>`. A plan is read-only even when
@@ -259,8 +317,19 @@ through a normal cleanup.
 A fleet sweep reports far more skipped tasks than eligible ones, and every skip
 is WB being correct rather than WB being stuck:
 
-- `current branch head is not integrated into the exact origin target
-  (awaiting push)` — the work exists only locally. Land it, do not delete it.
+- `current branch head <sha> is not integrated into the exact origin target
+  origin/<base> at <sha> (awaiting push)` — the source branch is not on origin
+  at this head: the work exists only locally. Land it, do not delete it.
+- `... (pushed to origin/<branch>, awaiting merge)` — the branch is pushed and
+  the named target does not contain it. Merge it, or check that the target
+  named is the one you meant (Trap 3). `; recorded base <branch> is absent`
+  says the default branch was judged because the recorded base is gone.
+- `held: branch <b> is the recorded base of <task> (<repo>), which is not
+  eligible: ...` — another listed task is recorded against this task's branch
+  and cannot be retired yet. Retiring the base would delete that branch and
+  close any pull request into it, so the base waits; resolve the named task.
+  `held: <task> is stacked on a branch of <base> and was not retired in this
+  run` is the same hold when the stacked task failed during apply.
 - `branch still has an open pull request: <url>` — close or merge the PR first.
 - `worktree has local changes` — uncommitted work. WB never removes it.
 - `coordinated task blocked by <repository>` — one repository in a
@@ -288,6 +357,19 @@ authorization to seal the Work Log first, retire an exact unchanged remote
 source branch with force-with-lease, then remove a clean unlocked worktree and
 its exact local branch. See [lifecycle.md](lifecycle.md) for the full
 disposition contract, and for `wb worktree rename` recycling.
+
+For tasks with an available original claim, cleanup seals one of two
+dispositions based on what it proved. A worktree whose branch has commits of
+its own that cleanup proved are on the target is sealed `landed`, with a
+`landed` object in
+the terminal record and its outbox receipt: `target`, `landed_sha`, `proof`
+(`contained`, `merged_pull_request`, `rebase_merged` or `absorbed`) and the
+`pull_request` number when known. Everything else it removes (a worktree that
+never committed, a detached review checkout, a `wb/integration/` merge
+candidate) is sealed `removed`. A claim `wb worktree log finalize --apply`
+already sealed keeps that terminal. Records sealed by an older `wb` are not
+rewritten. The missing-history path above records its retirement receipt without
+synthesizing a terminal.
 
 ## Finish the sweep
 

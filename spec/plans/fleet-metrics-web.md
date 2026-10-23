@@ -238,7 +238,7 @@ The web interface is served directly by the Go server at `/metrics` (with `/cove
 
 ## 10. Acceptance Criteria
 
-1. Navigating to `http://127.0.0.1:8766/metrics` or `http://127.0.0.1:8766/coverage` in a browser displays the responsive metrics dashboard.
+1. (Retired 2026-10-02: the daemon's `/metrics` and `/coverage` pages were removed with the old dashboard; the `/v0/workbench/metrics` API remains. cockpit#req:legacy-dashboard-retired.) Navigating to `http://127.0.0.1:8766/metrics` or `http://127.0.0.1:8766/coverage` in a browser displays the responsive metrics dashboard.
 2. The dashboard displays all repositories with harvested test coverage, showing total statements, covered statements, and percentage with color-coded status badges.
 3. Clicking on a repository expands its per-package coverage table, allowing sorting and searching across Go packages.
 4. The backend API (`GET /v0/workbench/metrics`) accepts generic metrics (such as `commits_per_day` or arbitrary JSON dimensions) and persists them via DALgo.
@@ -252,6 +252,7 @@ The web interface is served directly by the Go server at `/metrics` (with `/cove
 - fleet-quality#ac:complete-conventional-verification — verified by existing verification test suite
 - fleet-quality#ac:exact-graduation-receipt — verified by existing graduation receipt test suite
 - fleet-quality#ac:instant-remote-ci-coverage — verified by existing remote CI coverage test suite
+- fleet-quality#ac:deadcode-same-verdict-on-every-host — verified by TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform
 
 ---
 *This document follows the https://specscore.md/plan-specification*

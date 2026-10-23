@@ -218,10 +218,8 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	sort.Slice(graph.ambiguousModules, func(i, j int) bool {
 		left, right := graph.ambiguousModules[i], graph.ambiguousModules[j]
-		if left.Module != right.Module {
-			return left.Module < right.Module
-		}
-		return left.Repository < right.Repository
+		// One warning is emitted per distinct module map key.
+		return left.Module < right.Module
 	})
 	return graph, errors.Join(discoveryErrors...)
 }

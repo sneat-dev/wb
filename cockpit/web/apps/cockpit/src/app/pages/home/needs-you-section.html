@@ -1,0 +1,56 @@
+<section class="home-section" aria-labelledby="home-needs-h">
+  <h2 id="home-needs-h" class="home-h">
+    Needs you
+    @if (needs().items.length > 0) {
+      <a class="home-count urgent" [routerLink]="needs().moreLink.path" [queryParams]="needs().moreLink.query" title="All of them, on Tasks">{{ needs().items.length }}</a>
+    }
+  </h2>
+  @if (empty()) {
+    @if (warming()) {
+      <app-skeleton-rows [count]="1" />
+    } @else {
+      <p class="home-calm"><app-glyph class="home-calm-ok" [paths]="ok" />Nothing needs you.</p>
+    }
+  } @else {
+    <ul class="home-card urgent">
+      @for (row of rows(); track row.id) {
+        <li class="home-row needs-row">
+          <app-task-state-badge size="small" [value]="row.state" />
+          <div class="home-main">
+            <strong class="home-task">{{ row.task }}</strong>
+            <span class="home-reason">{{ row.reason }}</span>
+          </div>
+          <div class="home-meta">
+            @for (place of row.places; track $index) {
+              <span class="home-place">{{ place.repository }}@if (place.branch) {<code>{{ place.branch }}</code>}</span>
+            }
+            @if (row.machine; as machine) {
+              <span class="home-machine" [attr.title]="machine.title"><span class="home-machine-name">{{ machine.name }}</span>@if (machine.chip) {<span class="home-chip" [class.stale]="machine.stale">{{ machine.chip }}</span>}</span>
+            }
+            @if (row.reportedBy; as machines) {
+              <span class="home-place" title="This machine has no entry of the task, so it offers no push or copy for it">as reported by {{ machines }}</span>
+            }
+            @if (row.at) {
+              <time class="home-age" [attr.datetime]="row.at" [attr.title]="row.at">{{ row.age }}</time>
+            }
+          </div>
+          <div class="home-action">
+            @if (row.action.kind === 'route') {
+              <a class="home-act" [routerLink]="row.action.link.path" [queryParams]="row.action.link.query" [attr.aria-label]="row.action.label">{{ row.action.text }}</a>
+            } @else {
+              <a class="home-act" [href]="row.action.href" target="_blank" rel="noopener noreferrer" [attr.aria-label]="row.action.label + ', opens in a new tab'">{{ row.action.text }}</a>
+            }
+            @if (row.work; as work) {
+              <app-lazy-mount [load]="loadWork" [inputs]="{ action: work }" />
+            }
+          </div>
+        </li>
+      }
+      @if (needs().more > 0) {
+        <li class="home-foot">
+          <a [routerLink]="needs().moreLink.path" [queryParams]="needs().moreLink.query">+{{ needs().more }} more</a>
+        </li>
+      }
+    </ul>
+  }
+</section>

@@ -8,12 +8,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 // Claim modes. The empty mode is the default and means ClaimModeWorktree.
 const (
-	ClaimModeWorktree  = "worktree"
-	ClaimModeCanonical = "canonical"
+	ClaimModeWorktree  = worktreeclaims.ClaimModeWorktree
+	ClaimModeCanonical = worktreeclaims.ClaimModeCanonical
 )
 
 const leaseExtensionEventType = "worktree.canonical_lease_extended"
@@ -127,23 +129,11 @@ func sealedCanonicalClaim(home, clonePath string, projection workLogProjection) 
 	return canonicalClaimResult(CanonicalClaimSealed, claim, *claim.LeaseExpiresAt), nil
 }
 
-// validateClaimModeLease is the single statement of the mode/lease contract:
-// the mode is one of the known values, a canonical claim carries a lease that
-// ends after the instant it was recorded, and no other claim carries one.
+// validateClaimModeLease is the mode/lease contract used before a claim is
+// written. Reading an immutable claim checks the same contract through
+// worktreeclaims.ValidateClaimModeLease.
 func validateClaimModeLease(mode string, lease, recordedAt time.Time) error {
-	switch mode {
-	case "", ClaimModeWorktree:
-		if !lease.IsZero() {
-			return errors.New("lease_expires_at is valid only for a canonical claim")
-		}
-	case ClaimModeCanonical:
-		if lease.IsZero() || !lease.After(recordedAt) {
-			return errors.New("a canonical claim requires lease_expires_at after the instant it is recorded")
-		}
-	default:
-		return fmt.Errorf("claim mode %q is invalid; want %q or %q", mode, ClaimModeWorktree, ClaimModeCanonical)
-	}
-	return nil
+	return worktreeclaims.ValidateClaimModeLease(mode, lease, recordedAt)
 }
 
 func claimLeaseExpiry(lease time.Time) *time.Time {

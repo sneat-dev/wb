@@ -3,11 +3,14 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestCwWtWorkLogVerbCommandsInProcess(t *testing.T) {
@@ -140,31 +143,46 @@ func TestCwWtWorkLogFinalizeReportHandling(t *testing.T) {
 }
 
 func TestCwWtWorkLogAdmissionAndModeErrors(t *testing.T) {
-	projects, _, worktree := initGCFixture(t)
+	projects, home, worktree := initGCFixture(t)
+	inv := testInvocation(t, projects)
+	installSessionResolver(inv)
+	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
+	worklogRoots := []string{
+		filepath.Join(home, "worklogs"),
+		filepath.Join(worktree, ".wb-worklog"),
+		filepath.Join(worktree, ".wb", "local", "worklog"),
+	}
+	before := snapshotTrees(t, worklogRoots...)
+	if _, exists := before[filepath.Join(worktree, ".wb-worklog", "recovery.json")]; !exists {
+		t.Fatal("create fixture has no projected Work Log to preserve")
+	}
 
 	// agent mode without a live registered session is refused before any write.
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "agent", "--prompt", "x")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(inv) }, "steer", worktree, "--mode", "agent", "--prompt", "x")
 	if err == nil || !strings.Contains(err.Error(), "live registered session") {
 		t.Fatalf("log steer --mode agent = %v", err)
 	}
+	if after := snapshotTrees(t, worklogRoots...); !reflect.DeepEqual(before, after) {
+		t.Fatalf("refused agent steer changed Work Log file existence or bytes (before=%d after=%d files)", len(before), len(after))
+	}
 	// manual mode without an initiator is refused.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "manual", "--prompt", "x")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(inv) }, "steer", worktree, "--mode", "manual", "--prompt", "x")
 	if err == nil || !strings.Contains(err.Error(), "--initiator") {
 		t.Fatalf("log steer --mode manual without initiator = %v", err)
 	}
 	// An unknown mode is refused.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "yolo", "--prompt", "x")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(inv) }, "steer", worktree, "--mode", "yolo", "--prompt", "x")
 	if err == nil || !strings.Contains(err.Error(), "unsupported execution mode") {
 		t.Fatalf("log steer --mode yolo = %v", err)
 	}
 	// A bad output format is refused first.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "show", worktree, "--format", "yaml")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(inv) }, "show", worktree, "--format", "yaml")
 	if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 		t.Fatalf("log show --format yaml = %v", err)
 	}
 
 	// steer with neither source is refused.
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) }, "steer", worktree, "--mode", "manual", "--initiator", "cwWt")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeWorkLogCmd(inv) }, "steer", worktree, "--mode", "manual", "--initiator", "cwWt")
 	if err == nil || !strings.Contains(err.Error(), "exactly one of --prompt or --prompt-file") {
 		t.Fatalf("log steer without a source = %v", err)
 	}

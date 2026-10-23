@@ -443,7 +443,7 @@ func TestSessionCustodyCoverageBatchPreparedClaimAndTerminal(t *testing.T) {
 		terminalClaim.Lifecycle = "terminal"
 		sealedAt := time.Unix(123, 0).UTC()
 		terminal := workLogTerminalRecord{
-			workLogClaim: terminalClaim, FinalCommit: request.BundleCommit,
+			Claim: terminalClaim, FinalCommit: request.BundleCommit,
 			Disposition: "external_handoff", SealedAt: sealedAt,
 			SuccessorClaimID: target.ClaimID, SuccessorAgentID: request.SuccessorWBSessionID,
 			ExternalHandoff: evidence,

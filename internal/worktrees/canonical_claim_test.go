@@ -584,7 +584,13 @@ func TestLeaseExtensionFailsClosedWhenStorageIsUnusable(t *testing.T) {
 		t.Parallel()
 		fixture := newCanonicalClaimFixture(t)
 		claim := fixture.recordCanonical(t, lease)
-		overwrite(t, filepath.Join(runPathFor(fixture, claim), "locks"), []byte("x"))
+		// Publication takes the claim lock, so locks is a directory. Replace
+		// it with a file: the extension must fail closed instead of recording.
+		locks := filepath.Join(runPathFor(fixture, claim), "locks")
+		if err := os.RemoveAll(locks); err != nil {
+			t.Fatal(err)
+		}
+		overwrite(t, locks, []byte("x"))
 		if _, err := appendCanonicalLeaseExtension(fixture.home, claim, canonicalClaimEpoch, lease.Add(time.Hour)); err == nil {
 			t.Fatal("extension was recorded without the claim lock")
 		}

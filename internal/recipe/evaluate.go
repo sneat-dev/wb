@@ -28,10 +28,8 @@ func Evaluate(r Recipe, repoPath string) (Preview, error) {
 		if err != nil {
 			return Preview{}, err
 		}
-		content, ok, err := gitops.ShowFile(repoPath, "origin/"+def, r.Target)
-		if err != nil {
-			return Preview{}, err
-		}
+		// ShowFile treats every failed read as an absent target.
+		content, ok, _ := gitops.ShowFile(repoPath, "origin/"+def, r.Target)
 		if !ok {
 			return Preview{Summary: "no " + r.Target, Changed: false}, nil
 		}

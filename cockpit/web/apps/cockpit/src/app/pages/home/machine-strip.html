@@ -1,0 +1,22 @@
+<ul class="home-tiles" aria-label="Machines">
+  @for (tile of tiles(); track tile.id) {
+    <li class="home-tile">
+      <div class="tile-head">
+        <strong class="tile-name">{{ tile.name }}</strong>
+        <app-state-badge kind="load" size="small" [value]="tile.load.state" />
+      </div>
+      <div class="tile-reach">{{ tile.reach }}@if (tile.state === 'stale') { · stale }</div>
+      @if (tile.bars; as bars) {
+        <div class="tile-bars" [attr.title]="tile.sample">
+          <span class="tile-label">CPU</span>
+          <span class="tile-bar" role="img" [attr.aria-label]="'CPU ' + bars.cpu + ' percent'"><span class="tile-fill" [style.width.%]="bars.cpu"></span></span>
+          <span class="tile-value">{{ bars.cpu }}%</span>
+          <span class="tile-label">Mem</span>
+          <span class="tile-bar" role="img" [attr.aria-label]="'Memory ' + bars.memory + ' percent'"><span class="tile-fill" [style.width.%]="bars.memory"></span></span>
+          <span class="tile-value">{{ bars.memory }}%</span>
+        </div>
+      }
+      <div class="tile-reach">{{ tile.sample }}</div>
+    </li>
+  }
+</ul>

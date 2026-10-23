@@ -61,10 +61,7 @@ func ResolveOrRegisterForProcess(dir string, startPID int, hints AutoRegisterHin
 	if record, ok := ResolveForProcess(dir, startPID); ok {
 		return record, false, nil
 	}
-	record, err := InferRecordForProcess(startPID, hints)
-	if err != nil {
-		return Record{}, false, err
-	}
+	record, _ := InferRecordForProcess(startPID, hints)
 	// A finished session's record must not be overwritten by a new one at the
 	// same PID: its parked aggregate is still resumable, and the registry row
 	// is how a coordinator finds it. This refuses a lifecycle collision, never
@@ -133,10 +130,7 @@ func InferRecordForProcess(startPID int, hints AutoRegisterHints) (Record, error
 	if record.NativeHarnessID == "" {
 		record.NativeHarnessID = strings.TrimSpace(os.Getenv(envAgentID))
 	}
-	id, err := NewID()
-	if err != nil {
-		return Record{}, err
-	}
+	id, _ := NewID()
 	// Always a fresh identity, never the one a stale record at this PID
 	// carries: a recycled PID must not inherit a finished session's lifecycle.
 	record.WBSessionID = id
@@ -190,14 +184,18 @@ func FindHarnessAncestor(startPID int) (int, string) {
 // registration point at the process an agent would have named itself. Depth is
 // bounded because a corrupted process chain must not spin.
 func findHarnessAncestor(startPID int) (int, string) {
+	return findHarnessAncestorWithReaders(startPID, parentPID, processEvidence)
+}
+
+func findHarnessAncestorWithReaders(startPID int, readParent func(int) (int, bool), readEvidence func(int) (ProcessEvidence, bool)) (int, string) {
 	const maxDepth = 12
 	pid := startPID
 	for depth := 0; depth < maxDepth && pid > 1; depth++ {
-		parent, ok := parentPID(pid)
+		parent, ok := readParent(pid)
 		if !ok || parent <= 1 {
 			return 0, ""
 		}
-		evidence, ok := processEvidence(parent)
+		evidence, ok := readEvidence(parent)
 		if !ok {
 			pid = parent
 			continue

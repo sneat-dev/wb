@@ -98,10 +98,9 @@ func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, 
 		if err != nil {
 			return ValidationCacheKey{}, err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return ValidationCacheKey{}, err
-		}
+		// WalkDir supplied path by joining descendant names to this same root;
+		// its volume and absolute/relative form agree with root.
+		rel, _ := filepath.Rel(root, path)
 		key.ModuleFiles = append(key.ModuleFiles, filepath.ToSlash(rel)+"="+digest)
 	}
 	return key, nil
@@ -139,38 +138,31 @@ func fileDigest(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func validationCacheDigest(schema int, key ValidationCacheKey, report VerificationReport) (string, error) {
-	payload, err := json.Marshal(struct {
+// Cache payloads contain only finite primitive fields, slices, string-keyed maps,
+// and nonrecursive evidence pointers; they have no custom JSON marshalers.
+func validationCacheDigest(schema int, key ValidationCacheKey, report VerificationReport) string {
+	payload, _ := json.Marshal(struct {
 		Schema int                `json:"schema"`
 		Key    ValidationCacheKey `json:"key"`
 		Report VerificationReport `json:"report"`
 	}{schema, key, report})
-	if err != nil {
-		return "", err
-	}
 	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
-func validationCacheKeyDigest(key ValidationCacheKey) (string, error) {
-	payload, err := json.Marshal(struct {
+func validationCacheKeyDigest(key ValidationCacheKey) string {
+	payload, _ := json.Marshal(struct {
 		Schema int                `json:"schema"`
 		Key    ValidationCacheKey `json:"key"`
 	}{validationCacheSchema, key})
-	if err != nil {
-		return "", err
-	}
 	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // LoadValidationCache returns only an intact terminal report with an exact key.
 // Any malformed, stale, or otherwise incomplete record is a cache miss.
 func LoadValidationCache(cacheRoot string, key ValidationCacheKey) (VerificationReport, bool, error) {
-	digest, err := validationCacheKeyDigest(key)
-	if err != nil {
-		return VerificationReport{}, false, err
-	}
+	digest := validationCacheKeyDigest(key)
 	path := filepath.Join(cacheRoot, digest+".json")
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -186,8 +178,8 @@ func LoadValidationCache(cacheRoot string, key ValidationCacheKey) (Verification
 	if record.Schema != validationCacheSchema || !sameValidationCacheKey(record.Key, key) || record.Report.Status == StatusSkipped || record.Report.Revision != key.TargetRevision || !record.Report.WorkspaceClean {
 		return VerificationReport{}, false, nil
 	}
-	actual, err := validationCacheDigest(record.Schema, record.Key, record.Report)
-	if err != nil || actual != record.Digest {
+	actual := validationCacheDigest(record.Schema, record.Key, record.Report)
+	if actual != record.Digest {
 		return VerificationReport{}, false, nil
 	}
 	return record.Report, true, nil
@@ -214,19 +206,10 @@ func saveValidationCacheInjected(cacheRoot string, key ValidationCacheKey, repor
 	if report.Status == StatusSkipped || report.Revision != key.TargetRevision || !report.WorkspaceClean {
 		return fmt.Errorf("validation cache accepts only terminal clean evidence")
 	}
-	keyDigest, err := validationCacheKeyDigest(key)
-	if err != nil {
-		return err
-	}
-	digest, err := validationCacheDigest(validationCacheSchema, key, report)
-	if err != nil {
-		return err
-	}
+	keyDigest := validationCacheKeyDigest(key)
+	digest := validationCacheDigest(validationCacheSchema, key, report)
 	record := validationCacheRecord{Schema: validationCacheSchema, Key: key, Report: report, Digest: digest}
-	raw, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
+	raw, _ := json.Marshal(record)
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 		return err
 	}

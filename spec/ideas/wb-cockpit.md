@@ -7,7 +7,7 @@ status: Specified
 **Status:** Specified
 **Date:** 2026-10-01
 **Owner:** alex
-**Promotes To:** cockpit, cockpit-actions, work-loss-risk
+**Promotes To:** cockpit, cockpit-actions, cockpit-views, work-loss-risk
 **Supersedes:** —
 **Related Ideas:** extends:daemon-as-coordinator
 
@@ -22,7 +22,8 @@ silently left behind, and take the obvious next action without leaving it?
 WB has two web surfaces today, and neither is operational:
 
 - `internal/dashboard` — pure-Go embedded HTML on the loopback daemon
-  (`http://127.0.0.1:8766`, `/metrics`, `/coverage`). Read-only.
+  (`http://127.0.0.1:8766`, `/metrics`, `/coverage`). Read-only. (Retired
+  2026-10-02: Cockpit replaced its pages; cockpit#req:legacy-dashboard-retired.)
 - `hub/web` — an Astro site embedded in the binary at `/workbench/` and hosted
   at `https://sneat.work/bench/dashboard`. Read-only. The peers pages and
   admin buttons `peer-connectivity` specifies for it are not built.

@@ -118,6 +118,23 @@ observe the console line, the fast-forward of the canonical clone with an
 untouched worktree, and the dashboard status. Update `docs/cli-flag-matrix.md`
 and `ai/capabilities.json` for `--quiet` and the status additions.
 
+### Task 4: Hub writes need the owner's credential
+
+**Id:** task-4
+**Verifies:** self-hosted-bench#ac:hub-writes-need-a-credential, self-hosted-bench#ac:hub-write-errors-are-closed-codes
+**Depends-On:** 1
+**Status:** complete
+
+Add `hub.HandlerOptions.OperatorWrites`, which the daemon sets and the hosted
+instance does not: with it, `POST /v0/workbench/coverage`,
+`POST /v0/workbench/metrics` and the installation `connect` and `authorize`
+routes require a machine bearer of the host owner or a request the injected
+owner check accepts, and fail closed without one. The daemon binds Cockpit's
+`IsOwner` to that check once the Cockpit server exists, the way it fills
+`dashboard.Options.Owner`. Replace the store error text those two write routes
+echoed with closed codes. Unit tests in `hub` and on a real daemon-hosted hub
+mount in `cmd/wb`.
+
 ## Risks
 
 - dalgo2ingitdb transaction semantics differ from Firestore; the parity

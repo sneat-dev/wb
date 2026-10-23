@@ -62,14 +62,6 @@ func (address Address) Path(root string) string {
 // String renders the address the way it is written on disk.
 func (address Address) String() string { return address.Relative() }
 
-// EqualFold reports whether two addresses name the same clone, ignoring case
-// (forges and GitHub owners are case-insensitive).
-func (address Address) EqualFold(other Address) bool {
-	return strings.EqualFold(address.Host, other.Host) &&
-		strings.EqualFold(address.Org, other.Org) &&
-		strings.EqualFold(address.Repo, other.Repo)
-}
-
 // ParseRelative parses a root-relative canonical clone path
 // (<host>/<org>/<repo>) into an Address. A path whose first level is not a
 // literal forge hostname is rejected: a first-level entry that is not a valid

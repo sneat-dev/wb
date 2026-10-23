@@ -417,6 +417,26 @@ commit is empty and whose typed evidence says that content was not inspected.
 Exercise races that recreate a branch or replace claim bytes between plan and
 apply and prove neither writes a terminal record.
 
+### Task 19: Seal proved landings as `landed` at cleanup
+
+**Id:** task-19
+**Verifies:** work-log#ac:cleanup-seals-proved-landings-as-landed, work-log#ac:landed-proof-is-refused-where-it-proves-nothing
+**Depends-On:** task-8
+**Status:** complete
+**Implemented-by:** 453e4f55 (fix-landed-seal)
+
+Every land verb ends in cleanup, and cleanup sealed each worktree it removed as
+`removed`: on 2026-10-02 the founder's machine held 3,411 `removed` terminals
+against 62 `landed`, and a sample of 81 of the `removed` ones with commits were
+all merged (46 contained in the target, 35 squash-merged pull requests). Derive
+a `landed` proof (target, landed commit, proof kind, pull request number) from
+the integration checks that already make a worktree eligible for cleanup, and
+have the first seal choose `landed` with that proof when the claim made the
+work, `removed` otherwise. Carry the proof in the terminal and its outbox
+receipt, refuse it on any other disposition, and let the reader that proves a
+cleanup removal accept a `landed` terminal that carries it. Existing terminals
+are never rewritten.
+
 ## Open Questions
 
 1. The Synchestra service contract is being authored concurrently. Before Task

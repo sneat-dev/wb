@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/wbupdate"
+
 	"github.com/sneat-dev/wb/internal/testenv"
 	"gopkg.in/yaml.v3"
 )
@@ -70,7 +72,7 @@ func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
 	}
 	contents := string(readme)
 	for _, command := range []string{
-		selfUpdateHomebrewInstallCommand,
+		wbupdate.HomebrewInstallCommand,
 		"curl -fsSL https://sneat.work/bench/install/get-cli | sh",
 		"go install github.com/sneat-dev/wb/cmd/wb@latest",
 	} {
@@ -155,14 +157,14 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatal("go-ci release job missing")
 	}
-	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c" {
+	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@5d96b1f3fbb3f12bb1e2762ff5ba54ccb9506504" {
 		t.Fatalf("release uses=%v", got)
 	}
 	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility", "go-scope"})
 	assert("release gate", strings.Join(strings.Fields(fmt.Sprint(release["if"])), " "),
 		"${{ !cancelled() && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' && needs.release-eligibility.result == 'success' && needs.release-eligibility.outputs.eligible == 'true' }}")
 	assert("release inputs", release["with"], map[string]any{
-		"go_version": "1.27", "default_bump": "patch",
+		"go_version": "1.27", "node_version": "24.15.0", "default_bump": "patch",
 		"require_notarized_macos": true, "allow_major_version_bump": false,
 	})
 	expectedSecrets := map[string]any{"GORELEASER_GITHUB_TOKEN": "${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}"}
@@ -190,18 +192,14 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		assert(name+" scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
 			"needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	}
-	// coverage is the per-change coverage ratchet's one and only baseline
-	// producer (spec/plans/coverage-to-100/README.md task-3(b)): it is
-	// deliberately exempt from the validation-reuse push-event skip the other
-	// validation jobs apply, so a baseline artifact is published for every
-	// Go-relevant push to main.
+	// Coverage shares exact trusted PR reuse; nightly publishes full artifacts.
 	coverageJob, ok := jobs["coverage"].(map[string]any)
 	if !ok {
 		t.Fatal("validation job coverage missing")
 	}
 	assert("coverage starts after eligibility, reuse and Go scope", coverageJob["needs"], []any{"release-eligibility", "validation-reuse", "go-scope"})
 	assert("coverage scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(coverageJob["if"])), " "),
-		"needs.go-scope.outputs.required == 'true'")
+		"needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	goScope, ok := jobs["go-scope"].(map[string]any)
 	if !ok {
 		t.Fatal("Go validation scope job missing")
@@ -239,6 +237,13 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	}
 	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
 	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
+	filtersStep, _ := windowsScopeSteps[1].(map[string]any)
+	filtersWith, _ := filtersStep["with"].(map[string]any)
+	for _, path := range []string{"internal/filewrite/**", "internal/unixcompat/**", "internal/orchestrate/pr_update.go", "internal/orchestrate/pr_update*_test.go"} {
+		if !strings.Contains(fmt.Sprint(filtersWith["filters"]), "- '"+path+"'") {
+			t.Errorf("native Windows scope omits receipt publication owner %q", path)
+		}
+	}
 	windows, ok := jobs["windows"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows validation job missing")
@@ -252,6 +257,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
 		"go test ./internal/lifecyclehooks -run '^TestWindowsTrust'",
 		"go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'",
+		"go test ./internal/filewrite ./internal/orchestrate ./internal/unixcompat -count=1 -json -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsImmutablePublicationRefusesWithoutReplacingWinner|TestWindowsPortableSentinelsMatchNativeErrors|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'",
 		"go test ./api/githubapp -count=1",
 	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)

@@ -3,6 +3,8 @@
 package worktrees
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,4 +160,36 @@ func testLandlockCapabilityAllowsDevNullWrite(t *testing.T) {
 // downstream reads its coverage contribution or expects its temp files gone.
 func landlockChildExit() {
 	os.Exit(0)
+}
+
+func TestLandlockABIRequiresWriteControls(t *testing.T) {
+	t.Parallel()
+	for _, version := range []uintptr{0, 1, 2, 3, 6} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			t.Parallel()
+			err := validateLandlockABI(version)
+			if version < 3 {
+				// Direct policy admission must reject before any kernel shape
+				// probe. This does not claim the running kernel has an old ABI.
+				err = probeLandlockRuleShape(version)
+				want := fmt.Sprintf("secure Git capability is unavailable: Landlock ABI %d lacks required write controls", version)
+				if err == nil || err.Error() != want {
+					t.Fatalf("ABI %d admission = %v, want %s", version, err, want)
+				}
+			} else if err != nil {
+				t.Fatalf("ABI %d admission = %v", version, err)
+			}
+		})
+	}
+}
+
+func TestLandlockInstallFailurePreservesDiagnostic(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("installation refused")
+	err := pinOSThreadThroughLandlock(func() error { return sentinel })
+	if err != sentinel {
+		t.Fatalf("installation error = %v, want exact sentinel", err)
+	}
+	// The failure path's lock balance is source-reviewed. An outer thread pin
+	// or a scheduler handoff loop would not discriminate a leaked nested lock.
 }

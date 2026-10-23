@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fixtureRepo builds a tiny real git repository containing a one-package Go
@@ -71,7 +69,9 @@ func (r *fixtureRepo) commitAll(message string) string {
 func (r *fixtureRepo) coverProfile() []CoverageBlock {
 	r.t.Helper()
 	profilePath := filepath.Join(r.t.TempDir(), "profile.out")
-	cmd := exec.Command("go", "test", "-coverprofile="+profilePath, "./...")
+	// This fixture measures each package's own tests. Inherited -coverpkg
+	// must not let a test moved to another package keep covering its source.
+	cmd := exec.Command("go", "test", "-coverpkg=", "-coverprofile="+profilePath, "./...")
 	cmd.Dir = r.dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		r.t.Fatalf("go test -coverprofile: %v\n%s", err, output)
@@ -151,7 +151,7 @@ func Add(a, b int) int {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly one package", results)
@@ -197,7 +197,7 @@ func NewlyAdded(a, b int) int {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want exactly one package", results)
@@ -283,7 +283,7 @@ func TestFoo(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocks := repo.coverProfile()
-	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath)
+	results, _ := EvaluateRatchet(blocks, changed, touched, nil, baseline, repo.modulePath, nil)
 
 	var pkgA *PackageRatchet
 	for i := range results {
@@ -313,7 +313,7 @@ func TestEvaluateRatchetFailsWhenPackageUncoveredCountRisesWithoutChangedLineOve
 	// touched, which is enough to make "." a changed package.
 	touched := map[string]bool{"app_test.go": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -341,7 +341,7 @@ func TestEvaluateRatchetWarnsInsteadOfFailingWhenAnUnchangedPackagesCountRises(t
 	// The PR touches a wholly different package ("other"), not "." (app.go).
 	touched := map[string]bool{"other/thing.go": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -381,7 +381,7 @@ func TestEvaluateRatchetFailsWhenOnlyANonGoFixtureChangedInAPackageThatRose(t *t
 	changed := ChangedLines{} // the diff touched no .go line at all
 	touched := map[string]bool{"cases.json": true}
 	baseline := PackageBaseline{Packages: map[string]int{".": 1}}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -402,7 +402,7 @@ func TestEvaluateRatchetPassesForNewPackageWithNoBaseline(t *testing.T) {
 	blocks := []CoverageBlock{
 		{File: "fixture.test/app/new/pkg.go", StartLine: 1, EndLine: 1, Statements: 1, Count: 1},
 	}
-	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app", nil)
 	if len(results) != 1 || !results[0].Pass || results[0].HasBaseline {
 		t.Fatalf("results = %#v, want one passing package with no baseline entry", results)
 	}
@@ -423,7 +423,7 @@ func TestEvaluateRatchetFailsForChangedNewPackageWithUncoveredStatements(t *test
 		{File: "fixture.test/app/n/n.go", StartLine: 1, StartCol: 1, EndLine: 3, EndCol: 2, Statements: 3, Count: 0},
 	}
 	touched := map[string]bool{"n/n.go": true}
-	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -449,7 +449,7 @@ func TestEvaluateRatchetPassesForChangedNewPackageFullyCovered(t *testing.T) {
 		{File: "fixture.test/app/n/n.go", StartLine: 1, StartCol: 1, EndLine: 3, EndCol: 2, Statements: 3, Count: 1},
 	}
 	touched := map[string]bool{"n/n.go": true}
-	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app")
+	results, warnings := EvaluateRatchet(blocks, ChangedLines{}, touched, nil, PackageBaseline{Packages: map[string]int{}}, "fixture.test/app", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -484,6 +484,76 @@ func TestParseCoverageProfileParsesRangesAndCounts(t *testing.T) {
 	}
 	if blocks[1] != (CoverageBlock{File: "fixture.test/app/app.go", StartLine: 7, StartCol: 34, EndLine: 10, EndCol: 2, Statements: 3, Count: 0}) {
 		t.Fatalf("blocks[1] = %#v", blocks[1])
+	}
+}
+
+func TestParseCoverageProfileDeduplicatesSetBlocksForSummary(t *testing.T) {
+	t.Parallel()
+	profilePath := filepath.Join(t.TempDir(), "profile.out")
+	contents := "mode: set\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 0\n" +
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 0\n" +
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n"
+	if err := os.WriteFile(profilePath, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ParseCoverageProfile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 2 || blocks[0].Count != 1 || blocks[1].Count != 0 || blocks[0].EndCol != 4 || blocks[1].EndCol != 6 {
+		t.Fatalf("deduplicated blocks = %#v", blocks)
+	}
+	summary := SummaryFromProfile(blocks, "example.com/app", CoverageSummaryMeta{})
+	if summary.Statements != 5 || summary.Covered != 2 || summary.Packages["pkg"].Statements != 5 || summary.Packages["pkg"].Covered != 2 {
+		t.Fatalf("duplicate blocks inflated summary: %+v", summary)
+	}
+	baseline := BaselineFromProfile(blocks, "example.com/app", "abc123")
+	if baseline.Packages["pkg"] != 3 || len(baseline.UncoveredBlocks["pkg"]) != 1 || baseline.UncoveredBlocks["pkg"][0].EndCol != 6 {
+		t.Fatalf("duplicate blocks inflated baseline: %+v", baseline)
+	}
+}
+
+func TestParseCoverageProfileSumsRepeatedCountAndAtomicHits(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"count", "atomic"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			profilePath := filepath.Join(t.TempDir(), "profile.out")
+			contents := "mode: " + mode + "\n" +
+				"example.com/app/pkg/a.go:1.1,1.4 2 2\n" +
+				"example.com/app/pkg/a.go:1.1,1.4 2 3\n"
+			if err := os.WriteFile(profilePath, []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			blocks, err := ParseCoverageProfile(profilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(blocks) != 1 || blocks[0].Count != 5 {
+				t.Fatalf("merged %s hits = %#v", mode, blocks)
+			}
+			summary := SummaryFromProfile(blocks, "example.com/app", CoverageSummaryMeta{})
+			if summary.Statements != 2 || summary.Covered != 2 {
+				t.Fatalf("merged %s summary = %+v", mode, summary)
+			}
+		})
+	}
+}
+
+func TestParseCoverageProfileRejectsConflictingRepeatedStatementCount(t *testing.T) {
+	t.Parallel()
+	profilePath := filepath.Join(t.TempDir(), "profile.out")
+	contents := "mode: set\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n" +
+		"example.com/app/pkg/a.go:1.1,1.4 3 1\n"
+	if err := os.WriteFile(profilePath, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseCoverageProfile(profilePath); err == nil || !strings.Contains(err.Error(), "statement count") {
+		t.Fatalf("conflicting block error = %v", err)
 	}
 }
 
@@ -957,7 +1027,7 @@ func TestEvaluateRatchetSortsFindingsByFileThenLine(t *testing.T) {
 		"pkg/b.go": {5: true},
 		"pkg/a.go": {9: true, 2: true},
 	}
-	results, _ := EvaluateRatchet(blocks, changed, nil, nil, PackageBaseline{Packages: map[string]int{}}, "m")
+	results, _ := EvaluateRatchet(blocks, changed, nil, nil, PackageBaseline{Packages: map[string]int{}}, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want 1 package", results)
 	}
@@ -1041,7 +1111,7 @@ func TestComputeBaselineAtRefFailsWhenGoTestFails(t *testing.T) {
 // branch on its own (a matched build either fails, taking the "go test
 // failed" branch above, or succeeds and always writes a well-formed
 // profile); TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed
-// exercises it with a `go` shim instead.
+// exercises it by replacing the profile after a successful measurement.
 
 // TestComputeBaselineAtRefFailsWhenGitWorktreeAddFails exercises the plain
 // (non-timeout) branch of "git worktree add" failing, by making .git
@@ -1163,40 +1233,35 @@ func TestGitChangedLinesHandlesPathsWithSpaces(t *testing.T) {
 	}
 }
 
-// TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed
-// exercises ComputeBaselineAtRef's ParseCoverageProfile error branch with a
-// `go` shim that fakes `go test -coverprofile` to exit 0 while writing a
-// profile ParseCoverageProfile rejects (a line with no "file:range"
-// separator) — real `go test` cannot produce this, but a hermetic shim
-// proves the branch fails closed rather than leaving it untested. Not
-// parallel-safe (t.Setenv mutates the process-wide PATH).
+// The progress callback models a profile replaced after measurement completes.
+// Baseline construction must reject it even though the measurement itself passed.
 func TestComputeBaselineAtRefFailsClosedWhenCoverageProfileIsMalformed(t *testing.T) {
+	t.Parallel()
 	repo := newFixtureRepo(t)
 	repo.writeFile("app.go", fixtureBaseSource)
 	repo.writeFile("app_test.go", fixtureTestSource)
 	repo.commitAll("base")
-
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = test ]; then\n" +
-		"  for a in \"$@\"; do\n" +
-		"    case \"$a\" in -coverprofile=*) p=\"${a#-coverprofile=}\";; esac\n" +
-		"  done\n" +
-		"  printf 'mode: set\\nbadformat 1 1\\n' > \"$p\"\n" +
-		"  exit 0\n" +
-		"fi\n" +
-		"exec " + realGo + " \"$@\"\n"
-	shimDir := t.TempDir()
-	if err := testenv.WriteExecutableFile(filepath.Join(shimDir, "go"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	if _, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, RunOptions{}); err == nil {
-		t.Fatal("want error when the measured profile fails ParseCoverageProfile's stricter parse")
+	replaced := false
+	options := RunOptions{Progress: func(event Progress) {
+		if event.State != ProgressCompleted || event.Status != StatusPassed {
+			return
+		}
+		for _, line := range strings.Split(repo.runGit("worktree", "list", "--porcelain"), "\n") {
+			if !strings.HasPrefix(line, "worktree ") {
+				continue
+			}
+			root := strings.TrimPrefix(line, "worktree ")
+			if strings.HasPrefix(filepath.Base(root), "wb-coverage-baseline-") {
+				if err := os.WriteFile(filepath.Join(root, "wb-coverage-baseline.out"), []byte("mode: set\nbadformat 1 1\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				replaced = true
+			}
+		}
+	}}
+	_, err := ComputeBaselineAtRef(context.Background(), repo.dir, "HEAD", time.Minute, options)
+	if !replaced || err == nil || !strings.Contains(err.Error(), "no coverage profile produced measuring merge base") {
+		t.Fatalf("replaced = %v, error = %v; want rejected replaced baseline profile", replaced, err)
 	}
 }
 
@@ -1242,7 +1307,7 @@ func TestEvaluateRatchetNamesFileLineForACountOnlyRise(t *testing.T) {
 	// "pkg" a changed package, while leaving a.go's block position
 	// trustworthy for the exact-match attribution below.
 	touched := map[string]bool{"pkg/a_test.go": true}
-	results, warnings := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m")
+	results, warnings := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1291,7 +1356,7 @@ func TestEvaluateRatchetDoesNotBlameLineShiftedBlocksInFilesThePRTouched(t *test
 	offsets := map[string]FileLineOffsets{
 		"pkg/a.go": {hunks: []lineOffsetHunk{{oldStart: 5, oldCount: 0, newStart: 5, newCount: 15}}},
 	}
-	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, offsets, baseline, "m")
+	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, offsets, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1319,7 +1384,7 @@ func TestEvaluateRatchetDedupesAFindingReportedByBothTheDirectAndRoseRules(t *te
 	// pkg/other.go (not a.go) is what the PR touched, so "pkg" is a changed
 	// package, but a.go's own block position is still trustworthy.
 	touched := map[string]bool{"pkg/other.go": true}
-	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "m")
+	results, warnings := EvaluateRatchet(blocks, changed, touched, nil, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}
@@ -1344,7 +1409,7 @@ func TestEvaluateRatchetSortsWarningsByPackageThenFileThenLine(t *testing.T) {
 	baseline := PackageBaseline{Packages: map[string]int{"x": 0, "y": 0}}
 	// touchedFiles is nil: neither package is one the PR changes, so every
 	// rise becomes a warning, exercising all three tie-break levels.
-	_, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, baseline, "m")
+	_, warnings := EvaluateRatchet(blocks, ChangedLines{}, nil, nil, baseline, "m", nil)
 	want := []RatchetWarning{
 		{Package: "x", File: "x/a.go", Line: 2, Reason: ReasonNewlyUncoveredAtBase},
 		{Package: "x", File: "x/a.go", Line: 9, Reason: ReasonNewlyUncoveredAtBase},
@@ -1377,7 +1442,7 @@ func TestEvaluateRatchetDoesNotRefindABlockTheBaselineAlreadyHad(t *testing.T) {
 		{File: "m/pkg/a.go", StartLine: 9, StartCol: 1, EndLine: 9, EndCol: 10, Statements: 1, Count: 0},
 	}
 	touched := map[string]bool{"pkg/a_test.go": true}
-	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m")
+	results, _ := EvaluateRatchet(currentBlocks, ChangedLines{}, touched, nil, baseline, "m", nil)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v, want one package", results)
 	}

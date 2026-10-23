@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1118,7 +1119,7 @@ func TestAbortHandoffCrashBindsSuccessorExecutionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeWorkLogTerminal(fixture.home, runDir, claim, head, "handoff", firstID, "next-run", nil); err != nil {
+	if _, err := sealWorkLogTerminal(fixture.home, runDir, worktreeclaims.TerminalSealRequest{Claim: claim, FinalCommit: head, Disposition: "handoff", SuccessorClaimID: firstID, SuccessorAgentID: "next-run"}); err != nil {
 		_ = runDir.Close()
 		t.Fatal(err)
 	}

@@ -7,6 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
 // TestCloseSupersededWorktreeMergePullRequestExhaustsVerifyRetriesOnPersistentTransientRead
@@ -23,7 +27,7 @@ import (
 //
 //nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
 func TestCloseSupersededWorktreeMergePullRequestExhaustsVerifyRetriesOnPersistentTransientRead(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && [ "$2" = '--method' ] && [ "$3" = PATCH ]; then
   exit 0
 fi
@@ -61,7 +65,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 //nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
 func TestPinPullRequestViewToHeadRetriesUntilHeadMatches(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "reads")
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q 'repos/acme/app/pulls/41'; then
   n=0
   if [ -f "`+state+`" ]; then n=$(cat "`+state+`"); fi
@@ -78,7 +82,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 `)
 
 	var slept []time.Duration
-	view := PullRequestView{Number: 41}
+	view := githubchecks.PullRequestView{Number: 41}
 	view.Head.SHA = "original-sha"
 
 	got, err := pinPullRequestViewToHead(context.Background(), "acme/app", "41", "pushed-sha", view, func(d time.Duration) { slept = append(slept, d) })
@@ -111,7 +115,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 //
 //nolint:paralleltest // calls t.Setenv via installTransientReadTestGH, which Go's testing package forbids combined with t.Parallel
 func TestPinPullRequestViewToHeadReturnsErrorAfterExhaustingAttempts(t *testing.T) {
-	installTransientReadTestGH(t, `#!/bin/sh
+	testfixture.InstallTransientReadGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q 'repos/acme/app/pulls/41'; then
   printf '{"number":41,"head":{"sha":"stale-sha"}}\n'
   exit 0
@@ -120,7 +124,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 `)
 
 	var slept []time.Duration
-	view := PullRequestView{Number: 41}
+	view := githubchecks.PullRequestView{Number: 41}
 	view.Head.SHA = "original-sha"
 
 	_, err := pinPullRequestViewToHead(context.Background(), "acme/app", "41", "pushed-sha", view, func(d time.Duration) { slept = append(slept, d) })

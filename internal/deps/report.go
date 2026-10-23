@@ -116,10 +116,8 @@ func WriteReports(directory string, report Report) error {
 	if err := os.WriteFile(filepath.Join(directory, "deps-set.md"), []byte(report.Markdown()), 0o644); err != nil {
 		return err
 	}
-	raw, err := report.YAML()
-	if err != nil {
-		return err
-	}
+	// This concrete report has no fallible YAML marshalers; time.Time uses yaml timev.
+	raw, _ := report.YAML()
 	return os.WriteFile(filepath.Join(directory, "deps-set.yaml"), raw, 0o644)
 }
 

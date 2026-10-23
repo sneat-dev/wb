@@ -84,6 +84,10 @@ jobs:
               - 'cmd/wb/**'
               - 'api/githubapp/**'
               - 'internal/session/**'
+              - 'internal/filewrite/**'
+              - 'internal/unixcompat/**'
+              - 'internal/orchestrate/pr_update.go'
+              - 'internal/orchestrate/pr_update*_test.go'
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/go-ci.yml'
@@ -192,10 +196,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check strict coverage profile gate
+        run: python3 .github/scripts/test-coverage-strict.py
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: go build (macOS, no cgo)
+        # No job runs tests on macOS, so the cgo-free macOS machine-metrics reader
+        # (gopsutil through purego) is only build- and vet-checked here; its tests
+        # run on the founder's Mac.
+        run: |
+          CGO_ENABLED=0 GOOS=darwin go build ./...
+          CGO_ENABLED=0 GOOS=darwin go vet ./internal/cockpit/machinemetrics
 
   lint:
     name: Lint (golangci-lint)
@@ -223,12 +236,11 @@ jobs:
           install-mode: goinstall
 
   coverage:
-    name: Tests and coverage (8 shards)
+    name: Tests and scoped coverage
     needs: [release-eligibility, validation-reuse, go-scope]
-    # This job is the per-change coverage ratchet's one and only baseline
-    # producer (spec/plans/coverage-to-100/README.md task-3(b)). It runs on
-    # every Go-relevant push even when other jobs reuse exact PR validation.
-    if: needs.go-scope.outputs.required == 'true'
+    if: >-
+      needs.go-scope.outputs.required == 'true' &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -239,7 +251,11 @@ jobs:
     # this job budget stay at their raised size regardless, so setup and
     # failure diagnostic upload remain outside the inner budget and a timeout
     # still leaves evidence.
-    timeout-minutes: 45
+    # Raised from 20m/45m on 2026-10-21 (founder decision): a change under
+    # .wb/ selects the whole module, and its default and e2e variants run in
+    # sequence inside one --timeout, which ran out in the last orchestrate
+    # shard. The baseline and head measurements each get 30m.
+    timeout-minutes: 70
     permissions:
       contents: read
       actions: read
@@ -257,63 +273,33 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Fetch coverage baseline for the merge base
-        if: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
+      - name: Test changed packages and affected dependents with coverage ratchets
         env:
-          GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # --commit filters server-side by exact commit, so an old merge
-          # base is still found precisely instead of falling out of a
-          # branch listing's default recency window; --status success is
-          # deliberately not required, since a baseline can exist even when
-          # some unrelated job on that run later failed.
-          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow go-ci.yml \
-            --commit "$BASE_SHA" --json databaseId --jq '.[0].databaseId' || true)
-          if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
-            gh run download "$RUN_ID" --repo "${{ github.repository }}" --name wb-coverage-baseline --dir . || true
+          target="$BASE_SHA"
+          if [ "$EVENT_NAME" != pull_request ]; then
+            target="$PUSH_BEFORE_SHA"
+            if [ -z "$target" ] || [[ "$target" =~ ^0+$ ]]; then
+              target=$(git rev-parse HEAD^)
+            fi
           fi
-          if [ ! -f coverage-baseline.json ]; then
-            echo "no published baseline artifact for merge base $BASE_SHA; wb coverage --changed will measure it directly, bounded by --baseline-timeout"
-          fi
-      - name: Test with merged coverage threshold
-        # PR #773 integrates work accumulated before these cross-branch
-        # ratchets were enforced. Accept its recorded debt once, while still
-        # running the complete test suite and repository coverage floor.
-        if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
-        run: >-
-          go run ./cmd/wb coverage .
-          --coverage-profile profile.cov
-          --report-dir coverage-diagnostics
-          --minimum=87
-          --format json
-          --non-interactive
-          --timeout 35m
-      - name: Test with the per-change coverage ratchet
-        if: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main') }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        # --baseline-timeout and --timeout bound two runs that can both
-        # execute in the worst case (no published baseline artifact, so the
-        # fallback measures the merge base, then the PR head is measured):
-        # 15m + 20m = 35m, leaving 10m of this job's 45-minute
-        # timeout-minutes for checkout, setup-go, the audit step above and
-        # the diagnostics upload below (review-696 also-fix #3: 20m + 20m
-        # left only 5m of headroom, so a slow shard could have the job
-        # killed by GitHub instead of the ratchet failing loudly).
-        run: >-
-          go run ./cmd/wb coverage .
-          --changed
-          --target "$BASE_SHA"
-          --baseline-file coverage-baseline.json
-          --baseline-timeout 15m
-          --timeout 20m
-          --coverage-profile profile.cov
-          --report-dir coverage-diagnostics
-          --minimum=87
-          --format json
-          --non-interactive
+          go run ./cmd/wb coverage . \
+            --changed --affected-packages --target "$target" \
+            --baseline-timeout 30m --timeout 30m --include-e2e \
+            --coverage-profile profile.cov --report-dir coverage-diagnostics \
+            --format json --non-interactive
+      - name: Require zero uncovered statements in the selected coverage scope
+        if: ${{ success() || failure() }}
+        run: |
+          set -euo pipefail
+          mkdir -p coverage-diagnostics
+          python3 .github/scripts/coverage-strict.py profile.cov --scope selected \
+            --ratchet coverage-diagnostics/coverage-ratchet.json --head "$(git rev-parse HEAD)" \
+            | tee coverage-diagnostics/coverage-strict.json
       - name: wb ci audit --strict against the PR base branch
         if: ${{ (success() || failure()) && github.event_name == 'pull_request' }}
         env:
@@ -339,39 +325,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-go-coverage
-          path: profile.cov
+          path: |
+            profile.cov
+            coverage-diagnostics/coverage-ratchet.json
           if-no-files-found: error
           retention-days: 14
-      - name: Publish per-package coverage baseline
-        if: ${{ github.event_name == 'push' }}
-        run: go run ./cmd/wb coverage baseline profile.cov --module . --sha "${{ github.sha }}" --out coverage-baseline.json
-      - name: Upload coverage baseline artifact
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wb-coverage-baseline
-          path: coverage-baseline.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Publish coverage summary
-        if: ${{ github.event_name == 'push' }}
-        run: >-
-          go run ./cmd/wb coverage summary profile.cov
-          --module .
-          --repo "${{ github.repository }}"
-          --sha "${{ github.sha }}"
-          --ref "${{ github.ref }}"
-          --workflow-run-id "${{ github.run_id }}"
-          --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          --out coverage-summary.json
-      - name: Upload coverage summary artifact
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wb-coverage-summary
-          path: coverage-summary.json
-          if-no-files-found: error
-          retention-days: 90
 
   race:
     name: Race tests
@@ -410,17 +368,18 @@ jobs:
     name: E2E tier (real git)
     needs: [release-eligibility, validation-reuse, go-scope]
     # spec/plans/coverage-to-100/README.md task-24: the e2e tier is a
-    # required job on every PR (founder decision 19), never a source of
-    # coverage (decision 17) -- this job carries no coverage step at all.
+    # required job on every PR (founder decision 19). The coverage job also
+    # measures this tier under the later native-coverage authorization; this
+    # independent job remains its pass/fail contract.
     # It follows the same go-scope/validation-reuse condition as source,
     # static, lint, and race.
     if: >-
       needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
-    # Task-23's 10-minute e2e budget (spec/plans/coverage-to-100/README.md
-    # "Plan choices, not founder instructions").
-    timeout-minutes: 10
+    # Match the existing combined-coverage native attempt budget; leave setup
+    # and failure reporting outside the per-package test deadline.
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -431,7 +390,7 @@ jobs:
           cache: true
       - name: go test -tags e2e (real-git journeys and adapter contract tests)
         run: >-
-          go test -tags e2e -count=1 -run '^Test(E2E|Contract)' ./...
+          go test -tags e2e -count=1 -timeout 20m -run '^Test(E2E|Contract)' ./...
 
   windows:
     name: Native Windows compile and test
@@ -471,6 +430,10 @@ jobs:
         run: >-
           go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb
           -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'
+      - name: Test native Windows atomic receipt publication
+        run: >-
+          go test ./internal/filewrite ./internal/orchestrate ./internal/unixcompat -count=1 -json
+          -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsImmutablePublicationRefusesWithoutReplacingWinner|TestWindowsPortableSentinelsMatchNativeErrors|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 
@@ -549,11 +512,15 @@ jobs:
       cancel-in-progress: false
     # Resolve smoke-test metadata alongside the artifact build, then verify
     # published artifacts and Homebrew installs in parallel after promotion.
-    uses: strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c
+    uses: strongo/cicd/.github/workflows/release.yml@5d96b1f3fbb3f12bb1e2762ff5ba54ccb9506504
     permissions:
       contents: write
     with:
       go_version: '1.27'
+      # .goreleaser.yml before-hooks build hub/web and cockpit/web with pnpm;
+      # Angular 22 needs Node ^22.22.3 || ^24.15.0 (cockpit/web engines), the
+      # same major cockpit-web.yml verifies on.
+      node_version: '24.15.0'
       allow_major_version_bump: false
       # A CLI-changing merge without a conventional terminal title must still
       # produce a patch release.
