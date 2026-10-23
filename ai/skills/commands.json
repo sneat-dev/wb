@@ -62,6 +62,9 @@
       "wb-worktrees",
       "wb-merge"
     ],
+    "lane": [
+      "wb-worktrees"
+    ],
     "layout": [
       "wb-fleet"
     ],
