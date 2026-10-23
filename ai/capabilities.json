@@ -7126,6 +7126,7 @@
               "flags": [
                 "--checks",
                 "--format",
+                "--to",
                 "--worktree"
               ],
               "modes": [
