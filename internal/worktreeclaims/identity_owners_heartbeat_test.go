@@ -193,6 +193,61 @@ func TestClaimsPortableClaimIdentityAndRoutes(t *testing.T) {
 	if _, err := ExpectedWorkLogClaimID(ClaimIdentity{ParentClaimID: first, AcquiredVia: "bad"}, nil, nil); err == nil {
 		t.Fatal("accepted bad acquisition")
 	}
+	if got := WorkLogClaimIDForMode("effort", result, ClaimModeWorktree); got != first {
+		t.Fatalf("explicit worktree mode changed the claim identity: %s", got)
+	}
+	canonical := WorkLogClaimIDForMode("effort", result, ClaimModeCanonical)
+	if canonical == first || !ValidClaimID(canonical) {
+		t.Fatalf("canonical claim identity = %s, worktree = %s", canonical, first)
+	}
+	claim.ParentClaimID = ""
+	claim.AcquiredVia = ""
+	claim.Mode = ClaimModeCanonical
+	if got, err := ExpectedWorkLogClaimID(claim, nil, nil); err != nil || got != canonical {
+		t.Fatalf("canonical root claim: %q %v", got, err)
+	}
+}
+
+func TestClaimModeLeaseContract(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	cases := []struct {
+		name    string
+		mode    string
+		lease   time.Time
+		wantErr string
+	}{
+		{"default mode without lease", "", time.Time{}, ""},
+		{"explicit worktree without lease", ClaimModeWorktree, time.Time{}, ""},
+		{"canonical with future lease", ClaimModeCanonical, future, ""},
+		{"unknown mode", "shared", time.Time{}, "claim mode"},
+		{"canonical without lease", ClaimModeCanonical, time.Time{}, "lease_expires_at"},
+		{"canonical with lease not after record time", ClaimModeCanonical, now, "lease_expires_at"},
+		{"worktree with lease", ClaimModeWorktree, future, "valid only for a canonical claim"},
+		{"default with lease", "", future, "valid only for a canonical claim"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateClaimModeLease(tc.mode, tc.lease, now)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+	if got := leaseInstant(nil); !got.IsZero() {
+		t.Fatalf("nil lease = %v", got)
+	}
+	if got := leaseInstant(&future); !got.Equal(future) {
+		t.Fatalf("lease instant = %v", got)
+	}
 }
 
 func TestClaimsHeartbeatFaultPorts(t *testing.T) {

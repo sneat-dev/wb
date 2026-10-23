@@ -3,10 +3,12 @@ package worktreeclaims
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/worktreelayout"
 )
@@ -15,6 +17,12 @@ const (
 	ModelProvenanceRuntimeObserved = "runtime_observed"
 	ModelProvenanceCallerDeclared  = "caller_declared"
 	ModelProvenanceUnknown         = "unknown"
+)
+
+// Claim modes. The empty mode is the default and means ClaimModeWorktree.
+const (
+	ClaimModeWorktree  = "worktree"
+	ClaimModeCanonical = "canonical"
 )
 
 type ExecutionIdentity struct {
@@ -34,7 +42,7 @@ type ClaimIdentity struct {
 	Version                                                int
 	EffortID, Repository, Worktree, Branch, Base, BaseSHA  string
 	Model, ModelProvenance, ModelDeclaredBy, CLI, Provider string
-	ParentClaimID, AcquiredVia, AgentID                    string
+	ParentClaimID, AcquiredVia, AgentID, Mode              string
 }
 
 var executionIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$`)
@@ -127,15 +135,54 @@ func IdentityFromClaim(claim ClaimIdentity) ExecutionIdentity {
 	return ExecutionIdentity{Model: model, ModelProvenance: provenance, ModelDeclaredBy: claim.ModelDeclaredBy, CLI: claim.CLI, Provider: claim.Provider}
 }
 func WorkLogClaimID(effort string, result CreationResult) string {
-	return workLogClaimID(effort, result)
+	return WorkLogClaimIDForMode(effort, result, "")
 }
-func workLogClaimID(effort string, result CreationResult) string {
+
+// WorkLogClaimIDForMode covers the claim mode. The default (worktree) mode
+// hashes exactly the fields it always has; a canonical claim additionally
+// hashes its mode, so the same checkout identity cannot be re-presented as a
+// worktree claim. Run IDs and machine-local worktree paths stay out of the
+// digest: the immutable private claim still records the absolute live path.
+func WorkLogClaimIDForMode(effort string, result CreationResult, mode string) string {
+	return workLogClaimID(effort, result, mode)
+}
+func workLogClaimID(effort string, result CreationResult, mode string) string {
 	hash := sha256.New()
-	for _, value := range []string{effort, result.Repository, result.Branch, result.Base, result.BaseSHA} {
+	fields := []string{effort, result.Repository, result.Branch, result.Base, result.BaseSHA}
+	if mode == ClaimModeCanonical {
+		fields = append(fields, "mode:"+mode)
+	}
+	for _, value := range fields {
 		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
 		_, _ = io.WriteString(hash, value)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// ValidateClaimModeLease is the mode/lease contract: the mode is one of the
+// known values, a canonical claim carries a lease that ends after the instant
+// it was recorded, and no other claim carries one.
+func ValidateClaimModeLease(mode string, lease, recordedAt time.Time) error {
+	switch mode {
+	case "", ClaimModeWorktree:
+		if !lease.IsZero() {
+			return errors.New("lease_expires_at is valid only for a canonical claim")
+		}
+	case ClaimModeCanonical:
+		if lease.IsZero() || !lease.After(recordedAt) {
+			return errors.New("a canonical claim requires lease_expires_at after the instant it is recorded")
+		}
+	default:
+		return fmt.Errorf("claim mode %q is invalid; want %q or %q", mode, ClaimModeWorktree, ClaimModeCanonical)
+	}
+	return nil
+}
+
+func leaseInstant(lease *time.Time) time.Time {
+	if lease == nil {
+		return time.Time{}
+	}
+	return *lease
 }
 func SuccessorWorkLogClaimID(parentClaimID, successor, disposition string) string {
 	hash := sha256.New()
@@ -155,7 +202,7 @@ func DeclaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition strin
 }
 func ExpectedWorkLogClaimID(claim ClaimIdentity, external, parked func() (string, error)) (string, error) {
 	if claim.ParentClaimID == "" {
-		return WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}), nil
+		return WorkLogClaimIDForMode(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}, claim.Mode), nil
 	}
 	switch claim.AcquiredVia {
 	case "external_handoff":

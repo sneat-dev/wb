@@ -93,6 +93,39 @@ func addSealedHistoryRun(t *testing.T, home string, expectation TerminalWorkLogE
 	writeHistoryJSON(t, filepath.Join(home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json"), event)
 }
 
+func TestStaticWorkLogClaimBindsCanonicalModeAndLease(t *testing.T) {
+	t.Parallel()
+	ports := terminalHistoryTestPorts()
+	ports.ExpectedClaimID = func(claim Claim) (string, error) {
+		return ExpectedWorkLogClaimID(ClaimIdentity{
+			Version: claim.Version, EffortID: claim.EffortID, Repository: claim.Repository,
+			Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
+			Mode: claim.Mode, ParentClaimID: claim.ParentClaimID, AcquiredVia: claim.AcquiredVia, AgentID: claim.AgentID,
+		}, nil, nil)
+	}
+	recorded := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	lease := recorded.Add(time.Hour)
+	claim := Claim{Version: 1, EffortID: "task", RunID: "run", Task: "task", Repository: "acme/app",
+		Worktree: "/tmp/clone", Branch: "feature", Base: "main", BaseSHA: strings.Repeat("a", 40),
+		Lifecycle: "active", RecordedAt: recorded, Mode: ClaimModeCanonical, LeaseExpiresAt: &lease}
+	claim.ClaimID = WorkLogClaimIDForMode(claim.EffortID, CreationResult{Repository: claim.Repository,
+		WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}, claim.Mode)
+	if err := ports.ValidateStaticWorkLogClaim(claim, claim.EffortID, claim.RunID); err != nil {
+		t.Fatalf("genuine canonical claim rejected: %v", err)
+	}
+	rewritten := claim
+	rewritten.Mode = ""
+	rewritten.LeaseExpiresAt = nil
+	if err := ports.ValidateStaticWorkLogClaim(rewritten, claim.EffortID, claim.RunID); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("worktree rewrite of a canonical claim was accepted: %v", err)
+	}
+	missingLease := claim
+	missingLease.LeaseExpiresAt = nil
+	if err := ports.ValidateStaticWorkLogClaim(missingLease, claim.EffortID, claim.RunID); err == nil || !strings.Contains(err.Error(), "lease_expires_at") {
+		t.Fatalf("canonical claim without a lease was accepted: %v", err)
+	}
+}
+
 func TestRemovedTerminalHistoryScansLegacyRunsAndRequiresUniqueProof(t *testing.T) {
 	t.Parallel()
 	home, expectation, claim := terminalHistoryFixture(t)

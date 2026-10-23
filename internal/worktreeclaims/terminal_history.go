@@ -242,6 +242,9 @@ func (p HistoryPorts) validateStaticWorkLogClaim(claim Claim, effort, run string
 			return errors.New("immutable successor Work Log claim metadata is invalid")
 		}
 	}
+	if err := ValidateClaimModeLease(claim.Mode, leaseInstant(claim.LeaseExpiresAt), claim.RecordedAt); err != nil {
+		return err
+	}
 	wantID, err := p.ExpectedClaimID(claim)
 	if err != nil {
 		return err

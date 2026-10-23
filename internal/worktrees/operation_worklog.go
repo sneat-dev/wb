@@ -31,7 +31,7 @@ func validateOperationWorkLogClaim(claim workLogClaim, task string, result Creat
 	if err != nil {
 		return err
 	}
-	want := workLogClaimID(effort, result)
+	want := workLogClaimIDForMode(effort, result, options.Mode)
 	if claim.EffortID != effort || claim.RunID != run || claim.Task != task || claim.Repository != result.Repository ||
 		filepath.Clean(claim.Worktree) != filepath.Clean(result.WorktreeDir) || claim.Branch != result.Branch ||
 		claim.Base != result.Base || claim.BaseSHA != result.BaseSHA || claim.ClaimID != want {
