@@ -198,6 +198,11 @@ the marker, and then, before merging or enqueueing:
    server-side and never arming auto-merge, so what lands is the reviewed
    head (inside the queue's merge-group commit under a merge queue).
 
+After landing, the promotion's head is never retired: it is the long-lived
+integration branch. More generally, `wb pr land` keeps any head branch whose
+commits carry `Wb-Lane` or `Wb-Refresh` merges, or that open pull requests
+target, and says why in the receipt (`head_retained`).
+
 A pull request without the marker any of whose commits carries a `Wb-Lane`
 trailer refuses `batch-block-invalid` (naming `wb integration promote`, which
 restores the body) instead of landing under the ordinary rules.

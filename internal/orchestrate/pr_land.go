@@ -201,6 +201,9 @@ type PullRequestLandOptions struct {
 	readPullRequest func(ctx context.Context, repository, selector string) (githubchecks.PullRequestView, error)
 	// promotePorts is the promotion-landing seam; nil reads GitHub.
 	promotePorts *promoteLandingPorts
+	// openPullRequestsOnto is the seam for "is the head branch the base of
+	// other open work"; nil reads GitHub.
+	openPullRequestsOnto func(ctx context.Context, repository, branch string) (int, error)
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -331,7 +334,10 @@ type PullRequestLandResult struct {
 	Checks       *githubchecks.PullRequestWaitResult `json:"checks,omitempty"`
 	WaivedChecks []WaivedCheck                       `json:"waived_checks,omitempty" yaml:"waived_checks,omitempty"`
 
-	BranchDeleted bool   `json:"branch_deleted"`
+	BranchDeleted bool `json:"branch_deleted"`
+	// HeadRetained says why the head branch was kept after landing: a
+	// long-lived integration branch is never retired.
+	HeadRetained  string `json:"head_retained,omitempty"`
 	LandingOnBase bool   `json:"landing_on_base"`
 	CanonicalSync string `json:"canonical_sync,omitempty"`
 	// LocalSync records the outcome of fast-forwarding the local WB worktree
@@ -964,6 +970,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Promotion = promotion
 		result.Evidence["promotion"] = fmt.Sprintf("%d reviewed lane(s), head reviewed by %s", len(promotion.Lanes), promotion.Reviewer)
 	}
+	result.HeadRetained = integrationHeadReason(ctx, options, view, sourceCommits, result.Promotion, result.Evidence)
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
@@ -1337,6 +1344,12 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
+	if result.HeadRetained != "" {
+		// An integration branch outlives every promotion: neither the branch
+		// nor the worktrees on it are retired.
+		result.Evidence["head_branch"] = "retained " + view.Head.Ref + ": " + result.HeadRetained
+		return finishLandedPullRequest(ctx, options, result, number)
+	}
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.resolveRunner(), canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
 		// The merge is already on the base branch: report that, not a bare
@@ -1369,6 +1382,11 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 		result.Evidence["cleanup"] = "fork source worktrees retained; target-repository worktrees do not belong to this pull request head"
 	}
 
+	return finishLandedPullRequest(ctx, options, result, number)
+}
+
+// finishLandedPullRequest reports what the landing closes and succeeds.
+func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, number string) (PullRequestLandResult, error) {
 	// #615: report the issues this landing closes, from GitHub's own
 	// closingIssuesReferences — an informational finding, never a refusal,
 	// including when there are none.

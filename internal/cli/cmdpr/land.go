@@ -180,6 +180,11 @@ target history. It never updates the branch server-side or arms auto-merge,
 and otherwise follows the repository's merge policy. A pull request without
 the marker whose commits include a WB lane merge is refused.
 
+LONG-LIVED HEAD BRANCHES ARE KEPT. After landing, wb retires the head branch
+and its worktrees unless the branch is long-lived: a promotion's integration
+branch, a branch whose commits carry WB lane or refresh merges, or one that
+open pull requests target. The receipt names why (head_retained).
+
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
 retirement, cleanup) did not finish: the change is on the base branch, and the
