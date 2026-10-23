@@ -130,8 +130,8 @@ when given, else `.wb/quality.yaml` `integration_checks`, else
 exactly the checked commit to `refs/heads/<integration>` without force only
 when the checks passed, so agents never hand-roll the check or the refresh. A
 failed check stops with `integration-check-failed` (exit `1`) and the report,
-and pushes nothing; a recipe that ran no check at all refuses
-`integration-check-skipped` and pushes nothing. A rerun that has nothing new
+and pushes nothing; a run in which no check ran and passed (every check skipped
+or undefined) refuses `integration-check-skipped` and pushes nothing. A rerun that has nothing new
 to push runs no check. A non-fast-forward rejection refuses
 `integration-moved`; the operator reruns in a fresh worktree, and merged pins
 are skipped there.

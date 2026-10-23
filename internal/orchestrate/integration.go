@@ -291,6 +291,15 @@ func (options IntegrationOptions) resolveVerify() func(context.Context, string, 
 	return localChecks
 }
 
+func anyCheckPassed(report quality.VerificationReport) bool {
+	for _, entry := range report.Results {
+		if entry.Status == quality.StatusPassed {
+			return true
+		}
+	}
+	return false
+}
+
 // defaultIntegrationChecks run when neither --checks nor the repository's
 // integration_checks recipe names any; typecheck runs only where a project
 // defines it.
@@ -789,9 +798,11 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 	}
 	report := options.resolveVerify()(ctx, options.Repository, options.Worktree, options.Checks, options.CheckTimeout)
 	result.Checks = &report
-	switch report.Status {
-	case quality.StatusPassed:
-	case quality.StatusSkipped:
+	// A report of skipped entries only is "passed" to quality; here it means
+	// nothing ran, so nothing was verified.
+	switch {
+	case report.Status == quality.StatusPassed && anyCheckPassed(report):
+	case report.Status != quality.StatusFailed:
 		return result.refuse(IntegrationRefusalCheckSkipped,
 			fmt.Sprintf("the local-check recipe ran no check on %s, so nothing was verified; nothing was pushed", shortMergeRevision(head)), ""), nil
 	default:

@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -56,9 +55,12 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 		return base, fmt.Errorf("repository quality policy %s has version %d; want 1", path, config.Version)
 	}
 	if config.IntegrationChecks != nil {
+		if len(config.IntegrationChecks) == 0 {
+			return base, fmt.Errorf("repository quality policy %s integration_checks must list at least one check", path)
+		}
 		checks, err := ParseChecks(strings.Join(config.IntegrationChecks, ","))
-		if err != nil || len(config.IntegrationChecks) == 0 || slices.Contains(config.IntegrationChecks, "") {
-			return base, fmt.Errorf("repository quality policy %s integration_checks must list known checks: %v", path, err)
+		if err != nil {
+			return base, fmt.Errorf("repository quality policy %s integration_checks: %w", path, err)
 		}
 		base.IntegrationChecks = checks
 	}
