@@ -72,6 +72,10 @@ func newBatchFixture(t *testing.T) *batchFixture {
 	fixture.base = bgit(t, seed, "rev-parse", "HEAD")
 	bgit(t, root, "clone", "--quiet", "--branch", "public-demo", origin, fixture.work)
 	bgit(t, fixture.work, "switch", "--quiet", "-c", "public-demo-batch-1")
+	// The verbs run git themselves in the batch worktree; CI has no global identity.
+	bgit(t, fixture.work, "config", "user.name", "WB Test")
+	bgit(t, fixture.work, "config", "user.email", "wb@example.test")
+	bgit(t, fixture.work, "config", "commit.gpgsign", "false")
 	return fixture
 }
 
