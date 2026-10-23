@@ -26,6 +26,19 @@ func integrationHeadReason(ctx context.Context, options PullRequestLandOptions, 
 	if promotion != nil || strings.Contains(view.Body, promoteMarker) {
 		return "it is the integration branch this promotion carries"
 	}
+	onto := options.pullRequestsOnto
+	if onto == nil {
+		onto = pullRequestsOnto
+	}
+	targeted, err := onto(ctx, options.Repository, view.Head.Ref)
+	switch {
+	case err != nil:
+		return "kept because pull requests onto it could not be listed: " + err.Error()
+	case targeted > 0:
+		return "pull requests have targeted it, so other work lands on it"
+	}
+	// The one-row read above is cheaper than paging the commits, so it
+	// answers first.
 	commits := options.sourceCommits
 	if commits == nil {
 		read, err := pullRequestCommits(ctx, options.Repository, number)
@@ -40,17 +53,6 @@ func integrationHeadReason(ctx context.Context, options PullRequestLandOptions, 
 				return fmt.Sprintf("commit %s is a WB %s merge, so it is an integration branch", shortMergeRevision(commit.SHA), strings.ToLower(strings.TrimPrefix(match[1], "Wb-")))
 			}
 		}
-	}
-	onto := options.pullRequestsOnto
-	if onto == nil {
-		onto = pullRequestsOnto
-	}
-	targeted, err := onto(ctx, options.Repository, view.Head.Ref)
-	switch {
-	case err != nil:
-		return "kept because pull requests onto it could not be listed: " + err.Error()
-	case targeted > 0:
-		return "pull requests have targeted it, so other work lands on it"
 	}
 	return ""
 }

@@ -201,8 +201,8 @@ type PullRequestLandOptions struct {
 	readPullRequest func(ctx context.Context, repository, selector string) (githubchecks.PullRequestView, error)
 	// promotePorts is the promotion-landing seam; nil reads GitHub.
 	promotePorts *promoteLandingPorts
-	// openPullRequestsOnto is the seam for "is the head branch the base of
-	// other open work"; nil reads GitHub.
+	// pullRequestsOnto is the seam for "has any pull request targeted the
+	// head branch"; nil reads GitHub.
 	pullRequestsOnto func(ctx context.Context, repository, branch string) (int, error)
 	// sourceCommits are the pull request's commits when this invocation
 	// already read them; the retention decision reads them otherwise.
@@ -883,7 +883,9 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// building against an unpublished tree must not be landed, and reading it
 	// as a bypass would make the guard optional by accident.
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Started, view.Head.Ref, 0, 0)
-	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep); refusal != nil {
+	// A promotion's head is an integration branch whose worktrees landing
+	// keeps, so only their live links are pre-flighted, never their state.
+	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep || strings.Contains(view.Body, promoteMarker)); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Completed, view.Head.Ref, 0, 0)
