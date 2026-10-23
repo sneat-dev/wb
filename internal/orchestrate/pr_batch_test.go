@@ -56,6 +56,16 @@ func TestBatchBodyRoundTripsItsStateAndRejectsBadBlocks(t *testing.T) {
 	if _, ok, err := ParseBatchBody(batchBlockBegin + "\n```yaml\n: [\n```\n" + batchBlockEnd); !ok || err == nil {
 		t.Fatalf("bad yaml: ok=%v err=%v", ok, err)
 	}
+	badBase := state
+	badBase.Base = "--upload-pack=evil"
+	if _, ok, err := ParseBatchBody(RenderBatchBody(badBase)); !ok || err == nil {
+		t.Fatalf("non-SHA base accepted: ok=%v err=%v", ok, err)
+	}
+	badStep := state
+	badStep.Steps = []BatchStep{{Kind: BatchStepSource, Head: strings.Repeat("b", 40), MergeCommit: "HEAD~1"}}
+	if _, ok, err := ParseBatchBody(RenderBatchBody(badStep)); !ok || err == nil {
+		t.Fatalf("non-SHA merge commit accepted: ok=%v err=%v", ok, err)
+	}
 	state.addBuilder("opus@claude-code@s")
 	state.addBuilder("other")
 	if strings.Join(state.BuiltBy, ",") != "opus@claude-code@s,other" {
@@ -209,7 +219,7 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 	var calls []string
 	responses := map[string]string{
 		"repos/acme/app/pulls/7":            `{"number":7,"state":"open","merged":true}`,
-		"repos/acme/app/issues/comments/42": `{"body":"LGTM"}`,
+		"repos/acme/app/issues/comments/42": `{"body":"LGTM","issue_url":"https://api.github.com/repos/acme/app/issues/510"}`,
 		"repos/acme/app":                    `{"allow_merge_commit":true}`,
 		"repos/acme/app/pulls?state=all&head=acme:public-demo-batch-1": `[{"number":7}]`,
 		"repos/acme/app/pulls":   `{"number":8}`,
@@ -231,8 +241,14 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 	if view, err := adapter.PullRequest(ctx, "acme/app", 7); err != nil || !view.Merged {
 		t.Fatalf("pull request = %+v %v", view, err)
 	}
-	if body, err := adapter.IssueComment(ctx, "acme/app", 42); err != nil || body != "LGTM" {
-		t.Fatalf("comment = %q %v", body, err)
+	if comment, err := adapter.IssueComment(ctx, "acme/app", 42); err != nil || comment.Body != "LGTM" || comment.PullRequest != 510 {
+		t.Fatalf("comment = %+v %v", comment, err)
+	}
+	foreign := githubBatch{gh: func(context.Context, ...string) ([]byte, error) {
+		return []byte(`{"body":"x","issue_url":"https://api.github.com/repos/acme/other/issues/510"}`), nil
+	}}
+	if comment, err := foreign.IssueComment(ctx, "acme/app", 42); err != nil || comment.PullRequest != 0 {
+		t.Fatalf("a comment from another repository bound to #%d (%v)", comment.PullRequest, err)
 	}
 	if allowed, err := adapter.AllowsMergeCommits(ctx, "acme/app"); err != nil || !allowed {
 		t.Fatalf("merge commits = %v %v", allowed, err)

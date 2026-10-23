@@ -112,6 +112,7 @@ func (fixture *batchFixture) sourceFrom(from, file, contents, reviewerSession st
 	fixture.gh.prs[number] = view
 	fixture.nextNote++
 	fixture.gh.comments[fixture.nextNote] = fmt.Sprintf("**Review by opus@claude-code@%s**\n\nLGTM\n\nReviewed-Head: %s\n", reviewerSession, head)
+	fixture.gh.commentPR[fixture.nextNote] = number
 	return fmt.Sprintf("%d@%s=https://github.com/acme/app/pull/%d#issuecomment-%d", number, head[:12], number, fixture.nextNote), number
 }
 
@@ -159,6 +160,7 @@ func (cache *memoryBatchCache) Save(state BatchState) error {
 type fakeBatchGitHub struct {
 	prs          map[int]githubchecks.PullRequestView
 	comments     map[int64]string
+	commentPR    map[int64]int
 	noMerge      bool
 	queue        bool
 	batch        githubchecks.PullRequestView
@@ -168,7 +170,7 @@ type fakeBatchGitHub struct {
 }
 
 func newFakeBatchGitHub() *fakeBatchGitHub {
-	return &fakeBatchGitHub{prs: map[int]githubchecks.PullRequestView{}, comments: map[int64]string{}}
+	return &fakeBatchGitHub{prs: map[int]githubchecks.PullRequestView{}, comments: map[int64]string{}, commentPR: map[int64]int{}}
 }
 
 var errFakeGitHub = errors.New("fake GitHub failure")
@@ -185,15 +187,15 @@ func (gh *fakeBatchGitHub) PullRequest(_ context.Context, _ string, number int) 
 	return gh.prs[number], nil
 }
 
-func (gh *fakeBatchGitHub) IssueComment(_ context.Context, _ string, id int64) (string, error) {
+func (gh *fakeBatchGitHub) IssueComment(_ context.Context, _ string, id int64) (BatchComment, error) {
 	if gh.fail() {
-		return "", errFakeGitHub
+		return BatchComment{}, errFakeGitHub
 	}
 	body, ok := gh.comments[id]
 	if !ok {
-		return "", errors.New("comment not found")
+		return BatchComment{}, errors.New("comment not found")
 	}
-	return body, nil
+	return BatchComment{Body: body, PullRequest: gh.commentPR[id]}, nil
 }
 
 func (gh *fakeBatchGitHub) AllowsMergeCommits(context.Context, string) (bool, error) {
@@ -286,6 +288,17 @@ func TestE2EBatchCleanSourcesMakeOnePullRequest(t *testing.T) {
 	if fixture.gh.updates != 1 || !strings.Contains(fixture.gh.batch.Body, batchBlockBegin) {
 		t.Fatalf("a hand-edited body was not regenerated: updates=%d", fixture.gh.updates)
 	}
+	fixture.gh.batch.State = "closed"
+	if closed := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(first, second))); closed.RefusalCode != BatchRefusalClosed {
+		t.Fatalf("republishing a closed batch = %s", closed.RefusalCode)
+	}
+	fixture.gh.batch.State = "open"
+	writeBatchFile(t, fixture.work, "local.go", "package a\n")
+	bgit(t, fixture.work, "add", "local.go")
+	bgit(t, fixture.work, "commit", "--quiet", "-m", "unrecorded local commit")
+	if moved := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(first, second))); moved.RefusalCode != BatchRefusalWorktree || !strings.Contains(moved.Reason, "past the recorded batch head") {
+		t.Fatalf("rerun past the recorded head = %s %q", moved.RefusalCode, moved.Reason)
+	}
 }
 
 func TestE2EBatchConflictStopsAndResumeContinues(t *testing.T) {
@@ -372,15 +385,19 @@ func TestE2EBatchRefusesBadPinsTogetherAndCreatesNothing(t *testing.T) {
 	fixture.gh.prs[wrongPR] = view
 	missing, _ := fixture.source("j.go", "package a\n")
 	delete(fixture.gh.comments, fixture.nextNote)
+	misbound, _ := fixture.source("p.go", "package a\n")
+	fixture.gh.commentPR[fixture.nextNote] = 1
+	operatorAsOther, _ := fixture.source("q.go", "package a\n")
+	fixture.gh.comments[fixture.nextNote] = strings.Replace(fixture.gh.comments[fixture.nextNote], "opus@claude-code@reviewer", "sonnet@claude-code@operator", 1)
 	parent, parentPR := fixture.source("k.go", "package a\n")
 	child, _ := fixture.sourceFrom(fixture.gh.prs[parentPR].Head.SHA, "l.go", "package a\n", "reviewer")
 
-	result := mustBatch(t, LandRefused)(CreatePullRequestBatch(context.Background(), fixture.options(moved, stale, draft, anonymous, lane, wrong, missing, parent, child)))
+	result := mustBatch(t, LandRefused)(CreatePullRequestBatch(context.Background(), fixture.options(moved, stale, draft, anonymous, lane, wrong, missing, misbound, operatorAsOther, parent, child)))
 	codes := map[string]int{}
 	for _, issue := range result.Refusals {
 		codes[issue.Code]++
 	}
-	want := map[string]int{BatchRefusalSourceHeadMoved: 1, BatchRefusalSourceUnreviewed: 2, BatchRefusalSourceNotOpen: 1, BatchRefusalSourceSelfReview: 2, BatchRefusalSourceWrongBase: 1, BatchRefusalSourceAlreadyIncluded: 1}
+	want := map[string]int{BatchRefusalSourceHeadMoved: 1, BatchRefusalSourceUnreviewed: 3, BatchRefusalSourceNotOpen: 1, BatchRefusalSourceSelfReview: 3, BatchRefusalSourceWrongBase: 1, BatchRefusalSourceAlreadyIncluded: 1}
 	for code, count := range want {
 		if codes[code] != count {
 			t.Errorf("%s refused %d time(s), want %d: %+v", code, codes[code], count, result.Refusals)

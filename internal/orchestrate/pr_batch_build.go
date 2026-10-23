@@ -287,18 +287,25 @@ func (options BatchOptions) verifyPins(ctx context.Context, git batchGit, pins [
 			issue(BatchRefusalSourceAlreadyLanded, fmt.Sprintf("%s head %s is already in %s", label, shortMergeRevision(head), options.Target))
 			continue
 		}
-		body, err := github.IssueComment(ctx, options.Repository, pin.ReviewCommentID)
+		comment, err := github.IssueComment(ctx, options.Repository, pin.ReviewCommentID)
 		if err != nil {
 			issue(BatchRefusalSourceUnreviewed, err.Error())
 			continue
 		}
+		if comment.PullRequest != pin.Number {
+			issue(BatchRefusalSourceUnreviewed, fmt.Sprintf("review comment %d is on #%d, not %s", pin.ReviewCommentID, comment.PullRequest, label))
+			continue
+		}
+		body := comment.Body
 		if reviewed, parseErr := parseReviewedHeadLine(body); parseErr != nil || reviewed != head {
 			issue(BatchRefusalSourceUnreviewed, fmt.Sprintf("review %s does not end Reviewed-Head: %s", pin.ReviewURL, head))
 			continue
 		}
 		reviewer := declaredReviewer(body)
 		lane := options.resolveLaneSession()(options.ProjectsRoot, options.Repository, view.Head.Ref)
-		if !identityComplete(reviewer) || (lane != "" && strings.EqualFold(reviewer.Session, lane)) || reviewer.SelfReview(operator) {
+		// Independence is judged on the session alone: the same session
+		// declaring another model name is still the same author.
+		if !identityComplete(reviewer) || (lane != "" && strings.EqualFold(reviewer.Session, lane)) || strings.EqualFold(reviewer.Session, operator.Session) {
 			issue(BatchRefusalSourceSelfReview, fmt.Sprintf("review identity %q is incomplete, the lane author's, or the operator's", reviewer.String()))
 			continue
 		}
@@ -358,6 +365,12 @@ func (options BatchOptions) checkMergeRoute(ctx context.Context) (*BatchIssue, e
 	return nil, nil
 }
 
+// verbCommand is the exact command line for another batch verb on the same
+// batch.
+func (options BatchOptions) verbCommand(verb string) string {
+	return fmt.Sprintf("wb pr batch %s %s --target %s --worktree %s", verb, options.Repository, options.Target, shellSingleQuote(options.Worktree))
+}
+
 func refuseIssue(result BatchResult, issue BatchIssue) BatchResult {
 	return result.refuse(issue.Code, issue.Reason, "")
 }
@@ -389,9 +402,17 @@ func CreatePullRequestBatch(ctx context.Context, options BatchOptions) (BatchRes
 	}
 	if found && len(cached.Steps) > 0 {
 		if !samePins(cached, pins) || cached.conflicted() >= 0 {
-			return result.refuse(BatchRefusalWorktree, "batch "+branch+" already has sources; use wb pr batch add or resume", "wb pr batch resume "+branch), nil
+			return result.refuse(BatchRefusalWorktree, "batch "+branch+" already has sources; resume it, or start another batch", options.verbCommand("resume")), nil
 		}
-		// An identical rerun finishes publication and changes nothing else.
+		// An identical rerun finishes publication and changes nothing else;
+		// it never pushes commits the batch did not record.
+		head, err := git.out(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return result, err
+		}
+		if last := cached.Steps[len(cached.Steps)-1].MergeCommit; last != "" && head != last {
+			return result.refuse(BatchRefusalWorktree, fmt.Sprintf("batch worktree is at %s, past the recorded batch head %s", shortMergeRevision(head), shortMergeRevision(last)), ""), nil
+		}
 		return options.continueBatch(ctx, git, cached, result)
 	}
 	if _, err := git.out(ctx, "fetch", "--quiet", "origin", options.Target); err != nil {
@@ -459,7 +480,7 @@ func (options BatchOptions) continueBatch(ctx context.Context, git batchGit, sta
 			result.State = &state
 			return result.finding(BatchRefusalConflict,
 				fmt.Sprintf("merging %s conflicts in %s; resolve them in %s and commit the merge", stepLabel(*step), strings.Join(conflicts, ", "), options.Worktree),
-				"wb pr batch resume --worktree "+options.Worktree), nil
+				options.verbCommand("resume")), nil
 		}
 		step.State = BatchStateMerged
 		if err := options.save(&state); err != nil {
@@ -477,7 +498,7 @@ func stepLabel(step BatchStep) string {
 // with the merge left in progress.
 func (options BatchOptions) mergeStep(ctx context.Context, git batchGit, state BatchState, step *BatchStep) ([]string, error) {
 	message := fmt.Sprintf("Merge #%d (%s) into %s", step.PullRequest, shortMergeRevision(step.Head), state.Branch)
-	if _, err := git.out(ctx, configArgs(state.MergeOptions, "merge", "--no-ff", "--no-edit", "-m", message, step.Head)...); err != nil {
+	if _, err := git.out(ctx, configArgs(batchMergeOptions, "merge", "--no-ff", "--no-edit", "-m", message, step.Head)...); err != nil {
 		conflicts, listErr := git.out(ctx, "diff", "--name-only", "--diff-filter=U")
 		if listErr != nil || conflicts == "" {
 			return nil, err
@@ -501,7 +522,7 @@ func (options BatchOptions) publish(ctx context.Context, git batchGit, state Bat
 	push, err := git.exec(ctx, "push", "--quiet", "origin", "HEAD:refs/heads/"+state.Branch)
 	if err != nil {
 		if strings.Contains(push.Stderr, "[rejected]") || strings.Contains(push.Stderr, "non-fast-forward") || strings.Contains(push.Stderr, "fetch first") {
-			return result.refuse(BatchRefusalMoved, "origin/"+state.Branch+" moved; nothing was force-pushed", "wb pr batch add --worktree "+options.Worktree), nil
+			return result.refuse(BatchRefusalMoved, "origin/"+state.Branch+" moved; nothing was force-pushed", ""), nil
 		}
 		return result, fmt.Errorf("push %s: %w: %s", state.Branch, err, strings.TrimSpace(push.Stderr))
 	}
@@ -509,6 +530,9 @@ func (options BatchOptions) publish(ctx context.Context, git batchGit, state Bat
 	view, err := github.BatchPullRequest(ctx, options.Repository, state.Branch)
 	if err != nil {
 		return result, err
+	}
+	if view.Number != 0 && (view.Merged || !strings.EqualFold(view.State, "open")) {
+		return result.refuse(BatchRefusalClosed, fmt.Sprintf("batch pull request #%d for %s is merged or closed; start a new batch", view.Number, state.Branch), ""), nil
 	}
 	number := view.Number
 	body := RenderBatchBody(state)
