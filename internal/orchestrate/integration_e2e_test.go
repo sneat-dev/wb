@@ -60,6 +60,11 @@ func (gh *fakeIntegrationGitHub) CommitComment(_ context.Context, _ string, id i
 	return comment, nil
 }
 
+// passedChecks is a local-check report in which one check ran and passed.
+func passedChecks() quality.VerificationReport {
+	return quality.VerificationReport{Status: quality.StatusPassed, Results: []quality.VerificationEntry{{Check: quality.CheckLint, Status: quality.StatusPassed}}}
+}
+
 func igit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "-c", "commit.gpgsign=false"}, args...)...)
@@ -99,7 +104,7 @@ func newIntegrationFixture(t *testing.T) *integrationFixture {
 	igit(t, seed, "commit", "--quiet", "-m", "base")
 	igit(t, seed, "push", "--quiet", "origin", "HEAD:main", "HEAD:public-demo")
 	fixture := &integrationFixture{t: t, origin: origin, work: filepath.Join(root, "work"),
-		gh: &fakeIntegrationGitHub{comments: map[int64]CommitComment{}}, report: quality.VerificationReport{Status: quality.StatusPassed}}
+		gh: &fakeIntegrationGitHub{comments: map[int64]CommitComment{}}, report: passedChecks()}
 	fixture.base = igit(t, seed, "rev-parse", "HEAD")
 	igit(t, root, "clone", "--quiet", "--branch", "public-demo", origin, fixture.work)
 	igit(t, fixture.work, "switch", "--quiet", "-c", "merge-1")
@@ -246,7 +251,8 @@ func TestE2EIntegrationMergeRefusesWhenTheRecipeRanNoCheck(t *testing.T) {
 	t.Parallel()
 	fixture := newIntegrationFixture(t)
 	pin, _ := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
-	fixture.report = quality.VerificationReport{Status: quality.StatusSkipped}
+	// quality calls a report of only skipped entries "passed".
+	fixture.report = quality.VerificationReport{Status: quality.StatusPassed, Results: []quality.VerificationEntry{{Check: quality.CheckTypecheck, Status: quality.StatusSkipped}}}
 	result := mustIntegration(t, LandRefused)(MergeIntegration(context.Background(), fixture.options(pin)))
 	if result.RefusalCode != IntegrationRefusalCheckSkipped || igit(t, fixture.origin, "rev-parse", "public-demo") != fixture.base {
 		t.Fatalf("result = %+v", result)
@@ -363,7 +369,7 @@ func TestE2EIntegrationMergeNeverForcePushesOverAMovedBranch(t *testing.T) {
 	// The pushed-without-pins path pushes what add merged; origin moved first.
 	options := fixture.options()
 	options.verify = func(context.Context, string, string, []quality.Check, time.Duration) quality.VerificationReport {
-		return quality.VerificationReport{Status: quality.StatusPassed}
+		return passedChecks()
 	}
 	igit(t, fixture.work, "fetch", "--quiet", "origin")
 	result, err := MergeIntegration(ctx, options)
@@ -384,7 +390,7 @@ func TestE2EIntegrationMergeNeverForcePushesOverAMovedBranch(t *testing.T) {
 	raceOptions := race.options(racePin)
 	raceOptions.verify = func(context.Context, string, string, []quality.Check, time.Duration) quality.VerificationReport {
 		race.advance("public-demo", "z.go", "package a\n")
-		return quality.VerificationReport{Status: quality.StatusPassed}
+		return passedChecks()
 	}
 	raced := mustIntegration(t, LandRefused)(MergeIntegration(ctx, raceOptions))
 	if raced.RefusalCode != IntegrationRefusalMoved || raced.Pushed {

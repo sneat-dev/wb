@@ -21,11 +21,15 @@ import (
 type Check string
 
 const (
-	CheckLint    Check = "lint"
-	CheckTest    Check = "test"
-	CheckBuild   Check = "build"
-	CheckSpec    Check = "spec"
-	checkInstall Check = "install"
+	CheckLint  Check = "lint"
+	CheckTest  Check = "test"
+	CheckBuild Check = "build"
+	CheckSpec  Check = "spec"
+	// CheckTypecheck runs a Node project's own "typecheck" script; it has
+	// no Go command (build and vet already type-check Go) and is skipped
+	// where the script is not defined.
+	CheckTypecheck Check = "typecheck"
+	checkInstall   Check = "install"
 )
 
 // RunOptions bounds a single external command and retries only failed
@@ -37,6 +41,10 @@ type RunOptions struct {
 	// command attempts and any process-isolated Go shards. Zero leaves the
 	// existing per-command Timeout behavior unchanged.
 	CheckTimeout time.Duration
+	// IntegrationChecks is the repository's own local-check recipe for
+	// `wb integration merge` (.wb/quality.yaml integration_checks); empty
+	// leaves the caller's default.
+	IntegrationChecks []Check
 	// ShardAttemptTimeout bounds one process-isolated Go test shard attempt.
 	// Zero retains Timeout as the shard-attempt bound when Timeout is set.
 	ShardAttemptTimeout time.Duration
@@ -178,7 +186,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 	}
 	for _, module := range modules {
 		for _, check := range checks {
-			if check == CheckSpec {
+			if check == CheckSpec || check == CheckTypecheck {
 				continue
 			}
 			for _, command := range goCommands(check, options) {
@@ -193,7 +201,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		for _, node := range nodes {
 			hasScript := false
 			for _, check := range checks {
-				if check != CheckSpec && (node.Scripts[string(check)] || node.Nx) {
+				if check != CheckSpec && (node.Scripts[string(check)] || (node.Nx && check != CheckTypecheck)) {
 					hasScript = true
 					break
 				}
@@ -208,7 +216,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 				if check == CheckSpec {
 					continue
 				}
-				if !node.Scripts[string(check)] && !node.Nx {
+				if !node.Scripts[string(check)] && (!node.Nx || check == CheckTypecheck) {
 					report.Results = append(report.Results, VerificationEntry{Language: "node", Module: node.Module, Check: check, Status: StatusSkipped, Detail: "script is not defined"})
 					continue
 				}
@@ -1285,9 +1293,9 @@ func ParseChecks(value string) ([]Check, error) {
 	for _, raw := range strings.Split(value, ",") {
 		check := Check(strings.TrimSpace(raw))
 		switch check {
-		case CheckLint, CheckTest, CheckBuild, CheckSpec:
+		case CheckLint, CheckTest, CheckBuild, CheckSpec, CheckTypecheck:
 		default:
-			return nil, fmt.Errorf("unknown check %q (want lint, test, build, or spec)", raw)
+			return nil, fmt.Errorf("unknown check %q (want lint, test, build, typecheck, or spec)", raw)
 		}
 		if !seen[check] {
 			checks = append(checks, check)

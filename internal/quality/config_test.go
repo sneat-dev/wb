@@ -122,3 +122,55 @@ func TestRepositoryRunOptionsFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryRunOptionsLoadsIntegrationChecks(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		root := t.TempDir()
+		path := filepath.Join(root, repositoryQualityConfigPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	options, err := RepositoryRunOptions(write(t, "version: 1\nintegration_checks: [lint, typecheck]\n"), RunOptions{})
+	if err != nil || len(options.IntegrationChecks) != 2 || options.IntegrationChecks[1] != CheckTypecheck {
+		t.Fatalf("options = %+v err = %v", options, err)
+	}
+	for name, body := range map[string]string{
+		"unknown check": "version: 1\nintegration_checks: [lint, fuzz]\n",
+		"empty list":    "version: 1\nintegration_checks: []\n",
+		"empty entry":   "version: 1\nintegration_checks: [lint, \"\"]\n",
+		"blank only":    "version: 1\nintegration_checks: [\" \"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := RepositoryRunOptions(write(t, body), RunOptions{}); err == nil || !strings.Contains(err.Error(), "integration_checks") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestTypecheckRunsOnlyAProjectsOwnScript(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for name, body := range map[string]string{"go.mod": "module example.test/x\n\ngo 1.22\n", "package.json": `{"scripts":{}}`, "nx.json": "{}"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Go has no typecheck command, and an Nx workspace without the script
+	// is not asked to run the target.
+	report := VerifyWithOptions(t.Context(), "example/x", root, []Check{CheckTypecheck}, RunOptions{})
+	if len(report.Results) != 1 || report.Results[0].Language != "node" || report.Results[0].Status != StatusSkipped {
+		t.Fatalf("report = %+v", report)
+	}
+	if checks, err := ParseChecks("typecheck,lint"); err != nil || checks[0] != CheckTypecheck {
+		t.Fatalf("checks = %v err = %v", checks, err)
+	}
+}

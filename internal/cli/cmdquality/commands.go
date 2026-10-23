@@ -160,7 +160,7 @@ func NewVerify(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 		},
 	}
 	bindQualityScopeFlags(command, &options)
-	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
+	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build,typecheck,spec (default lint,test,build)")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write verify.md and verify.yaml to this directory")
 	return command
