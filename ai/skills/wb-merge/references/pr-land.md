@@ -324,9 +324,14 @@ wb pr land <owner/repo#n> --waive-check "<name>" --waive-reason "<why safe>"
 - The target branch server-enforced protection policy does not require it.
 - The target branch current tip commit has the check with the same failing conclusion.
 
-If any named check is required by target policy, passed on target tip, was absent on target tip, had a different conclusion, or was not failing on the head, `wb pr land` refuses. A target with no server-enforced required checks cannot use waivers (`waived-check-target-unfenced`).
+If any named check is required by target policy, passed on target tip, had a different conclusion, or was not failing on the head, `wb pr land` refuses.
 
-The receipt records each waived check's name, head conclusion, target tip SHA, and reason in both text and JSON output.
+- **Still running.** A waived check that has not concluded is waited for, never judged: the result is `waived-check-pending` with a resume command. A real failure of a non-waived check wins over it (`checks_failed`), and once GitHub auto-merge merged the PR the waivers are recorded as moot.
+- **No concluded run on the target tip.** WB refuses `waived-check-absent-on-target` (no run) or `waived-check-hung-on-target` (still running) and names the nearest first-parent ancestor within 20 commits that failed the same way; rerun with `--waive-baseline <sha>`. A tip that ran the check green always wins, and a baseline older than a green run is refused (`waived-check-baseline-invalid`).
+- **Aggregators.** `--waive-aggregate deploy-gate` waives an aggregator job when every input in its workflow job's `needs:` (read at the run's own head) passed or is waived, at least one is waived, and neither it nor any input is required; otherwise `waived-aggregate-unproven`.
+- **Unfenced target.** With no server-enforced required checks, waivers need `--allow-unfenced`; WB then does not arm auto-merge and merges itself after the verdict. Without it: `waived-check-target-unfenced`.
+
+The receipt records each waived check's name, head conclusion, target tip SHA, baseline SHA (and whether it was the tip), authority, and reason; an aggregator also records its inputs and workflow file.
 
 ## Refusals and what resolves each
 
@@ -344,7 +349,11 @@ The receipt records each waived check's name, head conclusion, target tip SHA, a
 | `target-has-no-strict-fence` | the target branch has no server-enforced strict up-to-date policy, so green checks prove the head was green, not that it still is | `wb pr land … --allow-unfenced`, recorded on the receipt |
 | `waived-check-required` | a waived check is required by target branch server-enforced policy | fix the failure or change target policy; waivers cannot bypass required checks |
 | `waived-check-green-on-target` | a waived check passed on target tip SHA | investigate the failure on the PR head; the failure is not pre-existing on the target |
-| `waived-check-absent-on-target` | a waived check is not found on target tip SHA | run or observe the check on target tip, or fix the PR failure |
+| `waived-check-absent-on-target` | a waived check is not found on target tip SHA | rerun with the suggested `--waive-baseline <sha>`, or run the check on target tip |
+| `waived-check-hung-on-target` | a waived check's run on target tip has not concluded | rerun with the suggested `--waive-baseline <sha>`, or wait for the tip run |
+| `waived-check-baseline-invalid` | `--waive-baseline` is not a first-parent ancestor within 20 commits, did not fail the same way, or is older than a green run | use the baseline WB suggests |
+| `waived-check-pending` | the only checks still running are waived; they are judged once they conclude | run the printed resume command |
+| `waived-aggregate-unproven` | an aggregator's `needs:` inputs do not all pass or carry a waiver | waive the failing input too, or fix it |
 | `waived-check-conclusion-mismatch` | a waived check failed on target tip but with a different conclusion | investigate the differing failure on the PR head |
 | `waived-check-not-failed` | a waived check did not fail or cancel on the PR head | omit the unnecessary waiver flag |
 | `waived-check-target-unfenced` | the target branch has no server-enforced required checks, so non-required checks cannot be waived | `wb pr land … --allow-unfenced` |

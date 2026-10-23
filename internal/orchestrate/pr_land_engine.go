@@ -175,7 +175,7 @@ func awaitLandablePullRequest(
 			Head:              updatedView.Head.SHA,
 			AllowUnfenced:     options.AllowUnfenced,
 			MergeQueue:        options.mergeQueue != nil,
-			WaiveChecks:       options.WaiveChecks,
+			WaiveChecks:       options.waitWaivedChecks(),
 			Slice:             remaining,
 			CheckPollInterval: options.CheckPollInterval,
 			Progress:          options.Progress,
