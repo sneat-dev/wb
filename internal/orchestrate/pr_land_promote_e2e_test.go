@@ -5,7 +5,12 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // landPromotionFixture makes the land fixture's pull request a promotion
@@ -58,7 +63,7 @@ func TestE2ELandRefusesAPromotionWithoutAFreshReview(t *testing.T) {
 
 //nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
 func TestE2ELandLandsAReviewedPromotion(t *testing.T) {
-	_, opts := landPromotionFixture(t)
+	fixture, opts := landPromotionFixture(t)
 	opts.ApprovedBy = "https://github.com/acme/app/pull/7#issuecomment-2"
 	result, err := LandPullRequest(context.Background(), opts)
 	if err != nil {
@@ -67,6 +72,53 @@ func TestE2ELandLandsAReviewedPromotion(t *testing.T) {
 	if result.Outcome != LandSuccess || result.Promotion == nil || result.Evidence["promotion"] == "" {
 		t.Fatalf("outcome = %s (%s: %s), promotion = %+v", result.Outcome, result.RefusalCode, result.Reason, result.Promotion)
 	}
+	// The integration branch outlives its promotion.
+	if result.BranchDeleted || result.HeadRetained == "" {
+		t.Fatalf("promotion head was retired: deleted=%v retained=%q", result.BranchDeleted, result.HeadRetained)
+	}
+	assertRemoteBranchKept(t, fixture, "public-demo")
+}
+
+func assertRemoteBranchKept(t *testing.T, fixture *landFixture, branch string) {
+	t.Helper()
+	if output, err := runGitAllowFail(defaultRunner, fixture.canonical, "ls-remote", "origin", "refs/heads/"+branch); err != nil {
+		t.Fatal(err)
+	} else if strings.TrimSpace(output) == "" {
+		t.Fatalf("remote branch %s was deleted", branch)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandKeepsAHeadBranchThatPullRequestsTarget(t *testing.T) {
+	fixture := newLandFixture(t, "public-demo", "go.mod", "go.sum")
+	fixture.writeState(t, "open-onto", `[{"number":9}]`)
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "pull requests have targeted it") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+	assertRemoteBranchKept(t, fixture, "public-demo")
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandKeepsAHeadBranchCarryingLaneMerges(t *testing.T) {
+	fixture := newLandFixture(t, "public-demo", "go.mod", "go.sum")
+	commits, err := json.Marshal([]map[string]any{{"sha": fixture.headSHA, "commit": map[string]string{
+		"message": "Merge main into public-demo\n\nWb-Refresh: main@" + fixture.baseSHA + "\nWb-Merged-By: opus@claude-code@op"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.writeState(t, "commits", string(commits))
+	result, landErr := LandPullRequest(context.Background(), landOptions(fixture))
+	if landErr != nil {
+		t.Fatal(landErr)
+	}
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "refresh merge") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+	assertRemoteBranchKept(t, fixture, "public-demo")
 }
 
 //nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
@@ -90,5 +142,106 @@ func TestE2ELandRefusesAPromotionBehindItsTarget(t *testing.T) {
 	}
 	if result.Outcome != LandRefused || result.RefusalCode != LandRefusalBatchBehindTarget {
 		t.Fatalf("outcome = %s/%s (%s)", result.Outcome, result.RefusalCode, result.Reason)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandKeepsTheHeadWhenItsUseCannotBeDecoded(t *testing.T) {
+	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
+	fixture.writeState(t, "open-onto", "not json")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "could not be listed") {
+		t.Fatalf("outcome = %s deleted=%v retained=%q", result.Outcome, result.BranchDeleted, result.HeadRetained)
+	}
+	assertRemoteBranchKept(t, fixture, "feature/x")
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandKeepsTheHeadWhenItsUseCannotBeListed(t *testing.T) {
+	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
+	fixture.writeState(t, "open-onto-fail", "1")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "could not be listed") {
+		t.Fatalf("outcome = %s deleted=%v retained=%q", result.Outcome, result.BranchDeleted, result.HeadRetained)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandResumingAnAlreadyMergedPromotionKeepsItsHead(t *testing.T) {
+	// A merge queue merges after wb pr land returned; the resume sees the pull
+	// request already merged and finishes the tail without the gate.
+	fixture, opts := landPromotionFixture(t)
+	fixture.writeState(t, "merged", "true")
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.Evidence["recovery"] == "" || result.BranchDeleted || !strings.Contains(result.HeadRetained, "promotion") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+	assertRemoteBranchKept(t, fixture, "public-demo")
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandResumeKeepsTheHeadWhenItsCommitsCannotBeRead(t *testing.T) {
+	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
+	fixture.writeState(t, "merged", "true")
+	fixture.writeState(t, "commits", "not json")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "commits could not be read") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandResumeRetiresAnOrdinaryHead(t *testing.T) {
+	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
+	fixture.writeState(t, "merged", "true")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || !result.BranchDeleted || result.HeadRetained != "" {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandAPromotionWithADirtyIntegrationWorktreeKeepsIt(t *testing.T) {
+	fixture, opts := landPromotionFixture(t)
+	opts.ApprovedBy = "https://github.com/acme/app/pull/7#issuecomment-2"
+	opts.Keep = false // the default: landing retires what it may
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{ProjectsRoot: fixture.projects,
+		Operation: "integration", Branch: "public-demo", BranchChosen: true, Resume: true, WorkLog: worktrees.WorkLogOptions{Model: "unknown"}})
+	if err != nil || len(created) != 1 {
+		t.Fatal(created, err)
+	}
+	dirty := filepath.Join(created[0].WorktreeDir, "in-progress.txt")
+	if err := os.WriteFile(dirty, []byte("work in progress\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	view := orchCovPullRequestView(t, `{"head":{"ref":"public-demo","repo":{"full_name":"acme/app"}},"base":{"ref":"main"}}`)
+	view.Head.SHA = fixture.headSHA
+	if got := preflightLandingCleanup(context.Background(), opts, view, "7", false); got == nil || got.code != "cleanup-blocked-dirty" {
+		t.Fatalf("the fixture's integration worktree is not dirty to the preflight: %+v", got)
+	}
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.HeadRetained == "" || len(result.CleanedTasks) != 0 {
+		t.Fatalf("outcome = %s (%s: %s) retained=%q cleaned=%v", result.Outcome, result.RefusalCode, result.Reason, result.HeadRetained, result.CleanedTasks)
+	}
+	if _, err := os.Stat(dirty); err != nil {
+		t.Fatalf("the integration worktree's work was not kept: %v", err)
 	}
 }
