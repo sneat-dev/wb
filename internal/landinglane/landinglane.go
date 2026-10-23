@@ -50,8 +50,10 @@ const SchemaVersion = 1
 type Owner struct {
 	WBSessionID string `json:"wb_session_id"`
 	PID         int    `json:"pid"`
-	Runtime     string `json:"runtime,omitempty"`
-	Model       string `json:"model,omitempty"`
+	// OperationPID is the short-lived WB command, distinct from the harness PID.
+	OperationPID int    `json:"operation_pid,omitempty"`
+	Runtime      string `json:"runtime,omitempty"`
+	Model        string `json:"model,omitempty"`
 	// Command names the verb holding the lane, e.g. "wb pr land" or
 	// "wb worktree merge land", so a refusal can say what the owner is doing.
 	Command string `json:"command,omitempty"`
@@ -157,6 +159,8 @@ type AcquireRequest struct {
 	// Tests inject this to avoid depending on real processes; production
 	// callers should leave it nil.
 	IsOwnerLive func(Owner) bool
+	// LegacyOperationActive overrides conservative legacy process observation for tests.
+	LegacyOperationActive func() (bool, error)
 
 	StaleAfter time.Duration
 	Now        func() time.Time
@@ -240,6 +244,22 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 	}
 
 	if existing.Owner.WBSessionID == request.Self.WBSessionID {
+		if existing.Owner.OperationPID == 0 && self.OperationPID > 0 {
+			legacyActive := request.LegacyOperationActive
+			if legacyActive == nil {
+				legacyActive = legacyOperationActive
+			}
+			active, err := legacyActive()
+			if err != nil {
+				return Record{}, fmt.Errorf("inspect legacy landing operations: %w", err)
+			}
+			if active {
+				return Record{}, fmt.Errorf("legacy landing lane %s: another WB command is running; stop it before resuming", lane)
+			}
+		}
+		if existing.Owner.OperationPID > 0 && existing.Owner.OperationPID != self.OperationPID && session.ProcessAlive(existing.Owner.OperationPID) {
+			return Record{}, fmt.Errorf("landing lane %s has active operation PID %d; stop that command before resuming", lane, existing.Owner.OperationPID)
+		}
 		// Same session: proceed and refresh. AcquiredAt is preserved across a
 		// refresh so a receipt started earlier by this same session still
 		// reports how long it has actually held the lane; only the heartbeat
@@ -247,6 +267,7 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 		// moves forward.
 		refreshed := existing
 		refreshed.Owner.PID = self.PID
+		refreshed.Owner.OperationPID = self.OperationPID
 		refreshed.Owner.Runtime = self.Runtime
 		refreshed.Owner.Model = self.Model
 		refreshed.Owner.Command = self.Command
@@ -463,6 +484,9 @@ func writeRecordInjected(path string, record Record, inj *filewrite.Injector) er
 // PID (a PID can be reused by an unrelated process the moment its original
 // owner exits).
 func defaultOwnerLive(sessionDir string, owner Owner) bool {
+	if owner.OperationPID > 0 && session.ProcessAlive(owner.OperationPID) {
+		return true
+	}
 	if sessionDir == "" || owner.PID <= 0 {
 		return false
 	}

@@ -78,6 +78,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 
 | Command surface | `--projects-root` | `--filter` | `--org` | `--non-interactive` |
 |---|---:|---:|---:|---:|
+| `lane release` | yes | rejected | rejected | yes |
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `sync-report validate` | rejected | rejected | rejected | yes |
 | `sync-report publish` | yes | rejected | rejected | yes |

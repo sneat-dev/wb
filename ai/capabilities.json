@@ -7332,6 +7332,80 @@
       "notes": "Promoted to a root-level command so the primary completion verb is reachable without the worktree noun; wb land and wb worktree land resolve through the identical constructor and can never drift apart."
     },
     {
+      "id": "wb.lane.release",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb lane release",
+              "flags": [
+                "--target"
+              ],
+              "modes": [
+                "Release the registered session owned idle landing lane; absent lanes succeed; active operations and other owners are refused."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb lane release --help",
+              "contains": [
+                "--target",
+                "idle"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/landinglane/release_idle_test.go",
+              "name": "TestReleaseIdlePreservesActiveOperationsAndOtherOwners",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Release an idle landing lane",
+              "examples": [
+                "wb lane release owner/repository --target main"
+              ]
+            },
+            {
+              "path": "ai/skills/wb/SKILL.md",
+              "marker": "# WB",
+              "examples": [
+                "wb lane release <owner/repository>"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "## Only one landing owner per (repository, target)",
+              "examples": [
+                "wb lane release owner/repository --target main"
+              ]
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Legacy records without operation_pid require a successful process-table observation with no other WB command running."
+    },
+    {
       "id": "wb.layout.audit",
       "feature_refs": [],
       "since": "unreleased",
