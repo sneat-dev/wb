@@ -30,3 +30,31 @@ func TestIntegrationHeadReasonDecidesOnlyForThisRepositorysHead(t *testing.T) {
 		t.Fatalf("ordinary head reason = %q", reason)
 	}
 }
+
+func TestIsPromotionReadsThePromotionMarkerFromTheBody(t *testing.T) {
+	t.Parallel()
+	view := githubchecks.PullRequestView{Body: "plain description"}
+	if isPromotion(view) {
+		t.Fatal("a body without the marker is not a promotion")
+	}
+	view.Body = "intro\n" + promoteMarker + "\n"
+	if !isPromotion(view) {
+		t.Fatal("a body carrying the marker is a promotion")
+	}
+}
+
+func TestIntegrationHeadReasonKeepsAHeadWhoseCommitsCarryALaneTrailer(t *testing.T) {
+	t.Parallel()
+	view := githubchecks.PullRequestView{}
+	view.Head.Ref, view.Base.Ref = "public-demo", "main"
+	view.Head.Repo = &struct {
+		FullName string `json:"full_name"`
+	}{FullName: "acme/app"}
+	options := PullRequestLandOptions{Repository: "acme/app",
+		pullRequestsOnto: func(context.Context, string, string) (int, error) { return 0, nil },
+		sourceCommits:    []SourceCommit{{SHA: "abcdef1234567", Body: "Merge lane\n\nWb-Lane: opus@claude-code@op"}}}
+	reason := integrationHeadReason(context.Background(), options, view, "7", nil)
+	if !strings.Contains(reason, "lane merge") {
+		t.Fatalf("lane trailer reason = %q", reason)
+	}
+}

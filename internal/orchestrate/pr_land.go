@@ -885,7 +885,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Started, view.Head.Ref, 0, 0)
 	// A promotion's head is an integration branch whose worktrees landing
 	// keeps, so only their live links are pre-flighted, never their state.
-	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep || strings.Contains(view.Body, promoteMarker)); refusal != nil {
+	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep || isPromotion(view)); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Completed, view.Head.Ref, 0, 0)
