@@ -4,6 +4,7 @@ package orchestrate
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,5 +97,45 @@ func TestE2ELandRecordsWaiversAsMootOnceGitHubMerged(t *testing.T) {
 	}
 	if result.Evidence["waivers"] != "moot (merged by GitHub)" {
 		t.Fatalf("waivers evidence = %q", result.Evidence["waivers"])
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandRefusesACheckWaivedTwice(t *testing.T) {
+	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
+	opts := landOptions(fixture)
+	opts.WaiveChecks = []string{"e2e"}
+	opts.WaiveAggregates = []string{"deploy-gate", "deploy-gate"}
+	opts.WaiveReason = "red on public-demo"
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandRefused || result.RefusalCode != LandRefusalWaivedCheckDuplicate {
+		t.Fatalf("outcome = %s/%s (%s)", result.Outcome, result.RefusalCode, result.Reason)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandKeepsARequiredWaivedCheckInTheFailureReport(t *testing.T) {
+	fixture := newLandFixture(t, "bump/deps", "go.mod", "go.sum")
+	fixture.writeState(t, "check-runs", `{
+		"total_count": 2,
+		"check_runs": [
+			{"name": "CI", "status": "completed", "conclusion": "failure", "app": {"id": 42}},
+			{"name": "lint", "status": "completed", "conclusion": "failure", "app": {"id": 100}}
+		]
+	}`)
+	opts := landOptions(fixture)
+	opts.Inspector = settleInspector(fixture)
+	opts.WaiveChecks = []string{"CI"}
+	opts.WaiveReason = "attempting to waive a required check"
+	opts.NoAutoMerge = true
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RefusalCode != LandRefusalChecksFailed || !strings.Contains(result.Reason, `CI" (required by`) {
+		t.Fatalf("refusal = %s, reason = %q: a required check named in --waive-check vanished from the report", result.RefusalCode, result.Reason)
 	}
 }
