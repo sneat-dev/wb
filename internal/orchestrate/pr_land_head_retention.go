@@ -10,6 +10,13 @@ import (
 	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
+// isPromotion reports whether the pull request declares itself a promotion.
+// The pre-merge cleanup check and the head-retention decision both ask it, so
+// they cannot drift apart.
+func isPromotion(view githubchecks.PullRequestView) bool {
+	return strings.Contains(view.Body, promoteMarker)
+}
+
 // integrationHeadReason says why landing must keep the pull request's head
 // branch, or "" when it may be retired. It runs on every route to the
 // landing tail — a fresh merge, a merge queue, and an already-merged resume.
@@ -23,7 +30,7 @@ func integrationHeadReason(ctx context.Context, options PullRequestLandOptions, 
 	if view.Head.Repo == nil || !strings.EqualFold(view.Head.Repo.FullName, options.Repository) || strings.TrimSpace(view.Head.Ref) == "" || view.Head.Ref == view.Base.Ref {
 		return "" // nothing of this repository would be retired
 	}
-	if promotion != nil || strings.Contains(view.Body, promoteMarker) {
+	if promotion != nil || isPromotion(view) {
 		return "it is the integration branch this promotion carries"
 	}
 	onto := options.pullRequestsOnto

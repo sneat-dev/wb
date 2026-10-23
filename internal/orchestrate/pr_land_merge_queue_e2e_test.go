@@ -167,3 +167,21 @@ func TestLandOnAMergeQueueTargetRecordsAPlanLimitedRulesReadUnderAllowUnfenced(t
 		t.Fatalf("outcome = %s (%s): %s; evidence %v", result.Outcome, result.RefusalCode, result.Reason, result.Evidence)
 	}
 }
+
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestLandOnAMergeQueueTargetKeepsAnIntegrationHeadBranch(t *testing.T) {
+	fixture := newMergeQueueLandFixture(t, "public-demo", "merge")
+	fixture.writeState(t, "open-onto", `[{"number":9}]`)
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.MergeQueue == nil || result.BranchDeleted || !strings.Contains(result.HeadRetained, "pull requests have targeted it") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+	if output, lsErr := runGitAllowFail(defaultRunner, fixture.canonical, "ls-remote", "origin", "refs/heads/public-demo"); lsErr != nil {
+		t.Fatal(lsErr)
+	} else if strings.TrimSpace(output) == "" {
+		t.Fatal("remote branch public-demo was deleted")
+	}
+}
