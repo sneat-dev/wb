@@ -23,11 +23,12 @@ type Dependencies struct {
 	SuggestCloses   func(context.Context, string, string) []int
 	Interactive     func(io.Writer, bool) bool
 	IsTerminal      func(io.Writer) bool
+	Batch           BatchDependencies
 }
 
 func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "pr", Short: "Update or land pull requests with exact-head evidence"}
-	command.AddCommand(NewCreate(runtime, deps), NewUpdate(runtime, deps), NewLand(runtime, deps))
+	command.AddCommand(NewCreate(runtime, deps), NewUpdate(runtime, deps), NewLand(runtime, deps), NewBatch(runtime, deps.Batch))
 	return command
 }
 func landingProgress(runtime shared.Runtime, deps Dependencies, command *cobra.Command, nonInteractive bool) *cliprogress.Checks {

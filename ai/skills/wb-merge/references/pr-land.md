@@ -328,6 +328,26 @@ If any named check is required by target policy, passed on target tip, was absen
 
 The receipt records each waived check's name, head conclusion, target tip SHA, and reason in both text and JSON output.
 
+## Batch reviewed pull requests with wb pr batch
+
+When several lanes target one integration branch, land them as one batch instead of one CI run and one fence refresh each. Cut a batch worktree from the target, then name each source as `<pr>@<sha>=<review-comment-url>` (no leading `#`, which starts a shell comment):
+
+```sh
+wb worktree create public-demo-batch-1 datatug/datatug-apps --base public-demo --branch public-demo-batch-1 --model <model> --original-prompt-file -
+cd <printed path>
+wb pr batch create <owner/repository> --target <branch> <pr@sha=review-url>...
+```
+
+- Every pin is verified first: the PR is open, targets `--target`, still has the pinned head, is not already landed or contained in another pin, and the named comment's `Reviewed-Head:` is that head from a complete identity that is neither the lane author's nor yours. All refusals are reported together and nothing is created.
+- Each pinned head gets its own `--no-ff` merge commit. WB never rebases, squashes or force-pushes, and opens exactly one pull request whose body carries the batch state.
+- A conflict stops with `batch-conflict` and the files. Resolve, commit the merge, then `wb pr batch resume`.
+- A push that origin rejects because the batch branch moved is refused with `batch-moved`; nothing is force-pushed.
+- Landing needs an independent review of the batch head, even when nothing conflicted: semantic conflicts produce no textual one.
+
+```sh
+wb pr batch resume <owner/repository> --target <branch>
+```
+
 ## Refusals and what resolves each
 
 | Refusal code | What it means | Sanctioned next step |

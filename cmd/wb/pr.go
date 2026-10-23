@@ -29,7 +29,7 @@ func prDependencies() cmdpr.Dependencies {
 		CheckoutUpdated: func(out io.Writer) func(context.Context, orchestrate.CheckoutUpdate) {
 			return landingcontext.CheckoutUpdated(out, lifecyclehooks.Dispatch)
 		}, SuggestCloses: landingcontext.SuggestCloses,
-		Interactive: func(out io.Writer, nonInteractive bool) bool { return console.Interactive(out, nonInteractive) }, IsTerminal: func(out io.Writer) bool { return console.IsTerminal(out) }}
+		Interactive: func(out io.Writer, nonInteractive bool) bool { return console.Interactive(out, nonInteractive) }, IsTerminal: func(out io.Writer) bool { return console.IsTerminal(out) }, Batch: cmdpr.DefaultBatchDependencies()}
 }
 func landingGuardError(err error) error {
 	var refusal *landingcontext.Refusal

@@ -30,22 +30,23 @@ the reviewer only the conflict resolutions or attributed a failure to a lane.
 
 ```text
 wb pr batch create <owner/repo> --target <branch> <pr@sha=review-url>...
-wb pr batch add    <batch> [<pr@sha=review-url>...]
-wb pr batch resume <batch>
-wb pr batch delta  <batch> [--format text|json]
-wb pr batch status <batch> [--format text|json]
+wb pr batch add    <owner/repo> --target <branch> [<pr@sha=review-url>...]
+wb pr batch resume <owner/repo> --target <branch>
+wb pr batch delta  <owner/repo> --target <branch> [--overlap]
+wb pr batch status <owner/repo> --target <branch>
 wb pr land <batch-pr>          # unchanged verb; batch rules apply (REQ batch-landing)
 ```
 
-`<batch>` is the batch branch name (`public-demo-batch-1`) or its PR. A pin
+Every verb runs in the batch worktree (`--worktree`, default the current
+directory) and takes `--format text|json`. A pin
 is `<number>@<sha>=<review-comment-url>` (no `#`, which starts a shell
 comment; a quoted leading `#` is accepted); the review is named explicitly,
 never discovered. Every command WB prints quotes its pins.
 
 ### What is reused, and what is not
 
-Reused: the merge-prepare integration-worktree creation and per-repository
-merger lane lock; private-state receipt persistence; review binding
+Reused: WB worktree creation (the operator runs `wb worktree create` for the
+batch worktree, so its Work Log claim and lifecycle are the ordinary ones); review binding
 (`namedReviewedHead`, `parseReviewedHeadLine`, `ReviewDigest`,
 `ParseReviewerIdentity`); `wb pr create`'s push and PR open/adopt;
 `wb pr land`'s wait, waivers ([PR Land Waivers](../pr-land-waivers/README.md))
@@ -82,9 +83,12 @@ The batch also records the session of every WB invocation that mutated it
 
 ### REQ: batch-construction
 
-WB MUST create a WB-managed integration worktree on a new branch
-`<target>-batch-<n>` (next `n` free on origin) from the fetched target tip,
-then for each source in order: `git fetch origin <pinned-sha>` (the commit
+A batch MUST run in a clean WB-managed worktree of the repository, created
+from the target on a branch `<target>-batch-<n>` (`wb worktree create
+<target>-batch-<n> <repo> --base <target> --branch <target>-batch-<n>`) and
+still at the fetched target tip; otherwise every verb refuses
+`batch-worktree-invalid` and prints that command. Then, for each source in
+order: `git fetch origin <pinned-sha>` (the commit
 itself, never `refs/pull/<n>/head`), and `git merge --no-ff --no-edit -m
 "Merge #<n> (<short-sha>) into <batch-branch>" <pinned-sha>` with WB's fixed
 merge options (`-c merge.renames=true -c merge.conflictStyle=merge -c
@@ -115,9 +119,12 @@ continue it: the batch branch itself, plus a fenced YAML block in the batch
 PR body (between `<!-- wb-batch:begin -->` and `<!-- wb-batch:end -->`)
 holding repository, target, base SHA, merge options, and per source: PR,
 pinned head, review comment id and digest, declared reviewer, merge commit,
-state. WB's private-state receipt is an append-only cache: each mutation
-writes a new revision, never rewriting an old one; a missing or stale cache
-is rebuilt from origin. Because anyone with write access can edit the body
+state, and the builders' sessions (`built_by`). The block omits the PR
+number and the cache revision, so an unchanged batch renders an unchanged
+body. WB's private-state copy is an append-only cache: each mutation writes
+a new revision, never rewriting an old one. It is preferred over the body
+only while its steps extend the body's (a batch stopped on a conflict is not
+published until it resolves); a missing cache is rebuilt from origin. Because anyone with write access can edit the body
 block or push to the branch, nothing in them is trusted as given: REQ
 batch-merge-provenance re-verifies it before delta and landing. A push
 rejected as non-fast-forward (another machine moved the batch) is refused
@@ -163,8 +170,13 @@ origin's batch branch:
    <base>..<head>` (`kind: fix`).
 
 Content brought in unchanged from a pinned head or the target never appears.
-An empty delta prints `integration delta: empty` and exits `0`. `--format
-json` lists each part with commit, kind and paths.
+An empty delta prints `integration delta: empty` and exits `0`; it still
+needs the batch review of REQ batch-landing, because semantic conflicts
+produce no textual one (decided 2026-10-23, after a batch whose two semantic
+conflicts had no textual conflict). `--overlap` makes that review cheaper:
+it adds, for every file two or more sources changed, each such source's own
+diff of those files (`kind: overlap`). `--format json` lists each part with
+commit, kind and paths.
 
 ### REQ: batch-landing
 
@@ -349,8 +361,7 @@ also failed on source #3's pin, it reports `test: source #2, #3`.
 
 ## Open Questions
 
-- Should an empty integration delta land without a batch review, on WB's
-  mechanical proof alone? Until decided, REQ batch-landing requires one.
+None at this time.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

@@ -1,0 +1,286 @@
+package orchestrate
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/worktrees"
+)
+
+func TestParseBatchPinAcceptsTheDocumentedShapeOnly(t *testing.T) {
+	t.Parallel()
+	pin, err := ParseBatchPin("acme/app", "#510@3B32619C=https://github.com/acme/app/pull/510#issuecomment-42")
+	if err != nil || pin.Number != 510 || pin.SHA != "3b32619c" || pin.ReviewCommentID != 42 {
+		t.Fatalf("pin = %+v err = %v", pin, err)
+	}
+	for name, raw := range map[string]string{
+		"no review":        "510@3b32619c",
+		"not a comment":    "510@3b32619c=https://github.com/acme/app/pull/510",
+		"other repository": "510@3b32619c=https://github.com/acme/other/pull/510#issuecomment-42",
+		"other pr":         "510@3b32619c=https://github.com/acme/app/pull/511#issuecomment-42",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ParseBatchPin("acme/app", raw); err == nil {
+				t.Fatalf("%q was accepted", raw)
+			}
+		})
+	}
+}
+
+func TestBatchBodyRoundTripsItsStateAndRejectsBadBlocks(t *testing.T) {
+	t.Parallel()
+	state := BatchState{Version: 1, Repository: "acme/app", Target: "public-demo", Branch: "public-demo-batch-1", Base: strings.Repeat("a", 40),
+		MergeOptions: batchMergeOptions, BuiltBy: []string{"opus@claude-code@s"},
+		Steps: []BatchStep{{Kind: BatchStepSource, PullRequest: 510, Head: strings.Repeat("b", 40), Reviewer: "r", State: BatchStateMerged, MergeCommit: strings.Repeat("c", 40)},
+			{Kind: BatchStepRefresh, Head: strings.Repeat("d", 40), State: BatchStatePending}}}
+	body := RenderBatchBody(state)
+	if !strings.Contains(body, "| 1 | #510 |") || !strings.Contains(body, "refresh `public-demo`") || !strings.Contains(body, "| - |") {
+		t.Fatalf("body = %s", body)
+	}
+	parsed, ok, err := ParseBatchBody(body)
+	if err != nil || !ok || len(parsed.Steps) != 2 || parsed.Steps[0].Head != state.Steps[0].Head {
+		t.Fatalf("parsed = %+v ok=%v err=%v", parsed, ok, err)
+	}
+	if _, ok, err := ParseBatchBody("no block"); ok || err != nil {
+		t.Fatalf("plain body: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ParseBatchBody(batchBlockBegin + "\n```yaml\nwb_batch: 2\n```\n" + batchBlockEnd); !ok || err == nil {
+		t.Fatalf("future version: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ParseBatchBody(batchBlockBegin + "\n```yaml\n: [\n```\n" + batchBlockEnd); !ok || err == nil {
+		t.Fatalf("bad yaml: ok=%v err=%v", ok, err)
+	}
+	state.addBuilder("opus@claude-code@s")
+	state.addBuilder("other")
+	if strings.Join(state.BuiltBy, ",") != "opus@claude-code@s,other" {
+		t.Fatalf("built_by = %v", state.BuiltBy)
+	}
+}
+
+func TestBatchResultExitCodesAndJSON(t *testing.T) {
+	t.Parallel()
+	for outcome, want := range map[LandOutcome]int{LandSuccess: 0, LandFindings: 1, LandRefused: 2} {
+		if got := (BatchResult{Outcome: outcome}).ExitCode(); got != want {
+			t.Errorf("%s exit = %d, want %d", outcome, got, want)
+		}
+	}
+	raw, err := MarshalBatchResult(BatchResult{Verb: "pr batch delta", Outcome: LandSuccess})
+	if err != nil || !strings.Contains(string(raw), `"verb": "pr batch delta"`) {
+		t.Fatalf("json = %s err = %v", raw, err)
+	}
+}
+
+func TestDeclaredReviewerReadsTheReviewHeader(t *testing.T) {
+	t.Parallel()
+	if got := declaredReviewer("**Review by opus@claude-code@abc** (head `x`)\n"); got.String() != "opus@claude-code@abc" || !identityComplete(got) {
+		t.Fatalf("reviewer = %+v", got)
+	}
+	if got := declaredReviewer("LGTM"); identityComplete(got) {
+		t.Fatalf("headerless review counted as complete: %+v", got)
+	}
+}
+
+func TestBatchOptionDefaultsResolveProductionPorts(t *testing.T) {
+	t.Parallel()
+	options := BatchOptions{ProjectsRoot: t.TempDir()}
+	if options.resolveRunner() == nil || options.resolveGitHub() == nil || options.resolveCheckout() == nil || options.resolveLaneSession() == nil || options.resolveCache() == nil {
+		t.Fatal("a default port is nil")
+	}
+	if _, found, err := options.resolveCache().Load("acme/app", "public-demo-batch-1"); found || err != nil {
+		t.Fatalf("fresh projects root cache: found=%v err=%v", found, err)
+	}
+	if options.resolveOperator().String() == "" {
+		t.Fatal("no operator identity")
+	}
+	if _, _, _, err := manifestCheckout(t.TempDir()); err == nil {
+		t.Fatal("a plain directory read as a WB worktree")
+	}
+	if session := claimSessionForBranch(t.TempDir(), "acme/app", "lane-1"); session != "" {
+		t.Fatalf("session = %q from an empty projects root", session)
+	}
+	claims := []worktrees.ActiveClaimSummary{{Repository: "acme/other", Branch: "lane-1", WBSessionID: "x"}, {Repository: "ACME/app", Branch: "lane-1", WBSessionID: "wb-1"}}
+	if session := claimSessionIn(claims, "acme/app", "lane-1"); session != "wb-1" {
+		t.Fatalf("session = %q", session)
+	}
+}
+
+func TestFileBatchCacheKeepsEveryRevisionImmutable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cache := fileBatchCache{home: func() (string, error) { return root, nil }}
+	if _, found, err := cache.Load("acme/app", "public-demo-batch-1"); found || err != nil {
+		t.Fatalf("empty cache: found=%v err=%v", found, err)
+	}
+	options := BatchOptions{cache: cache}
+	state := BatchState{Version: 1, Repository: "acme/app", Branch: "public-demo-batch-1"}
+	for i := 0; i < 2; i++ {
+		if err := options.save(&state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, found, err := cache.Load("acme/app", "public-demo-batch-1")
+	if err != nil || !found || loaded.Revision != 2 {
+		t.Fatalf("loaded = %+v found=%v err=%v", loaded, found, err)
+	}
+	stale := BatchState{Version: 1, Repository: "acme/app", Branch: "public-demo-batch-1"}
+	if err := options.save(&stale); err != nil || stale.Revision != 3 {
+		t.Fatalf("stale state saved as revision %d: %v", stale.Revision, err)
+	}
+	if err := cache.Save(stale); err == nil {
+		t.Fatal("a revision was overwritten")
+	}
+	dir, _ := cache.dir("acme/app", "public-demo-batch-1")
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "9.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cache.Load("acme/app", "public-demo-batch-1"); err == nil {
+		t.Fatal("a corrupt revision was accepted")
+	}
+	onlyRoot := t.TempDir()
+	only := fileBatchCache{home: func() (string, error) { return onlyRoot, nil }}
+	onlyDir, _ := only.dir("acme/app", "b")
+	if err := os.MkdirAll(onlyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := only.Load("acme/app", "b"); found || err != nil {
+		t.Fatalf("directory without revisions: found=%v err=%v", found, err)
+	}
+	if err := os.WriteFile(filepath.Join(onlyDir, "1.json"), nil, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getuid() != 0 {
+		if _, _, err := only.Load("acme/app", "b"); err == nil {
+			t.Fatal("an unreadable revision was accepted")
+		}
+	}
+	blockedRoot := t.TempDir()
+	blocked := fileBatchCache{home: func() (string, error) { return blockedRoot, nil }}
+	blockedDir, _ := blocked.dir("acme/app", "c")
+	if err := os.MkdirAll(filepath.Dir(blockedDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blockedDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := blocked.Load("acme/app", "c"); err == nil {
+		t.Fatal("a file in place of the cache directory was accepted")
+	}
+	if err := blocked.Save(BatchState{Repository: "acme/app", Branch: "c"}); err == nil {
+		t.Fatal("saved under a file")
+	}
+	homeless := fileBatchCache{home: func() (string, error) { return "", errors.New("no home") }}
+	if _, _, err := homeless.Load("acme/app", "c"); err == nil {
+		t.Fatal("a missing WB home was accepted on load")
+	}
+	if err := homeless.Save(BatchState{}); err == nil {
+		t.Fatal("a missing WB home was accepted on save")
+	}
+}
+
+type failingBatchCache struct{ loadErr, saveErr error }
+
+func (cache failingBatchCache) Load(string, string) (BatchState, bool, error) {
+	return BatchState{}, false, cache.loadErr
+}
+func (cache failingBatchCache) Save(BatchState) error { return cache.saveErr }
+
+func TestBatchSaveReportsCacheFailures(t *testing.T) {
+	t.Parallel()
+	state := BatchState{}
+	if err := (BatchOptions{cache: failingBatchCache{loadErr: errors.New("load")}}).save(&state); err == nil {
+		t.Fatal("a cache read failure was swallowed")
+	}
+	if err := (BatchOptions{cache: failingBatchCache{saveErr: errors.New("save")}}).save(&state); err == nil {
+		t.Fatal("a cache write failure was swallowed")
+	}
+}
+
+func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
+	t.Parallel()
+	var calls []string
+	responses := map[string]string{
+		"repos/acme/app/pulls/7":            `{"number":7,"state":"open","merged":true}`,
+		"repos/acme/app/issues/comments/42": `{"body":"LGTM"}`,
+		"repos/acme/app":                    `{"allow_merge_commit":true}`,
+		"repos/acme/app/pulls?state=all&head=acme:public-demo-batch-1": `[{"number":7}]`,
+		"repos/acme/app/pulls":   `{"number":8}`,
+		"repos/acme/app/pulls/8": `{}`,
+	}
+	gh := func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		for _, arg := range args {
+			if body, ok := responses[arg]; ok {
+				return []byte(body), nil
+			}
+		}
+		return nil, errors.New("unexpected call")
+	}
+	adapter := githubBatch{gh: gh, mergeQueue: func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error) {
+		return &githubchecks.MergeQueuePolicy{}, nil
+	}}
+	ctx := context.Background()
+	if view, err := adapter.PullRequest(ctx, "acme/app", 7); err != nil || !view.Merged {
+		t.Fatalf("pull request = %+v %v", view, err)
+	}
+	if body, err := adapter.IssueComment(ctx, "acme/app", 42); err != nil || body != "LGTM" {
+		t.Fatalf("comment = %q %v", body, err)
+	}
+	if allowed, err := adapter.AllowsMergeCommits(ctx, "acme/app"); err != nil || !allowed {
+		t.Fatalf("merge commits = %v %v", allowed, err)
+	}
+	if queued, err := adapter.UsesMergeQueue(ctx, "acme/app", "public-demo"); err != nil || !queued {
+		t.Fatalf("queue = %v %v", queued, err)
+	}
+	if view, err := adapter.BatchPullRequest(ctx, "acme/app", "public-demo-batch-1"); err != nil || view.Number != 7 {
+		t.Fatalf("batch pull request = %+v %v", view, err)
+	}
+	if number, err := adapter.CreatePullRequest(ctx, "acme/app", "public-demo-batch-1", "public-demo", "t", "b"); err != nil || number != 8 {
+		t.Fatalf("created = %d %v", number, err)
+	}
+	if err := adapter.UpdatePullRequestBody(ctx, "acme/app", 8, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), "--method POST repos/acme/app/pulls -f head=public-demo-batch-1 -f base=public-demo") {
+		t.Fatalf("calls = %v", calls)
+	}
+
+	empty := githubBatch{gh: func(context.Context, ...string) ([]byte, error) { return []byte(`[]`), nil }}
+	if view, err := empty.BatchPullRequest(ctx, "acme/app", "b"); err != nil || view.Number != 0 {
+		t.Fatalf("no batch pull request = %+v %v", view, err)
+	}
+	numberless := githubBatch{gh: func(context.Context, ...string) ([]byte, error) { return []byte(`{}`), nil }}
+	if _, err := numberless.CreatePullRequest(ctx, "acme/app", "b", "t", "t", "b"); err == nil || !strings.Contains(err.Error(), "no pull request number") {
+		t.Fatalf("numberless create err = %v", err)
+	}
+	if _, err := empty.CreatePullRequest(ctx, "acme/app", "b", "t", "t", "b"); err == nil {
+		t.Fatal("a create without a number was accepted")
+	}
+	broken := githubBatch{gh: func(context.Context, ...string) ([]byte, error) { return nil, errors.New("down") }}
+	if _, err := broken.PullRequest(ctx, "acme/app", 7); err == nil {
+		t.Fatal("pull request error swallowed")
+	}
+	if _, err := broken.IssueComment(ctx, "acme/app", 1); err == nil {
+		t.Fatal("comment error swallowed")
+	}
+	if _, err := broken.AllowsMergeCommits(ctx, "acme/app"); err == nil {
+		t.Fatal("settings error swallowed")
+	}
+	if _, err := broken.BatchPullRequest(ctx, "acme/app", "b"); err == nil {
+		t.Fatal("list error swallowed")
+	}
+	if _, err := broken.CreatePullRequest(ctx, "acme/app", "b", "t", "t", "b"); err == nil {
+		t.Fatal("create error swallowed")
+	}
+	if err := broken.UpdatePullRequestBody(ctx, "acme/app", 1, "b"); err == nil {
+		t.Fatal("update error swallowed")
+	}
+}

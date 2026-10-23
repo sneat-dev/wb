@@ -116,5 +116,5 @@ attribution follow in later small PRs.
 
 ## Open Questions
 
-- Should an empty integration delta (no conflicts, no fix commits) land
-  without a batch Reviewed-Head, on WB's mechanical proof alone?
+None at this time. (Decided 2026-10-23: an empty integration delta still
+needs a batch review; see the integration-branch-batches Feature.)
