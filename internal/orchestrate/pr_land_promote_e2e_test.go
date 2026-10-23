@@ -78,3 +78,17 @@ func TestE2ELandFailsWhenThePromotionHistoryCannotBeRead(t *testing.T) {
 		t.Fatal("a failed history read was swallowed")
 	}
 }
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandRefusesAPromotionBehindItsTarget(t *testing.T) {
+	_, opts := landPromotionFixture(t)
+	opts.ApprovedBy = "https://github.com/acme/app/pull/7#issuecomment-2"
+	opts.promotePorts.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) { return ancestor != "main", "" }
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandRefused || result.RefusalCode != LandRefusalBatchBehindTarget {
+		t.Fatalf("outcome = %s/%s (%s)", result.Outcome, result.RefusalCode, result.Reason)
+	}
+}
