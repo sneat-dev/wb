@@ -333,6 +333,40 @@ If any named check is required by target policy, passed on target tip, had a dif
 
 The receipt records each waived check's name, head conclusion, target tip SHA, baseline SHA (and whether it was the tip), authority, and reason; an aggregator also records its inputs and workflow file.
 
+## Merge reviewed lanes into an integration branch
+
+Lanes that target an integration branch (for example `public-demo`) push their
+branch and open **no** pull request. A reviewer posts the review as a commit
+comment on the lane SHA, ending `Reviewed-Head: <sha>`:
+
+```sh
+gh api repos/<owner>/<repo>/commits/<sha>/comments -F body=@review.md
+```
+
+The operator merges each reviewed SHA into the integration branch locally, runs
+the local checks and pushes — never by hand:
+
+```sh
+wb worktree create <task> <owner/repo> --base <integration> --model <model> --original-prompt-file -
+wb integration merge <owner/repository> <integration> <branch@sha=review-url>...
+```
+
+- A pin is `<branch>@<sha>=https://github.com/<owner>/<repo>/commit/<sha>#commitcomment-<id>`.
+  Every pin is verified before Git is touched; every refusal is reported at once.
+- Each pinned SHA gets its own `--no-ff` merge commit carrying `Wb-Lane`,
+  `Wb-Review`, `Wb-Review-Digest`, `Wb-Reviewer` and `Wb-Merged-By` trailers.
+  WB never rebases, squashes or force-pushes.
+- The repository's local-check recipe (`.wb/quality.yaml`, `--checks` to
+  select) must pass before the push; no CI runs on that push, and the
+  integration branch needs no ruleset.
+- A conflict stops with the files listed: resolve, `git commit --no-edit`
+  (keeps the trailers), rerun the same command. Merged pins are skipped.
+- `wb pr batch add <owner/repository> --target <integration> <branch@sha=review-url>...`
+  does only the merges, without checking or pushing.
+- Full CI and a fresh review of the exact head happen once, on the one
+  integration → main pull request, which lands under the repository's merge
+  policy.
+
 ## Refusals and what resolves each
 
 | Refusal code | What it means | Sanctioned next step |

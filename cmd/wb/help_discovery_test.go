@@ -132,11 +132,11 @@ func helpAdvertisesFlag(help, name string) bool {
 
 func TestHelpResolvesAUniqueCommandNameAndUnknownTopicsFailUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"help", "merge"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("help merge exit = %d, stderr = %s", code, stderr.String())
+	if code := run([]string{"help", "prepare"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("help prepare exit = %d, stderr = %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "wb worktree merge") {
-		t.Fatalf("help merge did not resolve the unique descendant:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "wb worktree merge prepare") {
+		t.Fatalf("help prepare did not resolve the unique descendant:\n%s", stdout.String())
 	}
 
 	stdout.Reset()
