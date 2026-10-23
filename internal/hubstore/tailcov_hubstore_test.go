@@ -15,11 +15,11 @@ import (
 // exactly where a real operator would put it.
 const tailCovAccessManifest = "enabled: true\ndatabase: wb\npolicies:\n  - tailcov-lockdown.yaml\n"
 
-// tailCovAccessPolicy is a syntactically complete dtql.org/access/v1 policy for
+// tailCovAccessPolicy is a syntactically complete tugql.org/access/v1 policy for
 // the `wb` database. It exists to put the store into the one state where
 // inGitDB wraps the database in its policy decorator instead of returning the
 // plain engine.
-const tailCovAccessPolicy = `apiVersion: dtql.org/access/v1
+const tailCovAccessPolicy = `apiVersion: tugql.org/access/v1
 composition: dalgo-hierarchical-v1
 default: deny
 kind: AccessPolicy

@@ -10,9 +10,9 @@ require (
 	connectrpc.com/connect v1.20.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/x/ansi v0.11.7
-	github.com/dal-go/dalgo v0.80.0
+	github.com/dal-go/dalgo v0.95.2
 	github.com/dal-go/dalgo2openvaultdb v0.3.1
-	github.com/dal-go/record v0.1.3
+	github.com/dal-go/record v0.1.5
 	github.com/gofrs/flock v0.13.1
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/ingitdb/dalgo2ingitdb v0.4.0
@@ -31,7 +31,7 @@ require (
 )
 
 require (
-	github.com/RoaringBitmap/roaring/v2 v2.27.0 // indirect
+	github.com/RoaringBitmap/roaring/v2 v2.29.0 // indirect
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.6 // indirect
@@ -62,7 +62,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/power-devops/perfstat v0.0.0-20260805114148-88456608a4f6 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/strongo/random v0.0.2 // indirect
+	github.com/strongo/random v0.0.3 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
