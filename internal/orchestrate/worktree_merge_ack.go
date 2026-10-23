@@ -175,6 +175,10 @@ type WorktreeMergePreparedRebatch struct {
 // be present in the current target but whose validation boundary never became
 // terminal. The original merge receipt and Work Log remain untouched.
 type WorktreeMergeLandedFailureAcknowledgement struct {
+	// Historical descendant acknowledgements bind these optional fields into ID.
+	// Readers retain them; current acknowledgement generation remains unchanged.
+	ReceiptSHA256       string                `json:"receipt_sha256,omitempty"`
+	ObservedSources     []WorktreeMergeSource `json:"observed_sources,omitempty"`
 	SchemaVersion       int                   `json:"schema_version"`
 	ID                  string                `json:"id"`
 	Status              string                `json:"status"`
@@ -959,6 +963,18 @@ func landedFailureAcknowledgementID(ack WorktreeMergeLandedFailureAcknowledgemen
 			_, _ = hash.Write([]byte{0})
 		}
 	}
+	if len(ack.ObservedSources) > 0 {
+		for _, value := range []string{"observed_sources", ack.ReceiptSHA256} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+		for _, source := range ack.ObservedSources {
+			for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+				_, _ = hash.Write([]byte(value))
+				_, _ = hash.Write([]byte{0})
+			}
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -985,6 +1001,9 @@ func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt)
 	var ack WorktreeMergeLandedFailureAcknowledgement
 	if err := readMergeAcknowledgement(path, "landed-failure acknowledgement", &ack); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
+	}
+	if err := validateLandedFailureObservedSources(ack, receipt); err != nil {
+		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s: %w", path, err)
 	}
 	if ack.SchemaVersion != worktreeMergeLandedFailureAcknowledgementSchemaVersion || ack.Status != "landed_failure_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.CurrentTargetSHA == "" || ack.CandidateSHA == "" || ack.ClaimBaseSHA == "" ||
