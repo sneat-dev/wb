@@ -346,12 +346,20 @@ wb pr batch create <owner/repository> --target <branch> <pr@sha=review-url>...
 - Every pin is verified first: the PR is open, targets `--target`, still has the pinned head, is not already landed or contained in another pin, and the named comment's `Reviewed-Head:` is that head from a complete identity that is neither the lane author's nor yours. All refusals are reported together and nothing is created.
 - Each pinned head gets its own `--no-ff` merge commit. WB never rebases, squashes or force-pushes, and opens exactly one pull request whose body carries the batch state.
 - A conflict stops with `batch-conflict` and the files. Resolve, commit the merge, then `wb pr batch resume`.
-- `wb pr batch add` merges the advanced target tip as its own merge commit first, then new pins; on another machine it rebuilds the state from the PR body, and a diverged branch is refused with `batch-moved`. Nothing is ever force-pushed.
-- Landing needs an independent review of the batch head, even when nothing conflicted: semantic conflicts produce no textual one.
+- `wb pr batch add` merges the advanced target tip as its own merge commit first, then new pins; on another machine it rebuilds the state from the PR body, and a diverged branch is refused with `batch-moved`.
+- The reviewer reads only the integration delta, and an empty delta is still reviewed (semantic conflicts produce no textual one):
+
+```sh
+wb pr batch delta <owner/repository> --target <branch> --overlap
+```
+
+  It shows conflict resolutions, fix commits, and any merge WB did not record (`batch-unrecorded-merge`); `--overlap` adds each source's own diff of every file more than one source changed. A recorded base that is not on the target is refused (`batch-base-invalid`).
+- `wb pr batch status` attributes every failed check on the batch head as `pre-existing`, `source #n`, `integration` or `unattributed` from existing runs, starting no CI.
 
 ```sh
 wb pr batch resume <owner/repository> --target <branch>
 wb pr batch add <owner/repository> --target <branch>
+wb pr batch status <owner/repository> --target <branch>
 ```
 
 ## Refusals and what resolves each

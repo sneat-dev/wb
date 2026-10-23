@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -715,6 +716,16 @@ func (options BatchOptions) syncBatchHead(ctx context.Context, git batchGit, sta
 		return "", err
 	}
 	return head, nil
+}
+
+// sortedKeys returns the map keys in order.
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // extendsSteps reports whether longer starts with every step of shorter.

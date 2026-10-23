@@ -216,18 +216,20 @@ func ParseBatchBody(body string) (BatchState, bool, error) {
 
 // BatchResult is the envelope every batch verb returns.
 type BatchResult struct {
-	SchemaVersion int          `json:"v"`
-	Verb          string       `json:"verb"`
-	Outcome       LandOutcome  `json:"outcome"`
-	RefusalCode   string       `json:"refusal_code,omitempty"`
-	Reason        string       `json:"reason,omitempty"`
-	Refusals      []BatchIssue `json:"refusals,omitempty"`
-	Command       string       `json:"sanctioned_command,omitempty"`
-	Worktree      string       `json:"worktree,omitempty"`
-	State         *BatchState  `json:"state,omitempty"`
-	Head          string       `json:"head,omitempty"`
-	PullRequest   string       `json:"pull_request,omitempty"`
-	Changed       bool         `json:"changed"`
+	SchemaVersion int           `json:"v"`
+	Verb          string        `json:"verb"`
+	Outcome       LandOutcome   `json:"outcome"`
+	RefusalCode   string        `json:"refusal_code,omitempty"`
+	Reason        string        `json:"reason,omitempty"`
+	Refusals      []BatchIssue  `json:"refusals,omitempty"`
+	Command       string        `json:"sanctioned_command,omitempty"`
+	Worktree      string        `json:"worktree,omitempty"`
+	State         *BatchState   `json:"state,omitempty"`
+	Head          string        `json:"head,omitempty"`
+	PullRequest   string        `json:"pull_request,omitempty"`
+	Delta         []BatchDelta  `json:"delta,omitempty"`
+	Attribution   []BatchFailed `json:"attribution,omitempty"`
+	Changed       bool          `json:"changed"`
 }
 
 // BatchIssue is one refusal among several reported together.

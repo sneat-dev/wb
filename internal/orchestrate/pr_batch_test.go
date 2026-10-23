@@ -226,7 +226,8 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 		}
 		return nil, errors.New("unexpected call")
 	}
-	adapter := githubBatch{gh: gh, mergeQueue: func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error) {
+	inspector := &waiverInspectorStub{checks: []githubchecks.RemoteCheck{{Name: "ci", Bucket: "pass"}}}
+	adapter := githubBatch{gh: gh, inspector: inspector, mergeQueue: func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error) {
 		return &githubchecks.MergeQueuePolicy{}, nil
 	}}
 	ctx := context.Background()
@@ -251,6 +252,9 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 	if err := adapter.UpdatePullRequestBody(ctx, "acme/app", 8, "b"); err != nil {
 		t.Fatal(err)
 	}
+	if checks, err := adapter.CommitChecks(ctx, "acme/app", strings.Repeat("a", 40)); err != nil || len(checks) != 1 {
+		t.Fatalf("checks = %v %v", checks, err)
+	}
 	if !strings.Contains(strings.Join(calls, "\n"), "--method POST repos/acme/app/pulls -f head=public-demo-batch-1 -f base=public-demo") {
 		t.Fatalf("calls = %v", calls)
 	}
@@ -266,7 +270,7 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 	if _, err := empty.CreatePullRequest(ctx, "acme/app", "b", "t", "t", "b"); err == nil {
 		t.Fatal("a create without a number was accepted")
 	}
-	broken := githubBatch{gh: func(context.Context, ...string) ([]byte, error) { return nil, errors.New("down") }}
+	broken := githubBatch{gh: func(context.Context, ...string) ([]byte, error) { return nil, errors.New("down") }, inspector: &waiverInspectorStub{reason: "403"}}
 	if _, err := broken.PullRequest(ctx, "acme/app", 7); err == nil {
 		t.Fatal("pull request error swallowed")
 	}
@@ -284,6 +288,34 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 	}
 	if err := broken.UpdatePullRequestBody(ctx, "acme/app", 1, "b"); err == nil {
 		t.Fatal("update error swallowed")
+	}
+	if _, err := broken.CommitChecks(ctx, "acme/app", "a"); err == nil {
+		t.Fatal("checks error swallowed")
+	}
+}
+
+type waiverInspectorStub struct {
+	checks []githubchecks.RemoteCheck
+	reason string
+}
+
+func (stub *waiverInspectorStub) RequiredChecks(context.Context, string, string, bool) ([]githubchecks.RequiredRemoteCheck, string, string) {
+	return nil, "", ""
+}
+func (stub *waiverInspectorStub) TargetHead(context.Context, string, string) (string, string) {
+	return "", ""
+}
+func (stub *waiverInspectorStub) CommitChecks(context.Context, githubchecks.PullRequestWaitOptions) ([]githubchecks.RemoteCheck, bool, string) {
+	return stub.checks, false, stub.reason
+}
+
+func TestBatchFailedRendersItsClass(t *testing.T) {
+	t.Parallel()
+	if got := (BatchFailed{Check: "test", Class: BatchFailureSource, Sources: []int{2, 5}}).String(); got != "test: source #2, #5" {
+		t.Fatalf("got %q", got)
+	}
+	if got := (BatchFailed{Check: "lint", Class: BatchFailurePreExisting}).String(); got != "lint: pre-existing" {
+		t.Fatalf("got %q", got)
 	}
 }
 

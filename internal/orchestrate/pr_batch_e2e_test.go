@@ -159,6 +159,8 @@ func (cache *memoryBatchCache) Save(state BatchState) error {
 type fakeBatchGitHub struct {
 	prs          map[int]githubchecks.PullRequestView
 	comments     map[int64]string
+	checks       map[string][]githubchecks.RemoteCheck
+	others       []githubchecks.RemoteCheck
 	noMerge      bool
 	queue        bool
 	batch        githubchecks.PullRequestView
@@ -168,7 +170,7 @@ type fakeBatchGitHub struct {
 }
 
 func newFakeBatchGitHub() *fakeBatchGitHub {
-	return &fakeBatchGitHub{prs: map[int]githubchecks.PullRequestView{}, comments: map[int64]string{}}
+	return &fakeBatchGitHub{prs: map[int]githubchecks.PullRequestView{}, comments: map[int64]string{}, checks: map[string][]githubchecks.RemoteCheck{}}
 }
 
 var errFakeGitHub = errors.New("fake GitHub failure")
@@ -236,6 +238,16 @@ func (gh *fakeBatchGitHub) UpdatePullRequestBody(_ context.Context, _ string, _ 
 	return nil
 }
 
+func (gh *fakeBatchGitHub) CommitChecks(_ context.Context, _, sha string) ([]githubchecks.RemoteCheck, error) {
+	if gh.fail() {
+		return nil, errFakeGitHub
+	}
+	if checks, ok := gh.checks[sha]; ok {
+		return checks, nil
+	}
+	return gh.others, nil
+}
+
 func mustBatch(t *testing.T, want LandOutcome) func(BatchResult, error) BatchResult {
 	t.Helper()
 	return func(result BatchResult, err error) BatchResult {
@@ -250,7 +262,7 @@ func mustBatch(t *testing.T, want LandOutcome) func(BatchResult, error) BatchRes
 	}
 }
 
-func TestE2EBatchCleanSourcesMakeOnePullRequest(t *testing.T) {
+func TestE2EBatchCleanSourcesMakeOnePullRequestAndAnEmptyDelta(t *testing.T) {
 	t.Parallel()
 	fixture := newBatchFixture(t)
 	first, n1 := fixture.source("c.go", "package a\n\nconst C = 1\n")
@@ -272,6 +284,10 @@ func TestE2EBatchCleanSourcesMakeOnePullRequest(t *testing.T) {
 	if again.Changed || fixture.gh.creates != 1 || fixture.gh.updates != 0 {
 		t.Fatalf("rerun changed the batch: changed=%v creates=%d updates=%d", again.Changed, fixture.gh.creates, fixture.gh.updates)
 	}
+	delta := mustBatch(t, LandSuccess)(DeltaPullRequestBatch(ctx, fixture.options()))
+	if delta.Reason != "integration delta: empty" || len(delta.Delta) != 0 {
+		t.Fatalf("delta = %q %+v", delta.Reason, delta.Delta)
+	}
 	if other := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(first))); other.RefusalCode != BatchRefusalWorktree {
 		t.Fatalf("different pins on a built batch: %s", other.RefusalCode)
 	}
@@ -288,7 +304,7 @@ func TestE2EBatchCleanSourcesMakeOnePullRequest(t *testing.T) {
 	}
 }
 
-func TestE2EBatchConflictStopsAndResumeContinues(t *testing.T) {
+func TestE2EBatchConflictStopsResumeContinuesAndDeltaShowsOnlyTheResolution(t *testing.T) {
 	t.Parallel()
 	fixture := newBatchFixture(t)
 	first, _ := fixture.source("a.go", "package a\n\nconst A = 2\n")
@@ -318,6 +334,16 @@ func TestE2EBatchConflictStopsAndResumeContinues(t *testing.T) {
 	if resumed.State.Steps[1].State != BatchStateResolved || resumed.State.Steps[2].State != BatchStateMerged {
 		t.Fatalf("resumed steps = %+v", resumed.State.Steps)
 	}
+	delta := mustBatch(t, LandSuccess)(DeltaPullRequestBatch(ctx, fixture.options()))
+	if len(delta.Delta) != 1 || delta.Delta[0].Kind != BatchDeltaResolution || strings.Join(delta.Delta[0].Paths, ",") != "a.go" || strings.Contains(delta.Delta[0].Diff, "E = 1") {
+		t.Fatalf("delta = %+v", delta.Delta)
+	}
+	overlap := fixture.options()
+	overlap.Overlap = true
+	withOverlap := mustBatch(t, LandSuccess)(DeltaPullRequestBatch(ctx, overlap))
+	if len(withOverlap.Delta) != 3 || withOverlap.Delta[1].Kind != BatchDeltaOverlap || withOverlap.Reason != "integration delta: 1 part(s)" {
+		t.Fatalf("overlap delta = %+v", withOverlap.Delta)
+	}
 }
 
 func TestE2EBatchResumeRefusesAResolutionThatIsNotTheRecordedMerge(t *testing.T) {
@@ -332,6 +358,51 @@ func TestE2EBatchResumeRefusesAResolutionThatIsNotTheRecordedMerge(t *testing.T)
 	bgit(t, fixture.work, "commit", "--quiet", "-am", "not a merge")
 	if refused := mustBatch(t, LandRefused)(ResumePullRequestBatch(ctx, fixture.options())); refused.RefusalCode != BatchRefusalResolutionInvalid {
 		t.Fatalf("refusal = %s", refused.RefusalCode)
+	}
+}
+
+func TestE2EBatchFixCommitAndHandPushedMergeAppearInTheDelta(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n\nconst C = 1\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	writeBatchFile(t, fixture.work, "c.go", "package a\n\nconst C = 2\n")
+	bgit(t, fixture.work, "commit", "--quiet", "-am", "integration fix")
+	bgit(t, fixture.work, "push", "--quiet", "origin", "HEAD:public-demo-batch-1")
+	delta := mustBatch(t, LandSuccess)(DeltaPullRequestBatch(ctx, fixture.options()))
+	if len(delta.Delta) != 1 || delta.Delta[0].Kind != BatchDeltaFix {
+		t.Fatalf("delta = %+v", delta.Delta)
+	}
+	sneaky, _ := fixture.source("z.go", "package a\n\nconst Z = 1\n")
+	sneakyHead := strings.SplitN(strings.SplitN(sneaky, "@", 2)[1], "=", 2)[0]
+	bgit(t, fixture.work, "fetch", "--quiet", "origin")
+	bgit(t, fixture.work, "merge", "--quiet", "--no-ff", "--no-edit", sneakyHead)
+	bgit(t, fixture.work, "push", "--quiet", "origin", "HEAD:public-demo-batch-1")
+	unrecorded := mustBatch(t, LandFindings)(DeltaPullRequestBatch(ctx, fixture.options()))
+	if unrecorded.RefusalCode != BatchRefusalUnrecordedMerge || unrecorded.Delta[1].Kind != BatchDeltaUnrecorded || !strings.Contains(unrecorded.Delta[1].Diff, "Z = 1") {
+		t.Fatalf("unrecorded = %s %+v", unrecorded.RefusalCode, unrecorded.Delta)
+	}
+
+	edited, _, _ := ParseBatchBody(fixture.gh.batch.Body)
+	edited.Base = bgit(t, fixture.work, "rev-parse", "HEAD")
+	fixture.gh.batch.Body = RenderBatchBody(edited)
+	elsewhere := fixture.options()
+	elsewhere.cache = &memoryBatchCache{}
+	if refused := mustBatch(t, LandRefused)(DeltaPullRequestBatch(ctx, elsewhere)); refused.RefusalCode != BatchRefusalBaseInvalid {
+		t.Fatalf("edited base: %s", refused.RefusalCode)
+	}
+}
+
+func TestE2EBatchEditedReviewMakesItsMergeUnrecorded(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n\nconst C = 1\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	fixture.gh.comments[fixture.nextNote] += "\nedited later\n"
+	if result := mustBatch(t, LandFindings)(DeltaPullRequestBatch(ctx, fixture.options())); result.RefusalCode != BatchRefusalUnrecordedMerge {
+		t.Fatalf("refusal = %s", result.RefusalCode)
 	}
 }
 
@@ -354,6 +425,10 @@ func TestE2EBatchAddRefreshesTheTargetThenMergesWithoutForcePush(t *testing.T) {
 	}
 	if ff := bgit(t, fixture.work, "merge-base", "--is-ancestor", before, "origin/public-demo-batch-1"); ff != "" {
 		t.Fatalf("not a fast-forward: %s", ff)
+	}
+	delta := mustBatch(t, LandSuccess)(DeltaPullRequestBatch(ctx, fixture.options()))
+	if delta.Reason != "integration delta: empty" {
+		t.Fatalf("delta = %q %+v", delta.Reason, delta.Delta)
 	}
 	fixture.gh.batch.Merged = true
 	if closed := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options(second))); closed.RefusalCode != BatchRefusalClosed {
@@ -499,7 +574,7 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 		"missing directory": func(o *BatchOptions) { o.Worktree = filepath.Join(t.TempDir(), "gone") },
 	}
 	for name, mutate := range cases {
-		for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){CreatePullRequestBatch, AddToPullRequestBatch, ResumePullRequestBatch} {
+		for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){CreatePullRequestBatch, AddToPullRequestBatch, ResumePullRequestBatch, DeltaPullRequestBatch, StatusPullRequestBatch} {
 			options := fixture.options(pin)
 			mutate(&options)
 			if refused := mustBatch(t, LandRefused)(verb(ctx, options)); refused.RefusalCode != BatchRefusalWorktree {
@@ -516,10 +591,40 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(pin))); refused.RefusalCode != BatchRefusalWorktree || !strings.Contains(refused.Reason, "not origin/public-demo") {
 		t.Fatalf("stale worktree: %s %q", refused.RefusalCode, refused.Reason)
 	}
-	for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){ResumePullRequestBatch, AddToPullRequestBatch} {
+	for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){ResumePullRequestBatch, AddToPullRequestBatch, DeltaPullRequestBatch, StatusPullRequestBatch} {
 		if refused := mustBatch(t, LandRefused)(verb(ctx, fixture.options())); refused.RefusalCode != BatchRefusalNotFound {
 			t.Errorf("no batch: %s", refused.RefusalCode)
 		}
+	}
+}
+
+func TestE2EBatchStatusAttributesFailedChecksWithoutStartingCI(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, n1 := fixture.source("c.go", "package a\n")
+	second, n2 := fixture.source("d.go", "package a\n")
+	third, n3 := fixture.source("e.go", "package a\n")
+	ctx := context.Background()
+	built := mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first, second, third)))
+	fail := func(name string) githubchecks.RemoteCheck {
+		return githubchecks.RemoteCheck{Name: name, Bucket: "fail"}
+	}
+	pass := func(name string) githubchecks.RemoteCheck {
+		return githubchecks.RemoteCheck{Name: name, Bucket: "pass"}
+	}
+	fixture.gh.checks[built.Head] = []githubchecks.RemoteCheck{fail("test"), fail("lint"), fail("e2e"), fail("build"), fail("smoke"), pass("ok")}
+	fixture.gh.checks[fixture.base] = []githubchecks.RemoteCheck{pass("test"), fail("lint"), pass("e2e"), pass("build"), pass("smoke")}
+	fixture.gh.checks[fixture.gh.prs[n1].Head.SHA] = []githubchecks.RemoteCheck{pass("test"), pass("e2e"), {Name: "build", Bucket: "pending"}}
+	fixture.gh.checks[fixture.gh.prs[n2].Head.SHA] = []githubchecks.RemoteCheck{fail("test"), pass("e2e"), pass("build")}
+	fixture.gh.checks[fixture.gh.prs[n3].Head.SHA] = []githubchecks.RemoteCheck{fail("test"), pass("e2e"), pass("build")}
+	status := mustBatch(t, LandSuccess)(StatusPullRequestBatch(ctx, fixture.options()))
+	var got []string
+	for _, failed := range status.Attribution {
+		got = append(got, failed.String())
+	}
+	want := fmt.Sprintf("test: source #%d, #%d|lint: pre-existing|e2e: integration|build: unattributed|smoke: unattributed", n2, n3)
+	if strings.Join(got, "|") != want {
+		t.Fatalf("attribution = %s, want %s", strings.Join(got, "|"), want)
 	}
 }
 
@@ -568,12 +673,29 @@ func TestE2EBatchEveryGitOrGitHubFailureIsReportedNotSwallowed(t *testing.T) {
 				o.Pins = o.Pins[2:]
 				return AddToPullRequestBatch(context.Background(), o)
 			},
+			func(f *batchFixture, o BatchOptions) (BatchResult, error) {
+				// Give the delta a fix commit and a merge WB did not record.
+				writeBatchFile(f.t, f.work, "fix.go", "package a\n")
+				bgit(f.t, f.work, "add", "fix.go")
+				bgit(f.t, f.work, "commit", "--quiet", "-m", "fix")
+				_, extra := f.source("x.go", "package a\n")
+				bgit(f.t, f.work, "fetch", "--quiet", "origin")
+				bgit(f.t, f.work, "merge", "--quiet", "--no-ff", "--no-edit", f.gh.prs[extra].Head.SHA)
+				bgit(f.t, f.work, "push", "--quiet", "origin", "HEAD:public-demo-batch-1")
+				o.Overlap = true
+				return DeltaPullRequestBatch(context.Background(), o)
+			},
+			func(f *batchFixture, o BatchOptions) (BatchResult, error) {
+				return StatusPullRequestBatch(context.Background(), o)
+			},
 		}
 	}
-	for stepIndex := 0; stepIndex < 4; stepIndex++ {
+	for stepIndex := 0; stepIndex < 6; stepIndex++ {
 		for _, failing := range []string{"git", "GitHub", "cache"} {
 			for failAt := 1; ; failAt++ {
 				fixture := newBatchFixture(t)
+				fixture.gh.others = []githubchecks.RemoteCheck{{Name: "test", Bucket: "fail"}}
+				fixture.gh.checks[fixture.base] = []githubchecks.RemoteCheck{{Name: "test", Bucket: "pass"}}
 				pins, steps := journey(fixture)
 				calls := 0
 				options := fixture.options(pins...)
@@ -620,6 +742,9 @@ func TestE2EBatchRefreshConflictStopsAddAndResumes(t *testing.T) {
 	if again := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options())); again.RefusalCode != BatchRefusalConflict {
 		t.Fatalf("add while stopped = %s", again.RefusalCode)
 	}
+	if status := mustBatch(t, LandSuccess)(StatusPullRequestBatch(ctx, fixture.options())); status.PullRequest != "acme/app#777" {
+		t.Fatalf("status = %+v", status)
+	}
 	redo := exec.Command("git", "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "merge", "--no-ff", "--no-edit", stopped.State.Steps[1].Head)
 	redo.Dir = fixture.work
 	if output, err := redo.CombinedOutput(); err == nil {
@@ -640,6 +765,10 @@ func TestE2EBatchRefreshConflictStopsAddAndResumes(t *testing.T) {
 	if again := mustBatch(t, LandSuccess)(ResumePullRequestBatch(ctx, fixture.options())); again.Changed {
 		t.Fatal("resuming a finished batch changed it")
 	}
+	delta := mustBatch(t, LandSuccess)(DeltaPullRequestBatch(ctx, fixture.options()))
+	if len(delta.Delta) != 1 || delta.Delta[0].Kind != BatchDeltaResolution {
+		t.Fatalf("delta = %+v", delta.Delta)
+	}
 }
 
 func TestE2EBatchUnpublishedStopReportsFromTheLocalCache(t *testing.T) {
@@ -651,6 +780,10 @@ func TestE2EBatchUnpublishedStopReportsFromTheLocalCache(t *testing.T) {
 	mustBatch(t, LandFindings)(CreatePullRequestBatch(ctx, fixture.options(first, second)))
 	writeBatchFile(t, fixture.work, "a.go", "package a\n\nconst A = 4\n")
 	bgit(t, fixture.work, "commit", "--quiet", "-am", "resolve")
+	status := mustBatch(t, LandSuccess)(StatusPullRequestBatch(ctx, fixture.options()))
+	if status.PullRequest != "" || len(status.State.Steps) != 2 {
+		t.Fatalf("unpublished status = %+v", status)
+	}
 	if refused := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options())); refused.RefusalCode != BatchRefusalNotFound {
 		t.Fatalf("add before publish = %s", refused.RefusalCode)
 	}
@@ -689,7 +822,7 @@ func TestE2EBatchMalformedBodyBlockIsAnError(t *testing.T) {
 	ctx := context.Background()
 	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
 	fixture.gh.batch.Body = batchBlockBegin + "\n```yaml\n: [\n```\n" + batchBlockEnd
-	if _, err := AddToPullRequestBatch(ctx, fixture.options()); err == nil {
+	if _, err := DeltaPullRequestBatch(ctx, fixture.options()); err == nil {
 		t.Fatal("a malformed batch block was accepted")
 	}
 }

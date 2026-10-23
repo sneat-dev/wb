@@ -24,6 +24,7 @@ type BatchGitHub interface {
 	BatchPullRequest(ctx context.Context, repository, branch string) (githubchecks.PullRequestView, error)
 	CreatePullRequest(ctx context.Context, repository, branch, base, title, body string) (int, error)
 	UpdatePullRequestBody(ctx context.Context, repository string, number int, body string) error
+	CommitChecks(ctx context.Context, repository, sha string) ([]githubchecks.RemoteCheck, error)
 }
 
 // batchGHCall runs one `gh` invocation and returns its stdout.
@@ -38,11 +39,12 @@ func batchGH(ctx context.Context, args ...string) ([]byte, error) {
 type githubBatch struct {
 	gh         batchGHCall
 	mergeQueue func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error)
+	inspector  ChecksPolicyInspector
 }
 
 // DefaultBatchGitHub returns the production adapter.
 func DefaultBatchGitHub() BatchGitHub {
-	return githubBatch{gh: batchGH, mergeQueue: githubchecks.TargetMergeQueue}
+	return githubBatch{gh: batchGH, mergeQueue: githubchecks.TargetMergeQueue, inspector: defaultChecksPolicyInspectorInstance}
 }
 
 func (adapter githubBatch) PullRequest(ctx context.Context, repository string, number int) (githubchecks.PullRequestView, error) {
@@ -128,6 +130,14 @@ func (adapter githubBatch) UpdatePullRequestBody(ctx context.Context, repository
 		return fmt.Errorf("update %s#%d body: %w", repository, number, err)
 	}
 	return nil
+}
+
+func (adapter githubBatch) CommitChecks(ctx context.Context, repository, sha string) ([]githubchecks.RemoteCheck, error) {
+	checks, _, reason := adapter.inspector.CommitChecks(ctx, githubchecks.PullRequestWaitOptions{Repository: repository, Head: sha})
+	if reason != "" {
+		return nil, fmt.Errorf("read checks for %s: %s", shortMergeRevision(sha), reason)
+	}
+	return checks, nil
 }
 
 // batchGit runs git in one checkout with separated streams, so stdout parses
