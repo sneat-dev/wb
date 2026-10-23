@@ -16,13 +16,14 @@ import (
 // BatchDependencies are the batch verbs' orchestration entry points.
 type BatchDependencies struct {
 	Create func(context.Context, orchestrate.BatchOptions) (orchestrate.BatchResult, error)
+	Add    func(context.Context, orchestrate.BatchOptions) (orchestrate.BatchResult, error)
 	Resume func(context.Context, orchestrate.BatchOptions) (orchestrate.BatchResult, error)
 }
 
 // DefaultBatchDependencies wires the production verbs.
 func DefaultBatchDependencies() BatchDependencies {
 	return BatchDependencies{
-		Create: orchestrate.CreatePullRequestBatch,
+		Create: orchestrate.CreatePullRequestBatch, Add: orchestrate.AddToPullRequestBatch,
 		Resume: orchestrate.ResumePullRequestBatch,
 	}
 }
@@ -56,6 +57,7 @@ func NewBatch(runtime shared.Runtime, deps BatchDependencies) *cobra.Command {
 	discovery(command, "batch integration branch reviewed heads merge commits one pull request delta conflict resolution")
 	command.AddCommand(
 		newBatchVerb(runtime, "create", "create <owner/repository> --target <branch> <pr@sha=review-url>...", "Verify pins and build a new batch with one merge commit per pin", true, true, deps.Create),
+		newBatchVerb(runtime, "add", "add <owner/repository> --target <branch> [<pr@sha=review-url>...]", "Refresh the target into the batch, then merge more pins", true, false, deps.Add),
 		newBatchVerb(runtime, "resume", "resume <owner/repository> --target <branch>", "Accept a committed conflict resolution and continue the batch", false, false, deps.Resume),
 	)
 	return command

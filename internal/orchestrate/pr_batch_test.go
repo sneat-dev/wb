@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -282,5 +284,62 @@ func TestGitHubBatchAdapterReadsAndWritesThroughGH(t *testing.T) {
 	}
 	if err := broken.UpdatePullRequestBody(ctx, "acme/app", 1, "b"); err == nil {
 		t.Fatal("update error swallowed")
+	}
+}
+
+func TestExtendsStepsRequiresAMatchingPrefix(t *testing.T) {
+	t.Parallel()
+	a := BatchStep{Kind: BatchStepSource, Head: "a"}
+	b := BatchStep{Kind: BatchStepSource, Head: "b"}
+	if !extendsSteps([]BatchStep{a, b}, []BatchStep{a}) || extendsSteps([]BatchStep{a}, []BatchStep{a, b}) || extendsSteps([]BatchStep{b, a}, []BatchStep{a}) {
+		t.Fatal("extendsSteps misjudged a prefix")
+	}
+}
+
+func TestSyncBatchHeadFastForwardsOnlyWhenBehind(t *testing.T) {
+	t.Parallel()
+	state := BatchState{Branch: "public-demo-batch-1"}
+	argv := func(args ...string) func(runnertest.Call) bool {
+		return func(call runnertest.Call) bool { return strings.Join(call.Args, " ") == strings.Join(args, " ") }
+	}
+	ok := func(out string) runner.Result { return runner.Result{Stdout: out} }
+	failed := errors.New("exit 1")
+	cases := []struct {
+		name    string
+		script  func(*runnertest.Fake)
+		want    string
+		wantErr bool
+	}{
+		{"behind fast-forwards", func(f *runnertest.Fake) {
+			f.Expect(argv("rev-parse", "HEAD"), ok("a"), nil).Expect(argv("rev-parse", "origin/public-demo-batch-1"), ok("b"), nil).
+				Expect(argv("merge-base", "--is-ancestor", "a", "b"), ok(""), nil).Expect(argv("merge", "--ff-only", "--quiet", "b"), ok(""), nil)
+		}, "b", false},
+		{"fast-forward fails", func(f *runnertest.Fake) {
+			f.Expect(argv("rev-parse", "HEAD"), ok("a"), nil).Expect(argv("rev-parse", "origin/public-demo-batch-1"), ok("b"), nil).
+				Expect(argv("merge-base", "--is-ancestor", "a", "b"), ok(""), nil).Expect(argv("merge", "--ff-only", "--quiet", "b"), runner.Result{ExitCode: 128}, failed)
+		}, "", true},
+		{"ancestry unreadable", func(f *runnertest.Fake) {
+			f.Expect(argv("rev-parse", "HEAD"), ok("a"), nil).Expect(argv("rev-parse", "origin/public-demo-batch-1"), ok("b"), nil).
+				Expect(argv("merge-base", "--is-ancestor", "a", "b"), runner.Result{ExitCode: 128}, failed)
+		}, "", true},
+		{"head unreadable", func(f *runnertest.Fake) {
+			f.Expect(argv("rev-parse", "HEAD"), runner.Result{ExitCode: 128}, failed)
+		}, "", true},
+		{"diverged", func(f *runnertest.Fake) {
+			f.Expect(argv("rev-parse", "HEAD"), ok("a"), nil).Expect(argv("rev-parse", "origin/public-demo-batch-1"), ok("b"), nil).
+				Expect(argv("merge-base", "--is-ancestor", "a", "b"), runner.Result{ExitCode: 1}, failed).
+				Expect(argv("merge-base", "--is-ancestor", "b", "a"), runner.Result{ExitCode: 1}, failed)
+		}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := runnertest.New(t)
+			tc.script(fake)
+			head, err := (BatchOptions{run: fake}).syncBatchHead(context.Background(), batchGit{run: fake}, state)
+			if head != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("head = %q err = %v", head, err)
+			}
+		})
 	}
 }

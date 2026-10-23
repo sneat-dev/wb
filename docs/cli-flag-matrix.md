@@ -130,7 +130,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `pr create` | yes | rejected | rejected | yes |
 | `pr update` | yes | rejected | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
-| `pr batch create`, `resume` | yes | rejected | rejected | yes |
+| `pr batch create`, `add`, `resume` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `create` (root alias), `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |

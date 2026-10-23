@@ -7959,6 +7959,70 @@
       "notes": "See wb.peers.block for the shared name/ID resolution and the laptop-local upstream path."
     },
     {
+      "id": "wb.pr.batch.add",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr batch add",
+              "flags": [
+                "--format",
+                "--target",
+                "--worktree"
+              ],
+              "modes": [
+                "Merges the advanced target tip first as its own recorded merge commit, then the new pins",
+                "Rebuilds state from the batch pull request body on another machine and refuses a diverged branch instead of force-pushing"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr batch add --help",
+              "contains": [
+                "Refresh the target into the batch"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Batch reviewed pull requests with wb pr batch",
+              "examples": [
+                "wb pr batch add <owner/repository> --target <branch>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_batch_e2e_test.go",
+              "name": "TestE2EBatchAddRefreshesTheTargetThenMergesWithoutForcePush",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Part of wb pr batch. Landing the batch is a separate wb pr land, which needs an independent review of the batch head; wb pr batch delta and status, and wb pr land --batch, ship in follow-ups."
+    },
+    {
       "id": "wb.pr.batch.create",
       "feature_refs": [
         "spec/features/integration-branch-batches/README.md"
@@ -8021,7 +8085,7 @@
           "limitation": null
         }
       },
-      "notes": "Part of wb pr batch. Landing the batch is a separate wb pr land, which needs an independent review of the batch head; wb pr batch add, delta and status, and wb pr land --batch, ship in follow-ups."
+      "notes": "Part of wb pr batch. Landing the batch is a separate wb pr land, which needs an independent review of the batch head; wb pr batch delta and status, and wb pr land --batch, ship in follow-ups."
     },
     {
       "id": "wb.pr.batch.resume",
@@ -8084,7 +8148,7 @@
           "limitation": null
         }
       },
-      "notes": "Part of wb pr batch. Landing the batch is a separate wb pr land, which needs an independent review of the batch head; wb pr batch add, delta and status, and wb pr land --batch, ship in follow-ups."
+      "notes": "Part of wb pr batch. Landing the batch is a separate wb pr land, which needs an independent review of the batch head; wb pr batch delta and status, and wb pr land --batch, ship in follow-ups."
     },
     {
       "id": "wb.pr.create",

@@ -335,6 +335,61 @@ func TestE2EBatchResumeRefusesAResolutionThatIsNotTheRecordedMerge(t *testing.T)
 	}
 }
 
+func TestE2EBatchAddRefreshesTheTargetThenMergesWithoutForcePush(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n\nconst C = 1\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	before := bgit(t, fixture.work, "rev-parse", "origin/public-demo-batch-1")
+	if noop := mustBatch(t, LandSuccess)(AddToPullRequestBatch(ctx, fixture.options())); noop.Changed {
+		t.Fatal("a refresh-only add with nothing to refresh changed the batch")
+	}
+	tip := fixture.advanceTarget("f.go", "package a\n\nconst F = 1\n")
+	second, _ := fixture.source("d.go", "package a\n\nconst D = 1\n")
+	added := mustBatch(t, LandSuccess)(AddToPullRequestBatch(ctx, fixture.options(second)))
+	steps := added.State.Steps
+	if len(steps) != 3 || steps[1].Kind != BatchStepRefresh || steps[1].Head != tip || steps[2].PullRequest == 0 {
+		t.Fatalf("steps = %+v", steps)
+	}
+	if ff := bgit(t, fixture.work, "merge-base", "--is-ancestor", before, "origin/public-demo-batch-1"); ff != "" {
+		t.Fatalf("not a fast-forward: %s", ff)
+	}
+	fixture.gh.batch.Merged = true
+	if closed := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options(second))); closed.RefusalCode != BatchRefusalClosed {
+		t.Fatalf("closed = %s", closed.RefusalCode)
+	}
+}
+
+func TestE2EBatchAddOnAnotherCloneRebuildsFromOriginAndRefusesARace(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n\nconst C = 1\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+
+	bgit(t, filepath.Dir(fixture.other), "clone", "--quiet", "--branch", "public-demo-batch-1", fixture.origin, fixture.other)
+	elsewhere := fixture.options()
+	elsewhere.Worktree, elsewhere.cache = fixture.other, &memoryBatchCache{}
+	second, _ := fixture.source("d.go", "package a\n\nconst D = 1\n")
+	elsewhere.Pins = []string{second}
+	mustBatch(t, LandSuccess)(AddToPullRequestBatch(ctx, elsewhere))
+
+	// The first clone is now behind origin: add fast-forwards it.
+	third, _ := fixture.source("e.go", "package a\n\nconst E = 1\n")
+	mustBatch(t, LandSuccess)(AddToPullRequestBatch(ctx, fixture.options(third)))
+
+	// A local commit on the other clone diverges from origin.
+	writeBatchFile(t, fixture.other, "x.go", "package a\n")
+	bgit(t, fixture.other, "add", "x.go")
+	bgit(t, fixture.other, "commit", "--quiet", "-m", "local")
+	fourth, _ := fixture.source("g.go", "package a\n\nconst G = 1\n")
+	elsewhere.Pins = []string{fourth}
+	if moved := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, elsewhere)); moved.RefusalCode != BatchRefusalMoved {
+		t.Fatalf("diverged add = %s", moved.RefusalCode)
+	}
+}
+
 func TestE2EBatchPublishRefusesARejectedPush(t *testing.T) {
 	t.Parallel()
 	fixture := newBatchFixture(t)
@@ -412,7 +467,7 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 		t.Fatalf("no merge commits: %s", refused.RefusalCode)
 	}
 	fixture.gh.noMerge, fixture.gh.queue = false, true
-	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(pin))); refused.RefusalCode != BatchRefusalTargetMergeQueue {
+	if refused := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options(pin))); refused.RefusalCode != BatchRefusalTargetMergeQueue {
 		t.Fatalf("merge queue: %s", refused.RefusalCode)
 	}
 	fixture.gh.queue = false
@@ -421,6 +476,9 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 	}
 	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options("510@zz=nope"))); refused.RefusalCode != BatchRefusalPinInvalid {
 		t.Fatalf("bad pin: %s", refused.RefusalCode)
+	}
+	if refused := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options("nope"))); refused.RefusalCode != BatchRefusalPinInvalid {
+		t.Fatalf("bad add pin: %s", refused.RefusalCode)
 	}
 	cases := map[string]func(*BatchOptions){
 		"no worktree": func(o *BatchOptions) { o.Worktree = "" },
@@ -441,7 +499,7 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 		"missing directory": func(o *BatchOptions) { o.Worktree = filepath.Join(t.TempDir(), "gone") },
 	}
 	for name, mutate := range cases {
-		for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){CreatePullRequestBatch, ResumePullRequestBatch} {
+		for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){CreatePullRequestBatch, AddToPullRequestBatch, ResumePullRequestBatch} {
 			options := fixture.options(pin)
 			mutate(&options)
 			if refused := mustBatch(t, LandRefused)(verb(ctx, options)); refused.RefusalCode != BatchRefusalWorktree {
@@ -458,7 +516,7 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(pin))); refused.RefusalCode != BatchRefusalWorktree || !strings.Contains(refused.Reason, "not origin/public-demo") {
 		t.Fatalf("stale worktree: %s %q", refused.RefusalCode, refused.Reason)
 	}
-	for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){ResumePullRequestBatch} {
+	for _, verb := range []func(context.Context, BatchOptions) (BatchResult, error){ResumePullRequestBatch, AddToPullRequestBatch} {
 		if refused := mustBatch(t, LandRefused)(verb(ctx, fixture.options())); refused.RefusalCode != BatchRefusalNotFound {
 			t.Errorf("no batch: %s", refused.RefusalCode)
 		}
@@ -505,9 +563,14 @@ func TestE2EBatchEveryGitOrGitHubFailureIsReportedNotSwallowed(t *testing.T) {
 				o.Pins = o.Pins[:2]
 				return CreatePullRequestBatch(context.Background(), o)
 			},
+			func(f *batchFixture, o BatchOptions) (BatchResult, error) {
+				f.advanceTarget("f.go", "package a\n")
+				o.Pins = o.Pins[2:]
+				return AddToPullRequestBatch(context.Background(), o)
+			},
 		}
 	}
-	for stepIndex := 0; stepIndex < 3; stepIndex++ {
+	for stepIndex := 0; stepIndex < 4; stepIndex++ {
 		for _, failing := range []string{"git", "GitHub", "cache"} {
 			for failAt := 1; ; failAt++ {
 				fixture := newBatchFixture(t)
@@ -539,7 +602,47 @@ func TestE2EBatchEveryGitOrGitHubFailureIsReportedNotSwallowed(t *testing.T) {
 	}
 }
 
-func TestE2EBatchCreateRefusesAStoppedBatch(t *testing.T) {
+func TestE2EBatchRefreshConflictStopsAddAndResumes(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("a.go", "package a\n\nconst A = 2\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	fixture.advanceTarget("a.go", "package a\n\nconst A = 7\n")
+	stopped := mustBatch(t, LandFindings)(AddToPullRequestBatch(ctx, fixture.options()))
+	if stopped.RefusalCode != BatchRefusalConflict || stopped.State.Steps[1].Kind != BatchStepRefresh {
+		t.Fatalf("refresh conflict = %s %+v", stopped.RefusalCode, stopped.State.Steps)
+	}
+	if dirty := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options())); dirty.RefusalCode != BatchRefusalWorktree {
+		t.Fatalf("add mid-merge = %s", dirty.RefusalCode)
+	}
+	bgit(t, fixture.work, "merge", "--abort")
+	if again := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options())); again.RefusalCode != BatchRefusalConflict {
+		t.Fatalf("add while stopped = %s", again.RefusalCode)
+	}
+	redo := exec.Command("git", "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "merge", "--no-ff", "--no-edit", stopped.State.Steps[1].Head)
+	redo.Dir = fixture.work
+	if output, err := redo.CombinedOutput(); err == nil {
+		t.Fatalf("the refresh merged cleanly the second time: %s", output)
+	}
+	// Taking one side leaves the merge in progress with a clean tree.
+	bgit(t, fixture.work, "checkout", "--ours", "a.go")
+	bgit(t, fixture.work, "add", "a.go")
+	if inMerge := mustBatch(t, LandRefused)(ResumePullRequestBatch(ctx, fixture.options())); inMerge.RefusalCode != BatchRefusalResolutionInvalid {
+		t.Fatalf("uncommitted merge = %s", inMerge.RefusalCode)
+	}
+	writeBatchFile(t, fixture.work, "a.go", "package a\n\nconst A = 9\n")
+	bgit(t, fixture.work, "commit", "--quiet", "-am", "resolve refresh")
+	resumed := mustBatch(t, LandSuccess)(ResumePullRequestBatch(ctx, fixture.options()))
+	if resumed.State.Steps[1].State != BatchStateResolved {
+		t.Fatalf("steps = %+v", resumed.State.Steps)
+	}
+	if again := mustBatch(t, LandSuccess)(ResumePullRequestBatch(ctx, fixture.options())); again.Changed {
+		t.Fatal("resuming a finished batch changed it")
+	}
+}
+
+func TestE2EBatchUnpublishedStopReportsFromTheLocalCache(t *testing.T) {
 	t.Parallel()
 	fixture := newBatchFixture(t)
 	first, _ := fixture.source("a.go", "package a\n\nconst A = 2\n")
@@ -548,8 +651,46 @@ func TestE2EBatchCreateRefusesAStoppedBatch(t *testing.T) {
 	mustBatch(t, LandFindings)(CreatePullRequestBatch(ctx, fixture.options(first, second)))
 	writeBatchFile(t, fixture.work, "a.go", "package a\n\nconst A = 4\n")
 	bgit(t, fixture.work, "commit", "--quiet", "-am", "resolve")
+	if refused := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options())); refused.RefusalCode != BatchRefusalNotFound {
+		t.Fatalf("add before publish = %s", refused.RefusalCode)
+	}
 	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(first, second))); refused.RefusalCode != BatchRefusalWorktree {
 		t.Fatalf("create on a stopped batch = %s", refused.RefusalCode)
+	}
+}
+
+func TestE2EBatchAddKeepsUnpushedLocalWorkAndRefusesBadPins(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	if again := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, fixture.options(first))); again.Refusals[0].Code != BatchRefusalSourceAlreadyIncluded {
+		t.Fatalf("re-adding a merged pin = %+v", again.Refusals)
+	}
+	writeBatchFile(t, fixture.work, "fix.go", "package a\n")
+	bgit(t, fixture.work, "add", "fix.go")
+	bgit(t, fixture.work, "commit", "--quiet", "-m", "local fix")
+	second, _ := fixture.source("d.go", "package a\n")
+	added := mustBatch(t, LandSuccess)(AddToPullRequestBatch(ctx, fixture.options(second)))
+	if !strings.Contains(bgit(t, fixture.work, "log", "--format=%s", "origin/public-demo-batch-1"), "local fix") || len(added.State.Steps) != 2 {
+		t.Fatalf("the unpushed fix was not kept: %+v", added.State.Steps)
+	}
+	if !samePins(*added.State, []BatchPin{{Number: 501, SHA: added.State.Steps[0].Head}, {Number: 502, SHA: added.State.Steps[1].Head}}) ||
+		samePins(*added.State, []BatchPin{{Number: 501, SHA: added.State.Steps[0].Head}, {Number: 999, SHA: "abc"}}) {
+		t.Fatal("samePins misjudged the recorded pins")
+	}
+}
+
+func TestE2EBatchMalformedBodyBlockIsAnError(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	fixture.gh.batch.Body = batchBlockBegin + "\n```yaml\n: [\n```\n" + batchBlockEnd
+	if _, err := AddToPullRequestBatch(ctx, fixture.options()); err == nil {
+		t.Fatal("a malformed batch block was accepted")
 	}
 }
 

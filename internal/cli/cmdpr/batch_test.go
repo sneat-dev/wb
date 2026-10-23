@@ -14,13 +14,13 @@ func batchDeps(result orchestrate.BatchResult, got *orchestrate.BatchOptions) Ba
 		*got = options
 		return result, nil
 	}
-	return BatchDependencies{Create: run, Resume: run}
+	return BatchDependencies{Create: run, Add: run, Resume: run}
 }
 
 func TestPRBatchHasItsFiveVerbsAndDefaults(t *testing.T) {
 	t.Parallel()
 	deps := DefaultBatchDependencies()
-	if deps.Create == nil || deps.Resume == nil {
+	if deps.Create == nil || deps.Add == nil || deps.Resume == nil {
 		t.Fatal("a default batch verb is nil")
 	}
 	command := NewBatch(testRuntime(), deps)
@@ -28,7 +28,7 @@ func TestPRBatchHasItsFiveVerbsAndDefaults(t *testing.T) {
 	for _, sub := range command.Commands() {
 		names = append(names, sub.Name())
 	}
-	if strings.Join(names, ",") != "create,resume" {
+	if strings.Join(names, ",") != "add,create,resume" {
 		t.Fatalf("verbs = %v", names)
 	}
 	if !strings.Contains(command.Long, "--branch public-demo-batch-1") || !strings.Contains(command.Long, "still reviewed") {
@@ -85,6 +85,7 @@ func TestPRBatchUsageErrors(t *testing.T) {
 		{"create", "acme/app", "--target", "public-demo"},
 		{"resume", "acme/app", "extra", "--target", "public-demo"},
 		{"resume"},
+		{"add", "acme/app"},
 		{"resume", "acme/app"},
 	}
 	for _, args := range cases {
@@ -107,7 +108,7 @@ func TestPRBatchReportsVerbErrorsAndWriteFailures(t *testing.T) {
 	failing := func(context.Context, orchestrate.BatchOptions) (orchestrate.BatchResult, error) {
 		return orchestrate.BatchResult{}, context.Canceled
 	}
-	deps := BatchDependencies{Create: failing, Resume: failing}
+	deps := BatchDependencies{Create: failing, Add: failing, Resume: failing}
 	var out, errOut bytes.Buffer
 	if code := executeTest(NewBatch(testRuntime(), deps), []string{"resume", "acme/app", "--target", "public-demo"}, &out, &errOut); code == 0 {
 		t.Fatal("a verb error exited 0")

@@ -251,7 +251,7 @@ func (options BatchOptions) checkBatchWorktree(ctx context.Context, git batchGit
 
 // verifyPins applies REQ batch-source-pins to every pin and returns the
 // source steps, or every refusal together.
-func (options BatchOptions) verifyPins(ctx context.Context, git batchGit, pins []BatchPin, targetRef string) ([]BatchStep, []BatchIssue, error) {
+func (options BatchOptions) verifyPins(ctx context.Context, git batchGit, pins []BatchPin, batchHead, targetRef string) ([]BatchStep, []BatchIssue, error) {
 	github := options.resolveGitHub()
 	operator := options.resolveOperator()
 	var steps []BatchStep
@@ -285,6 +285,12 @@ func (options BatchOptions) verifyPins(ctx context.Context, git batchGit, pins [
 			return nil, nil, err
 		} else if landed {
 			issue(BatchRefusalSourceAlreadyLanded, fmt.Sprintf("%s head %s is already in %s", label, shortMergeRevision(head), options.Target))
+			continue
+		}
+		if included, err := git.test(ctx, "merge-base", "--is-ancestor", head, batchHead); err != nil {
+			return nil, nil, err
+		} else if included {
+			issue(BatchRefusalSourceAlreadyIncluded, fmt.Sprintf("%s head %s is already in the batch", label, shortMergeRevision(head)))
 			continue
 		}
 		body, err := github.IssueComment(ctx, options.Repository, pin.ReviewCommentID)
@@ -408,7 +414,7 @@ func CreatePullRequestBatch(ctx context.Context, options BatchOptions) (BatchRes
 	if head != tip {
 		return result.refuse(BatchRefusalWorktree, fmt.Sprintf("batch worktree is at %s, not origin/%s %s", shortMergeRevision(head), options.Target, shortMergeRevision(tip)), ""), nil
 	}
-	steps, issues, err := options.verifyPins(ctx, git, pins, "origin/"+options.Target)
+	steps, issues, err := options.verifyPins(ctx, git, pins, head, "origin/"+options.Target)
 	if err != nil {
 		return result, err
 	}
@@ -458,7 +464,7 @@ func (options BatchOptions) continueBatch(ctx context.Context, git batchGit, sta
 			}
 			result.State = &state
 			return result.finding(BatchRefusalConflict,
-				fmt.Sprintf("merging %s conflicts in %s; resolve them in %s and commit the merge", stepLabel(*step), strings.Join(conflicts, ", "), options.Worktree),
+				fmt.Sprintf("merging %s conflicts in %s; resolve them in %s and commit the merge", stepLabel(state, *step), strings.Join(conflicts, ", "), options.Worktree),
 				"wb pr batch resume --worktree "+options.Worktree), nil
 		}
 		step.State = BatchStateMerged
@@ -469,14 +475,20 @@ func (options BatchOptions) continueBatch(ctx context.Context, git batchGit, sta
 	return options.publish(ctx, git, state, result)
 }
 
-func stepLabel(step BatchStep) string {
-	return "#" + strconv.Itoa(step.PullRequest)
+func stepLabel(state BatchState, step BatchStep) string {
+	if step.Kind == BatchStepSource {
+		return "#" + strconv.Itoa(step.PullRequest)
+	}
+	return state.Target + " " + shortMergeRevision(step.Head)
 }
 
 // mergeStep makes the step's merge commit, or returns the conflicting paths
 // with the merge left in progress.
 func (options BatchOptions) mergeStep(ctx context.Context, git batchGit, state BatchState, step *BatchStep) ([]string, error) {
-	message := fmt.Sprintf("Merge #%d (%s) into %s", step.PullRequest, shortMergeRevision(step.Head), state.Branch)
+	message := fmt.Sprintf("Merge %s (%s) into %s", stepLabel(state, *step), shortMergeRevision(step.Head), state.Branch)
+	if step.Kind == BatchStepSource {
+		message = fmt.Sprintf("Merge #%d (%s) into %s", step.PullRequest, shortMergeRevision(step.Head), state.Branch)
+	}
 	if _, err := git.out(ctx, configArgs(state.MergeOptions, "merge", "--no-ff", "--no-edit", "-m", message, step.Head)...); err != nil {
 		conflicts, listErr := git.out(ctx, "diff", "--name-only", "--diff-filter=U")
 		if listErr != nil || conflicts == "" {
@@ -582,4 +594,138 @@ func ResumePullRequestBatch(ctx context.Context, options BatchOptions) (BatchRes
 	}
 	result.Changed = true
 	return options.continueBatch(ctx, git, state, result)
+}
+
+// loadPublishedState returns the batch state, preferring origin's PR body
+// (authoritative) over the private cache, and the batch pull request.
+func (options BatchOptions) loadPublishedState(ctx context.Context, branch string) (BatchState, int, bool, error) {
+	view, err := options.resolveGitHub().BatchPullRequest(ctx, options.Repository, branch)
+	if err != nil {
+		return BatchState{}, 0, false, err
+	}
+	if view.Number != 0 {
+		state, ok, parseErr := ParseBatchBody(view.Body)
+		if parseErr != nil {
+			return BatchState{}, 0, false, parseErr
+		}
+		if ok {
+			// This machine's cache wins only while it extends what origin
+			// records: a stop on a conflict is not published until it resolves.
+			if cached, found, cacheErr := options.resolveCache().Load(options.Repository, branch); cacheErr != nil {
+				return BatchState{}, 0, false, cacheErr
+			} else if found && extendsSteps(cached.Steps, state.Steps) {
+				state = cached
+			}
+			state.PullRequest = view.Number
+			closed := view.Merged || !strings.EqualFold(view.State, "open")
+			return state, view.Number, closed, nil
+		}
+	}
+	state, found, err := options.resolveCache().Load(options.Repository, branch)
+	if err != nil || !found {
+		return BatchState{}, 0, false, err
+	}
+	return state, view.Number, false, nil
+}
+
+// AddToPullRequestBatch is `wb pr batch add`: refresh the target, then merge
+// new pins onto the existing batch head.
+func AddToPullRequestBatch(ctx context.Context, options BatchOptions) (BatchResult, error) {
+	result := BatchResult{SchemaVersion: 1, Verb: "pr batch add", Worktree: options.Worktree}
+	pins, issue := options.parsePins()
+	if issue != nil {
+		return refuseIssue(result, *issue), nil
+	}
+	if issue, err := options.checkMergeRoute(ctx); err != nil || issue != nil {
+		if err != nil {
+			return result, err
+		}
+		return refuseIssue(result, *issue), nil
+	}
+	git := options.git()
+	branch, issue := options.checkBatchWorktree(ctx, git)
+	if issue != nil {
+		return refuseIssue(result, *issue), nil
+	}
+	state, number, closed, err := options.loadPublishedState(ctx, branch)
+	if err != nil {
+		return result, err
+	}
+	if state.Version == 0 || number == 0 {
+		return result.refuse(BatchRefusalNotFound, "no published batch for "+branch+"; create it, or resume a stopped one", "wb pr batch resume --worktree "+options.Worktree), nil
+	}
+	if closed {
+		return result.refuse(BatchRefusalClosed, fmt.Sprintf("batch pull request #%d is merged or closed; start a new batch", number), ""), nil
+	}
+	if state.conflicted() >= 0 {
+		return result.refuse(BatchRefusalConflict, "the batch is stopped on a conflict", "wb pr batch resume --worktree "+options.Worktree), nil
+	}
+	if _, err := git.out(ctx, "fetch", "--quiet", "origin", options.Target, state.Branch); err != nil {
+		return result, err
+	}
+	head, err := options.syncBatchHead(ctx, git, state)
+	if err != nil || head == "" {
+		if err != nil {
+			return result, err
+		}
+		return result.refuse(BatchRefusalMoved, "origin/"+state.Branch+" and this worktree diverged; nothing was force-pushed", ""), nil
+	}
+	steps, issues, err := options.verifyPins(ctx, git, pins, head, "origin/"+options.Target)
+	if err != nil {
+		return result, err
+	}
+	if len(issues) > 0 {
+		result.Refusals = issues
+		return result.refuse(issues[0].Code, fmt.Sprintf("%d pin(s) refused; the batch is unchanged", len(issues)), ""), nil
+	}
+	tip, err := git.out(ctx, "rev-parse", "origin/"+options.Target)
+	if err != nil {
+		return result, err
+	}
+	if current, err := git.test(ctx, "merge-base", "--is-ancestor", tip, head); err != nil {
+		return result, err
+	} else if !current {
+		state.Steps = append(state.Steps, BatchStep{Kind: BatchStepRefresh, Head: tip, State: BatchStatePending})
+	}
+	state.Steps = append(state.Steps, steps...)
+	state.addBuilder(options.resolveOperator().String())
+	return options.continueBatch(ctx, git, state, result)
+}
+
+// syncBatchHead brings the worktree to origin's batch head when it is behind,
+// and returns the head, or "" when the two diverged.
+func (options BatchOptions) syncBatchHead(ctx context.Context, git batchGit, state BatchState) (string, error) {
+	head, err := git.out(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	remote, err := git.out(ctx, "rev-parse", "origin/"+state.Branch)
+	if err != nil || remote == head {
+		return head, err
+	}
+	if behind, err := git.test(ctx, "merge-base", "--is-ancestor", head, remote); err != nil {
+		return "", err
+	} else if behind {
+		if _, err := git.out(ctx, "merge", "--ff-only", "--quiet", remote); err != nil {
+			return "", err
+		}
+		return remote, nil
+	}
+	if ahead, err := git.test(ctx, "merge-base", "--is-ancestor", remote, head); err != nil || !ahead {
+		return "", err
+	}
+	return head, nil
+}
+
+// extendsSteps reports whether longer starts with every step of shorter.
+func extendsSteps(longer, shorter []BatchStep) bool {
+	if len(longer) < len(shorter) {
+		return false
+	}
+	for i, step := range shorter {
+		if longer[i].Kind != step.Kind || longer[i].Head != step.Head {
+			return false
+		}
+	}
+	return true
 }

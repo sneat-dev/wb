@@ -346,11 +346,12 @@ wb pr batch create <owner/repository> --target <branch> <pr@sha=review-url>...
 - Every pin is verified first: the PR is open, targets `--target`, still has the pinned head, is not already landed or contained in another pin, and the named comment's `Reviewed-Head:` is that head from a complete identity that is neither the lane author's nor yours. All refusals are reported together and nothing is created.
 - Each pinned head gets its own `--no-ff` merge commit. WB never rebases, squashes or force-pushes, and opens exactly one pull request whose body carries the batch state.
 - A conflict stops with `batch-conflict` and the files. Resolve, commit the merge, then `wb pr batch resume`.
-- A push that origin rejects because the batch branch moved is refused with `batch-moved`; nothing is force-pushed.
+- `wb pr batch add` merges the advanced target tip as its own merge commit first, then new pins; on another machine it rebuilds the state from the PR body, and a diverged branch is refused with `batch-moved`. Nothing is ever force-pushed.
 - Landing needs an independent review of the batch head, even when nothing conflicted: semantic conflicts produce no textual one.
 
 ```sh
 wb pr batch resume <owner/repository> --target <branch>
+wb pr batch add <owner/repository> --target <branch>
 ```
 
 ## Refusals and what resolves each
