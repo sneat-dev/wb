@@ -7384,6 +7384,20 @@
               "examples": [
                 "wb lane release owner/repository --target main"
               ]
+            },
+            {
+              "path": "ai/skills/wb/SKILL.md",
+              "marker": "# WB",
+              "examples": [
+                "wb lane release <owner/repository>"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-merge/SKILL.md",
+              "marker": "## Only one landing owner per (repository, target)",
+              "examples": [
+                "wb lane release owner/repository --target main"
+              ]
             }
           ],
           "limitation": null
