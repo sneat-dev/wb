@@ -211,6 +211,38 @@ func TestE2EBatchAddGivesAPinUnderAnEarlierPinNoMergeOfItsOwn(t *testing.T) {
 	if !strings.Contains(result.Reason, "merged 1 lane(s), 1 already merged") {
 		t.Fatalf("reason = %s", result.Reason)
 	}
+	// A rerun accepts the lower pin through the upper pin's recorded merge.
+	again := mustIntegration(t, LandSuccess)(AddToBatch(context.Background(), fixture.options(lower)))
+	if again.Lanes[0].State != LaneStateAlreadyMerged || again.Changed {
+		t.Fatalf("rerun = %+v", again)
+	}
+}
+
+func TestE2EBatchRerunRefusesAResolutionThatLostItsTrailers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t)
+	first, _ := fixture.lane(fixture.base, "a.go", "package a\n\nconst A = 2\n", "reviewer")
+	second, _ := fixture.lane(fixture.base, "a.go", "package a\n\nconst A = 3\n", "reviewer")
+	options := fixture.options(first, second)
+	mustIntegration(t, LandFindings)(AddToBatch(ctx, options))
+	writeIntegrationFile(t, fixture.work, "a.go", "package a\n\nconst A = 5\n")
+	igit(t, fixture.work, "commit", "--quiet", "-am", "resolve")
+	refused := mustIntegration(t, LandRefused)(MergeIntegration(ctx, options))
+	if refused.RefusalCode != BatchRefusalUnrecordedMerge || len(refused.Refusals) != 1 || refused.Pushed {
+		t.Fatalf("refused = %+v", refused)
+	}
+}
+
+func TestE2EIntegrationMergeRefusesWhenTheRecipeRanNoCheck(t *testing.T) {
+	t.Parallel()
+	fixture := newIntegrationFixture(t)
+	pin, _ := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
+	fixture.report = quality.VerificationReport{Status: quality.StatusSkipped}
+	result := mustIntegration(t, LandRefused)(MergeIntegration(context.Background(), fixture.options(pin)))
+	if result.RefusalCode != IntegrationRefusalCheckSkipped || igit(t, fixture.origin, "rev-parse", "public-demo") != fixture.base {
+		t.Fatalf("result = %+v", result)
+	}
 }
 
 func TestE2EBatchAddMergesWithoutPushingAndNamesTheNextCommand(t *testing.T) {
@@ -433,7 +465,7 @@ func TestE2EIntegrationEveryGitOrGitHubFailureIsReportedNotSwallowed(t *testing.
 			},
 			func(o IntegrationOptions) (IntegrationResult, error) {
 				writeIntegrationFile(fixture.t, fixture.work, "a.go", "package a\n\nconst A = 5\n")
-				igit(fixture.t, fixture.work, "commit", "--quiet", "-am", "resolve")
+				igit(fixture.t, fixture.work, "commit", "--quiet", "-a", "--no-edit")
 				o.Pins = []string{first, second, third}
 				return MergeIntegration(ctx, o)
 			},

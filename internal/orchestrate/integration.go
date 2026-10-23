@@ -44,6 +44,13 @@ const (
 	// IntegrationRefusalMoved: origin's integration branch moved; nothing is
 	// force-pushed.
 	IntegrationRefusalMoved = "integration-moved"
+	// IntegrationRefusalCheckSkipped: the recipe ran no check at all, so
+	// nothing was verified; nothing is pushed.
+	IntegrationRefusalCheckSkipped = "integration-check-skipped"
+	// BatchRefusalUnrecordedMerge: a merge commit whose trailers do not bind
+	// its second parent to a still-valid review, and which brings in no
+	// target history.
+	BatchRefusalUnrecordedMerge = "batch-unrecorded-merge"
 )
 
 // Lane merge states.
@@ -422,6 +429,16 @@ func (options IntegrationOptions) verifyPins(ctx context.Context, git batchGit, 
 		if merged, err := git.test(ctx, "merge-base", "--is-ancestor", full, "HEAD"); err != nil {
 			return nil, nil, err
 		} else if merged {
+			// Only through a recorded merge: a resolution committed without
+			// --no-edit loses the trailers, and a rerun must not skip past it.
+			recorded, err := options.mergedThroughRecord(ctx, git, full)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !recorded {
+				issue(BatchRefusalUnrecordedMerge, fmt.Sprintf("%s is in HEAD only through a merge without its Wb-Lane trailers; amend that merge with git commit --amend and the trailers WB printed, or recreate the worktree", shortMergeRevision(full)))
+				continue
+			}
 			lane.State = LaneStateAlreadyMerged
 			lanes = append(lanes, lane)
 			continue
@@ -451,6 +468,69 @@ func (options IntegrationOptions) verifyPins(ctx context.Context, git batchGit, 
 		lanes = append(lanes, lane)
 	}
 	return lanes, issues, nil
+}
+
+// mergedThroughRecord reports whether sha, already in HEAD, is either on
+// origin/<integration> or brought in by a local first-parent merge whose
+// Wb-Lane trailer names its own second parent, a commit that contains sha.
+func (options IntegrationOptions) mergedThroughRecord(ctx context.Context, git batchGit, sha string) (bool, error) {
+	if pushed, err := git.test(ctx, "merge-base", "--is-ancestor", sha, options.remoteRef()); err != nil || pushed {
+		return pushed, err
+	}
+	raw, err := git.out(ctx, "log", "--first-parent", "--merges", "--format=%P%x00%B%x1e", "^"+options.remoteRef(), "HEAD")
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range strings.Split(raw, "\x1e") {
+		parents, message, _ := strings.Cut(strings.TrimLeft(entry, "\n"), "\x00")
+		fields := strings.Fields(parents)
+		record, ok := parseLaneTrailers(message)
+		if !ok || len(fields) != 2 || fields[1] != record.SHA {
+			continue
+		}
+		if contains, err := git.test(ctx, "merge-base", "--is-ancestor", sha, record.SHA); err != nil || contains {
+			return contains, err
+		}
+	}
+	return false, nil
+}
+
+// laneRecord is what a lane merge commit's trailers claim.
+type laneRecord struct {
+	Branch    string
+	SHA       string
+	Review    string
+	CommentID int64
+	Digest    string
+	Reviewer  string
+	MergedBy  ReviewerIdentity
+}
+
+var (
+	trailerLinePattern = regexp.MustCompile(`(?m)^(Wb-[A-Za-z-]+): (.+)$`)
+	fullSHAPattern     = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+// parseLaneTrailers reads a lane merge commit's trailers; ok is false unless
+// every one is present and well formed.
+func parseLaneTrailers(message string) (laneRecord, bool) {
+	values := map[string]string{}
+	for _, match := range trailerLinePattern.FindAllStringSubmatch(message, -1) {
+		values[match[1]] = strings.TrimSpace(match[2])
+	}
+	lane := values[trailerLane]
+	at := strings.LastIndex(lane, "@")
+	if at < 0 {
+		return laneRecord{}, false
+	}
+	record := laneRecord{Branch: lane[:at], SHA: strings.ToLower(lane[at+1:]), Review: values[trailerReview],
+		Digest: values[trailerDigest], Reviewer: values[trailerReviewer], MergedBy: ParseReviewerIdentity(values[trailerMergedBy])}
+	comment := commitCommentURLPattern.FindStringSubmatch(record.Review)
+	if !fullSHAPattern.MatchString(record.SHA) || comment == nil || record.Digest == "" || !identityComplete(record.MergedBy) {
+		return laneRecord{}, false
+	}
+	record.CommentID, _ = strconv.ParseInt(comment[3], 10, 64) // the pattern admits digits only
+	return record, true
 }
 
 // laneTrailers is the trailer block a lane merge commit carries.
@@ -596,11 +676,17 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 	}
 	report := options.resolveVerify()(ctx, options.Repository, options.Worktree, checks, options.CheckTimeout)
 	result.Checks = &report
-	if report.Status != quality.StatusPassed && report.Status != quality.StatusSkipped {
+	switch report.Status {
+	case quality.StatusPassed:
+	case quality.StatusSkipped:
+		return result.refuse(IntegrationRefusalCheckSkipped,
+			fmt.Sprintf("the local-check recipe ran no check on %s, so nothing was verified; nothing was pushed", shortMergeRevision(head)), ""), nil
+	default:
 		return result.finding(IntegrationRefusalCheckFailed,
 			fmt.Sprintf("the local checks failed on %s; nothing was pushed", shortMergeRevision(head)), options.command("integration merge")), nil
 	}
-	if pushed, err := git.exec(ctx, "push", "--quiet", "origin", "HEAD:refs/heads/"+options.Integration); err != nil {
+	// Push exactly the commit that was checked.
+	if pushed, err := git.exec(ctx, "push", "--quiet", "origin", head+":refs/heads/"+options.Integration); err != nil {
 		stderr := pushed.Stderr + pushed.Stdout
 		if strings.Contains(stderr, "[rejected]") || strings.Contains(stderr, "non-fast-forward") || strings.Contains(stderr, "fetch first") {
 			return result.refuse(IntegrationRefusalMoved,

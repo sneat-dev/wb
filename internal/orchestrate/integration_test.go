@@ -138,3 +138,25 @@ func TestIntegrationRefusesAnInvalidIntegrationBranch(t *testing.T) {
 		t.Fatalf("result = %+v err = %v", result, err)
 	}
 }
+
+func TestParseLaneTrailersNeedsEveryTrailer(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+	good := "Merge x\n\nWb-Lane: feat/x@" + sha + "\nWb-Review: https://github.com/acme/app/commit/" + sha + "#commitcomment-7\n" +
+		"Wb-Review-Digest: d1\nWb-Reviewer: opus@codex@r\nWb-Merged-By: opus@claude-code@m\n"
+	record, ok := parseLaneTrailers(good)
+	if !ok || record.Branch != "feat/x" || record.SHA != sha || record.CommentID != 7 || record.MergedBy.Session != "m" {
+		t.Fatalf("record = %+v ok = %v", record, ok)
+	}
+	for name, message := range map[string]string{
+		"no lane":           strings.Replace(good, "Wb-Lane: feat/x@"+sha, "Wb-Lane: feat/x", 1),
+		"short sha":         strings.Replace(good, "@"+sha+"\n", "@abc\n", 1),
+		"issue comment":     strings.Replace(good, "commit/"+sha+"#commitcomment-7", "pull/1#issuecomment-7", 1),
+		"no digest":         strings.Replace(good, "Wb-Review-Digest: d1\n", "", 1),
+		"incomplete merger": strings.Replace(good, "opus@claude-code@m", "opus@unknown@m", 1),
+	} {
+		if _, ok := parseLaneTrailers(message); ok {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}

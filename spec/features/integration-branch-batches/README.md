@@ -90,8 +90,8 @@ reported `already merged`, so a rerun is idempotent.
 
 `wb pr batch add` MUST run in a clean checkout whose HEAD contains
 `origin/<integration>` (otherwise `batch-worktree-invalid`, printing `wb
-worktree create <task> <repo> --base <integration>`). For each pin in order:
-`git fetch origin <pinned-sha>` (the commit itself), and `git merge --no-ff
+worktree create <task> <repo> --base <integration>`). For each pin in order,
+having fetched `origin/<branch>` and proved the pinned SHA is on it, `git merge --no-ff
 --no-edit` with WB's fixed merge options (`-c merge.renames=true -c
 merge.conflictStyle=merge -c rerere.enabled=false`) and the message
 `Merge <branch> (<short-sha>) into <integration>` carrying the trailers
@@ -107,18 +107,24 @@ body block or private cache.
 On a conflicting merge WB MUST leave the merge in progress, print the paths
 and the worktree, and exit `1` with `batch-conflict`. The operator resolves
 and runs `git commit --no-edit`, which keeps the trailers, then reruns the
-same command: merged pins are skipped and the rest continue. A rerun while a
-merge is still in progress refuses `batch-worktree-invalid`.
+same command: merged pins are skipped and the rest continue. A pin is skipped
+only when it is on `origin/<integration>` or a local merge whose `Wb-Lane`
+trailer names that merge's own second parent contains it; otherwise (a
+resolution committed without the trailers) the rerun refuses
+`batch-unrecorded-merge`. A rerun while a merge is still in progress refuses
+`batch-worktree-invalid`.
 
 ### REQ: integration-merge-local-check-push
 
 `wb integration merge` MUST perform `wb pr batch add` for any pins given,
 then run the repository's local-check recipe (default every configured
 check; `--checks lint,test,build,spec` selects) on the resulting HEAD, and
-push HEAD to `refs/heads/<integration>` without force only when every check
-passed, so agents never hand-roll the check. A failed check stops with
-`integration-check-failed` (exit `1`) and the report, and pushes nothing. A
-rerun that has nothing new to push runs no check. A non-fast-forward rejection refuses `integration-moved`;
+push exactly the checked commit to `refs/heads/<integration>` without force
+only when the checks passed, so agents never hand-roll the check. A failed
+check stops with `integration-check-failed` (exit `1`) and the report, and
+pushes nothing; a recipe that ran no check at all refuses
+`integration-check-skipped` and pushes nothing. A rerun that has nothing new
+to push runs no check. A non-fast-forward rejection refuses `integration-moved`;
 the operator reruns in a fresh worktree, and merged pins are skipped there.
 
 ### REQ: batch-merge-provenance
@@ -166,8 +172,7 @@ changes nothing.
 ### REQ: promote-landing
 
 `wb pr land` MUST treat a pull request as a promotion when its body carries
-the marker or any part of it, or its head commit carries a `Wb-Lane` trailer,
-and then, before merging or enqueueing:
+the marker, and then, before merging or enqueueing:
 
 1. require `--approved-by <comment-url>` naming a comment on that pull
    request whose `Reviewed-Head:` is its current head (`batch-delta-unreviewed`
@@ -178,13 +183,14 @@ and then, before merging or enqueueing:
 3. land under the repository's own merge policy for its target (the merge
    queue's method when the target has one, otherwise `wb pr land`'s usual
    method selection), with full CI on the target, never updating the branch
-   server-side and never arming auto-merge, so the reviewed head is the one
-   that lands. When that policy squashes, the integration branch is
+   server-side and never arming auto-merge, so what lands is the reviewed
+   head (inside the queue's merge-group commit under a merge queue). When that policy squashes, the integration branch is
    refreshed from the target (a target-refresh merge) or recreated before
    the next promotion.
 
-A body that lost its marker halves, or a broken one, refuses
-`batch-block-invalid` instead of landing under the ordinary rules.
+A pull request without the marker any of whose commits carries a `Wb-Lane`
+trailer refuses `batch-block-invalid` (naming `wb integration promote`, which
+restores the body) instead of landing under the ordinary rules.
 
 ## Acceptance Criteria
 
@@ -235,6 +241,32 @@ changed nothing, and `wb pr batch delta` prints `integration delta: empty`.
 resolved and committed with `git commit --no-edit`, and the command reruns
 **Then** the first is skipped as already merged, the third merges, and
 `delta` shows only the resolution hunk in `a.go`.
+
+### AC: rerun-refuses-a-resolution-without-trailers
+
+**Requirements:** integration-branch-batches#req:batch-conflict-stop-rerun
+
+**Given** a conflicted lane merge left in progress
+**When** the command reruns before the resolution is committed, and again
+after it was committed with `git commit -m resolve` (dropping the trailers)
+**Then** the first rerun refuses `batch-worktree-invalid` and the second
+refuses `batch-unrecorded-merge`; nothing is pushed.
+
+### AC: moved-integration-branch-is-never-overwritten
+
+**Requirements:** integration-branch-batches#req:integration-merge-local-check-push
+
+**Given** origin's integration branch moves while the local checks run
+**When** `wb integration merge` pushes
+**Then** it refuses `integration-moved` and origin keeps the other commit.
+
+### AC: a-recipe-that-ran-nothing-pushes-nothing
+
+**Requirements:** integration-branch-batches#req:integration-merge-local-check-push
+
+**Given** a repository whose local-check recipe runs no check
+**When** `wb integration merge` runs with a new lane
+**Then** it refuses `integration-check-skipped` and origin is unchanged.
 
 ### AC: fix-commit-appears-in-delta
 
