@@ -1,14 +1,14 @@
 ---
 format: https://specscore.md/idea-specification
-status: Specifying
+status: Specified
 ---
 
 # Idea: Integration-Branch Batch Landing
 
-**Status:** Specifying
+**Status:** Specified
 **Date:** 2026-10-22
 **Owner:** alex
-**Promotes To:** pr-land-waivers, integration-branch-batches, integration-branch-registry
+**Promotes To:** integration-branch-batches, integration-branch-registry, pr-land-waivers
 **Supersedes:** —
 **Related Ideas:** extends:mechanical-worktree-merge, extends:efficient-agent-pipeline, extends:ci-validation-reuse
 

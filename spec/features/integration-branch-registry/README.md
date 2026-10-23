@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Approved
 ---
 
 # Feature: Integration Branch Registry
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-registry?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-registry?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-registry?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-registry?op=request-change) |
-**Status:** Draft
+**Status:** Approved
 **Source Ideas:** integration-branch-batch-landing
 **Depends On:** [Integration Branch Batches](../integration-branch-batches/README.md), [Worktree Lifecycle](../worktree-lifecycle/README.md)
 

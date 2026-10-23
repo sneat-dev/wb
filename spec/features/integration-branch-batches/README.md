@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Approved
 ---
 
 # Feature: Integration Branch Batches
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-batches?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-batches?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-batches?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/integration-branch-batches?op=request-change) |
-**Status:** Draft
+**Status:** Approved
 **Source Ideas:** integration-branch-batch-landing
 **Depends On:** [PR Land Waivers](../pr-land-waivers/README.md), [Mechanical Worktree Merge](../mechanical-worktree-merge/README.md)
 
