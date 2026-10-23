@@ -1104,13 +1104,31 @@ func runWorktreeMergePrePushGateWithRunner(ctx context.Context, run runner.Runne
 }
 
 func pushWorktreeMergeRef(ctx context.Context, worktree, localSHA, remoteRef string, setUpstream bool, timeout time.Duration, retry int) error {
+	return pushWorktreeMergeRefWithExpectedAbsent(ctx, worktree, localSHA, remoteRef, setUpstream, false, timeout, retry)
+}
+
+// expectedAbsent uses Git's server-checked empty-ref lease for the one
+// unpublished recovery path. The preceding pre-push gate has already run the
+// managed hook. The lease refuses a concurrent, differently headed ref;
+// porcelain must also prove a new branch, since Git treats a same-head ref
+// as an up-to-date no-op even when the lease expects an empty ref.
+func pushWorktreeMergeRefWithExpectedAbsent(ctx context.Context, worktree, localSHA, remoteRef string, setUpstream, expectedAbsent bool, timeout time.Duration, retry int) error {
 	args := []string{"push", "--no-verify"}
+	if expectedAbsent {
+		args = append(args, "--porcelain", "--force-with-lease="+remoteRef+":")
+	}
 	if setUpstream {
 		args = append(args, "-u")
 	}
 	args = append(args, "origin", localSHA+":"+remoteRef)
-	_, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", args...)
-	return err
+	output, _, err := runCommand(ctx, defaultRunner, timeout, retry, worktree, "git", args...)
+	if err != nil {
+		return err
+	}
+	if expectedAbsent && !strings.Contains(output, "[new branch]") {
+		return fmt.Errorf("create-only candidate push did not create %s: %s", remoteRef, strings.TrimSpace(output))
+	}
+	return nil
 }
 
 // normalizeCompletedWorktreeMergeReceipt permits an exact resume to remove a
