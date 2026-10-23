@@ -11,15 +11,28 @@ import (
 )
 
 // integrationHeadReason says why landing must keep the pull request's head
-// branch, or "" when it may be retired. A promotion's head, a branch whose
-// commits carry WB lane or refresh merges, and a branch other open pull
-// requests target are long-lived integration branches: retiring one deletes
-// the base other work lands on (datatug/datatug-apps#504 deleted
-// public-demo). A failed open-pull-request read is recorded and does not
-// retain the branch.
-func integrationHeadReason(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, commits []SourceCommit, promotion *PromotionReceipt, evidence map[string]string) string {
-	if promotion != nil {
+// branch, or "" when it may be retired. It runs on every route to the
+// landing tail — a fresh merge, a merge queue, and an already-merged resume.
+// A promotion's head, a branch whose commits carry WB lane or refresh merges,
+// and a branch any pull request ever targeted are long-lived: retiring one
+// deletes the base other work lands on (datatug/datatug-apps#504 deleted
+// public-demo) and closes every open pull request still targeting it. It
+// fails closed: a read that cannot answer keeps the branch, because keeping
+// a branch costs nothing and a later sweep can still retire it.
+func integrationHeadReason(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, number string, promotion *PromotionReceipt) string {
+	if view.Head.Repo == nil || !strings.EqualFold(view.Head.Repo.FullName, options.Repository) || strings.TrimSpace(view.Head.Ref) == "" || view.Head.Ref == view.Base.Ref {
+		return "" // nothing of this repository would be retired
+	}
+	if promotion != nil || strings.Contains(view.Body, promoteMarker) {
 		return "it is the integration branch this promotion carries"
+	}
+	commits := options.sourceCommits
+	if commits == nil {
+		read, err := pullRequestCommits(ctx, options.Repository, number)
+		if err != nil {
+			return "kept because its commits could not be read to rule out WB merges: " + err.Error()
+		}
+		commits = read
 	}
 	for _, commit := range commits {
 		for _, match := range trailerLinePattern.FindAllStringSubmatch(commit.Body, -1) {
@@ -28,31 +41,30 @@ func integrationHeadReason(ctx context.Context, options PullRequestLandOptions, 
 			}
 		}
 	}
-	onto := options.openPullRequestsOnto
+	onto := options.pullRequestsOnto
 	if onto == nil {
-		onto = openPullRequestsOnto
+		onto = pullRequestsOnto
 	}
-	open, err := onto(ctx, options.Repository, view.Head.Ref)
-	if err != nil {
-		evidence["head_branch_use"] = "could not list open pull requests onto " + view.Head.Ref + ": " + err.Error()
-		return ""
-	}
-	if open > 0 {
-		return fmt.Sprintf("%d open pull request(s) target it", open)
+	targeted, err := onto(ctx, options.Repository, view.Head.Ref)
+	switch {
+	case err != nil:
+		return "kept because pull requests onto it could not be listed: " + err.Error()
+	case targeted > 0:
+		return "pull requests have targeted it, so other work lands on it"
 	}
 	return ""
 }
 
-// openPullRequestsOnto counts open pull requests whose base is branch (one
-// page is enough: any is a reason to keep it).
-func openPullRequestsOnto(ctx context.Context, repository, branch string) (int, error) {
-	raw, err := githubGet(ctx, "", repository, "", "", "repos/"+repository+"/pulls?state=open&per_page=10&base="+url.QueryEscape(branch))
+// pullRequestsOnto counts pull requests in any state whose base is branch;
+// one is enough to keep it.
+func pullRequestsOnto(ctx context.Context, repository, branch string) (int, error) {
+	raw, err := githubGet(ctx, "", repository, "", "", "repos/"+repository+"/pulls?state=all&per_page=1&base="+url.QueryEscape(branch))
 	if err != nil {
 		return 0, err
 	}
 	var pulls []json.RawMessage
 	if err := json.Unmarshal(raw, &pulls); err != nil {
-		return 0, fmt.Errorf("decode open pull requests onto %s: %w", branch, err)
+		return 0, fmt.Errorf("decode pull requests onto %s: %w", branch, err)
 	}
 	return len(pulls), nil
 }

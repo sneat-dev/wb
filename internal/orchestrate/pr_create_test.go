@@ -139,6 +139,9 @@ case "$*" in
     cat "$S/files" ;;
   'api repos/acme/app/pulls/'*'/commits?per_page=100 --include'|'api repos/acme/app/pulls/'*'/commits?per_page=100')
     cat "$S/commits" ;;
+  'api repos/acme/app/pulls?state=all&per_page=1&base='*)
+    # No pull request has targeted the landed head: it may be retired.
+    printf '[]\n' ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_CREATE_REMOTE" rev-parse refs/heads/main); fi

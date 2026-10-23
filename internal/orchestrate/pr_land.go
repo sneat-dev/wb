@@ -203,7 +203,10 @@ type PullRequestLandOptions struct {
 	promotePorts *promoteLandingPorts
 	// openPullRequestsOnto is the seam for "is the head branch the base of
 	// other open work"; nil reads GitHub.
-	openPullRequestsOnto func(ctx context.Context, repository, branch string) (int, error)
+	pullRequestsOnto func(ctx context.Context, repository, branch string) (int, error)
+	// sourceCommits are the pull request's commits when this invocation
+	// already read them; the retention decision reads them otherwise.
+	sourceCommits []SourceCommit
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -970,7 +973,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Promotion = promotion
 		result.Evidence["promotion"] = fmt.Sprintf("%d reviewed lane(s), head reviewed by %s", len(promotion.Lanes), promotion.Reviewer)
 	}
-	result.HeadRetained = integrationHeadReason(ctx, options, view, sourceCommits, result.Promotion, result.Evidence)
+	options.sourceCommits = sourceCommits
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
@@ -1344,6 +1347,7 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
+	result.HeadRetained = integrationHeadReason(ctx, options, view, number, result.Promotion)
 	if result.HeadRetained != "" {
 		// An integration branch outlives every promotion: neither the branch
 		// nor the worktrees on it are retired.

@@ -115,7 +115,7 @@ func (p *landOwnerProtocol) get(_ context.Context, request githubobserver.GetReq
 			body = []byte(`{"total_count":0,"statuses":[]}`)
 		case strings.Contains(request.Endpoint, "/actions/runs?"):
 			body = []byte(`{"total_count":0,"workflow_runs":[]}`)
-		case strings.HasPrefix(request.Endpoint, "repos/acme/app/pulls?state=open&"):
+		case strings.HasPrefix(request.Endpoint, "repos/acme/app/pulls?state=all&"):
 			body = []byte(`[]`)
 		case strings.HasPrefix(request.Endpoint, "repos/acme/app/commits/") && p.parentBody != nil:
 			body = p.parentBody(strings.TrimPrefix(request.Endpoint, "repos/acme/app/commits/"))

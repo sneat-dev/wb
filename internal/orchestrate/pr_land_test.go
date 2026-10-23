@@ -210,8 +210,8 @@ case "$*" in
     fi ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
-  'api repos/acme/app/pulls?state=open&per_page=10&base='*|'api repos/acme/app/pulls?state=open&per_page=10&base='*' --include')
-    # Open pull requests onto the head branch; a test may name some.
+  'api repos/acme/app/pulls?state=all&per_page=1&base='*|'api repos/acme/app/pulls?state=all&per_page=1&base='*' --include')
+    # Pull requests onto the head branch; a test may name some.
     if [ -f "$S/open-onto-fail" ]; then printf '{"message":"Server Error"}\n'; exit 1; fi
     if [ -f "$S/open-onto" ]; then cat "$S/open-onto"; else printf '[]\n'; fi ;;
   'api repos/acme/app/issues/comments/'*)

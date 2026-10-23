@@ -85,14 +85,14 @@ func assertRemoteBranchKept(t *testing.T, fixture *landFixture, branch string) {
 }
 
 //nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
-func TestE2ELandKeepsAHeadBranchThatOpenPullRequestsTarget(t *testing.T) {
+func TestE2ELandKeepsAHeadBranchThatPullRequestsTarget(t *testing.T) {
 	fixture := newLandFixture(t, "public-demo", "go.mod", "go.sum")
 	fixture.writeState(t, "open-onto", `[{"number":9}]`)
 	result, err := LandPullRequest(context.Background(), landOptions(fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "1 open pull request") {
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "pull requests have targeted it") {
 		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
 	}
 	assertRemoteBranchKept(t, fixture, "public-demo")
@@ -142,27 +142,71 @@ func TestE2ELandRefusesAPromotionBehindItsTarget(t *testing.T) {
 }
 
 //nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
-func TestE2ELandRetiresTheHeadWhenItsUseCannotBeRead(t *testing.T) {
+func TestE2ELandKeepsTheHeadWhenItsUseCannotBeDecoded(t *testing.T) {
 	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
 	fixture.writeState(t, "open-onto", "not json")
 	result, err := LandPullRequest(context.Background(), landOptions(fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != LandSuccess || !result.BranchDeleted || result.Evidence["head_branch_use"] == "" {
-		t.Fatalf("outcome = %s deleted=%v evidence=%v", result.Outcome, result.BranchDeleted, result.Evidence)
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "could not be listed") {
+		t.Fatalf("outcome = %s deleted=%v retained=%q", result.Outcome, result.BranchDeleted, result.HeadRetained)
 	}
+	assertRemoteBranchKept(t, fixture, "feature/x")
 }
 
 //nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
-func TestE2ELandRetiresTheHeadWhenItsUseCannotBeListed(t *testing.T) {
+func TestE2ELandKeepsTheHeadWhenItsUseCannotBeListed(t *testing.T) {
 	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
 	fixture.writeState(t, "open-onto-fail", "1")
 	result, err := LandPullRequest(context.Background(), landOptions(fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != LandSuccess || !result.BranchDeleted || result.Evidence["head_branch_use"] == "" {
-		t.Fatalf("outcome = %s deleted=%v evidence=%v", result.Outcome, result.BranchDeleted, result.Evidence)
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "could not be listed") {
+		t.Fatalf("outcome = %s deleted=%v retained=%q", result.Outcome, result.BranchDeleted, result.HeadRetained)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandResumingAnAlreadyMergedPromotionKeepsItsHead(t *testing.T) {
+	// A merge queue merges after wb pr land returned; the resume sees the pull
+	// request already merged and finishes the tail without the gate.
+	fixture, opts := landPromotionFixture(t)
+	fixture.writeState(t, "merged", "true")
+	result, err := LandPullRequest(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.Evidence["recovery"] == "" || result.BranchDeleted || !strings.Contains(result.HeadRetained, "promotion") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+	assertRemoteBranchKept(t, fixture, "public-demo")
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandResumeKeepsTheHeadWhenItsCommitsCannotBeRead(t *testing.T) {
+	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
+	fixture.writeState(t, "merged", "true")
+	fixture.writeState(t, "commits", "not json")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.BranchDeleted || !strings.Contains(result.HeadRetained, "commits could not be read") {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
+	}
+}
+
+//nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
+func TestE2ELandResumeRetiresAnOrdinaryHead(t *testing.T) {
+	fixture := newLandFixture(t, "feature/x", "go.mod", "go.sum")
+	fixture.writeState(t, "merged", "true")
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || !result.BranchDeleted || result.HeadRetained != "" {
+		t.Fatalf("outcome = %s (%s: %s) deleted=%v retained=%q", result.Outcome, result.RefusalCode, result.Reason, result.BranchDeleted, result.HeadRetained)
 	}
 }
