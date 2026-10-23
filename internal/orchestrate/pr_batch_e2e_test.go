@@ -603,7 +603,9 @@ func TestE2EBatchRefusesNonMergeTargetsAndBadWorktrees(t *testing.T) {
 	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(pin))); refused.RefusalCode != BatchRefusalWorktree || !strings.Contains(refused.Reason, "uncommitted") {
 		t.Fatalf("dirty: %s %q", refused.RefusalCode, refused.Reason)
 	}
-	os.Remove(filepath.Join(fixture.work, "dirty.go"))
+	if err := os.Remove(filepath.Join(fixture.work, "dirty.go")); err != nil {
+		t.Fatal(err)
+	}
 	fixture.advanceTarget("n.go", "package a\n")
 	if refused := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(pin))); refused.RefusalCode != BatchRefusalWorktree || !strings.Contains(refused.Reason, "not origin/public-demo") {
 		t.Fatalf("stale worktree: %s %q", refused.RefusalCode, refused.Reason)
