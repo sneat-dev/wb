@@ -226,7 +226,8 @@ type IntegrationOptions struct {
 	Pins         []string
 	ProjectsRoot string
 	// Checks are the local checks `wb integration merge` runs before it
-	// pushes; empty means quality.ParseChecks's default.
+	// pushes; empty means the repository's integration_checks recipe, else
+	// defaultIntegrationChecks.
 	Checks []quality.Check
 	// CheckTimeout bounds the local checks; 0 is the quality default.
 	CheckTimeout time.Duration
@@ -290,13 +291,26 @@ func (options IntegrationOptions) resolveVerify() func(context.Context, string, 
 	return localChecks
 }
 
+// defaultIntegrationChecks run when neither --checks nor the repository's
+// integration_checks recipe names any; typecheck runs only where a project
+// defines it.
+var defaultIntegrationChecks = []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckTypecheck}
+
 // localChecks runs the repository's own local-check recipe, as `wb worktree
-// merge` validates a candidate.
+// merge` validates a candidate: explicit checks, else the repository's
+// integration_checks, else defaultIntegrationChecks.
 func localChecks(ctx context.Context, repository, dir string, checks []quality.Check, timeout time.Duration) quality.VerificationReport {
 	runOptions, err := quality.RepositoryRunOptions(dir, quality.RunOptions{Timeout: timeout})
 	if err != nil {
 		return quality.VerificationReport{Repository: repository, Path: dir, Status: quality.StatusFailed,
 			Results: []quality.VerificationEntry{{Status: quality.StatusFailed, Detail: err.Error()}}}
+	}
+	switch {
+	case len(checks) > 0:
+	case len(runOptions.IntegrationChecks) > 0:
+		checks = runOptions.IntegrationChecks
+	default:
+		checks = defaultIntegrationChecks
 	}
 	return quality.VerifyWithOptions(ctx, repository, dir, checks, runOptions)
 }
@@ -773,11 +787,7 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 		return result.refuse(BatchRefusalUnrecordedMerge,
 			fmt.Sprintf("local merge %s carries no Wb-Lane trailers naming its second parent; nothing was checked or pushed", shortMergeRevision(unrecorded)), ""), nil
 	}
-	checks := options.Checks
-	if len(checks) == 0 {
-		checks, _ = quality.ParseChecks("") // the empty list always parses
-	}
-	report := options.resolveVerify()(ctx, options.Repository, options.Worktree, checks, options.CheckTimeout)
+	report := options.resolveVerify()(ctx, options.Repository, options.Worktree, options.Checks, options.CheckTimeout)
 	result.Checks = &report
 	switch report.Status {
 	case quality.StatusPassed:

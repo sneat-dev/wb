@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -17,7 +18,8 @@ type repositoryQualityConfig struct {
 	GoLint  struct {
 		Commands [][]string `yaml:"commands"`
 	} `yaml:"go_lint"`
-	GoTest *struct {
+	IntegrationChecks []string `yaml:"integration_checks"`
+	GoTest            *struct {
 		Shards   int      `yaml:"shards"`
 		Packages []string `yaml:"packages"`
 	} `yaml:"go_test"`
@@ -52,6 +54,13 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 	}
 	if config.Version != 1 {
 		return base, fmt.Errorf("repository quality policy %s has version %d; want 1", path, config.Version)
+	}
+	if config.IntegrationChecks != nil {
+		checks, err := ParseChecks(strings.Join(config.IntegrationChecks, ","))
+		if err != nil || len(config.IntegrationChecks) == 0 || slices.Contains(config.IntegrationChecks, "") {
+			return base, fmt.Errorf("repository quality policy %s integration_checks must list known checks: %v", path, err)
+		}
+		base.IntegrationChecks = checks
 	}
 	if config.GoTest != nil {
 		if config.GoTest.Shards < 2 {

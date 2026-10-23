@@ -124,8 +124,9 @@ options as `Merge <to> (<short-sha>) into <integration>` carrying
 batch-conflict-stop-rerun); then refuse `batch-unrecorded-merge` when any
 local first-parent merge not yet on `origin/<integration>` neither names its
 own second parent in `Wb-Lane` trailers nor brings in target history; then
-run the repository's local-check recipe (default `lint,test,build`;
-`--checks lint,test,build,spec` selects) on the resulting HEAD, and push
+run the repository's local-check recipe on the resulting HEAD — `--checks`
+when given, else `.wb/quality.yaml` `integration_checks`, else
+`lint,test,build` plus `typecheck` wherever a project defines that script, and push
 exactly the checked commit to `refs/heads/<integration>` without force only
 when the checks passed, so agents never hand-roll the check or the refresh. A
 failed check stops with `integration-check-failed` (exit `1`) and the report,
