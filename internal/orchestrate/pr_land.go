@@ -635,6 +635,13 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			command: "wb pr land " + options.Repository + "#" + number + " --waive-reason \"<reason>\"",
 		}), nil
 	}
+	if duplicate := DuplicateWaiver(options.WaiveChecks, options.WaiveAggregates); duplicate != "" {
+		return mergeRefusal(result, landRefusal{
+			code:    LandRefusalWaivedCheckDuplicate,
+			reason:  fmt.Sprintf("check %q is named more than once across --waive-check and --waive-aggregate", duplicate),
+			command: "wb pr land " + options.Repository + "#" + number,
+		}), nil
+	}
 	if (strings.TrimSpace(options.WaiveReason) != "" || strings.TrimSpace(options.WaiveBaseline) != "") && !options.hasWaivers() {
 		return mergeRefusal(result, landRefusal{
 			code:    LandRefusalWaiveReasonEmpty,
@@ -1065,14 +1072,15 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 				if check.Bucket != "fail" && check.Bucket != "cancel" {
 					continue
 				}
+				normalized := githubchecks.NormalizeCheckName(check.Name)
+				isRequired := isCheckRequiredByPolicy(normalized, check.AppID, required)
 				// A waived check is not a reason this landing failed: the
 				// waivers are judged once the non-waived failures are fixed.
-				if checkNameIn(check.Name, options.waitWaivedChecks()) {
+				// A required one stays in the report: no waiver can cover it.
+				if !isRequired && checkNameIn(check.Name, options.waitWaivedChecks()) {
 					continue
 				}
 				failedCount++
-				normalized := githubchecks.NormalizeCheckName(check.Name)
-				isRequired := isCheckRequiredByPolicy(normalized, check.AppID, required)
 				var targetCheck *githubchecks.RemoteCheck
 				for i := range targetChecks {
 					if githubchecks.NormalizeCheckName(targetChecks[i].Name) == normalized {

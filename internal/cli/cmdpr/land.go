@@ -215,18 +215,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
 				return runtime.ExitError(shared.ExitUsage, "--review-comment and --review-comment-file are mutually exclusive")
 			}
-			waivers := len(splitCommaSeparated(waiveChecks)) + len(splitCommaSeparated(waiveAggregates))
-			if waivers > 0 && strings.TrimSpace(waiveReason) == "" {
-				return runtime.ExitError(shared.ExitUsage, "--waive-check requires a non-empty --waive-reason (as does --waive-aggregate)")
-			}
-			if strings.TrimSpace(waiveReason) != "" && waivers == 0 {
-				return runtime.ExitError(shared.ExitUsage, "--waive-reason was given without any --waive-check")
-			}
-			if strings.TrimSpace(waiveBaseline) != "" && len(splitCommaSeparated(waiveChecks)) == 0 {
-				return runtime.ExitError(shared.ExitUsage, "--waive-baseline requires --waive-check")
-			}
-			if baseline := strings.TrimSpace(waiveBaseline); baseline != "" && !waiveBaselinePattern.MatchString(baseline) {
-				return runtime.ExitError(shared.ExitUsage, "--waive-baseline must be a 7-40 character hex commit SHA")
+			if problem := waiverFlagProblem(waiveChecks, waiveAggregates, waiveBaseline, waiveReason); problem != "" {
+				return runtime.ExitError(shared.ExitUsage, problem)
 			}
 			repository, number, err := prselector.Parse(args[0])
 			if err != nil {
@@ -431,6 +421,27 @@ func shortSHAForDisplay(sha string) string {
 
 // waiveBaselinePattern is the commit SHA shape --waive-baseline accepts.
 var waiveBaselinePattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+
+// waiverFlagProblem validates the waiver flags `wb pr land` and `wb pr create
+// --land` share, returning the usage error or "".
+func waiverFlagProblem(waiveChecks, waiveAggregates []string, waiveBaseline, waiveReason string) string {
+	checks, aggregates := splitCommaSeparated(waiveChecks), splitCommaSeparated(waiveAggregates)
+	waivers := len(checks) + len(aggregates)
+	switch {
+	case waivers > 0 && strings.TrimSpace(waiveReason) == "":
+		return "--waive-check requires a non-empty --waive-reason (as does --waive-aggregate)"
+	case strings.TrimSpace(waiveReason) != "" && waivers == 0:
+		return "--waive-reason was given without any --waive-check"
+	case strings.TrimSpace(waiveBaseline) != "" && len(checks) == 0:
+		return "--waive-baseline requires --waive-check"
+	case strings.TrimSpace(waiveBaseline) != "" && !waiveBaselinePattern.MatchString(strings.TrimSpace(waiveBaseline)):
+		return "--waive-baseline must be a 7-40 character hex commit SHA"
+	}
+	if duplicate := orchestrate.DuplicateWaiver(checks, aggregates); duplicate != "" {
+		return fmt.Sprintf("check %q is named more than once across --waive-check and --waive-aggregate", duplicate)
+	}
+	return ""
+}
 
 // waivedCheckBasis names what a waiver was judged on beyond the target tip.
 func waivedCheckBasis(waived orchestrate.WaivedCheck) string {

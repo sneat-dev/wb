@@ -8254,6 +8254,8 @@
                 "--review-comment-file",
                 "--timeout",
                 "--title",
+                "--waive-aggregate",
+                "--waive-baseline",
                 "--waive-check",
                 "--waive-reason"
               ],
