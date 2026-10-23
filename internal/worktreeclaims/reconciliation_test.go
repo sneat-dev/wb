@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func reconciliationTestClaim(worktree string) (Claim, Projection) {
@@ -14,6 +15,28 @@ func reconciliationTestClaim(worktree string) (Claim, Projection) {
 	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository,
 		WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
 	return claim, Projection{EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID}
+}
+
+func TestReconciliationClaimShapeBindsCanonicalMode(t *testing.T) {
+	t.Parallel()
+	worktree := t.TempDir()
+	claim, projection := reconciliationTestClaim(worktree)
+	lease := time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC)
+	claim.Mode = ClaimModeCanonical
+	claim.RecordedAt = lease.Add(-time.Hour)
+	claim.LeaseExpiresAt = &lease
+	claim.ClaimID = WorkLogClaimIDForMode(claim.EffortID, CreationResult{Repository: claim.Repository,
+		WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}, claim.Mode)
+	projection.ClaimID = claim.ClaimID
+	if err := ValidateReconciliationClaimShape(worktree, projection, claim); err != nil {
+		t.Fatalf("canonical claim shape: %v", err)
+	}
+	rewritten := claim
+	rewritten.Mode = ""
+	rewritten.LeaseExpiresAt = nil
+	if err := ValidateReconciliationClaimShape(worktree, projection, rewritten); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("worktree rewrite of a canonical claim was accepted: %v", err)
+	}
 }
 
 func TestReconciliationReadClaimPortFailures(t *testing.T) {

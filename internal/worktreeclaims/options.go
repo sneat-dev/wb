@@ -28,7 +28,11 @@ type Options struct {
 	TaskSummary, WBSessionID, OriginalPrompt                                string
 	RequireOriginalPrompt                                                   bool
 	AcquiredVia                                                             string
-	Snapshot                                                                PromptSnapshot
+	// Mode is "" or "worktree" or "canonical". LeaseExpiresAt is required for
+	// a canonical claim and is preserved across option round-trips.
+	Mode           string
+	LeaseExpiresAt time.Time
+	Snapshot       PromptSnapshot
 }
 type PromptMetadata struct {
 	Version         int       `json:"version"`

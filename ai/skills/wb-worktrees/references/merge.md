@@ -64,6 +64,12 @@ can rebase onto that SHA while Phase 2 waits for GitHub.
 
 ## Recovery
 
+If an interrupted landing command has exited but its session still holds the
+landing lane, run `wb lane release owner/repository --target main`. This only
+releases your idle lane claim; preserve the receipt and source worktree for a
+later resume. See [release lifecycle](lifecycle.md#release-an-idle-landing-lane)
+for active-operation and legacy-process refusals.
+
 ```sh
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --cleanup --progress --format json

@@ -22,11 +22,12 @@ func resolveOwner(projectsRoot, command string, pid int, directoryFor func(strin
 		return landinglane.Owner{}
 	}
 	return landinglane.Owner{
-		WBSessionID: record.WBSessionID,
-		PID:         record.PID,
-		Runtime:     record.Runtime,
-		Model:       record.Model,
-		Command:     command,
+		WBSessionID:  record.WBSessionID,
+		PID:          record.PID,
+		OperationPID: pid,
+		Runtime:      record.Runtime,
+		Model:        record.Model,
+		Command:      command,
 	}
 }
 

@@ -126,7 +126,7 @@ func ValidateReconciliationClaimShape(worktree string, projection Projection, cl
 	if !worktreelayout.ValidSafeSegment(claim.EffortID) || !worktreelayout.ValidSafeSegment(claim.RunID) || !worktreelayout.ValidSafeSegment(claim.Task) || !ValidClaimID(claim.ClaimID) || !worktreeproof.IsGitObjectID(claim.BaseSHA) {
 		return fmt.Errorf("private work-log claim identity is invalid")
 	}
-	want := WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	want := WorkLogClaimIDForMode(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA}, claim.Mode)
 	if claim.ParentClaimID != "" {
 		if !ValidClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed") {
 			return fmt.Errorf("private successor claim metadata is invalid")

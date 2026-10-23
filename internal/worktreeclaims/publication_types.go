@@ -59,6 +59,15 @@ type Claim struct {
 	ParentClaimID   string                   `json:"parent_claim_id,omitempty"`
 	AcquiredVia     string                   `json:"acquired_via,omitempty"`
 	ExternalHandoff *ExternalHandoffEvidence `json:"external_handoff,omitempty"`
+	// Mode is "" or "worktree" for a claim on an isolated worktree and
+	// "canonical" for a claim on the repository's canonical clone. It is part
+	// of the claim identity, so a canonical claim cannot be rewritten as a
+	// worktree claim.
+	Mode string `json:"mode,omitempty"`
+	// LeaseExpiresAt is set exactly on canonical claims: the instant the
+	// original lease lapses. Extensions are appended as lease-extension
+	// evidence and never mutate this field.
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 
 	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
 	// only, read at zero cost from the environment by

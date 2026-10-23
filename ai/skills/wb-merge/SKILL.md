@@ -187,19 +187,28 @@ resume`, and `merge revert` all acquire a durable landing-lane record for the
 be re-prepared or stranded. A different **live** WB session already driving
 that lane is **refused**, naming that session's WB session ID, pid,
 runtime/model, how long it has held the lane, and the receipt it is driving.
-Ask it to return control with `wb session recall <id>`, or override with
+Coordinate with the named owner, who can release its idle claim using
+`wb lane release owner/repository --target main`, or explicitly override with
 `--take-over-lane --lane-reason <text>` (the same flag name on every landing
 command now — the reason is recorded on the lane and, for `worktree merge`,
 on the receipt's `lane_owner` field, so `--format json` shows it). A session
-whose registry entry is gone is taken over automatically with a printed note;
+whose registry entry is gone and whose recorded WB operation is no longer live
+is taken over automatically with a printed note;
 a live session is **never** taken over implicitly, no matter how old its
 heartbeat looks — a heartbeat refresh runs for the whole duration of any CI
 wait the lane holds, so a live, actively-landing session's lane never goes
-stale out from under it. The same session resuming or retrying simply
-refreshes its own lane. A lane record that cannot be parsed refuses the same
+stale out from under it. The same session resuming or retrying refreshes its own
+lane only after any different recorded operation has exited. A lane record that cannot be parsed refuses the same
 way a live owner does, naming the corrupt file, rather than being treated as
 free. This is the mechanical enforcement of "one landing owner per repository
 and target branch" — see `[[land-work-dont-queue-it]]`.
+After interrupting a landing command, use `wb lane release owner/repository --target main` to release your registered session's idle claim. An absent lane
+succeeds; another owner or a live WB operation is refused. Legacy claims without
+an operation PID conservatively refuse while any other WB executable runs, even
+for another repository, and fail closed if process observation is unavailable.
+This command preserves branches, worktrees and PRs. See the
+[release lifecycle](../wb-worktrees/references/lifecycle.md#release-an-idle-landing-lane).
+
 An unpublished prepare-time conflict releases receipt-based lane ownership after
 the prepare stops and WB verifies its candidate branch is absent remotely: its
 receipt and sources remain available for repair, while another source may

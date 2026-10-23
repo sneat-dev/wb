@@ -114,6 +114,14 @@ type WorkLogOptions struct {
 	// the manifest beside it — says the identity was reconstructed rather than
 	// created. Empty for a normal create.
 	AcquiredVia string
+	// Mode is the claim mode: "" or "worktree" (the default, an isolated linked
+	// worktree) or "canonical" (the repository's canonical clone, held under a
+	// lease). A canonical claim requires LeaseExpiresAt.
+	Mode string
+	// LeaseExpiresAt is the instant a canonical claim's lease lapses. It is
+	// computed once by the caller from the creation instant; any later
+	// extension is separate append-only evidence, never a rewrite.
+	LeaseExpiresAt time.Time
 
 	// snapshot is private local input, never part of a public projection.
 	snapshot worktreeclaims.PromptSnapshot
@@ -358,7 +366,15 @@ func identityFromClaim(claim workLogClaim) ExecutionIdentity {
 	return worktreeclaims.IdentityFromClaim(toClaimIdentity(claim))
 }
 func workLogClaimID(effort string, result CreateResult) string {
-	return worktreeclaims.WorkLogClaimID(effort, toCreationResult(result))
+	return workLogClaimIDForMode(effort, result, "")
+}
+
+// workLogClaimIDForMode covers the claim mode. The default (worktree) mode
+// hashes exactly the fields it always has; a canonical claim additionally
+// hashes its mode, so the same checkout identity cannot be re-presented as a
+// worktree claim.
+func workLogClaimIDForMode(effort string, result CreateResult, mode string) string {
+	return worktreeclaims.WorkLogClaimIDForMode(effort, toCreationResult(result), mode)
 }
 func WorkLogClaimID(effort string, result CreateResult) string {
 	return worktreeclaims.WorkLogClaimID(effort, toCreationResult(result))
@@ -380,7 +396,7 @@ func toClaimIdentity(claim workLogClaim) worktreeclaims.ClaimIdentity {
 	return worktreeclaims.ClaimIdentity{Version: claim.Version, EffortID: claim.EffortID, Repository: claim.Repository, Worktree: claim.Worktree,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, Model: claim.Model, ModelProvenance: claim.ModelProvenance,
 		ModelDeclaredBy: claim.ModelDeclaredBy, CLI: claim.CLI, Provider: claim.Provider, ParentClaimID: claim.ParentClaimID,
-		AcquiredVia: claim.AcquiredVia, AgentID: claim.AgentID}
+		AcquiredVia: claim.AcquiredVia, AgentID: claim.AgentID, Mode: claim.Mode}
 }
 
 // recordWorkLog writes one immutable private claim per worktree, a redacted
@@ -546,8 +562,11 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 	if err != nil {
 		return outcome, err
 	}
+	if err := validateClaimModeLease(options.Mode, options.LeaseExpiresAt, now); err != nil {
+		return outcome, err
+	}
 	outcome.EffortID, outcome.RunID = effort, run
-	claimID := workLogClaimID(effort, result)
+	claimID := workLogClaimIDForMode(effort, result, options.Mode)
 	outcome.ClaimID = claimID
 	runDir, runPath, err := preparation.openRun(home, effort, run, true)
 	if err != nil {
@@ -612,7 +631,7 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 		TaskSummary:   taskSummary,
 		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
-		AcquiredVia:      strings.TrimSpace(options.AcquiredVia),
+		AcquiredVia: strings.TrimSpace(options.AcquiredVia), Mode: options.Mode, LeaseExpiresAt: claimLeaseExpiry(options.LeaseExpiresAt),
 		HarnessSessionID: fields.HarnessSessionID, Harness: fields.Harness,
 		EffortLevel: fields.EffortLevel, ToolUseID: fields.ToolUseID, WBVersion: fields.WBVersion}
 	ports := worktreeclaims.PublicationPorts{
@@ -2970,6 +2989,7 @@ func toClaimOptions(options WorkLogOptions) worktreeclaims.Options {
 		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
 		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
 		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
+		Mode: options.Mode, LeaseExpiresAt: options.LeaseExpiresAt,
 		Snapshot: options.snapshot,
 	}
 }
@@ -2980,6 +3000,7 @@ func fromClaimOptions(options worktreeclaims.Options) WorkLogOptions {
 		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
 		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
 		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
+		Mode: options.Mode, LeaseExpiresAt: options.LeaseExpiresAt,
 		snapshot: options.Snapshot,
 	}
 }
