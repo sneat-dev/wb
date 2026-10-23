@@ -171,6 +171,15 @@ needs: are all green or waived. A required check is never waived. A target with
 no server-enforced required checks accepts waivers only with --allow-unfenced,
 and WB then merges itself after the verdict instead of arming auto-merge.
 
+PROMOTION PULL REQUESTS. A pull request opened by wb integration promote (its
+body carries the promotion marker) lands only with --approved-by naming a
+review comment on it whose Reviewed-Head is its current head, from an identity
+that is not yours and made none of its lane merges, after every merge on its
+first-parent history is proved to bring in a still-reviewed lane commit or
+target history. It never updates the branch server-side or arms auto-merge,
+and otherwise follows the repository's merge policy. A pull request without
+the marker whose commits include a WB lane merge is refused.
+
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
 retirement, cleanup) did not finish: the change is on the base branch, and the

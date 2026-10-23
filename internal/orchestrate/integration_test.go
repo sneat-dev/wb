@@ -160,3 +160,57 @@ func TestParseLaneTrailersNeedsEveryTrailer(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubPromoteAdapter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	var asked [][]string
+	reply := func(out string, err error) githubPromote {
+		return githubPromote{githubIntegration{gh: func(_ context.Context, args ...string) ([]byte, error) {
+			asked = append(asked, args)
+			return []byte(out), err
+		}}}
+	}
+	if branch, err := reply(`{"default_branch":"trunk"}`, nil).DefaultBranch(ctx, "acme/app"); err != nil || branch != "trunk" {
+		t.Fatalf("branch = %q err = %v", branch, err)
+	}
+	if _, err := reply(`{}`, nil).DefaultBranch(ctx, "acme/app"); err == nil {
+		t.Fatal("an empty default branch was accepted")
+	}
+	if number, body, err := reply(`[{"number":5,"body":"b"}]`, nil).OpenPullRequest(ctx, "acme/app", "public-demo", "main"); err != nil || number != 5 || body != "b" {
+		t.Fatalf("open = %d %q %v", number, body, err)
+	}
+	if !strings.Contains(strings.Join(asked[len(asked)-1], " "), "head=acme:public-demo&base=main") {
+		t.Fatalf("open asked %v", asked[len(asked)-1])
+	}
+	if number, _, err := reply(`[]`, nil).OpenPullRequest(ctx, "acme/app", "x", "main"); err != nil || number != 0 {
+		t.Fatalf("none = %d %v", number, err)
+	}
+	if number, err := reply(`{"number":9}`, nil).CreatePullRequest(ctx, "acme/app", "x", "main", "t", "b"); err != nil || number != 9 {
+		t.Fatalf("create = %d %v", number, err)
+	}
+	if err := reply(`{}`, nil).UpdatePullRequestBody(ctx, "acme/app", 9, "b"); err != nil || !strings.Contains(strings.Join(asked[len(asked)-1], " "), "PATCH repos/acme/app/pulls/9") {
+		t.Fatalf("update err = %v asked %v", err, asked[len(asked)-1])
+	}
+	broken := reply("", errors.New("502"))
+	if _, err := broken.DefaultBranch(ctx, "acme/app"); err == nil {
+		t.Fatal("default branch error swallowed")
+	}
+	if _, _, err := broken.OpenPullRequest(ctx, "acme/app", "x", "main"); err == nil {
+		t.Fatal("open error swallowed")
+	}
+	if _, err := broken.CreatePullRequest(ctx, "acme/app", "x", "main", "t", "b"); err == nil {
+		t.Fatal("create error swallowed")
+	}
+	if err := broken.UpdatePullRequestBody(ctx, "acme/app", 9, "b"); err == nil {
+		t.Fatal("update error swallowed")
+	}
+	if DefaultPromoteGitHub() == nil || (PromoteOptions{}).resolveGitHub() == nil {
+		t.Fatal("no production promote adapter")
+	}
+	for outcome, want := range map[LandOutcome]int{LandSuccess: 0, LandRefused: 2, LandFindings: 1} {
+		if got := (PromoteResult{Outcome: outcome}).ExitCode(); got != want {
+			t.Errorf("%s exit %d", outcome, got)
+		}
+	}
+}

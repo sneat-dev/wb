@@ -7126,6 +7126,7 @@
               "flags": [
                 "--checks",
                 "--format",
+                "--to",
                 "--worktree"
               ],
               "modes": [
@@ -7175,6 +7176,71 @@
         }
       },
       "notes": "Lanes push branches with no pull request; reviews are commit comments on the lane SHA. Promotion to main (wb integration promote) and the integration delta ship in a follow-up."
+    },
+    {
+      "id": "wb.integration.promote",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb integration promote",
+              "flags": [
+                "--format",
+                "--to",
+                "--worktree"
+              ],
+              "modes": [
+                "Refuses batch-unrecorded-merge when any merge the target lacks cannot be proved to bring in a still-reviewed lane commit or target history",
+                "Opens, or refreshes the body of, the one pull request from the integration branch to its target, listing every lane and carrying the promotion marker",
+                "wb pr land then needs a fresh independent review of that pull request's exact head and never updates the branch or arms auto-merge"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb integration promote --help",
+              "contains": [
+                "Re-prove an integration branch"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb integration promote <owner/repository> <integration>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_promote_e2e_test.go",
+              "name": "TestE2EPromoteOpensOnePullRequestAndAnEmptyDelta",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; one promotion pull request carries the integration branch to main under full CI and a fresh review of its head."
     },
     {
       "id": "wb.land",
@@ -8087,6 +8153,73 @@
         }
       },
       "notes": "Lanes push branches with no pull request; reviews are commit comments on the lane SHA. Promotion to main (wb integration promote) and the integration delta ship in a follow-up."
+    },
+    {
+      "id": "wb.pr.batch.delta",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr batch delta",
+              "flags": [
+                "--format",
+                "--overlap",
+                "--target",
+                "--to",
+                "--worktree"
+              ],
+              "modes": [
+                "Prints only conflict resolutions, fix commits and the full diff of unrecorded merges between the integration branch and its target",
+                "Re-proves every lane merge from its Wb-* trailers against the still-current commit comment",
+                "--overlap adds each lane's own diff of every file more than one lane changed; an empty delta still needs the promotion review"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr batch delta --help",
+              "contains": [
+                "Print only the integration delta"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb pr batch delta <owner/repository> --target <integration> --overlap"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_promote_e2e_test.go",
+              "name": "TestE2EDeltaShowsOnlyResolutionsFixesAndOverlap",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; one promotion pull request carries the integration branch to main under full CI and a fresh review of its head."
     },
     {
       "id": "wb.pr.create",

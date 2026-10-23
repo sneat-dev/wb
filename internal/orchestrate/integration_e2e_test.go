@@ -38,6 +38,14 @@ type fakeIntegrationGitHub struct {
 	calls    int
 }
 
+func (gh *fakeIntegrationGitHub) DefaultBranch(context.Context, string) (string, error) {
+	gh.calls++
+	if gh.calls == gh.failAt {
+		return "", errFakeGitHub
+	}
+	return "main", nil
+}
+
 var errFakeGitHub = errors.New("fake GitHub failure")
 
 func (gh *fakeIntegrationGitHub) CommitComment(_ context.Context, _ string, id int64) (CommitComment, error) {
@@ -492,7 +500,7 @@ func TestE2EIntegrationEveryGitOrGitHubFailureIsReportedNotSwallowed(t *testing.
 					options.run = failingIntegrationRunner{Runner: runner.New(), failAt: failAt, calls: &calls}
 				}
 				result, err := steps[stepIndex](options)
-				reached := calls >= failAt || fixture.gh.calls >= failAt
+				reached := (failing == "git" && calls >= failAt) || (failing == "GitHub" && fixture.gh.calls >= failAt)
 				if !reached {
 					break
 				}
