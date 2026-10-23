@@ -89,6 +89,14 @@ func autoMergeBypassesAGuard(ctx context.Context, options PullRequestLandOptions
 		return "--keep-commits merges a rebuilt branch, not this head"
 	}
 	if options.AllowUnfenced {
+		// REQ waiver-on-unfenced-target: where GitHub enforces no required
+		// check, a waiver is judged by WB alone, so GitHub must not merge
+		// before that verdict.
+		if options.hasWaivers() {
+			if required, _, reason := options.resolveInspector().RequiredChecks(ctx, options.Repository, target, false); reason != "" || len(required) == 0 {
+				return "waivers on a target without server-enforced required checks are judged by WB before it merges"
+			}
+		}
 		return ""
 	}
 	_, freshnessAuthority, reason := githubchecks.RequiredChecks(ctx, options.Repository, target, true)
