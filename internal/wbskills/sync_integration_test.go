@@ -80,8 +80,11 @@ func testNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent(t *testing.T, 
 	if strings.Contains(secondOut.String(), "added:") || strings.Contains(secondOut.String(), "updated:") {
 		t.Errorf("second identical sync reported a change: %q", secondOut.String())
 	}
-	if !strings.Contains(secondOut.String(), "nothing to do") {
-		t.Errorf("second sync output = %q, want it to say there was nothing to do", secondOut.String())
+	if !strings.Contains(secondOut.String(), "unchanged; already up to date") {
+		t.Errorf("second sync output = %q, want an unchanged count", secondOut.String())
+	}
+	if strings.Contains(secondOut.String(), "wb-worktrees") {
+		t.Errorf("second sync output listed unchanged skill names: %q", secondOut.String())
 	}
 }
 

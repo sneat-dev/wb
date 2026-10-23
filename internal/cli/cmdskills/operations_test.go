@@ -210,12 +210,15 @@ func TestReportsRenderAllActionsAndMultipleTargetsWithoutFixtures(t *testing.T) 
 		if err := writeSkillsSyncReports(&out, results, format); err != nil {
 			t.Fatal(err)
 		}
-		for _, word := range []string{"added-skill", "updated-skill", "unchanged-skill", "removed-skill", "conflict-skill"} {
+		for _, word := range []string{"added-skill", "updated-skill", "removed-skill", "conflict-skill"} {
 			if !strings.Contains(out.String(), word) {
 				t.Fatalf("%s missing %s: %s", format, word, out.String())
 			}
 		}
 		if format == "json" {
+			if !strings.Contains(out.String(), "unchanged-skill") {
+				t.Fatalf("json missing unchanged-skill: %s", out.String())
+			}
 			var payload skillsSyncMultiJSON
 			if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
 				t.Fatal(err)
@@ -223,7 +226,7 @@ func TestReportsRenderAllActionsAndMultipleTargetsWithoutFixtures(t *testing.T) 
 			if !payload.DryRun || payload.WBVersion != "1.2.3" || len(payload.Targets) != 2 || payload.Targets[0].PriorWBVersion != "1.0.0" {
 				t.Fatalf("payload=%+v", payload)
 			}
-		} else if !strings.Contains(out.String(), "would sync") {
+		} else if strings.Contains(out.String(), "unchanged-skill") || !strings.Contains(out.String(), "would sync") || !strings.Contains(out.String(), "1 skill unchanged") {
 			t.Fatal(out.String())
 		}
 	}

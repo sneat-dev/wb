@@ -36,7 +36,7 @@ func TestAfterUpdateDelegatesVerifiedRequestsInOrder(t *testing.T) {
 	if !reflect.DeepEqual(requests, want) {
 		t.Fatalf("requests=%+v want=%+v", requests, want)
 	}
-	if out.String() != "Verified installed wb version: 0.96.4 (was 0.96.2).\nsynced skills\n" || diagnostic.String() != "daemon receipt\n" {
+	if out.String() != "Verified installed wb version: 0.96.4 (was 0.96.2).\nsynced skills\n" || diagnostic.String() != "Daemon restart finished.\n" {
 		t.Fatalf("out=%q diagnostic=%q", out.String(), diagnostic.String())
 	}
 }

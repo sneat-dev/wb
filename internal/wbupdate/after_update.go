@@ -1,7 +1,9 @@
 package wbupdate
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -47,9 +49,63 @@ func (service Service) RestartDaemon(output Output, parent context.Context, upda
 		_, _ = output.Err.Write(result.Combined)
 		return
 	}
-	// The self-update command owns stdout (especially in JSON mode), so the
-	// child lifecycle receipt is diagnostic-only.
-	_, _ = output.Err.Write(result.Combined)
+	// A successful handoff used to dump the child's progress lines and the
+	// full lifecycle JSON onto stderr. That receipt stays available from
+	// `wb daemon status --format json`; self-update only needs the outcome.
+	_, _ = fmt.Fprintln(output.Err, daemonRestartSummary(result.Combined))
+}
+
+// daemonRestartSummary turns a successful `wb daemon restart --format json`
+// receipt into one line. Progress text mixed in ahead of the document is
+// ignored. Unparseable success still stays quiet: the child already exited 0.
+func daemonRestartSummary(output []byte) string {
+	result, ok := parseDaemonRestartResult(output)
+	if !ok {
+		return "Daemon restart finished."
+	}
+	if result.State.PID == 0 && !result.ProcessManagerRunning && !result.Reachable {
+		return "No running daemon to restart."
+	}
+	summary := "Daemon restarted."
+	switch {
+	case result.ReadyVerified || result.ReportedState == "ready" || result.State.Status == "ready":
+		summary = "Daemon restarted and ready."
+	case result.ReportedState != "":
+		summary = fmt.Sprintf("Daemon restarted (%s).", result.ReportedState)
+	case result.State.Status != "":
+		summary = fmt.Sprintf("Daemon restarted (%s).", result.State.Status)
+	}
+	if result.Warning != "" {
+		return summary + "\nwarning: " + result.Warning
+	}
+	return summary
+}
+
+func parseDaemonRestartResult(output []byte) (daemonRestartReceipt, bool) {
+	start := bytes.IndexByte(output, '{')
+	if start < 0 {
+		return daemonRestartReceipt{}, false
+	}
+	var result daemonRestartReceipt
+	if err := json.Unmarshal(output[start:], &result); err != nil || result.Action == "" {
+		return daemonRestartReceipt{}, false
+	}
+	return result, true
+}
+
+// daemonRestartReceipt is the subset of `wb daemon restart --format json`
+// this summary reads. The full document stays on `wb daemon status`.
+type daemonRestartReceipt struct {
+	Action                string `json:"action"`
+	ProcessManagerRunning bool   `json:"process_manager_running"`
+	Reachable             bool   `json:"reachable"`
+	ReadyVerified         bool   `json:"ready_verified"`
+	ReportedState         string `json:"reported_state"`
+	Warning               string `json:"warning"`
+	State                 struct {
+		PID    int    `json:"pid"`
+		Status string `json:"status"`
+	} `json:"state"`
 }
 
 func writeVerifiedVersion(output Output, previous, installed string) {
