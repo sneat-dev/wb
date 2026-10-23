@@ -112,6 +112,7 @@ func (fixture *batchFixture) sourceFrom(from, file, contents, reviewerSession st
 	fixture.gh.prs[number] = view
 	fixture.nextNote++
 	fixture.gh.comments[fixture.nextNote] = fmt.Sprintf("**Review by opus@claude-code@%s**\n\nLGTM\n\nReviewed-Head: %s\n", reviewerSession, head)
+	fixture.gh.commentPR[fixture.nextNote] = number
 	return fmt.Sprintf("%d@%s=https://github.com/acme/app/pull/%d#issuecomment-%d", number, head[:12], number, fixture.nextNote), number
 }
 
@@ -159,6 +160,7 @@ func (cache *memoryBatchCache) Save(state BatchState) error {
 type fakeBatchGitHub struct {
 	prs          map[int]githubchecks.PullRequestView
 	comments     map[int64]string
+	commentPR    map[int64]int
 	checks       map[string][]githubchecks.RemoteCheck
 	others       []githubchecks.RemoteCheck
 	noMerge      bool
@@ -170,7 +172,7 @@ type fakeBatchGitHub struct {
 }
 
 func newFakeBatchGitHub() *fakeBatchGitHub {
-	return &fakeBatchGitHub{prs: map[int]githubchecks.PullRequestView{}, comments: map[int64]string{}, checks: map[string][]githubchecks.RemoteCheck{}}
+	return &fakeBatchGitHub{prs: map[int]githubchecks.PullRequestView{}, comments: map[int64]string{}, commentPR: map[int64]int{}, checks: map[string][]githubchecks.RemoteCheck{}}
 }
 
 var errFakeGitHub = errors.New("fake GitHub failure")
@@ -187,15 +189,15 @@ func (gh *fakeBatchGitHub) PullRequest(_ context.Context, _ string, number int) 
 	return gh.prs[number], nil
 }
 
-func (gh *fakeBatchGitHub) IssueComment(_ context.Context, _ string, id int64) (string, error) {
+func (gh *fakeBatchGitHub) IssueComment(_ context.Context, _ string, id int64) (BatchComment, error) {
 	if gh.fail() {
-		return "", errFakeGitHub
+		return BatchComment{}, errFakeGitHub
 	}
 	body, ok := gh.comments[id]
 	if !ok {
-		return "", errors.New("comment not found")
+		return BatchComment{}, errors.New("comment not found")
 	}
-	return body, nil
+	return BatchComment{Body: body, PullRequest: gh.commentPR[id]}, nil
 }
 
 func (gh *fakeBatchGitHub) AllowsMergeCommits(context.Context, string) (bool, error) {
@@ -301,6 +303,17 @@ func TestE2EBatchCleanSourcesMakeOnePullRequestAndAnEmptyDelta(t *testing.T) {
 	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first, second)))
 	if fixture.gh.updates != 1 || !strings.Contains(fixture.gh.batch.Body, batchBlockBegin) {
 		t.Fatalf("a hand-edited body was not regenerated: updates=%d", fixture.gh.updates)
+	}
+	fixture.gh.batch.State = "closed"
+	if closed := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(first, second))); closed.RefusalCode != BatchRefusalClosed {
+		t.Fatalf("republishing a closed batch = %s", closed.RefusalCode)
+	}
+	fixture.gh.batch.State = "open"
+	writeBatchFile(t, fixture.work, "local.go", "package a\n")
+	bgit(t, fixture.work, "add", "local.go")
+	bgit(t, fixture.work, "commit", "--quiet", "-m", "unrecorded local commit")
+	if moved := mustBatch(t, LandRefused)(CreatePullRequestBatch(ctx, fixture.options(first, second))); moved.RefusalCode != BatchRefusalWorktree || !strings.Contains(moved.Reason, "past the recorded batch head") {
+		t.Fatalf("rerun past the recorded head = %s %q", moved.RefusalCode, moved.Reason)
 	}
 }
 
@@ -502,15 +515,19 @@ func TestE2EBatchRefusesBadPinsTogetherAndCreatesNothing(t *testing.T) {
 	fixture.gh.prs[wrongPR] = view
 	missing, _ := fixture.source("j.go", "package a\n")
 	delete(fixture.gh.comments, fixture.nextNote)
+	misbound, _ := fixture.source("p.go", "package a\n")
+	fixture.gh.commentPR[fixture.nextNote] = 1
+	operatorAsOther, _ := fixture.source("q.go", "package a\n")
+	fixture.gh.comments[fixture.nextNote] = strings.Replace(fixture.gh.comments[fixture.nextNote], "opus@claude-code@reviewer", "sonnet@claude-code@operator", 1)
 	parent, parentPR := fixture.source("k.go", "package a\n")
 	child, _ := fixture.sourceFrom(fixture.gh.prs[parentPR].Head.SHA, "l.go", "package a\n", "reviewer")
 
-	result := mustBatch(t, LandRefused)(CreatePullRequestBatch(context.Background(), fixture.options(moved, stale, draft, anonymous, lane, wrong, missing, parent, child)))
+	result := mustBatch(t, LandRefused)(CreatePullRequestBatch(context.Background(), fixture.options(moved, stale, draft, anonymous, lane, wrong, missing, misbound, operatorAsOther, parent, child)))
 	codes := map[string]int{}
 	for _, issue := range result.Refusals {
 		codes[issue.Code]++
 	}
-	want := map[string]int{BatchRefusalSourceHeadMoved: 1, BatchRefusalSourceUnreviewed: 2, BatchRefusalSourceNotOpen: 1, BatchRefusalSourceSelfReview: 2, BatchRefusalSourceWrongBase: 1, BatchRefusalSourceAlreadyIncluded: 1}
+	want := map[string]int{BatchRefusalSourceHeadMoved: 1, BatchRefusalSourceUnreviewed: 3, BatchRefusalSourceNotOpen: 1, BatchRefusalSourceSelfReview: 3, BatchRefusalSourceWrongBase: 1, BatchRefusalSourceAlreadyIncluded: 1}
 	for code, count := range want {
 		if codes[code] != count {
 			t.Errorf("%s refused %d time(s), want %d: %+v", code, codes[code], count, result.Refusals)
@@ -852,5 +869,99 @@ func TestE2EBatchProductionGitHubAdapterTalksToGH(t *testing.T) {
 	}
 	if queued, err := adapter.UsesMergeQueue(context.Background(), "acme/app", "public-demo"); err != nil || queued {
 		t.Fatalf("merge queue = %v %v", queued, err)
+	}
+}
+
+func TestE2EBatchAddDistrustsAnEditedBodyBlock(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	original := fixture.gh.batch.Body
+	unreviewed, unreviewedPR := fixture.source("evil.go", "package a\n")
+	_ = unreviewed
+	for name, edit := range map[string]func(*BatchState){
+		"injected pending step": func(state *BatchState) {
+			state.Steps = append(state.Steps, BatchStep{Kind: BatchStepSource, PullRequest: unreviewedPR, Head: fixture.gh.prs[unreviewedPR].Head.SHA, State: BatchStatePending})
+		},
+		"branch redirected onto the target": func(state *BatchState) { state.Branch = "public-demo" },
+		"another repository":                func(state *BatchState) { state.Repository = "acme/other" },
+		"another target":                    func(state *BatchState) { state.Target = "main" },
+	} {
+		state, _, _ := ParseBatchBody(original)
+		edit(&state)
+		fixture.gh.batch.Body = RenderBatchBody(state)
+		elsewhere := fixture.options()
+		elsewhere.cache = &memoryBatchCache{}
+		if refused := mustBatch(t, LandRefused)(AddToPullRequestBatch(ctx, elsewhere)); refused.RefusalCode != BatchRefusalBlockInvalid {
+			t.Errorf("%s: refusal = %s", name, refused.RefusalCode)
+		}
+	}
+	if out := bgit(t, fixture.work, "ls-remote", "origin", "public-demo"); !strings.HasPrefix(out, fixture.base) {
+		t.Fatalf("the integration branch moved: %s", out)
+	}
+}
+
+func TestE2EBatchForgedBodyStepsDoNotHideAMerge(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, _ := fixture.source("c.go", "package a\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	original := fixture.gh.batch.Body
+	_, sneaky := fixture.source("z.go", "package a\n\nconst Z = 1\n")
+	bgit(t, fixture.work, "fetch", "--quiet", "origin")
+	bgit(t, fixture.work, "merge", "--quiet", "--no-ff", "--no-edit", fixture.gh.prs[sneaky].Head.SHA)
+	bgit(t, fixture.work, "push", "--quiet", "origin", "HEAD:public-demo-batch-1")
+	forge := func(body string, pr int) string {
+		fixture.nextNote++
+		fixture.gh.comments[fixture.nextNote] = body
+		fixture.gh.commentPR[fixture.nextNote] = pr
+		state, _, _ := ParseBatchBody(original)
+		state.Steps = append(state.Steps, BatchStep{Kind: BatchStepSource, PullRequest: sneaky, Head: fixture.gh.prs[sneaky].Head.SHA,
+			ReviewCommentID: fixture.nextNote, ReviewDigest: ReviewDigest(body), State: BatchStateMerged})
+		return RenderBatchBody(state)
+	}
+	review := func(identity string) string {
+		return "**Review by " + identity + "**\nReviewed-Head: " + fixture.gh.prs[sneaky].Head.SHA + "\n"
+	}
+	for name, body := range map[string]string{
+		"review on another pull request": forge(review("opus@claude-code@reviewer"), 1),
+		"review by a batch builder":      forge(review("opus@claude-code@operator"), sneaky),
+		"anonymous review":               forge("Reviewed-Head: "+fixture.gh.prs[sneaky].Head.SHA+"\n", sneaky),
+	} {
+		fixture.gh.batch.Body = body
+		elsewhere := fixture.options()
+		elsewhere.cache = &memoryBatchCache{}
+		if delta := mustBatch(t, LandFindings)(DeltaPullRequestBatch(ctx, elsewhere)); delta.RefusalCode != BatchRefusalUnrecordedMerge {
+			t.Errorf("%s: delta = %s", name, delta.RefusalCode)
+		}
+	}
+	state, _, _ := ParseBatchBody(original)
+	state.Target = "main"
+	fixture.gh.batch.Body = RenderBatchBody(state)
+	elsewhere := fixture.options()
+	elsewhere.cache = &memoryBatchCache{}
+	if refused := mustBatch(t, LandRefused)(DeltaPullRequestBatch(ctx, elsewhere)); refused.RefusalCode != BatchRefusalBlockInvalid {
+		t.Fatalf("block for another target = %s", refused.RefusalCode)
+	}
+}
+
+func TestE2EBatchStatusCountsARefreshedTargetFailureAsPreExisting(t *testing.T) {
+	t.Parallel()
+	fixture := newBatchFixture(t)
+	first, n1 := fixture.source("c.go", "package a\n")
+	ctx := context.Background()
+	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
+	tip := fixture.advanceTarget("f.go", "package a\n")
+	added := mustBatch(t, LandSuccess)(AddToPullRequestBatch(ctx, fixture.options()))
+	fixture.gh.checks[added.Head] = []githubchecks.RemoteCheck{{Name: "flaky", Bucket: "fail"}}
+	fixture.gh.checks[fixture.base] = []githubchecks.RemoteCheck{{Name: "flaky", Bucket: "pass"}}
+	fixture.gh.checks[tip] = []githubchecks.RemoteCheck{{Name: "flaky", Bucket: "fail"}}
+	fixture.gh.checks[fixture.gh.prs[n1].Head.SHA] = []githubchecks.RemoteCheck{{Name: "flaky", Bucket: "pass"}}
+	status := mustBatch(t, LandSuccess)(StatusPullRequestBatch(ctx, fixture.options()))
+	if len(status.Attribution) != 1 || status.Attribution[0].String() != "flaky: pre-existing" {
+		t.Fatalf("attribution = %+v", status.Attribution)
 	}
 }

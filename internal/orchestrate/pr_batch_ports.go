@@ -16,7 +16,8 @@ import (
 // BatchGitHub is every GitHub read and write a batch verb makes.
 type BatchGitHub interface {
 	PullRequest(ctx context.Context, repository string, number int) (githubchecks.PullRequestView, error)
-	IssueComment(ctx context.Context, repository string, id int64) (string, error)
+	// IssueComment reads one comment and the pull request or issue it is on.
+	IssueComment(ctx context.Context, repository string, id int64) (BatchComment, error)
 	AllowsMergeCommits(ctx context.Context, repository string) (bool, error)
 	UsesMergeQueue(ctx context.Context, repository, target string) (bool, error)
 	// BatchPullRequest finds the pull request whose head is branch, in any
@@ -59,16 +60,32 @@ func (adapter githubBatch) PullRequest(ctx context.Context, repository string, n
 	return view, nil
 }
 
-func (adapter githubBatch) IssueComment(ctx context.Context, repository string, id int64) (string, error) {
-	var comment issueCommentBodyResponse
+// BatchComment is a review comment and the pull request it belongs to.
+type BatchComment struct {
+	Body        string
+	PullRequest int
+}
+
+func (adapter githubBatch) IssueComment(ctx context.Context, repository string, id int64) (BatchComment, error) {
+	var comment struct {
+		Body     string `json:"body"`
+		IssueURL string `json:"issue_url"`
+	}
 	raw, err := adapter.gh(ctx, "api", "repos/"+repository+"/issues/comments/"+strconv.FormatInt(id, 10))
 	if err == nil {
 		err = json.Unmarshal(raw, &comment)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read review comment %d: %w", id, err)
+		return BatchComment{}, fmt.Errorf("read review comment %d: %w", id, err)
 	}
-	return comment.Body, nil
+	// issue_url is https://api.github.com/repos/<owner>/<repo>/issues/<n>.
+	prefix := "/repos/" + strings.ToLower(repository) + "/issues/"
+	index := strings.LastIndex(strings.ToLower(comment.IssueURL), prefix)
+	number := 0
+	if index >= 0 {
+		number, _ = strconv.Atoi(comment.IssueURL[index+len(prefix):])
+	}
+	return BatchComment{Body: comment.Body, PullRequest: number}, nil
 }
 
 func (adapter githubBatch) AllowsMergeCommits(ctx context.Context, repository string) (bool, error) {
