@@ -145,13 +145,37 @@ func TestBatchGateLandsAReviewedBatchAsAMergeCommitWithoutUpdateBranch(t *testin
 	if err != nil || refusal != nil || state == nil || state.Branch != "public-demo-batch-1" {
 		t.Fatalf("state=%v refusal=%+v err=%v", state, refusal, err)
 	}
-	if narrowed.MergeMethod != "merge" || !narrowed.NoUpdateBranch {
-		t.Fatalf("options not narrowed: method=%s noUpdate=%v", narrowed.MergeMethod, narrowed.NoUpdateBranch)
+	if narrowed.MergeMethod != "merge" || !narrowed.NoUpdateBranch || !narrowed.NoAutoMerge {
+		t.Fatalf("options not narrowed: method=%s noUpdate=%v noAutoMerge=%v", narrowed.MergeMethod, narrowed.NoUpdateBranch, narrowed.NoAutoMerge)
 	}
 	plain := landingBatchView(batchState())
-	plain.Body = "an ordinary pull request"
+	plain.Body, plain.Head.Ref = "an ordinary pull request", "feature/x"
 	if state, refusal, _, err := runGate(t, gateOptions(world), plain); state != nil || refusal != nil || err != nil {
 		t.Fatal("an ordinary pull request went through the batch gate")
+	}
+}
+
+func TestBatchGateRefusesABatchWhoseBlockWasRemoved(t *testing.T) {
+	t.Parallel()
+	body := RenderBatchBody(batchState())
+	for name, mutate := range map[string]func(*githubchecks.PullRequestView){
+		"block deleted on a batch branch": func(v *githubchecks.PullRequestView) { v.Body = "nothing to see" },
+		"end marker removed": func(v *githubchecks.PullRequestView) {
+			v.Body, v.Head.Ref = strings.Replace(body, batchBlockEnd, "", 1), "feature/x"
+		},
+		"begin marker removed": func(v *githubchecks.PullRequestView) {
+			v.Body, v.Head.Ref = strings.Replace(body, batchBlockBegin, "", 1), "feature/x"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			view := landingBatchView(batchState())
+			mutate(&view)
+			_, refusal, _, err := runGate(t, gateOptions(newBatchWorld()), view)
+			if err != nil || refusal == nil || refusal.code != LandRefusalBatchBlockInvalid {
+				t.Fatalf("refusal=%+v err=%v", refusal, err)
+			}
+		})
 	}
 }
 

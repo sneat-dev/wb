@@ -69,10 +69,22 @@ func batchRefusal(code, reason, command string) *landRefusal {
 // batchLandingGate returns the batch state when view is a batch pull request
 // that may land, a refusal when it may not, and nil, nil, nil when view is not
 // a batch. It narrows options to a merge commit without update-branch.
+// looksLikeBatch reports a pull request that must not land under the ordinary
+// rules even though its block is missing: deleting or breaking the block must
+// not downgrade a batch to a plain landing.
+func looksLikeBatch(view githubchecks.PullRequestView) bool {
+	return strings.Contains(view.Body, batchBlockBegin) || strings.Contains(view.Body, batchBlockEnd) ||
+		(view.Base.Ref != "" && batchBranchPattern(view.Base.Ref).MatchString(view.Head.Ref))
+}
+
 func batchLandingGate(ctx context.Context, options *PullRequestLandOptions, view githubchecks.PullRequestView, number string) (*BatchState, *landRefusal, error) {
 	state, ok, err := ParseBatchBody(view.Body)
 	land := "wb pr land " + options.Repository + "#" + number
 	if !ok {
+		if looksLikeBatch(view) {
+			return nil, batchRefusal(LandRefusalBatchBlockInvalid,
+				"this pull request looks like a WB batch (a batch marker or a <target>-batch-<n> branch) but carries no readable batch block", ""), nil
+		}
 		return nil, nil, nil
 	}
 	if err != nil || state.Branch != view.Head.Ref || state.Target != view.Base.Ref || !strings.EqualFold(state.Repository, options.Repository) {
@@ -89,7 +101,9 @@ func batchLandingGate(ctx context.Context, options *PullRequestLandOptions, view
 	case (options.MergeMethodExplicit && options.MergeMethod != "merge") || len(options.KeepCommits) > 0:
 		return nil, batchRefusal(LandRefusalBatchMergeMethod, "a batch lands only as a merge commit, which keeps every reviewed head", land), nil
 	}
-	options.MergeMethod, options.NoUpdateBranch = "merge", true
+	// Auto-merge stays off: GitHub keeps an armed auto-merge across a push,
+	// so a commit pushed during the wait would land without this gate.
+	options.MergeMethod, options.NoUpdateBranch, options.NoAutoMerge = "merge", true, true
 
 	ports := options.resolveBatchPorts()
 	reviewed, reviewer, refusal := batchReview(ctx, *options, ports, number, delta)

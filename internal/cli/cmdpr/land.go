@@ -178,7 +178,9 @@ it whose Reviewed-Head is the current batch head from an identity that built
 none of the batch, and only after every first-parent merge is proved to bring
 in a recorded, still-reviewed pin or target history. Source pull requests are
 then recorded: merged, closed with a comment, or left open with a comment when
-their head moved after the pin.
+their head moved after the pin. Auto-merge is never armed for a batch. A pull
+request on a <target>-batch-<n> branch, or with a broken block, is refused
+rather than landed as an ordinary one.
 
 Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
 unverified), 2 a guard refused, 3 landed but the follow-up (canonical sync, branch
