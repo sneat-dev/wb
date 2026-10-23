@@ -103,7 +103,7 @@ workflow dispatch only.`,
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "plan publication and downstream waves without workflow dispatch, npm registry queries, or dependency-file changes")
 	command.Flags().BoolVar(&options.resume, "resume", false, "resume the persisted publication and dependency-wave reports without redispatching receipted workflows")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit downstream dependency references lower than an observed version")
-	command.Flags().StringVar(&options.checks, "checks", "", "downstream checks: lint,test,build (default all)")
+	command.Flags().StringVar(&options.checks, "checks", "", "downstream checks: lint,test,build,typecheck,spec (default lint,test,build)")
 	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "explicitly skip downstream local verification")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per workflow, registry, downstream check, or CI wait")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for eligible downstream external commands")

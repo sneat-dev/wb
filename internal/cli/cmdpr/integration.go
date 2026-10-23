@@ -62,9 +62,10 @@ const integrationLong = `Merge reviewed lane commits into an integration branch,
 ` + pinHelp + `
 
 After the merges, "wb integration merge" runs the repository's local-check
-recipe (.wb/quality.yaml; --checks lint,test,build,spec selects, default
-lint,test,build) on the result and pushes it to origin/<integration> without
-force only when every check passed. When the integration branch does not
+recipe on the result: --checks, else .wb/quality.yaml integration_checks, else
+lint, test and build plus typecheck where a project defines it. It pushes the
+checked commit to origin/<integration> without force only when every check
+passed. When the integration branch does not
 contain --to (default the repository's default branch), it first merges --to
 as a recorded refresh (Wb-Refresh), so the promotion is never behind its
 target. No CI runs on that push, and the
@@ -206,9 +207,12 @@ func newIntegrationVerb(runtime shared.Runtime, use, short, long string, batch b
 				}
 				options.Integration, options.Pins = target, args[1:]
 			} else {
-				parsed, err := quality.ParseChecks(checks)
-				if err != nil {
-					return runtime.ExitError(shared.ExitUsage, err.Error())
+				var parsed []quality.Check
+				if command.Flags().Changed("checks") {
+					var err error
+					if parsed, err = quality.ParseChecks(checks); err != nil {
+						return runtime.ExitError(shared.ExitUsage, err.Error())
+					}
 				}
 				options.Integration, options.Pins, options.Checks, options.To = args[1], args[2:], parsed, to
 			}
@@ -231,7 +235,7 @@ func newIntegrationVerb(runtime shared.Runtime, use, short, long string, batch b
 	if batch {
 		command.Flags().StringVar(&target, "target", "", "integration branch the lanes merge into (required)")
 	} else {
-		command.Flags().StringVar(&checks, "checks", "", "local checks to run before pushing: lint,test,build,spec (default lint,test,build)")
+		command.Flags().StringVar(&checks, "checks", "", "local checks to run before pushing: lint,test,build,typecheck,spec (default: the repository's integration_checks, else lint,test,build plus typecheck where defined)")
 		command.Flags().StringVar(&to, "to", "", "promotion target to refresh from when the integration branch lacks it (default: the repository's default branch)")
 	}
 	command.Flags().StringVar(&worktree, "worktree", "", "integration worktree (default: the current directory)")

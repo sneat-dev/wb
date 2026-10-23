@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -212,5 +213,34 @@ func TestGitHubPromoteAdapter(t *testing.T) {
 		if got := (PromoteResult{Outcome: outcome}).ExitCode(); got != want {
 			t.Errorf("%s exit %d", outcome, got)
 		}
+	}
+}
+
+func TestLocalChecksPreferExplicitThenRecipeThenDefault(t *testing.T) {
+	t.Parallel()
+	if !slices.Contains(defaultIntegrationChecks, quality.CheckTypecheck) || !slices.Contains(defaultIntegrationChecks, quality.CheckTest) {
+		t.Fatalf("defaults = %v", defaultIntegrationChecks)
+	}
+	root := t.TempDir()
+	for name, body := range map[string]string{"package.json": `{"scripts":{}}`, "nx.json": "{}", ".wb/quality.yaml": "version: 1\nintegration_checks: [typecheck]\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The recipe names only typecheck, which this workspace does not define:
+	// one skipped entry, and no Nx target is started.
+	report := localChecks(context.Background(), "acme/app", root, nil, 0)
+	if len(report.Results) != 1 || report.Results[0].Check != quality.CheckTypecheck {
+		t.Fatalf("recipe report = %+v", report)
+	}
+	if report := localChecks(context.Background(), "acme/app", root, []quality.Check{quality.CheckSpec}, 0); len(report.Results) != 1 || report.Results[0].Check != quality.CheckSpec {
+		t.Fatalf("explicit report = %+v", report)
+	}
+	// No project and no recipe: the defaults have nothing to run.
+	if report := localChecks(context.Background(), "acme/app", t.TempDir(), nil, 0); report.Status != quality.StatusSkipped {
+		t.Fatalf("default report = %+v", report)
 	}
 }

@@ -356,8 +356,9 @@ wb integration merge <owner/repository> <integration> <branch@sha=review-url>...
 - Each pinned SHA gets its own `--no-ff` merge commit carrying `Wb-Lane`,
   `Wb-Review`, `Wb-Review-Digest`, `Wb-Reviewer` and `Wb-Merged-By` trailers.
   WB never rebases, squashes or force-pushes.
-- The repository's local-check recipe (`.wb/quality.yaml`, `--checks` to
-  select) must pass before the push; no CI runs on that push, and the
+- The repository's local-check recipe must pass before the push: `--checks`,
+  else `.wb/quality.yaml` `integration_checks: [lint, test, ...]`, else lint,
+  test and build plus `typecheck` where a project defines that script; no CI runs on that push, and the
   integration branch needs no ruleset.
 - A conflict stops with the files listed: resolve, `git commit --no-edit`
   (keeps the trailers), rerun the same command. Merged pins are skipped.

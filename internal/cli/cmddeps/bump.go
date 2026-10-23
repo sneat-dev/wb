@@ -127,7 +127,7 @@ does: "@sneat/*" matches "@sneat/core", and "github.com/dal-go/*" matches
 	command.Flags().BoolVar(&options.fetchCache, "fetch-cache", false, "memoize DISCOVERY fetches for up to 15m within this run for repositories the campaign never pushed to, opened a PR for, or merged (opt-in; wave mutation bases always re-fetch; nothing persists across invocations; avoid when others may land on main mid-campaign)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse existing wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
-	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
+	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build,typecheck,spec (default lint,test,build)")
 	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge or PR validation")
 	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "legacy explicit escape hatch that skips local verification (distinct from --validation=fast)")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check, CI wait, or release wait (0 disables)")
