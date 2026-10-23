@@ -103,6 +103,14 @@ without queue detection and records the gap on the receipt, so never pass
 `--allow-unfenced` where a queue must not be bypassed. A queue required through classic branch protection rather than a
 ruleset is not detected yet.
 
+## Release an interrupted landing claim
+
+Once the WB landing command has stopped, `wb lane release owner/repository --target main` releases only your registered session's idle lane claim. An absent
+claim succeeds; another owner or a running operation is refused. It leaves the
+PR, branches and worktrees intact. Legacy claims conservatively require no
+other WB executable to be running; see the
+[release lifecycle](../../wb-worktrees/references/lifecycle.md#release-an-idle-landing-lane).
+
 ## Cleanup is the default
 
 The task's worktree is removed and its claim released as part of landing.

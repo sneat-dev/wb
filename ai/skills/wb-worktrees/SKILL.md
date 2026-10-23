@@ -143,7 +143,9 @@ diagnose it; do not repeat the whole gate.
   the branch in question has no worktree, it hands you to the `wb-branches`
   skill (`wb branch list` / `wb branch cleanup`) instead.
 - Read [lifecycle.md](references/lifecycle.md) to inspect live tasks,
-  finalize merged work, recycle caches safely, or abort interrupted claims.
+  finalize merged work, recycle caches safely, abort interrupted task claims,
+  or release your idle landing lane with `wb lane release owner/repository --target main` after its command exits. This releases the lane without
+  retiring the task or changing its branches/worktrees/PRs.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
   (checkpoint, steer, refresh, handoff, recover, finalize, sync).
 - Read [ownership.md](references/ownership.md) to register a session

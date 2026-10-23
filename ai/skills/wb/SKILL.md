@@ -13,6 +13,7 @@ wb worktree land <worktree>...           # finish it — one call per repository
 wb pr create --add <paths> -m "…" --land --approved-by <review>  # one worktree: commit, push, open, and land
 wb pr create --commit-staged -m "…"      # or --commit-all; open the pull request without landing it yet
 wb pr land <owner/repo#n>                # land an already-open pull request with no local worktree
+wb lane release <owner/repository>       # release your idle landing claim; --target defaults to main
 ```
 
 Never hand-roll `gh pr create`, `gh pr merge`, a manual ancestry check,
@@ -40,6 +41,10 @@ record the confirmation. Never challenge the same instruction twice.
 - Creating, resuming, listing, renaming, or cleaning up isolated worktrees, or
   landing/merging/reverting a batch of compatible work → `wb-worktrees` and
   `wb-merge`
+- Releasing your own idle landing claim after an interrupted command →
+  `wb lane release owner/repository --target main`; read `wb-worktrees`
+  [lifecycle](../wb-worktrees/references/lifecycle.md#release-an-idle-landing-lane)
+  for ownership and active-operation refusals
 - Fleet-wide sync, status, coverage, verify, or check → `wb-fleet`
 - Installing or diagnosing fleet-standard Git hooks → `wb-hooks`
 - Dependency bumps, publishing, or drift, or a coordinated release wave →

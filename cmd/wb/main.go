@@ -214,6 +214,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newPRCmd(inv), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(inv), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(inv), rootGroupAgent),
+		groupedRootCommand(newLaneCmd(inv), rootGroupAgent),
 		groupedRootCommand(newAgentCmd(inv), rootGroupAgent),
 		groupedRootCommand(newTaskCmd(inv), rootGroupAgent),
 		groupedRootCommand(newStreamCmd(inv), rootGroupChange),
@@ -267,7 +268,8 @@ func sideEffectFreeCommand(id string) bool {
 // silently ignoring it is unsafe for scripts and agents.
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
-		"sync": true, "run": true, "migrate": true,
+		"lane release": true,
+		"sync":         true, "run": true, "migrate": true,
 		"sync-report publish": true,
 		"dashboard":           true,
 		"cockpit":             true,
