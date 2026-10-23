@@ -72,11 +72,17 @@ func newBatchFixture(t *testing.T) *batchFixture {
 	fixture.base = bgit(t, seed, "rev-parse", "HEAD")
 	bgit(t, root, "clone", "--quiet", "--branch", "public-demo", origin, fixture.work)
 	bgit(t, fixture.work, "switch", "--quiet", "-c", "public-demo-batch-1")
-	// The verbs run git themselves in the batch worktree; CI has no global identity.
-	bgit(t, fixture.work, "config", "user.name", "WB Test")
-	bgit(t, fixture.work, "config", "user.email", "wb@example.test")
-	bgit(t, fixture.work, "config", "commit.gpgsign", "false")
+	batchIdentity(t, fixture.work)
 	return fixture
+}
+
+// batchIdentity gives a clone the verbs run git in its own committer
+// identity: the CI runner has no global one.
+func batchIdentity(t *testing.T, dir string) {
+	t.Helper()
+	bgit(t, dir, "config", "user.name", "WB Test")
+	bgit(t, dir, "config", "user.email", "wb@example.test")
+	bgit(t, dir, "config", "commit.gpgsign", "false")
 }
 
 func (fixture *batchFixture) options(pins ...string) BatchOptions {
@@ -386,6 +392,7 @@ func TestE2EBatchAddOnAnotherCloneRebuildsFromOriginAndRefusesARace(t *testing.T
 	mustBatch(t, LandSuccess)(CreatePullRequestBatch(ctx, fixture.options(first)))
 
 	bgit(t, filepath.Dir(fixture.other), "clone", "--quiet", "--branch", "public-demo-batch-1", fixture.origin, fixture.other)
+	batchIdentity(t, fixture.other)
 	elsewhere := fixture.options()
 	elsewhere.Worktree, elsewhere.cache = fixture.other, &memoryBatchCache{}
 	second, _ := fixture.source("d.go", "package a\n\nconst D = 1\n")
