@@ -37,6 +37,7 @@ func landPromotionFixture(t *testing.T) (*landFixture, PullRequestLandOptions) {
 		operator: func() ReviewerIdentity {
 			return ReviewerIdentity{Model: "opus", Harness: "claude-code", Session: "operator"}
 		},
+		mergeMethod: func(context.Context, string) (string, error) { return "merge", nil },
 	}
 	opts := landOptions(fixture)
 	opts.promotePorts = ports

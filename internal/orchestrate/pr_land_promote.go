@@ -41,13 +41,18 @@ type IssueComment struct {
 // promoteLandingPorts are the GitHub reads promotion landing makes.
 type promoteLandingPorts struct {
 	comment  func(ctx context.Context, repository string, id int64) (IssueComment, error)
-	review   IntegrationGitHub
+	review   commitCommentReader
 	contains func(ctx context.Context, repository, ancestor, descendant string) (bool, string)
 	operator func() ReviewerIdentity
+	// mergeMethod is the repository's preferred enabled method: a merge
+	// commit when allowed, so the integration branch stays an ancestor of
+	// the target and needs no refresh.
+	mergeMethod func(ctx context.Context, repository string) (string, error)
 }
 
 func defaultPromoteLandingPorts() promoteLandingPorts {
-	return promoteLandingPorts{comment: readIssueComment, review: DefaultIntegrationGitHub(), contains: githubchecks.ContainsTarget, operator: currentSessionIdentity}
+	return promoteLandingPorts{comment: readIssueComment, review: DefaultIntegrationGitHub(), contains: githubchecks.ContainsTarget,
+		operator: currentSessionIdentity, mergeMethod: repositoryPullRequestMergeMethod}
 }
 
 func (options PullRequestLandOptions) resolvePromotePorts() promoteLandingPorts {
@@ -106,7 +111,7 @@ func carriesLaneTrailer(commit SourceCommit) bool {
 // land, a refusal when it may not, and nil, nil, nil when view is not a
 // promotion. It narrows options so the reviewed head is what lands.
 func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, view githubchecks.PullRequestView, number string, commits []SourceCommit) (*PromotionReceipt, *landRefusal, error) {
-	promote := "wb integration promote " + options.Repository + " " + view.Head.Ref + " --to " + view.Base.Ref
+	promote := "wb integration promote " + options.Repository + " " + shellSingleQuote(view.Head.Ref) + " --to " + shellSingleQuote(view.Base.Ref)
 	ports := options.resolvePromotePorts()
 	if !strings.Contains(view.Body, promoteMarker) {
 		for _, commit := range commits {
@@ -125,7 +130,16 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 		return nil, nil, nil
 	}
 	options.NoUpdateBranch, options.NoAutoMerge = true, true
-	delta := fmt.Sprintf("wb pr batch delta %s --target %s --to %s --overlap", options.Repository, view.Head.Ref, view.Base.Ref)
+	// Prefer a merge commit, so the integration branch stays an ancestor of
+	// the target; a queue or an explicit --merge-method decides otherwise.
+	if !options.MergeMethodExplicit && options.mergeQueue == nil {
+		method, err := ports.mergeMethod(ctx, options.Repository)
+		if err != nil {
+			return nil, nil, err
+		}
+		options.MergeMethod = method
+	}
+	delta := promotionDeltaCommand(options.Repository, view)
 	reviewer, refusal := promotionReview(ctx, *options, ports, view, number, delta)
 	if refusal != nil {
 		return nil, refusal, nil
@@ -162,6 +176,25 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 		return nil, promoteRefusal(LandRefusalBatchDeltaSelfReview, fmt.Sprintf("reviewer session %s made a lane merge in this promotion", reviewer.Session), delta), nil
 	}
 	return &PromotionReceipt{Lanes: verdict.Lanes, Reviewer: reviewer.String()}, nil, nil
+}
+
+// promotionApprovalForm refuses, before any review comment is posted, a
+// promotion whose --approved-by is not a comment URL on it.
+func promotionApprovalForm(options PullRequestLandOptions, view githubchecks.PullRequestView, number string) *landRefusal {
+	if !strings.Contains(view.Body, promoteMarker) {
+		return nil
+	}
+	match := issueCommentURLPattern.FindStringSubmatch(strings.TrimSpace(options.ApprovedBy))
+	if match != nil && strings.EqualFold(match[1], options.Repository) && match[2] == number {
+		return nil
+	}
+	return promoteRefusal(LandRefusalBatchDeltaUnreviewed,
+		"a promotion lands only with --approved-by naming an existing review comment on this pull request whose Reviewed-Head is its head",
+		promotionDeltaCommand(options.Repository, view))
+}
+
+func promotionDeltaCommand(repository string, view githubchecks.PullRequestView) string {
+	return fmt.Sprintf("wb pr batch delta %s --target %s --to %s --overlap", repository, shellSingleQuote(view.Head.Ref), shellSingleQuote(view.Base.Ref))
 }
 
 // promotionReview reads the --approved-by comment on this pull request and

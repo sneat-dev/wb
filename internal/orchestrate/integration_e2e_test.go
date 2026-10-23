@@ -36,6 +36,27 @@ type fakeIntegrationGitHub struct {
 	comments map[int64]CommitComment
 	failAt   int
 	calls    int
+	// method is how promotions into the target land; "" means merge.
+	method string
+}
+
+func (gh *fakeIntegrationGitHub) DefaultBranch(context.Context, string) (string, error) {
+	gh.calls++
+	if gh.calls == gh.failAt {
+		return "", errFakeGitHub
+	}
+	return "main", nil
+}
+
+func (gh *fakeIntegrationGitHub) PromotionMergeMethod(context.Context, string, string) (string, error) {
+	gh.calls++
+	if gh.calls == gh.failAt {
+		return "", errFakeGitHub
+	}
+	if gh.method == "" {
+		return "merge", nil
+	}
+	return gh.method, nil
 }
 
 var errFakeGitHub = errors.New("fake GitHub failure")

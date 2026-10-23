@@ -761,6 +761,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
+	// A promotion is reviewed only by an existing comment on it; refuse the
+	// identity form before WB would post one.
+	if refusal := promotionApprovalForm(options, view, number); refusal != nil {
+		return mergeRefusal(result, *refusal), nil
+	}
 	// reviewedHead is the head this landing binds any review to (#586): the
 	// exact head observed before any update-branch cycle runs. A review
 	// supplied for a different head — whether the identity form (posted

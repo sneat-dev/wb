@@ -182,9 +182,11 @@ the marker, and then, before merging or enqueueing:
    `unknown` part and a session different from the operator's and from every
    `Wb-Merged-By` session on the walk (`batch-delta-self-review`);
 2. pass REQ batch-merge-provenance;
-3. land under the repository's own merge policy for its target (the merge
-   queue's method when the target has one, otherwise `wb pr land`'s usual
-   method selection), with full CI on the target, never updating the branch
+3. land under the repository's own merge policy for its target — the merge
+   queue's method when the target has one, an explicit `--merge-method`, or
+   otherwise a merge commit when the repository allows one (so the
+   integration branch stays an ancestor of the target), else its enabled
+   method — with full CI on the target, never updating the branch
    server-side and never arming auto-merge, so what lands is the reviewed
    head (inside the queue's merge-group commit under a merge queue). When that policy squashes, the integration branch is
    refreshed from the target (a target-refresh merge) or recreated before

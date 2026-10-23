@@ -65,7 +65,7 @@ func (verdict provenance) mergedBy(session string) bool {
 
 // verifyProvenance applies REQ batch-merge-provenance to walk. inTarget
 // reports whether a commit is history of the promotion target.
-func verifyProvenance(ctx context.Context, github IntegrationGitHub, repository string, walk []integrationCommit, inTarget func(string) (bool, error)) (provenance, error) {
+func verifyProvenance(ctx context.Context, github commitCommentReader, repository string, walk []integrationCommit, inTarget func(string) (bool, error)) (provenance, error) {
 	var verdict provenance
 	for _, commit := range walk {
 		if len(commit.Parents) < 2 {
@@ -98,7 +98,7 @@ func verifyProvenance(ctx context.Context, github IntegrationGitHub, repository 
 // reviewStillBinds re-reads a lane's review: still on that commit, still the
 // recorded text, still naming it, by a complete identity that did not make
 // the merge. A comment that cannot be read does not bind.
-func reviewStillBinds(ctx context.Context, github IntegrationGitHub, repository string, record laneRecord) bool {
+func reviewStillBinds(ctx context.Context, github commitCommentReader, repository string, record laneRecord) bool {
 	comment, err := github.CommitComment(ctx, repository, record.CommentID)
 	if err != nil || !strings.EqualFold(comment.CommitID, record.SHA) || ReviewDigest(comment.Body) != record.Digest {
 		return false
@@ -130,7 +130,6 @@ type PromoteOptions struct {
 // PromoteGitHub is every GitHub read and write promotion makes.
 type PromoteGitHub interface {
 	IntegrationGitHub
-	DefaultBranch(ctx context.Context, repository string) (string, error)
 	// OpenPullRequest finds the open pull request from head to base; number
 	// 0 means there is none.
 	OpenPullRequest(ctx context.Context, repository, head, base string) (number int, body string, err error)
@@ -176,6 +175,9 @@ func PromoteText(result PromoteResult) string {
 	}
 	if result.PullRequest != "" {
 		fmt.Fprintf(&text, "pull request: %s\n", result.PullRequest)
+	}
+	if result.Head != "" {
+		fmt.Fprintf(&text, "head: %s (a review of this delta ends Reviewed-Head: %s)\n", result.Head, result.Head)
 	}
 	for _, lane := range result.Lanes {
 		fmt.Fprintf(&text, "  lane %s@%s reviewed by %s\n", lane.Branch, shortMergeRevision(lane.SHA), lane.Reviewer)
@@ -267,7 +269,7 @@ func localInTarget(ctx context.Context, git batchGit, target string) func(string
 }
 
 func (options PromoteOptions) deltaCommand() string {
-	return fmt.Sprintf("wb pr batch delta %s --target %s --to %s", options.Repository, options.Integration, options.To)
+	return fmt.Sprintf("wb pr batch delta %s --target %s --to %s", options.Repository, shellSingleQuote(options.Integration), shellSingleQuote(options.To))
 }
 
 // DeltaBatch is `wb pr batch delta`: only the integration delta of the

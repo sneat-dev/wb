@@ -27,6 +27,8 @@ type promoteWorld struct {
 	contained   bool
 	containsErr string
 	operator    string
+	method      string
+	methodErr   error
 }
 
 func newPromoteWorld() *promoteWorld {
@@ -37,6 +39,7 @@ func newPromoteWorld() *promoteWorld {
 		laneCommit: promoteLane,
 		contained:  true,
 		operator:   "operator",
+		method:     "merge",
 	}
 }
 
@@ -52,6 +55,7 @@ func (world *promoteWorld) ports() *promoteLandingPorts {
 		operator: func() ReviewerIdentity {
 			return ReviewerIdentity{Model: "opus", Harness: "claude-code", Session: world.operator}
 		},
+		mergeMethod: func(context.Context, string) (string, error) { return world.method, world.methodErr },
 	}
 }
 
@@ -99,8 +103,22 @@ func TestPromotionGateLandsAReviewedPromotionWithoutUpdateBranchOrAutoMerge(t *t
 	if err != nil || refusal != nil || receipt == nil || len(receipt.Lanes) != 1 || receipt.Reviewer != "opus@codex@delta-reviewer" {
 		t.Fatalf("receipt = %+v refusal = %+v err = %v", receipt, refusal, err)
 	}
-	if !narrowed.NoUpdateBranch || !narrowed.NoAutoMerge {
+	if !narrowed.NoUpdateBranch || !narrowed.NoAutoMerge || narrowed.MergeMethod != "merge" {
 		t.Fatalf("options not narrowed: %+v", narrowed)
+	}
+	// A repository that only squashes squashes the promotion too; an explicit
+	// method is kept, and a failed settings read surfaces.
+	world.method = "squash"
+	if _, _, squashed, _ := runPromotionGate(world, promotionView(), promotionCommits(world), promoteApproval); squashed.MergeMethod != "squash" {
+		t.Fatalf("method = %s", squashed.MergeMethod)
+	}
+	explicit := PullRequestLandOptions{Repository: "acme/app", ApprovedBy: promoteApproval, promotePorts: world.ports(), MergeMethod: "rebase", MergeMethodExplicit: true}
+	if _, _, err := promotionLandingGate(context.Background(), &explicit, promotionView(), "7", promotionCommits(world)); err != nil || explicit.MergeMethod != "rebase" {
+		t.Fatalf("explicit method = %s err = %v", explicit.MergeMethod, err)
+	}
+	world.methodErr = errors.New("403")
+	if _, _, _, err := runPromotionGate(world, promotionView(), promotionCommits(world), promoteApproval); err == nil {
+		t.Fatal("a failed settings read was swallowed")
 	}
 	plain := promotionView()
 	plain.Body = "an ordinary pull request"
@@ -217,7 +235,25 @@ func TestDecodeIssueCommentBindsItsPullRequest(t *testing.T) {
 	if _, err := decodeIssueComment(nil, errors.New("404"), "acme/app", 5); err == nil {
 		t.Fatal("a failed read was swallowed")
 	}
-	if ports := (PullRequestLandOptions{}).resolvePromotePorts(); ports.comment == nil || ports.review == nil || ports.contains == nil || ports.operator == nil {
+	if ports := (PullRequestLandOptions{}).resolvePromotePorts(); ports.comment == nil || ports.review == nil || ports.contains == nil || ports.operator == nil || ports.mergeMethod == nil {
 		t.Fatal("a default promotion port is nil")
+	}
+}
+
+func TestPromotionApprovalFormIsCheckedBeforeAnyCommentIsPosted(t *testing.T) {
+	t.Parallel()
+	view := promotionView()
+	options := PullRequestLandOptions{Repository: "acme/app", ApprovedBy: "opus@codex@reviewer"}
+	if refusal := promotionApprovalForm(options, view, "7"); refusal == nil || refusal.code != LandRefusalBatchDeltaUnreviewed || !strings.Contains(refusal.command, "--target 'public-demo'") {
+		t.Fatalf("identity form refusal = %+v", refusal)
+	}
+	options.ApprovedBy = promoteApproval
+	if refusal := promotionApprovalForm(options, view, "7"); refusal != nil {
+		t.Fatalf("a comment URL was refused: %+v", refusal)
+	}
+	view.Body = "ordinary"
+	options.ApprovedBy = "opus@codex@reviewer"
+	if refusal := promotionApprovalForm(options, view, "7"); refusal != nil {
+		t.Fatal("an ordinary pull request's identity form was refused")
 	}
 }

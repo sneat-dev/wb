@@ -68,6 +68,7 @@ const (
 	trailerDigest   = "Wb-Review-Digest"
 	trailerReviewer = "Wb-Reviewer"
 	trailerMergedBy = "Wb-Merged-By"
+	trailerRefresh  = "Wb-Refresh"
 )
 
 // batchMergeOptions are the fixed merge settings every lane merge and every
@@ -155,6 +156,7 @@ type IntegrationResult struct {
 	Head          string                      `json:"head,omitempty"`
 	Lanes         []LaneMerge                 `json:"lanes,omitempty"`
 	Checks        *quality.VerificationReport `json:"checks,omitempty"`
+	Refreshed     string                      `json:"refreshed,omitempty"`
 	Pushed        bool                        `json:"pushed"`
 	Changed       bool                        `json:"changed"`
 }
@@ -228,7 +230,11 @@ type IntegrationOptions struct {
 	Checks []quality.Check
 	// CheckTimeout bounds the local checks; 0 is the quality default.
 	CheckTimeout time.Duration
-	GitHub       IntegrationGitHub
+	// To is the promotion target; empty means the repository's default
+	// branch. When a promotion into it does not land as a merge commit,
+	// `wb integration merge` refreshes the integration branch from it.
+	To     string
+	GitHub IntegrationGitHub
 
 	verb        string
 	run         runner.Runner
@@ -347,6 +353,9 @@ func (options IntegrationOptions) integrationArg(verb string) string {
 // rerunCommand is the same invocation again, pins quoted.
 func (options IntegrationOptions) rerunCommand() string {
 	command := options.command(options.verb)
+	if options.To != "" {
+		command += " --to " + shellSingleQuote(options.To)
+	}
 	for _, pin := range options.Pins {
 		command += " " + shellSingleQuote(pin)
 	}
@@ -495,9 +504,61 @@ func (options IntegrationOptions) mergedThroughRecord(ctx context.Context, git b
 	return false, nil
 }
 
+// refreshFromTarget resolves and fetches the promotion target and, when a
+// promotion into it does not land as a merge commit (the integration branch
+// then stops being its ancestor), merges the target into the integration
+// branch as a recorded refresh. It returns the target's remote ref, the
+// target SHA it merged ("" when none was needed), and a finding when the
+// refresh conflicts or the target is not a branch WB accepts.
+func (options IntegrationOptions) refreshFromTarget(ctx context.Context, git batchGit) (string, string, func(IntegrationResult) IntegrationResult, error) {
+	github := options.resolveGitHub()
+	to := options.To
+	if to == "" {
+		var err error
+		if to, err = github.DefaultBranch(ctx, options.Repository); err != nil {
+			return "", "", nil, err
+		}
+	}
+	if !validBranchName(to) {
+		return "", "", func(result IntegrationResult) IntegrationResult {
+			return result.refuse(BatchRefusalPinInvalid, fmt.Sprintf("%q is not a branch name WB accepts", to), "")
+		}, nil
+	}
+	ref := "refs/remotes/origin/" + to
+	if _, err := git.out(ctx, "fetch", "--quiet", "origin", "+refs/heads/"+to+":"+ref); err != nil {
+		return "", "", nil, err
+	}
+	method, err := github.PromotionMergeMethod(ctx, options.Repository, to)
+	if err != nil || method == "merge" {
+		return ref, "", nil, err
+	}
+	if contained, err := git.test(ctx, "merge-base", "--is-ancestor", ref, "HEAD"); err != nil || contained {
+		return ref, "", nil, err
+	}
+	tip, err := git.out(ctx, "rev-parse", ref)
+	if err != nil {
+		return ref, "", nil, err
+	}
+	subject := fmt.Sprintf("Merge %s (%s) into %s", to, shortMergeRevision(tip), options.Integration)
+	trailers := fmt.Sprintf("%s: %s@%s\n%s: %s", trailerRefresh, to, tip, trailerMergedBy, options.resolveOperator().String())
+	if _, mergeErr := git.out(ctx, configArgs(batchMergeOptions, "merge", "--no-ff", "--no-edit", "-m", subject, "-m", trailers, tip)...); mergeErr != nil {
+		conflicts, listErr := git.out(ctx, "diff", "--name-only", "--diff-filter=U")
+		if listErr != nil || conflicts == "" {
+			return ref, "", nil, mergeErr
+		}
+		return ref, tip, func(result IntegrationResult) IntegrationResult {
+			return result.finding(BatchRefusalConflict,
+				fmt.Sprintf("refreshing from %s (%s merges promotions with %s) conflicts in %s; resolve them in %s, run git commit --no-edit, and rerun",
+					to, to, method, strings.ReplaceAll(conflicts, "\n", ", "), options.Worktree), options.rerunCommand())
+		}, nil
+	}
+	return ref, tip, nil, nil
+}
+
 // unrecordedLocalMerge returns the first local first-parent merge, not yet on
-// origin/<integration>, whose trailers do not name its own second parent.
-func (options IntegrationOptions) unrecordedLocalMerge(ctx context.Context, git batchGit) (string, error) {
+// origin/<integration>, that neither names its own second parent in Wb-Lane
+// trailers nor brings in target history.
+func (options IntegrationOptions) unrecordedLocalMerge(ctx context.Context, git batchGit, target string) (string, error) {
 	raw, err := git.out(ctx, "log", "--first-parent", "--merges", "--format=%H%x00%P%x00%B%x1e", "^"+options.remoteRef(), "HEAD")
 	if err != nil {
 		return "", err
@@ -508,9 +569,19 @@ func (options IntegrationOptions) unrecordedLocalMerge(ctx context.Context, git 
 			continue
 		}
 		parents := strings.Fields(fields[1])
-		if record, ok := parseLaneTrailers(fields[2]); !ok || len(parents) != 2 || parents[1] != record.SHA {
-			return fields[0], nil
+		if record, ok := parseLaneTrailers(fields[2]); ok && len(parents) == 2 && parents[1] == record.SHA {
+			continue
 		}
+		if len(parents) == 2 {
+			refresh, err := git.test(ctx, "merge-base", "--is-ancestor", parents[1], target)
+			if err != nil {
+				return "", err
+			}
+			if refresh {
+				continue
+			}
+		}
+		return fields[0], nil
 	}
 	return "", nil
 }
@@ -677,6 +748,14 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 			return result.refuse(issue.Code, issue.Reason, ""), nil
 		}
 	}
+	target, refreshed, finding, err := options.refreshFromTarget(ctx, git)
+	if err != nil {
+		return result, err
+	}
+	result.Refreshed = refreshed
+	if finding != nil {
+		return finding(result), nil
+	}
 	head, err := git.out(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return result, err
@@ -692,7 +771,7 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 	}
 	// Whatever is pushed must be what WB merged: every local merge carries
 	// trailers naming its own second parent.
-	if unrecorded, err := options.unrecordedLocalMerge(ctx, git); err != nil {
+	if unrecorded, err := options.unrecordedLocalMerge(ctx, git, target); err != nil {
 		return result, err
 	} else if unrecorded != "" {
 		return result.refuse(BatchRefusalUnrecordedMerge,

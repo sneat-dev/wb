@@ -27,13 +27,6 @@ func (gh *fakePromoteGitHub) fail() bool {
 	return gh.calls == gh.failAt
 }
 
-func (gh *fakePromoteGitHub) DefaultBranch(context.Context, string) (string, error) {
-	if gh.fail() {
-		return "", errFakeGitHub
-	}
-	return "main", nil
-}
-
 func (gh *fakePromoteGitHub) OpenPullRequest(context.Context, string, string, string) (int, string, error) {
 	if gh.fail() {
 		return 0, "", errFakeGitHub
@@ -100,7 +93,7 @@ func TestE2EPromoteOpensOnePullRequestAndAnEmptyDelta(t *testing.T) {
 	if promoted.PullRequest != "acme/app#42" || github.creates != 1 || !promoted.Changed {
 		t.Fatalf("promoted = %+v", promoted)
 	}
-	for _, want := range []string{promoteMarker, "`lane-1`", "`" + firstSHA + "`", "wb pr batch delta acme/app --target public-demo --to main --overlap", "wb pr land acme/app#<number>"} {
+	for _, want := range []string{promoteMarker, "`lane-1`", "`" + firstSHA + "`", "wb pr batch delta acme/app --target 'public-demo' --to 'main' --overlap", "wb pr land acme/app#<number>"} {
 		if !strings.Contains(github.body, want) {
 			t.Errorf("body lacks %q:\n%s", want, github.body)
 		}
@@ -309,5 +302,108 @@ func TestE2EPromotionAdaptersReportFailedCalls(t *testing.T) {
 	}
 	if !errors.Is(errFakeGitHub, errFakeGitHub) {
 		t.Fatal("unreachable")
+	}
+}
+
+func TestE2EIntegrationMergeRefreshesFromATargetThatSquashesPromotions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t)
+	pin, _ := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
+	fixture.pushLanes(pin)
+	// Under a merge-commit policy an advanced main is left alone.
+	tip := fixture.advance("main", "m.go", "package a\n")
+	if result := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, fixture.options())); result.Refreshed != "" || result.Pushed {
+		t.Fatalf("merge policy refreshed: %+v", result)
+	}
+	fixture.gh.method = "squash"
+	result := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, fixture.options()))
+	if result.Refreshed != tip || !result.Pushed {
+		t.Fatalf("result = %+v", result)
+	}
+	pushed := igit(t, fixture.origin, "rev-parse", "public-demo")
+	if refresh := igit(t, fixture.origin, "log", "-1", "--format=%(trailers:key=Wb-Refresh,valueonly)", pushed); refresh != "main@"+tip {
+		t.Fatalf("refresh trailer = %q", refresh)
+	}
+	// The recorded refresh is target history to promotion.
+	github := &fakePromoteGitHub{fakeIntegrationGitHub: fixture.gh}
+	if delta := mustPromote(t, LandSuccess)(DeltaBatch(ctx, fixture.promoteOptions(github))); len(delta.Unrecorded) != 0 {
+		t.Fatalf("delta = %+v", delta)
+	}
+	// A rerun with the target already merged changes nothing.
+	if again := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, fixture.options())); again.Refreshed != "" || again.Pushed {
+		t.Fatalf("again = %+v", again)
+	}
+}
+
+func TestE2EIntegrationRefreshConflictStopsAndARerunPushes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t)
+	fixture.gh.method = "squash"
+	pin, _ := fixture.lane(fixture.base, "a.go", "package a\n\nconst A = 2\n", "reviewer")
+	fixture.pushLanes(pin)
+	fixture.advance("main", "a.go", "package a\n\nconst A = 9\n")
+	options := fixture.options()
+	options.To = "main"
+	stopped := mustIntegration(t, LandFindings)(MergeIntegration(ctx, options))
+	if stopped.RefusalCode != BatchRefusalConflict || !strings.Contains(stopped.Reason, "a.go") || !strings.Contains(stopped.Command, "--to 'main'") {
+		t.Fatalf("stopped = %+v", stopped)
+	}
+	writeIntegrationFile(t, fixture.work, "a.go", "package a\n\nconst A = 11\n")
+	igit(t, fixture.work, "commit", "--quiet", "-a", "--no-edit")
+	if result := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, options)); !result.Pushed {
+		t.Fatalf("result = %+v", result)
+	}
+	bad := fixture.options()
+	bad.To = "-x"
+	if refused := mustIntegration(t, LandRefused)(MergeIntegration(ctx, bad)); refused.RefusalCode != BatchRefusalPinInvalid {
+		t.Fatalf("refused = %+v", refused)
+	}
+}
+
+func TestE2EPinlessIntegrationMergeAcceptsAHandMadeTargetRefresh(t *testing.T) {
+	t.Parallel()
+	fixture := newIntegrationFixture(t)
+	tip := fixture.advance("main", "m.go", "package a\n")
+	igit(t, fixture.work, "fetch", "--quiet", "origin")
+	igit(t, fixture.work, "merge", "--quiet", "--no-ff", "--no-edit", tip)
+	if result := mustIntegration(t, LandSuccess)(MergeIntegration(context.Background(), fixture.options())); !result.Pushed {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// TestE2EIntegrationRefreshFailuresAreReportedNotSwallowed fails each git
+// call of an automatic refresh and of a pinless push over a hand-made
+// refresh, and requires every failure to surface.
+func TestE2EIntegrationRefreshFailuresAreReportedNotSwallowed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setups := map[string]func(*integrationFixture){
+		"automatic refresh": func(f *integrationFixture) {
+			f.gh.method = "squash"
+			f.advance("main", "m.go", "package a\n")
+		},
+		"hand-made refresh": func(f *integrationFixture) {
+			tip := f.advance("main", "m.go", "package a\n")
+			igit(f.t, f.work, "fetch", "--quiet", "origin")
+			igit(f.t, f.work, "merge", "--quiet", "--no-ff", "--no-edit", tip)
+		},
+	}
+	for name, setup := range setups {
+		for failAt := 1; ; failAt++ {
+			fixture := newIntegrationFixture(t)
+			setup(fixture)
+			calls := 0
+			options := fixture.options()
+			options.run = failingIntegrationRunner{Runner: runner.New(), failAt: failAt, calls: &calls}
+			result, err := MergeIntegration(ctx, options)
+			if calls < failAt {
+				break
+			}
+			if err == nil && result.Outcome == LandSuccess {
+				t.Errorf("%s: git failure at call %d was swallowed: %+v", name, failAt, result)
+			}
+		}
 	}
 }
