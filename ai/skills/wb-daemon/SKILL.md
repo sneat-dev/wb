@@ -1,6 +1,6 @@
 ---
 name: wb-daemon
-description: Serve and inspect WB's local operations API and web dashboard. Use when reviewing worktree activity and governed command cost, or when publishing a loopback WB service through an authenticated Cloudflare Tunnel.
+description: Serve and inspect WB's local operations API and Cockpit web interface. Use when reviewing worktree activity and governed command cost, or when publishing a loopback WB service through an authenticated Cloudflare Tunnel.
 ---
 
 # WB daemon
@@ -11,11 +11,71 @@ Open the hosted cross-machine dashboard in the platform browser:
 wb dashboard
 ```
 
-Use `wb dashboard --local` to start or reuse this machine's daemon and open its
-loopback view. `wb dashboard --format=json` and non-interactive invocations
-return the resolved URL without launching a browser.
+This machine's own web interface is Cockpit (`wb cockpit`, below); the old
+local operations pages (`/`, `/metrics`, `/coverage` and `/api/v1/overview`) are
+retired. `wb dashboard --local` is deprecated: it starts or reuses this
+machine's daemon and opens Cockpit without signing in. Run
+`wb dashboard --format=json`, or any non-interactive invocation, to get the
+resolved URL without launching a browser.
 
-Start and inspect the local read-only API and embedded dashboard:
+Find Cockpit's address, or open it. Agents run the JSON form:
+
+```sh
+wb cockpit --format=json
+wb cockpit
+wb cockpit --hosted
+```
+
+`wb cockpit --format=json` (or `--json`) starts or reuses the loopback daemon and
+prints `{url, scope, opened}` with the plain Cockpit URL: no login code, no
+browser. Bare `wb cockpit` is for the human operator at a terminal: it requests
+a login code over the owner channel and prints
+`/cockpit/session/login?code=...#key=...`. That URL is a credential (a single-use
+code valid for 60 seconds, and the session key that stays valid for the
+session), so it is printed only when stdout is a terminal. Run by an agent, or
+into a pipe, `wb cockpit` requests no code and prints the plain URL;
+`--print-url` asks for the login URL anyway (in JSON as `login_url`) and puts it
+in the transcript, so an agent does not pass it. A daemon too old to issue a
+session key is refused with exit 1: run `wb daemon restart`. The browser opens only in text format, on an
+interactive session whose stdout is a terminal. `--hosted` uses
+`cockpit.hosted_url` from wb.yaml and starts no daemon. Without `--listen` it
+uses a daemon already running here wherever it listens, else starts one on
+`127.0.0.1:8766`. `--listen <host:port>` (loopback only) names the address to start
+on; it never moves a running daemon: if one is recorded on another address the
+command refuses and names it (use `--listen` with that address, or stop it first).
+
+Read this machine's Cockpit metadata as one JSON envelope, which is what another
+machine's daemon runs over SSH:
+
+```sh
+wb cockpit export --format json
+wb cockpit export --format json --metrics-only
+```
+
+It prints `{schema_version, machine, exported_at, fleet, metrics}` (without `fleet`
+for `--metrics-only`) read from this machine's running daemon over its loopback
+listener as the anonymous-local reader, so it carries only the metadata set. It never
+starts a daemon, opens a browser or mints a login code: with no daemon running it prints
+`{schema_version, error}` with `daemon_not_running`, with a daemon that refuses
+anonymous reads (`cockpit.anonymous_metadata: false`) `export_refused`, with a daemon
+whose first scan has not finished `warming_up` (`--metrics-only` is not affected), and for
+any other failure `export_failed`, all with exit code 1 and fixed text. An entry the
+envelope's rules refuse is left out and counted in the envelope's `dropped` field. On macOS a daemon is
+found through launchd, so one started by hand in the foreground reads as not running.
+Run `wb daemon start` first if the daemon is not running.
+
+The page Cockpit opens is Home; its tabs are Home (`/`), Tasks (`/tasks`, with `/tasks/new`),
+Repositories, Worktrees, Agents and Machines, each a filterable list whose address holds `q`,
+`sort`, `machine`, `chips` and `sel`, with a detail route (`/worktrees/<id>`, `/machines/<id>`, ...).
+Cockpit runs nothing: a row offers "Copy command" text, and an owner session (`wb cockpit`) is what
+file content (a README) and the SSH form of a copied command need. Its configuration in wb.yaml is
+`cockpit.refresh_interval`, `cockpit.anonymous_metadata`, `cockpit.pull_request_limit`,
+`cockpit.pull_request_hourly_budget`, `cockpit.remote_http` and `cockpit.remote_ssh` (read other machines'
+exports over HTTP or SSH), `session_move.targets.<machine>.http` (`url`, `token_file`) and `.ssh` (`host`,
+`wb_path`) for each machine's route, and `remote.publish.interval`, `.agents` and `.metrics` for the opt-in
+periodic publish. The architecture, trust rule, cadences and budgets are in `docs/cockpit.md`.
+
+Start and inspect the local read-only API and Cockpit:
 
 ```sh
 wb daemon start
@@ -23,6 +83,16 @@ wb daemon status --format json
 wb daemon stop
 wb daemon restart --if-running
 ```
+
+On macOS the daemon's launchd service has one fixed label per user, so starting
+the daemon for one projects root would silently remove a service registered
+for another. `wb daemon start` and `wb daemon restart` therefore read the
+installed plist first and refuse, changing nothing, when it serves a different
+projects root or cannot be read; the error names that root and its listen
+address. Only `--replace-other-root` (never an environment variable) lets the
+replacement proceed. `wb cockpit`, `wb dashboard --local` and the commands
+that start the daemon implicitly have no such flag: they refuse and tell you to
+run `wb daemon start --replace-other-root` first.
 
 `wb daemon status` reports identity, not just reachability: read `identity`,
 `ready_verified` and `reported_state` before believing `state=ready`. A daemon
@@ -107,6 +177,9 @@ The raw policy applies only to `wb daemon operation submit`. Normal `wb run
 The default URL is `http://127.0.0.1:8766`. Keep the daemon on loopback. To
 reach it from another registered machine, route that local endpoint through a
 Cloudflare Tunnel protected by Cloudflare Access service authentication.
+`/` and `/api/v1/health` answer only a request whose `Host`
+names a loopback host (421 `misdirected_request` otherwise), so have the tunnel
+send one (cloudflared: `httpHostHeader: 127.0.0.1:8766`).
 
 `wb daemon start` is idempotent. If the managed listener belongs to an older
 installed WB executable, it drains the old generation and hands the durable
@@ -117,7 +190,7 @@ lifecycle transition keeps the same lock inode and atomically records its owner
 PID in a sidecar while holding a kernel lock; process death releases the kernel
 lock without losing or partially rewriting the recovery evidence.
 
-The dashboard stays on read-only loopback HTTP. Mutating operation RPCs prefer
+The loopback listener (Cockpit and the read-only API) stays on HTTP. Mutating operation RPCs prefer
 a separate mode-0600 Unix socket plus the private lifecycle owner token.
 Sandbox-denied socket calls use the authenticated owner-only project-root file
 bridge without moving execution outside the sandbox. Windows builds expose the
@@ -135,6 +208,15 @@ There is no remote mutation endpoint. Normal jobs are leased only to compatible
 registered workers over the protected local Connect RPC transport. The queue
 persists bounded output and command digests and rejects environment overrides.
 Reusing an idempotency key
-with different cwd, argv, environment, or CPU units is rejected. Use the
-dashboard and `/api/v1/*` read models for machine, worktree, and
+with different cwd, argv, environment, or CPU units is rejected. Use
+Cockpit and the `/api/v1/*` read models for machine, worktree, and
 governed-command visibility.
+
+`GET /api/v1/log` (the tail of the daemon's runtime log) is file content and is
+served to an owner session only. An owner session is two halves, the cookie
+`wb_cockpit_session_<port>` and the session key in the request header
+`X-Wb-Cockpit-Session-Key` (`wb cockpit` prints the key in the login URL's
+fragment and the Cockpit page sends it); the cookie alone, an address typed
+into a browser included, answers `401 {"error":"owner_session_required"}`. An agent that needs the log reads the
+file on the machine (`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log`
+in the daemon's runtime directory elsewhere); it does not fetch the route.

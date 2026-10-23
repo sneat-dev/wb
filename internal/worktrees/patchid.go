@@ -18,9 +18,16 @@ import (
 // required: the default patch-id algorithm is not guaranteed to produce the
 // same id for the same patch across Git versions, which would make this
 // comparison silently flaky depending on which Git built the two sides.
-func commitPatchIDs(ctx context.Context, repository, revRange string) (map[string][]string, error) {
+func commitPatchIDs(ctx context.Context, repository, revRange string, observation ...func(*exec.Cmd)) (map[string][]string, error) {
+	var beforeOutput func(*exec.Cmd)
+	if len(observation) != 0 {
+		beforeOutput = observation[0]
+	}
 	logCommand := exec.CommandContext(ctx, "git", "-C", repository, "log", "-p", "--no-color", "--no-merges", "--reverse", revRange)
 	logCommand.Env = console.Env()
+	if beforeOutput != nil {
+		beforeOutput(logCommand)
+	}
 	logOutput, err := logCommand.Output()
 	if err != nil {
 		return nil, fmt.Errorf("list patches for %s in %s: %w", revRange, repository, describeExitError(err))
@@ -28,6 +35,9 @@ func commitPatchIDs(ctx context.Context, repository, revRange string) (map[strin
 	patchIDCommand := exec.CommandContext(ctx, "git", "-C", repository, "patch-id", "--stable")
 	patchIDCommand.Env = console.Env()
 	patchIDCommand.Stdin = bytes.NewReader(logOutput)
+	if beforeOutput != nil {
+		beforeOutput(patchIDCommand)
+	}
 	patchIDOutput, err := patchIDCommand.Output()
 	if err != nil {
 		return nil, fmt.Errorf("compute patch-ids for %s in %s: %w", revRange, repository, describeExitError(err))
@@ -73,18 +83,22 @@ func describeExitError(err error) error {
 // an empty proof would accept a currentHead with no real relationship to
 // the finalized work at all.
 func commitsShareEveryPatchIDByRebase(ctx context.Context, repository, sealedHead, currentHead string) (bool, error) {
+	return commitsShareEveryPatchIDWithCommandObservation(ctx, repository, sealedHead, currentHead, nil)
+}
+
+func commitsShareEveryPatchIDWithCommandObservation(ctx context.Context, repository, sealedHead, currentHead string, beforeOutput func(*exec.Cmd)) (bool, error) {
 	sealedBase, err := git(ctx, repository, "merge-base", sealedHead, currentHead)
 	if err != nil {
 		return false, fmt.Errorf("find the common ancestor of %s and %s: %w", sealedHead, currentHead, err)
 	}
-	sealed, err := commitPatchIDs(ctx, repository, sealedBase+".."+sealedHead)
+	sealed, err := commitPatchIDs(ctx, repository, sealedBase+".."+sealedHead, beforeOutput)
 	if err != nil {
 		return false, err
 	}
 	if len(sealed) == 0 {
 		return false, nil
 	}
-	landed, err := commitPatchIDs(ctx, repository, sealedBase+".."+currentHead)
+	landed, err := commitPatchIDs(ctx, repository, sealedBase+".."+currentHead, beforeOutput)
 	if err != nil {
 		return false, err
 	}

@@ -27,7 +27,7 @@ func TestMigCovReplaceGoModuleReportsGoEditFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	migCovInstallFakeGo(t)
-	if err := replaceGoModule(dir, goMod, "example.com/dep", target); err == nil {
+	if err := replaceGoModule(dir, goMod, "example.com/dep", target, runIn); err == nil {
 		t.Fatal("replaceGoModule() ignored a failing go mod edit")
 	}
 }

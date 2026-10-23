@@ -25,14 +25,18 @@ type gitFilesystemCapabilityRoot struct {
 }
 
 func requireGitFilesystemCapability() error {
-	if err := platformGitFilesystemCapabilityAvailable(); err != nil {
+	return requireGitFilesystemCapabilityWithAdmission(platformGitFilesystemCapabilityAvailable, trustedGitExecutable)
+}
+
+func requireGitFilesystemCapabilityWithAdmission(available func() error, executable func() (string, error)) error {
+	if err := available(); err != nil {
 		return err
 	}
 	// Resolve the executable before Create/Cleanup has prepared any writable
 	// WB state. On macOS this also avoids invoking the /usr/bin/git xcrun shim
 	// inside the restricted child, where its global cache is not an authority
 	// WB should grant to Git.
-	_, err := trustedGitExecutable()
+	_, err := executable()
 	return err
 }
 

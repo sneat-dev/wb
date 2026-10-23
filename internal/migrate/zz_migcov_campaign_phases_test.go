@@ -433,10 +433,7 @@ func TestMigCovRepositoryComponentLayersSkipsUnknownModules(t *testing.T) {
 		modules:  map[string]*campaignModule{},
 		children: map[string][]string{"example.com/absent": {"example.com/alsomissing"}},
 	}
-	layers, err := c.repositoryComponentLayers()
-	if err != nil {
-		t.Fatalf("repositoryComponentLayers(unknown parent) = %v", err)
-	}
+	layers := c.repositoryComponentLayers()
 	if len(layers) == 0 || len(layers[0]) != 0 {
 		t.Fatalf("layers = %+v", layers)
 	}
@@ -445,24 +442,24 @@ func TestMigCovRepositoryComponentLayersSkipsUnknownModules(t *testing.T) {
 	parent := &campaignModule{path: "example.com/parent", repository: "github.com/acme/parent"}
 	c.modules["example.com/parent"] = parent
 	c.children = map[string][]string{"example.com/parent": {"example.com/alsomissing"}}
-	if _, err := c.repositoryComponentLayers(); err != nil {
-		t.Fatalf("repositoryComponentLayers(unknown child) = %v", err)
+	if layers := c.repositoryComponentLayers(); len(layers) != 1 || len(layers[0]) != 0 {
+		t.Fatalf("repositoryComponentLayers(unknown child) = %+v", layers)
 	}
 
 	// Two modules in the same repository never become a dependency edge.
 	sibling := &campaignModule{path: "example.com/parent/sub", repository: "github.com/acme/parent"}
 	c.modules["example.com/parent/sub"] = sibling
 	c.children = map[string][]string{"example.com/parent": {"example.com/parent/sub"}}
-	if _, err := c.repositoryComponentLayers(); err != nil {
-		t.Fatalf("repositoryComponentLayers(same repository) = %v", err)
+	if layers := c.repositoryComponentLayers(); len(layers) != 1 || len(layers[0]) != 0 {
+		t.Fatalf("repositoryComponentLayers(same repository) = %+v", layers)
 	}
 
 	// A module whose repository is not part of the campaign is ignored.
 	ghost := &campaignModule{path: "example.com/ghost", repository: "github.com/acme/ghost"}
 	c.modules["example.com/ghost"] = ghost
 	c.children = map[string][]string{"example.com/ghost": {"example.com/parent"}}
-	if _, err := c.repositoryComponentLayers(); err != nil {
-		t.Fatalf("repositoryComponentLayers(ghost repository) = %v", err)
+	if layers := c.repositoryComponentLayers(); len(layers) != 1 || len(layers[0]) != 0 {
+		t.Fatalf("repositoryComponentLayers(ghost repository) = %+v", layers)
 	}
 }
 

@@ -16,9 +16,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
 )
 
-func TestOrchE2EBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
+func TestE2EBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 	t.Parallel()
 	if refusal := buildAt(context.Background(), defaultRunner, t.TempDir(), SourceCommit{SHA: "0123456789abcdef"}, []string{"sh", "-c", "exit 0"}); refusal != nil {
 		t.Fatalf("passing build refusal = %+v", refusal)
@@ -38,7 +40,7 @@ func TestOrchE2EBuildAtReportsAFailedBuildAndAcceptsAPassingOne(t *testing.T) {
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovCommitsBetweenAndPatchIdentityDescribeOneCommit(t *testing.T) {
+func TestE2ECommitsBetweenAndPatchIdentityDescribeOneCommit(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt", "c.txt")
 	commits, err := commitsBetween(context.Background(), defaultGit, fixture.canonical, fixture.baseSHA, fixture.headSHA)
 	if err != nil {
@@ -58,7 +60,7 @@ func TestOrchCovCommitsBetweenAndPatchIdentityDescribeOneCommit(t *testing.T) {
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit(t *testing.T) {
+func TestE2EPatchIdentityHasNoIdentityForAMergeCommit(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt")
 	runEngineGit(t, fixture.canonical, "checkout", "-b", "side", fixture.baseSHA)
 	writeEngineFile(t, filepath.Join(fixture.canonical, "side.txt"), "side\n")
@@ -96,7 +98,7 @@ func TestOrchCovPatchIdentityHasNoIdentityForAMergeCommit(t *testing.T) {
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovMapLandedCommitsPairsKeptSourcesByPatchIdentity(t *testing.T) {
+func TestE2EMapLandedCommitsPairsKeptSourcesByPatchIdentity(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt", "c.txt")
 	runEngineGit(t, fixture.canonical, "checkout", "-b", "landed", fixture.baseSHA)
 	runEngineGit(t, fixture.canonical, "cherry-pick", fixture.commitSHAs[1])
@@ -127,7 +129,7 @@ func TestOrchCovMapLandedCommitsPairsKeptSourcesByPatchIdentity(t *testing.T) {
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate(t *testing.T) {
+func TestE2EMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt")
 	runEngineGit(t, fixture.canonical, "checkout", "-b", "landed", fixture.baseSHA)
 	runEngineGit(t, fixture.canonical, "cherry-pick", fixture.commitSHAs[0])
@@ -145,7 +147,7 @@ func TestOrchCovMapLandedCommitsLeavesEverythingUnpairedWithoutAnAggregate(t *te
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovRewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *testing.T) {
+func TestE2ERewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt", "c.txt")
 	commits := orchCovSourceCommits(t, fixture.canonical, fixture.baseSHA, fixture.headSHA)
 	if len(commits) != 3 {
@@ -155,7 +157,7 @@ func TestOrchCovRewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *test
 	if refusal != nil {
 		t.Fatal(refusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	landed, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -190,14 +192,14 @@ func TestOrchCovRewriteBranchForKeptCommitsLandsKeptAndAggregatedCommits(t *test
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovRewriteBranchForKeptCommitsRefusesAStaleLease(t *testing.T) {
+func TestE2ERewriteBranchForKeptCommitsRefusesAStaleLease(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt")
 	commits := orchCovSourceCommits(t, fixture.canonical, fixture.baseSHA, fixture.headSHA)
 	plan, refusal := planKeptCommits(commits, nil)
 	if refusal != nil {
 		t.Fatal(refusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Base.Ref = "candidate", "main"
 	view.Head.SHA = strings.Repeat("b", 40)
 
@@ -215,7 +217,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAStaleLease(t *testing.T) {
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovRewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranch(t *testing.T) {
+func TestE2ERewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranch(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt", "c.txt")
 	// The base now carries its own a.txt, so the first kept commit cannot
 	// replay. The kept commit is planned first, which is the path this proves.
@@ -231,7 +233,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranc
 	if plan.steps[0].aggregate || plan.steps[0].sources[0].SHA != commits[0].SHA {
 		t.Fatalf("plan does not lead with the kept commit: %+v", plan)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, head, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -254,7 +256,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAConflictWithoutMovingTheBranc
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovRewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing.T) {
+func TestE2ERewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt")
 	writeEngineFile(t, filepath.Join(fixture.canonical, "a.txt"), "base owns this file\n")
 	runEngineGit(t, fixture.canonical, "add", "-A")
@@ -265,7 +267,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing
 	if planRefusal != nil {
 		t.Fatal(planRefusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -280,14 +282,14 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAnAggregateConflict(t *testing
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovRewriteBranchForKeptCommitsRefusesAKeptCommitThatDoesNotBuild(t *testing.T) {
+func TestE2ERewriteBranchForKeptCommitsRefusesAKeptCommitThatDoesNotBuild(t *testing.T) {
 	fixture := newLandFixture(t, "candidate", "a.txt", "b.txt")
 	commits := orchCovSourceCommits(t, fixture.canonical, fixture.baseSHA, fixture.headSHA)
 	plan, planRefusal := planKeptCommits(commits, []string{commits[0].SHA})
 	if planRefusal != nil {
 		t.Fatal(planRefusal.reason)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "candidate", fixture.headSHA, "main"
 
 	_, _, refusal, err := rewriteBranchForKeptCommits(context.Background(), defaultGit, defaultRunner, fixture.canonical,
@@ -307,7 +309,7 @@ func TestOrchCovRewriteBranchForKeptCommitsRefusesAKeptCommitThatDoesNotBuild(t 
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
-func TestOrchCovLandKeepingCommitsRewritesThePublishedBranch(t *testing.T) {
+func TestE2ELandKeepingCommitsRewritesThePublishedBranch(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "keep-task", "wb/keep/candidate", "candidate.txt", "one\n")
 	writeEngineFile(t, filepath.Join(source.WorktreeDir, "second.txt"), "two\n")
@@ -319,7 +321,7 @@ func TestOrchCovLandKeepingCommitsRewritesThePublishedBranch(t *testing.T) {
 	if len(commits) != 2 {
 		t.Fatalf("source commits = %+v", commits)
 	}
-	view := PullRequestView{Number: 7, Title: "feat: the change"}
+	view := githubchecks.PullRequestView{Number: 7, Title: "feat: the change"}
 	view.Head.Ref, view.Head.SHA, view.Base.Ref = "wb/keep/candidate", head, "main"
 	options := PullRequestLandOptions{
 		Repository: "acme/app", ProjectsRoot: fixture.githubDir,

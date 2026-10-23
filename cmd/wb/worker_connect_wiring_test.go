@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"context"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
-// wb worker connect's RunE reaches connectWorker only after validating --id
-// and --root; no existing test drives it through Execute() at all (only
-// connectWorker's own helpers are unit tested directly). A context that is
-// already canceled makes connectWorker return at its very first check,
-// before touching the daemon, so this proves the wiring cheaply and safely.
+// The actual root family delegates a canceled request before daemon bootstrap;
+// the separate lease journey proves the live native transport and execution.
 func TestWorkerConnectCLIWiresIntoConnectWorker(t *testing.T) {
 	root := t.TempDir()
-	command := newWorkerConnectCmd(&invocation{projectsRoot: root}, defaultDaemonDependencies())
+	command := workerConnectForTest(&invocation{projectsRoot: root}, defaultDaemonDependencies())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	command.SetContext(ctx)
@@ -24,4 +23,15 @@ func TestWorkerConnectCLIWiresIntoConnectWorker(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatalf("worker connect with an already-canceled context: %v", err)
 	}
+}
+
+// Select the genuine production-registered child; no operation/error proxy.
+func workerConnectForTest(inv *invocation, deps daemonDependencies) *cobra.Command {
+	root := newWorkerCmd(inv, deps)
+	child, _, err := root.Find([]string{"connect"})
+	if err != nil {
+		panic(err)
+	}
+	root.RemoveCommand(child)
+	return child
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -57,38 +58,11 @@ func ResolveExecutionLayout(repoRoot, projectsRoot string) (ExecutionLayout, err
 	}, nil
 }
 
-func SecureExecutionWriteRoots(repoPath, configPath, projectsRoot string) ([]string, error) {
-	policy, err := LoadPolicy(repoPath, configPath)
-	if err != nil {
-		return nil, err
-	}
-	layout, err := ResolveExecutionLayout(policy.RepoRoot, projectsRoot)
-	if err != nil {
-		return nil, err
-	}
-	roots := []string{layout.Root}
-	if policy.Metrics.Enabled {
-		roots = append(roots, filepath.Dir(policy.Metrics.Path))
-	}
-	return uniqueSortedPaths(roots), nil
-}
-
-func ReplayPendingMetrics(repoPath, configPath, projectsRoot string) (int, error) {
-	policy, err := LoadPolicy(repoPath, configPath)
-	if err != nil {
-		return 0, err
-	}
-	layout, err := ResolveExecutionLayout(policy.RepoRoot, projectsRoot)
-	if err != nil {
-		return 0, err
-	}
-	if err := ensureExecutionLayout(layout); err != nil {
-		return 0, err
-	}
-	return replayPendingMetrics(policy.Metrics.Path, layout)
-}
-
 func ensureExecutionLayout(layout ExecutionLayout) error {
+	return ensureExecutionLayoutInjected(layout, nil)
+}
+
+func ensureExecutionLayoutInjected(layout ExecutionLayout, inj *filewrite.Injector) error {
 	for _, path := range []string{
 		layout.Root,
 		layout.ReportRoot,
@@ -97,7 +71,7 @@ func ensureExecutionLayout(layout ExecutionLayout) error {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return fmt.Errorf("create hook runtime path %s: %w", path, err)
 		}
-		if err := os.Chmod(path, 0o700); err != nil {
+		if err := filewrite.ChmodPath(path, 0o700, inj); err != nil {
 			return fmt.Errorf("protect hook runtime path %s: %w", path, err)
 		}
 	}
@@ -163,16 +137,17 @@ func replayPendingMetrics(targetPath string, layout ExecutionLayout) (int, error
 }
 
 func persistPendingMetricsReceipt(root, targetPath string, events []Event, appendErr error, now time.Time) (string, error) {
+	return persistPendingMetricsReceiptInjected(root, targetPath, events, appendErr, now, nil)
+}
+
+func persistPendingMetricsReceiptInjected(root, targetPath string, events []Event, appendErr error, now time.Time, inj *filewrite.Injector) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("create pending hook metrics directory: %w", err)
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
+	if err := filewrite.ChmodPath(root, 0o700, inj); err != nil {
 		return "", fmt.Errorf("protect pending hook metrics directory: %w", err)
 	}
-	token, err := randomToken(8)
-	if err != nil {
-		return "", err
-	}
+	token := randomToken(8)
 	path := filepath.Join(root, now.UTC().Format("20060102T150405.000000000Z")+"-"+token+".json")
 	receipt := PendingMetricsReceipt{
 		SchemaVersion: pendingMetricsReceiptSchemaVersion,
@@ -186,7 +161,7 @@ func persistPendingMetricsReceipt(root, targetPath string, events []Event, appen
 		return "", fmt.Errorf("encode pending hook metrics receipt: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := filewrite.WriteFile(path, data, 0o600, inj); err != nil {
 		return "", fmt.Errorf("write pending hook metrics receipt %s: %w", path, err)
 	}
 	return path, nil
@@ -205,21 +180,6 @@ func readPendingMetricsReceipt(path string) (PendingMetricsReceipt, error) {
 		return PendingMetricsReceipt{}, fmt.Errorf("pending hook metrics receipt %s uses schema version %d; supported version is %d", path, receipt.SchemaVersion, pendingMetricsReceiptSchemaVersion)
 	}
 	return receipt, nil
-}
-
-func uniqueSortedPaths(paths []string) []string {
-	seen := make(map[string]bool, len(paths))
-	unique := make([]string, 0, len(paths))
-	for _, path := range paths {
-		path = filepath.Clean(strings.TrimSpace(path))
-		if path == "" || seen[path] {
-			continue
-		}
-		seen[path] = true
-		unique = append(unique, path)
-	}
-	sort.Strings(unique)
-	return unique
 }
 
 func sanitizeRuntimeSegment(segment string) string {
@@ -242,16 +202,12 @@ func sanitizeRuntimeSegment(segment string) string {
 			builder.WriteByte('_')
 		}
 	}
-	if builder.Len() == 0 {
-		return "unknown"
-	}
 	return builder.String()
 }
 
-func randomToken(bytes int) (string, error) {
+func randomToken(bytes int) string {
 	buffer := make([]byte, bytes)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", fmt.Errorf("generate pending hook metrics token: %w", err)
-	}
-	return hex.EncodeToString(buffer), nil
+	// Go1.27 crypto/rand.Read fills the buffer or terminates on entropy failure.
+	_, _ = rand.Read(buffer)
+	return hex.EncodeToString(buffer)
 }

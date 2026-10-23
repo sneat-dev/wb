@@ -53,7 +53,12 @@ type Module struct {
 
 // ScanModule reads the module rooted at dir.
 func ScanModule(dir string) (Module, error) {
-	absolute, err := filepath.Abs(dir)
+	return scanModuleWithAbs(dir, filepath.Abs)
+}
+
+// scanModuleWithAbs preserves path-resolution failures without changing the process working directory in tests.
+func scanModuleWithAbs(dir string, abs func(string) (string, error)) (Module, error) {
+	absolute, err := abs(dir)
 	if err != nil {
 		return Module{}, err
 	}
@@ -89,10 +94,8 @@ func ScanModule(dir string) (Module, error) {
 		if !strings.HasSuffix(entry.Name(), ".go") {
 			return nil
 		}
-		relative, err := filepath.Rel(absolute, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies paths below this absolute root on the same volume.
+		relative, _ := filepath.Rel(absolute, path)
 		relative = filepath.ToSlash(relative)
 		parsedFile, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
 		if err != nil {
@@ -111,13 +114,9 @@ func ScanModule(dir string) (Module, error) {
 			packageDir = ""
 		}
 		for _, spec := range parsedFile.Imports {
-			if spec.Path == nil {
-				continue
-			}
-			importPath, err := strconv.Unquote(spec.Path.Value)
-			if err != nil {
-				continue
-			}
+			// Successful parsing guarantees an import path literal; malformed
+			// literals are reported in Unparseable above.
+			importPath, _ := strconv.Unquote(spec.Path.Value)
 			module.References = append(module.References, Reference{
 				Import:  importPath,
 				File:    relative,

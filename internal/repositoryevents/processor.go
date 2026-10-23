@@ -28,6 +28,10 @@ type SyncProcessor struct {
 }
 
 func (processor SyncProcessor) Process(ctx context.Context, event repositoryevent.Event, state ProcessState) (ProcessResult, error) {
+	return processor.processResolved(ctx, event, state, worktrees.CanonicalRepositoryPath)
+}
+
+func (processor SyncProcessor) processResolved(ctx context.Context, event repositoryevent.Event, state ProcessState, canonicalPath func(string, string) (string, error)) (ProcessResult, error) {
 	if err := event.Validate(); err != nil {
 		return ProcessResult{}, err
 	}
@@ -52,7 +56,7 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 	relocated := false
 	if event.Reason == repositoryevent.ReasonRepositoryRenamed {
 		oldOwner, oldName := repositoryParts(event.PreviousRepository)
-		oldPath, pathErr := worktrees.CanonicalRepositoryPath(processor.ProjectsRoot, oldOwner+"/"+oldName)
+		oldPath, pathErr := canonicalPath(processor.ProjectsRoot, oldOwner+"/"+oldName)
 		if pathErr != nil {
 			return out, pathErr
 		}
@@ -87,7 +91,7 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 			return out, err
 		} else {
 			owner, name := repositoryParts(event.Repository)
-			destination, destinationPathErr := worktrees.CanonicalRepositoryPath(processor.ProjectsRoot, owner+"/"+name)
+			destination, destinationPathErr := canonicalPath(processor.ProjectsRoot, owner+"/"+name)
 			if destinationPathErr != nil {
 				return out, destinationPathErr
 			}
@@ -105,7 +109,7 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 		}
 	}
 	owner, name := repositoryParts(event.Repository)
-	path, pathErr := worktrees.CanonicalRepositoryPath(processor.ProjectsRoot, owner+"/"+name)
+	path, pathErr := canonicalPath(processor.ProjectsRoot, owner+"/"+name)
 	if pathErr != nil {
 		return out, pathErr
 	}

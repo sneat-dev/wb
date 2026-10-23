@@ -514,3 +514,11 @@ func courierTestRequest(t *testing.T) (sessionmove.Request, []byte) {
 	}
 	return request, raw
 }
+
+func TestNewSSHDelivererRefusesAnInvalidRemoteAddressBeforeResolvingSSH(t *testing.T) {
+	t.Parallel()
+	_, err := NewSSHDeliverer(sessionmove.SSHConfig{Host: "vm", User: "ai;touch", WBPath: "/opt/wb"})
+	if err == nil || !strings.Contains(err.Error(), "ssh.user") {
+		t.Fatalf("NewSSHDeliverer error = %v, want the ssh.user validation refusal", err)
+	}
+}

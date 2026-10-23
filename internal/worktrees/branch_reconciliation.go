@@ -13,48 +13,140 @@ import (
 
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 const (
-	branchReconciliationRecordName = "record.json"
-	reconciliationStagePlanned     = "planned"
-	reconciliationStageBundles     = "bundles_preserved"
-	reconciliationStageRemote      = "remote_retired"
-	reconciliationStageLocal       = "local_retired"
-	reconciliationStageRebound     = "branch_rebound"
-	reconciliationStageEvent       = "event_appended"
-	reconciliationStageComplete    = "complete"
+	reconciliationStagePlanned  = worktreeclaims.ReconciliationStagePlanned
+	reconciliationStageBundles  = worktreeclaims.ReconciliationStageBundles
+	reconciliationStageRemote   = worktreeclaims.ReconciliationStageRemote
+	reconciliationStageLocal    = worktreeclaims.ReconciliationStageLocal
+	reconciliationStageRebound  = worktreeclaims.ReconciliationStageRebound
+	reconciliationStageEvent    = worktreeclaims.ReconciliationStageEvent
+	reconciliationStageComplete = worktreeclaims.ReconciliationStageComplete
 )
 
-// branchReconciliationRecord is private, durable recovery evidence. It never
-// rewrites the immutable claim: every apply re-reads and re-corroborates it.
-type branchReconciliationRecord struct {
-	Version      int       `json:"version"`
-	EventID      string    `json:"event_id"`
-	ClaimID      string    `json:"claim_id"`
-	Worktree     string    `json:"worktree"`
-	Repository   string    `json:"repository"`
-	ClaimBranch  string    `json:"claim_branch"`
-	LiveBranch   string    `json:"live_branch"`
-	ExpectedHead string    `json:"expected_head"`
-	LocalHead    string    `json:"local_claim_head"`
-	RemoteHead   string    `json:"remote_claim_head"`
-	TargetHead   string    `json:"target_head"`
-	Actor        string    `json:"actor"`
-	Reason       string    `json:"reason"`
-	Stage        string    `json:"stage"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
-type branchReconciliationEvidence struct {
-	Version int    `json:"version"`
-	Head    string `json:"head"`
-	Ref     string `json:"ref"`
-	Bundle  string `json:"bundle"`
-	SHA256  string `json:"sha256"`
-}
+type branchReconciliationRecord = worktreeclaims.ReconciliationRecord
+type branchReconciliationEvidence = worktreeclaims.ReconciliationEvidence
 
 func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVerbResult, error) {
+	return reconcileClaimBranchWithPorts(ctx, options, reconciliationPorts{})
+}
+
+type reconciliationPorts struct {
+	writeRecord   func(*os.File, branchReconciliationRecord) error
+	observeGit    func(context.Context, string) LocalGitEvidence
+	readEvents    func(string) ([]LocalWorkLogEvent, error)
+	appendEvent   func(string, LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error)
+	now           func() time.Time
+	lifecycle     func(context.Context, string, string, workLogClaim) (ListResult, error)
+	openCanonical func(string) (*canonicalRepository, error)
+	createRecord  func(string, workLogClaim, branchReconciliationRecord) (*os.File, error)
+	remoteHead    func(context.Context, string, string) (string, error)
+	localHead     func(context.Context, *canonicalRepository, string) (string, error)
+	retireRemote  func(context.Context, *canonicalRepository, branchReconciliationRecord) error
+	retireLocal   func(context.Context, *canonicalRepository, branchReconciliationRecord) error
+	rebind        func(context.Context, *canonicalRepository, branchReconciliationRecord) error
+	requireHead   func(context.Context, *canonicalRepository, string, string) error
+	requireAbsent func(context.Context, *canonicalRepository, string) error
+	corroborate   func(string, string, workLogProjection) error
+	bundle        reconciliationBundlePorts
+}
+
+// Bundle ports are scoped to one reconciliation attempt. Defaults retain the
+// descriptor-anchored Git and no-replace storage operations below.
+type reconciliationBundlePorts struct {
+	secureGit  func(context.Context, *canonicalRepository, ...string) error
+	advertise  func(context.Context, *canonicalRepository, string, string, string) error
+	readBytes  func(*os.File, string) ([]byte, error)
+	writeBytes func(*os.File, string, []byte, os.FileMode, bool) error
+	fetched    func(context.Context, *canonicalRepository, string) (string, error)
+}
+
+func (p reconciliationBundlePorts) withDefaults() reconciliationBundlePorts {
+	if p.secureGit == nil {
+		p.secureGit = func(ctx context.Context, canonical *canonicalRepository, args ...string) error {
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", args...)
+		}
+	}
+	if p.advertise == nil {
+		p.advertise = requireBundleAdvertisesClaimRef
+	}
+	if p.readBytes == nil {
+		p.readBytes = readBytesAt
+	}
+	if p.writeBytes == nil {
+		p.writeBytes = writeBytesImmutableAt
+	}
+	if p.fetched == nil {
+		p.fetched = func(ctx context.Context, canonical *canonicalRepository, ref string) (string, error) {
+			return gitCanonical(ctx, canonical, "rev-parse", ref)
+		}
+	}
+	return p
+}
+
+func (ports reconciliationPorts) withDefaults() reconciliationPorts {
+	if ports.writeRecord == nil {
+		ports.writeRecord = reconciliationClaimPorts().WriteRecord
+	}
+	if ports.observeGit == nil {
+		ports.observeGit = observeLocalGit
+	}
+	if ports.readEvents == nil {
+		ports.readEvents = readLocalEvents
+	}
+	if ports.appendEvent == nil {
+		ports.appendEvent = appendLocalEvent
+	}
+	if ports.now == nil {
+		ports.now = func() time.Time { return time.Now().UTC() }
+	}
+	if ports.lifecycle == nil {
+		ports.lifecycle = reconciliationLifecycleEvidence
+	}
+	if ports.openCanonical == nil {
+		ports.openCanonical = openCanonicalRepository
+	}
+	if ports.createRecord == nil {
+		ports.createRecord = reconciliationClaimPorts().CreateRecord
+	}
+	if ports.remoteHead == nil {
+		ports.remoteHead = remoteBranchHead
+	}
+	if ports.localHead == nil {
+		ports.localHead = localReconciliationBranchHead
+	}
+	if ports.retireRemote == nil {
+		ports.retireRemote = func(ctx context.Context, canonical *canonicalRepository, record branchReconciliationRecord) error {
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--force-with-lease=refs/heads/"+record.ClaimBranch+":"+record.RemoteHead, "origin", ":refs/heads/"+record.ClaimBranch)
+		}
+	}
+	if ports.retireLocal == nil {
+		ports.retireLocal = func(ctx context.Context, canonical *canonicalRepository, record branchReconciliationRecord) error {
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+record.ClaimBranch, record.LocalHead)
+		}
+	}
+	if ports.rebind == nil {
+		ports.rebind = func(ctx context.Context, canonical *canonicalRepository, record branchReconciliationRecord) error {
+			return runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "branch", "-m", record.LiveBranch, record.ClaimBranch)
+		}
+	}
+	if ports.requireHead == nil {
+		ports.requireHead = requireLocalClaimHead
+	}
+	if ports.requireAbsent == nil {
+		ports.requireAbsent = requireLocalClaimAbsent
+	}
+	if ports.corroborate == nil {
+		ports.corroborate = corroborateProjectionWithPrivateClaim
+	}
+	ports.bundle = ports.bundle.withDefaults()
+	return ports
+}
+
+func reconcileClaimBranchWithPorts(ctx context.Context, options LogRecoverOptions, ports reconciliationPorts) (LogVerbResult, error) {
+	ports = ports.withDefaults()
 	if err := validateBranchReconciliationOptions(options); err != nil {
 		return LogVerbResult{}, err
 	}
@@ -66,7 +158,7 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 	if err != nil {
 		return LogVerbResult{}, err
 	}
-	projection, claim, err := reconciliationClaim(home, root)
+	projection, claim, err := reconciliationClaimPorts().ReadClaim(home, root)
 	if err != nil {
 		return LogVerbResult{}, err
 	}
@@ -80,7 +172,7 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		}
 		defer unlock()
 	}
-	entry, err := reconciliationLifecycleEvidence(ctx, options.ProjectsRoot, root, claim)
+	entry, err := ports.lifecycle(ctx, options.ProjectsRoot, root, claim)
 	if err != nil {
 		return LogVerbResult{}, err
 	}
@@ -88,7 +180,8 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		return LogVerbResult{}, err
 	}
 
-	record, recordDir, recordErr := readBranchReconciliationRecord(home, claim, options.EventID)
+	claimPorts := reconciliationClaimPorts()
+	record, recordDir, recordErr := claimPorts.ReadRecord(home, claim, options.EventID)
 	if recordErr != nil && !errors.Is(recordErr, os.ErrNotExist) {
 		return LogVerbResult{}, recordErr
 	}
@@ -96,7 +189,7 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		if entry.Branch != options.ReconcileBranch {
 			return LogVerbResult{}, fmt.Errorf("live branch %q does not match --reconcile-branch %q", entry.Branch, options.ReconcileBranch)
 		}
-		canonical, openErr := openCanonicalRepository(entry.CanonicalDir)
+		canonical, openErr := ports.openCanonical(entry.CanonicalDir)
 		if openErr != nil {
 			return LogVerbResult{}, openErr
 		}
@@ -108,7 +201,7 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		if localErr != nil || !isGitObjectID(localHead) {
 			return LogVerbResult{}, fmt.Errorf("resolve exact local immutable-claim branch %q: %w", claim.Branch, localErr)
 		}
-		remoteHead, remoteErr := remoteBranchHead(ctx, entry.CanonicalDir, claim.Branch)
+		remoteHead, remoteErr := ports.remoteHead(ctx, entry.CanonicalDir, claim.Branch)
 		if remoteErr != nil || !isGitObjectID(remoteHead) {
 			return LogVerbResult{}, fmt.Errorf("resolve exact remote immutable-claim branch %q: %w", claim.Branch, remoteErr)
 		}
@@ -117,21 +210,21 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 			Repository: entry.Repository, ClaimBranch: claim.Branch, LiveBranch: options.ReconcileBranch,
 			ExpectedHead: options.ExpectedHead, LocalHead: localHead, RemoteHead: remoteHead,
 			TargetHead: entry.RemoteTargetSHA, Actor: options.Actor, Reason: options.Reason,
-			Stage: reconciliationStagePlanned, CreatedAt: time.Now().UTC(),
+			Stage: reconciliationStagePlanned, CreatedAt: ports.now(),
 		}
 		if !options.Apply {
 			return LogVerbResult{Worktree: root, Verb: "recover", Projection: localProjectionForReconciliation(projection),
 				Diagnosis: []string{"branch reconciliation plan is read-only", "local and remote claim heads will be preserved before retirement"},
 				Notes:     []string{"pass --apply to reconcile the live branch to the immutable Work Log claim"}}, nil
 		}
-		recordDir, err = createBranchReconciliationRecord(home, claim, record)
+		recordDir, err = ports.createRecord(home, claim, record)
 		if err != nil {
 			return LogVerbResult{}, err
 		}
 		defer func() { _ = recordDir.Close() }()
 	} else {
 		defer func() { _ = recordDir.Close() }()
-		if err := corroborateReconciliationRecord(record, claim, root, options); err != nil {
+		if err := worktreeclaims.CorroborateReconciliationRecord(record, claim, reconciliationRequest(root, options)); err != nil {
 			return LogVerbResult{}, err
 		}
 		if !options.Apply {
@@ -144,7 +237,7 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 	if entry.Branch != record.LiveBranch && entry.Branch != record.ClaimBranch {
 		return LogVerbResult{}, fmt.Errorf("live branch %q is neither recorded recovery branch %q nor immutable claim %q", entry.Branch, record.LiveBranch, record.ClaimBranch)
 	}
-	canonical, err := openCanonicalRepository(entry.CanonicalDir)
+	canonical, err := ports.openCanonical(entry.CanonicalDir)
 	if err != nil {
 		return LogVerbResult{}, err
 	}
@@ -154,26 +247,38 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 	}
 
 	if record.Stage == reconciliationStagePlanned {
-		if err := preserveReconciliationBundles(ctx, canonical, recordDir, record, options); err != nil {
+		if err := preserveReconciliationBundles(ctx, canonical, recordDir, record, options, ports.bundle); err != nil {
 			return LogVerbResult{}, err
 		}
 		record.Stage = reconciliationStageBundles
-		if err := writeBranchReconciliationRecord(recordDir, record); err != nil {
+		if err := ports.writeRecord(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
 	}
 	if record.Stage == reconciliationStageBundles {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := requireRemoteClaimHead(ctx, entry.CanonicalDir, record.ClaimBranch, record.RemoteHead); err != nil {
+		if err := verifyReconciliationBundles(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "push", "--force-with-lease=refs/heads/"+record.ClaimBranch+":"+record.RemoteHead, "origin", ":refs/heads/"+record.ClaimBranch); err != nil {
-			return LogVerbResult{}, fmt.Errorf("retire exact remote immutable-claim branch: %w", err)
+		remoteHead, err := ports.remoteHead(ctx, entry.CanonicalDir, record.ClaimBranch)
+		if err != nil {
+			return LogVerbResult{}, err
+		}
+		switch remoteHead {
+		case record.RemoteHead:
+			if err := ports.retireRemote(ctx, canonical, record); err != nil {
+				return LogVerbResult{}, fmt.Errorf("retire exact remote immutable-claim branch: %w", err)
+			}
+		case "":
+			// The delete may have succeeded before the next record write. The
+			// exact stored bundles above, not mere absence, authorize replay.
+		default:
+			return LogVerbResult{}, fmt.Errorf("remote immutable-claim branch %q moved from expected %s to %s", record.ClaimBranch, record.RemoteHead, remoteHead)
 		}
 		record.Stage = reconciliationStageRemote
-		if err := writeBranchReconciliationRecord(recordDir, record); err != nil {
+		if err := ports.writeRecord(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
 		if options.testStopAfterStage == "remote" {
@@ -181,20 +286,31 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		}
 	}
 	if record.Stage == reconciliationStageRemote {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
 		if err := requireRemoteClaimAbsent(ctx, entry.CanonicalDir, record.ClaimBranch); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := requireLocalClaimHead(ctx, canonical, record.ClaimBranch, record.LocalHead); err != nil {
+		if err := verifyReconciliationBundles(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+record.ClaimBranch, record.LocalHead); err != nil {
-			return LogVerbResult{}, fmt.Errorf("retire exact local immutable-claim branch: %w", err)
+		localHead, err := ports.localHead(ctx, canonical, record.ClaimBranch)
+		if err != nil {
+			return LogVerbResult{}, err
+		}
+		switch localHead {
+		case record.LocalHead:
+			if err := ports.retireLocal(ctx, canonical, record); err != nil {
+				return LogVerbResult{}, fmt.Errorf("retire exact local immutable-claim branch: %w", err)
+			}
+		case "":
+			// The exact expected ref was deleted before the stage write.
+		default:
+			return LogVerbResult{}, fmt.Errorf("local branch %q moved from expected %s to %s", record.ClaimBranch, record.LocalHead, localHead)
 		}
 		record.Stage = reconciliationStageLocal
-		if err := writeBranchReconciliationRecord(recordDir, record); err != nil {
+		if err := ports.writeRecord(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
 		if options.testStopAfterStage == "local" {
@@ -202,20 +318,36 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		}
 	}
 	if record.Stage == reconciliationStageLocal {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := requireLocalClaimAbsent(ctx, canonical, record.ClaimBranch); err != nil {
+		if err := verifyReconciliationBundles(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := requireLocalClaimHead(ctx, canonical, record.LiveBranch, record.ExpectedHead); err != nil {
+		claimHead, err := ports.localHead(ctx, canonical, record.ClaimBranch)
+		if err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "branch", "-m", record.LiveBranch, record.ClaimBranch); err != nil {
-			return LogVerbResult{}, fmt.Errorf("rebind live branch to immutable claim branch: %w", err)
+		switch claimHead {
+		case "":
+			if err := ports.requireHead(ctx, canonical, record.LiveBranch, record.ExpectedHead); err != nil {
+				return LogVerbResult{}, err
+			}
+			if err := ports.rebind(ctx, canonical, record); err != nil {
+				return LogVerbResult{}, fmt.Errorf("rebind live branch to immutable claim branch: %w", err)
+			}
+		case record.ExpectedHead:
+			if entry.Branch != record.ClaimBranch {
+				return LogVerbResult{}, fmt.Errorf("rebound immutable claim branch is not checked out at the recorded worktree")
+			}
+			if err := ports.requireAbsent(ctx, canonical, record.LiveBranch); err != nil {
+				return LogVerbResult{}, err
+			}
+		default:
+			return LogVerbResult{}, fmt.Errorf("immutable claim branch reappeared at %s before exact rebind", claimHead)
 		}
 		record.Stage = reconciliationStageRebound
-		if err := writeBranchReconciliationRecord(recordDir, record); err != nil {
+		if err := ports.writeRecord(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
 		if options.testStopAfterStage == "rebound" {
@@ -223,18 +355,18 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		}
 	}
 	if record.Stage == reconciliationStageRebound {
-		if err := revalidateReconciliationStage(ctx, options, root, claim, record); err != nil {
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
 			return LogVerbResult{}, err
 		}
-		if err := corroborateProjectionWithPrivateClaim(home, root, projection); err != nil {
+		if err := ports.corroborate(home, root, projection); err != nil {
 			return LogVerbResult{}, fmt.Errorf("re-corroborate immutable Work Log claim after branch rebind: %w", err)
 		}
-		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
+		event, updated, appendErr := appendReconciliationEvent(ctx, root, record, ports)
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
 		}
 		record.Stage = reconciliationStageEvent
-		if err := writeBranchReconciliationRecord(recordDir, record); err != nil {
+		if err := ports.writeRecord(recordDir, record); err != nil {
 			return LogVerbResult{}, err
 		}
 		if options.testStopAfterStage == "event" {
@@ -243,7 +375,10 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		return finishBranchReconciliation(recordDir, record, root, event, updated)
 	}
 	if record.Stage == reconciliationStageEvent || record.Stage == reconciliationStageComplete {
-		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
+		if err := revalidateReconciliationStage(ctx, options, root, claim, record, canonical, ports); err != nil {
+			return LogVerbResult{}, err
+		}
+		event, updated, appendErr := appendReconciliationEvent(ctx, root, record, ports)
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
 		}
@@ -255,17 +390,74 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 	return LogVerbResult{}, fmt.Errorf("unknown branch reconciliation stage %q", record.Stage)
 }
 
-func reconciliationEvent(ctx context.Context, root string, record branchReconciliationRecord) LocalWorkLogEvent {
+func reconciliationEvent(record branchReconciliationRecord, git LocalGitEvidence) LocalWorkLogEvent {
 	return LocalWorkLogEvent{ID: record.EventID, Type: LocalEventBranchReconciled,
-		Message: record.Reason, Git: ptrLocalGit(observeLocalGit(ctx, root)),
+		Message: record.Reason, Git: ptrLocalGit(git),
 		Extra: map[string]any{"actor": record.Actor, "live_branch": record.LiveBranch,
 			"claim_branch": record.ClaimBranch, "local_head": record.LocalHead,
 			"remote_head": record.RemoteHead}}
 }
 
+func appendReconciliationEvent(ctx context.Context, root string, record branchReconciliationRecord, ports reconciliationPorts) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
+	events, err := ports.readEvents(root)
+	if err != nil {
+		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
+	}
+	for _, prior := range events {
+		if prior.ID != record.EventID {
+			continue
+		}
+		if prior.Git == nil {
+			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("recorded branch reconciliation event has no Git evidence")
+		}
+		if prior.Git.Branch != record.ClaimBranch || prior.Git.Head != record.ExpectedHead {
+			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("recorded branch reconciliation event Git identity differs from exact recovery request")
+		}
+		expected := reconciliationEvent(record, *prior.Git)
+		expected.Version, expected.Seq, expected.At = prior.Version, prior.Seq, prior.At
+		if !sameLocalEvent(prior, expected) {
+			return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("recorded branch reconciliation event %q differs from exact recovery request", record.EventID)
+		}
+		return ports.appendEvent(root, prior)
+	}
+	observed := ports.observeGit(ctx, root)
+	if observed.Branch != record.ClaimBranch || observed.Head != record.ExpectedHead {
+		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, fmt.Errorf("observed branch reconciliation Git identity differs from exact recovery request")
+	}
+	return ports.appendEvent(root, reconciliationEvent(record, observed))
+}
+
+func localReconciliationBranchHead(ctx context.Context, canonical *canonicalRepository, branch string) (string, error) {
+	return gitCanonical(ctx, canonical, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+func verifyReconciliationBundles(directory *os.File, record branchReconciliationRecord) error {
+	for _, item := range []struct{ kind, reference, head string }{
+		{"local", "refs/heads/" + record.ClaimBranch, record.LocalHead},
+		{"remote", "refs/remotes/origin/" + record.ClaimBranch, record.RemoteHead},
+	} {
+		var evidence branchReconciliationEvidence
+		if err := readJSONAt(directory, item.kind+".json", &evidence); err != nil {
+			return fmt.Errorf("read durable %s reconciliation bundle evidence: %w", item.kind, err)
+		}
+		if evidence.Version != 1 || evidence.Head != item.head || evidence.Ref != item.reference || evidence.Bundle != item.kind+".bundle" {
+			return fmt.Errorf("durable %s reconciliation bundle evidence differs from recorded authority", item.kind)
+		}
+		content, err := readBytesAt(directory, evidence.Bundle)
+		if err != nil {
+			return fmt.Errorf("read durable %s reconciliation bundle: %w", item.kind, err)
+		}
+		digest := sha256.Sum256(content)
+		if hex.EncodeToString(digest[:]) != evidence.SHA256 {
+			return fmt.Errorf("durable %s reconciliation bundle digest differs from recorded authority", item.kind)
+		}
+	}
+	return nil
+}
+
 func finishBranchReconciliation(directory *os.File, record branchReconciliationRecord, root string, event LocalWorkLogEvent, projection LocalWorkLogProjection) (LogVerbResult, error) {
 	record.Stage = reconciliationStageComplete
-	if err := writeBranchReconciliationRecord(directory, record); err != nil {
+	if err := reconciliationClaimPorts().WriteRecord(directory, record); err != nil {
 		return LogVerbResult{}, err
 	}
 	return completedBranchReconciliationResult(root, event, projection), nil
@@ -300,48 +492,15 @@ func lockBranchReconciliationClaim(home string, claim workLogClaim) (func(), err
 	return locked.close, nil
 }
 
-func reconciliationClaim(home, worktree string) (workLogProjection, workLogClaim, error) {
-	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
-	if err != nil {
-		return workLogProjection{}, workLogClaim{}, err
-	}
-	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return workLogProjection{}, workLogClaim{}, err
-	}
-	defer func() { _ = run.Close() }()
-	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
-	if err != nil {
-		return workLogProjection{}, workLogClaim{}, err
-	}
-	if err := corroborateReconciliationClaimShape(worktree, projection, claim); err != nil {
-		return workLogProjection{}, workLogClaim{}, err
-	}
-	return projection, claim, nil
+func reconciliationClaimPorts() worktreeclaims.ReconciliationPorts {
+	return worktreeclaims.ReconciliationPorts{ReadProjection: readWorkLogProjectionForReadOnlyClaim}
 }
 
-func corroborateReconciliationClaimShape(worktree string, projection workLogProjection, claim workLogClaim) error {
-	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" || filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
-		return fmt.Errorf("work-log projection does not match immutable active claim")
+func reconciliationRequest(root string, options LogRecoverOptions) worktreeclaims.ReconciliationRequest {
+	return worktreeclaims.ReconciliationRequest{
+		Worktree: root, EventID: options.EventID, LiveBranch: options.ReconcileBranch,
+		ExpectedHead: options.ExpectedHead, Actor: options.Actor, Reason: options.Reason,
 	}
-	if !validSafeSegment(claim.EffortID) || !validSafeSegment(claim.RunID) || !validSafeSegment(claim.Task) || !validClaimID(claim.ClaimID) || !isGitObjectID(claim.BaseSHA) {
-		return fmt.Errorf("private work-log claim identity is invalid")
-	}
-	want := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
-	if claim.ParentClaimID != "" {
-		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed") {
-			return fmt.Errorf("private successor claim metadata is invalid")
-		}
-		if claim.Version == 2 && claim.AcquiredVia != "recycle_failed" {
-			want = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia, ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
-		} else {
-			want = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-		}
-	}
-	if want != claim.ClaimID {
-		return fmt.Errorf("private work-log claim digest mismatch")
-	}
-	return nil
 }
 
 func reconciliationLifecycleEvidence(ctx context.Context, projectsRoot, root string, claim workLogClaim) (ListResult, error) {
@@ -389,75 +548,34 @@ func validateReconciliationLifecycleEvidence(ctx context.Context, entry ListResu
 	return nil
 }
 
-func revalidateReconciliationStage(ctx context.Context, options LogRecoverOptions, root string, claim workLogClaim, record branchReconciliationRecord) error {
-	entry, err := reconciliationLifecycleEvidence(ctx, options.ProjectsRoot, root, claim)
+func revalidateReconciliationStage(ctx context.Context, options LogRecoverOptions, root string, claim workLogClaim, record branchReconciliationRecord, canonical *canonicalRepository, ports reconciliationPorts) error {
+	entry, err := ports.lifecycle(ctx, options.ProjectsRoot, root, claim)
 	if err != nil {
 		return err
 	}
 	if err := validateReconciliationLifecycleEvidence(ctx, entry, claim, options); err != nil {
 		return err
 	}
-	if entry.Branch != record.LiveBranch && entry.Branch != record.ClaimBranch {
-		return fmt.Errorf("live branch %q changed outside the recorded reconciliation", entry.Branch)
+	switch record.Stage {
+	case reconciliationStageRebound, reconciliationStageEvent, reconciliationStageComplete:
+		if entry.Branch != record.ClaimBranch {
+			return fmt.Errorf("live branch %q is not the rebound immutable claim %q", entry.Branch, record.ClaimBranch)
+		}
+		if err := ports.requireHead(ctx, canonical, record.ClaimBranch, record.ExpectedHead); err != nil {
+			return fmt.Errorf("verify rebound immutable claim head: %w", err)
+		}
+		if err := ports.requireAbsent(ctx, canonical, record.LiveBranch); err != nil {
+			return fmt.Errorf("verify retired live branch absence: %w", err)
+		}
+	default:
+		if entry.Branch != record.LiveBranch && entry.Branch != record.ClaimBranch {
+			return fmt.Errorf("live branch %q changed outside the recorded reconciliation", entry.Branch)
+		}
 	}
 	return nil
 }
 
-func createBranchReconciliationRecord(home string, claim workLogClaim, record branchReconciliationRecord) (*os.File, error) {
-	directory, err := openBranchReconciliationEvent(home, claim, record.EventID, true)
-	if err != nil {
-		return nil, err
-	}
-	if err := writeBranchReconciliationRecord(directory, record); err != nil {
-		_ = directory.Close()
-		return nil, err
-	}
-	return directory, nil
-}
-
-func readBranchReconciliationRecord(home string, claim workLogClaim, eventID string) (branchReconciliationRecord, *os.File, error) {
-	directory, err := openBranchReconciliationEvent(home, claim, eventID, false)
-	if err != nil {
-		return branchReconciliationRecord{}, nil, err
-	}
-	var record branchReconciliationRecord
-	if err := readJSONAt(directory, branchReconciliationRecordName, &record); err != nil {
-		_ = directory.Close()
-		return branchReconciliationRecord{}, nil, err
-	}
-	return record, directory, nil
-}
-
-// openBranchReconciliationEvent keeps create and replay on the same private
-// work-log path, so neither can silently read a different recovery record.
-func openBranchReconciliationEvent(home string, claim workLogClaim, eventID string, create bool) (*os.File, error) {
-	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = run.Close() }()
-	reconciliations, err := openPrivateChild(run, "branch-reconciliations", create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = reconciliations.Close() }()
-	return openPrivateChild(reconciliations, eventID, create)
-}
-
-func writeBranchReconciliationRecord(directory *os.File, record branchReconciliationRecord) error {
-	return writeJSONAtomicAt(directory, branchReconciliationRecordName, record, 0o600)
-}
-
-func corroborateReconciliationRecord(record branchReconciliationRecord, claim workLogClaim, root string, options LogRecoverOptions) error {
-	if record.Version != 1 || record.EventID != options.EventID || record.ClaimID != claim.ClaimID || filepath.Clean(record.Worktree) != filepath.Clean(root) ||
-		record.ClaimBranch != claim.Branch || record.LiveBranch != options.ReconcileBranch || record.ExpectedHead != options.ExpectedHead || record.Actor != options.Actor || record.Reason != options.Reason ||
-		!isGitObjectID(record.LocalHead) || !isGitObjectID(record.RemoteHead) || !isGitObjectID(record.TargetHead) {
-		return fmt.Errorf("branch reconciliation record does not match immutable claim and requested recovery")
-	}
-	return nil
-}
-
-func preserveReconciliationBundles(ctx context.Context, canonical *canonicalRepository, directory *os.File, record branchReconciliationRecord, options LogRecoverOptions) error {
+func preserveReconciliationBundles(ctx context.Context, canonical *canonicalRepository, directory *os.File, record branchReconciliationRecord, options LogRecoverOptions, ports reconciliationBundlePorts) error {
 	if options.testBeforeBundleCheck != nil {
 		options.testBeforeBundleCheck()
 	}
@@ -467,21 +585,21 @@ func preserveReconciliationBundles(ctx context.Context, canonical *canonicalRepo
 	if err := requireRemoteClaimHead(ctx, canonical.path, record.ClaimBranch, record.RemoteHead); err != nil {
 		return err
 	}
-	if err := bundleClaimHead(ctx, canonical, directory, record.EventID, "local", "refs/heads/"+record.ClaimBranch, record.LocalHead); err != nil {
+	if err := bundleClaimHead(ctx, canonical, directory, record.EventID, "local", "refs/heads/"+record.ClaimBranch, record.LocalHead, ports); err != nil {
 		return err
 	}
 	if options.testFailAfterBundle == "local" {
 		return fmt.Errorf("injected bundle failure after local preservation")
 	}
 	remoteRef := "refs/remotes/origin/" + record.ClaimBranch
-	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "fetch", "--no-tags", "origin", "+refs/heads/"+record.ClaimBranch+":"+remoteRef); err != nil {
+	if err := ports.secureGit(ctx, canonical, "fetch", "--no-tags", "origin", "+refs/heads/"+record.ClaimBranch+":"+remoteRef); err != nil {
 		return fmt.Errorf("fetch remote immutable-claim head for bundle preservation: %w", err)
 	}
-	fetched, err := gitCanonical(ctx, canonical, "rev-parse", remoteRef)
+	fetched, err := ports.fetched(ctx, canonical, remoteRef)
 	if err != nil || fetched != record.RemoteHead {
 		return fmt.Errorf("fetched remote immutable-claim head changed from %s to %s: %w", record.RemoteHead, fetched, err)
 	}
-	if err := bundleClaimHead(ctx, canonical, directory, record.EventID, "remote", remoteRef, record.RemoteHead); err != nil {
+	if err := bundleClaimHead(ctx, canonical, directory, record.EventID, "remote", remoteRef, record.RemoteHead, ports); err != nil {
 		return err
 	}
 	if options.testFailAfterBundle == "remote" {
@@ -490,26 +608,27 @@ func preserveReconciliationBundles(ctx context.Context, canonical *canonicalRepo
 	return nil
 }
 
-func bundleClaimHead(ctx context.Context, canonical *canonicalRepository, directory *os.File, eventID, kind, reference, head string) error {
+func bundleClaimHead(ctx context.Context, canonical *canonicalRepository, directory *os.File, eventID, kind, reference, head string, ports reconciliationBundlePorts) error {
+	ports = ports.withDefaults()
 	name := "wb-reconcile-" + eventID + "-" + kind + ".bundle"
 	path := filepath.Join(canonical.path, ".git", name)
-	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "bundle", "create", path, reference); err != nil {
+	if err := ports.secureGit(ctx, canonical, "bundle", "create", path, reference); err != nil {
 		return fmt.Errorf("create %s recovery bundle for %s at %s: %w", kind, reference, head, err)
 	}
-	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "bundle", "verify", path); err != nil {
+	if err := ports.secureGit(ctx, canonical, "bundle", "verify", path); err != nil {
 		return fmt.Errorf("verify %s recovery bundle for %s at %s: %w", kind, reference, head, err)
 	}
-	if err := requireBundleAdvertisesClaimRef(ctx, canonical, path, reference, head); err != nil {
+	if err := ports.advertise(ctx, canonical, path, reference, head); err != nil {
 		return fmt.Errorf("verify %s recovery bundle advertisement: %w", kind, err)
 	}
-	content, err := readBytesAt(canonical.common, name)
+	content, err := ports.readBytes(canonical.common, name)
 	if err != nil {
 		return fmt.Errorf("read verified %s recovery bundle: %w", kind, err)
 	}
 	defer func() { _ = unix.Unlinkat(int(canonical.common.Fd()), name, 0) }()
 	digest := sha256.Sum256(content)
 	bundleName := kind + ".bundle"
-	if err := writeBytesImmutableAt(directory, bundleName, content, 0o600, true); err != nil {
+	if err := ports.writeBytes(directory, bundleName, content, 0o600, true); err != nil {
 		return fmt.Errorf("preserve %s recovery bundle: %w", kind, err)
 	}
 	return writeJSONImmutableAt(directory, kind+".json", branchReconciliationEvidence{Version: 1, Head: head, Ref: reference, Bundle: bundleName, SHA256: hex.EncodeToString(digest[:])}, true)

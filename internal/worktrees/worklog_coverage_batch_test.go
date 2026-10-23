@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +66,7 @@ func TestWorkLogCoverageBatchPublicationAndPromptReuse(t *testing.T) {
 	}
 
 	extended, err := workLogOptionsForClaimExtension(fixture.home, fixture.options, fixture.outcome.claim)
-	if err != nil || extended.EffortID != fixture.outcome.claim.EffortID || len(extended.originalPromptContents) == 0 {
+	if err != nil || extended.EffortID != fixture.outcome.claim.EffortID || len(extended.snapshot.Contents) == 0 {
 		t.Fatalf("extended options = %#v, %v", extended, err)
 	}
 	if err := corroborateExistingRunPrompt(fixture.home, fixture.outcome.EffortID, fixture.outcome.RunID, fixture.options); err != nil {
@@ -83,7 +84,7 @@ func TestWorkLogCoverageBatchPublicationAndPromptReuse(t *testing.T) {
 	if err := migrateLegacySingletonClaim(runDir, runPath, fixture.home, fixture.outcome.EffortID, fixture.outcome.RunID); err != nil {
 		t.Fatal(err)
 	}
-	identity, corrections, err := projectExecutionIdentity(runDir, fixture.outcome.claim)
+	identity, corrections, err := correctionPorts().ProjectExecutionIdentity(runDir, fixture.outcome.claim)
 	if err != nil || identity.Model != "unknown" || len(corrections) != 0 {
 		t.Fatalf("projected identity = %#v/%#v, %v", identity, corrections, err)
 	}
@@ -135,15 +136,12 @@ func TestWorkLogCoverageBatchCorrectionsAndTerminalBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = runDir.Close() }()
-	identity, corrections, err := projectExecutionIdentity(runDir, fixture.outcome.claim)
+	identity, corrections, err := correctionPorts().ProjectExecutionIdentity(runDir, fixture.outcome.claim)
 	if err != nil || identity.Model != model || len(corrections) != 1 {
 		t.Fatalf("corrected identity = %#v/%#v, %v", identity, corrections, err)
 	}
 	finalCommit := strings.Repeat("b", 40)
-	sealedAt, err := writeWorkLogTerminalWithEvidence(
-		fixture.home, runDir, fixture.outcome.claim, finalCommit, "landed", "", "",
-		nil, nil, nil, nil, nil,
-	)
+	sealedAt, err := sealWorkLogTerminal(fixture.home, runDir, worktreeclaims.TerminalSealRequest{Claim: fixture.outcome.claim, FinalCommit: finalCommit, Disposition: "landed"})
 	if err != nil || sealedAt.IsZero() {
 		t.Fatalf("terminal = %s, %v", sealedAt, err)
 	}
@@ -166,12 +164,8 @@ func TestWorkLogCoverageBatchCorrectionsAndTerminalBoundaries(t *testing.T) {
 		Task: fixture.task, Repository: fixture.result.Repository, Worktree: fixture.worktree,
 		Branch: fixture.result.Branch, Base: fixture.result.Base, FinalCommit: finalCommit,
 	}
-	if base, err := validateRemovedTerminalWorkLog(fixture.home, expectation); err == nil || base != "" {
+	if base, err := terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(fixture.home, expectation); err == nil || base != "" {
 		t.Fatalf("landed terminal accepted as removed evidence: base=%q err=%v", base, err)
-	}
-	matches := 0
-	if _, err := validateRemovedTerminalWorkLogRun(fixture.home, expectation, "missing-run", &matches); err == nil {
-		t.Fatal("missing terminal run was accepted")
 	}
 
 	entry := ListResult{OpenPullRequest: &PullRequest{URL: "https://example.test/pull/1"}}
@@ -195,7 +189,7 @@ func TestWorkLogCoverageBatchFilesystemRefusals(t *testing.T) {
 	if err := removeWorkLogProjection(blocking); err == nil {
 		t.Fatal("projection removal accepted a file as worktree")
 	}
-	if _, err := validateRemovedTerminalWorkLog(blocking, TerminalWorkLogExpectation{Task: "task"}); err == nil {
+	if _, err := terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(blocking, TerminalWorkLogExpectation{Task: "task", Repository: "acme/app", Worktree: "/tmp/removed", Branch: "wb/task", FinalCommit: "commit"}); err == nil {
 		t.Fatal("terminal validation accepted a file as WB home")
 	}
 }

@@ -1,0 +1,328 @@
+package syncrun
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/fleetsync"
+)
+
+// syncReportHome pins WB_PROJECTS_ROOT at a temporary directory and returns the
+// state directory it derives, <root>/.wb. Every test here must use it: without
+// it the writer targets the developer's real projects root.
+//
+// EvalSymlinks matches what wbhome.Root does to the root (resolveAbs): where
+// TMPDIR is itself a symlink — macOS routes /var/folders through
+// /private/var/folders — the writer's announced path is the resolved one,
+// so an assertion built from the raw t.TempDir() would fail even though the
+// writer behaved correctly.
+func syncReportHome(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, ".wb")
+	// The state directory is created lazily by the writer; tests that chmod it
+	// to prove the unwritable path need it on disk first.
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func syncReportMetaForTest() fleetsync.RunMeta {
+	return fleetsync.RunMeta{
+		StartedAt:    time.Date(2026, 9, 1, 10, 15, 0, 0, time.UTC),
+		ProjectsRoot: "/home/ai/projects",
+		Scanned:      3,
+	}
+}
+
+func TestWriteSyncIssuesReportWritesToWBHome(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
+
+	path := filepath.Join(home, "last-sync-issues.md")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("report not written: %v", err)
+	}
+	if !strings.Contains(string(contents), "# WB sync issues") {
+		t.Errorf("unexpected contents:\n%s", contents)
+	}
+	if want := "Sync issues: 0 records — errors on 0 repos and 0 repos require attention; details in " + path; !strings.Contains(out.String(), want) {
+		t.Errorf("sync issue summary = %q, want %q", out.String(), want)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("unexpected stderr: %q", errOut.String())
+	}
+}
+
+func TestWriteSyncIssuesReportOverwritesRatherThanAppends(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+	path := filepath.Join(home, "last-sync-issues.md")
+
+	results := []fleetsync.Result{{
+		Repo:   discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"},
+		Status: fleetsync.Failed,
+		Err:    errors.New("boom"),
+	}}
+	writeSyncIssuesReport(syncReportMetaForTest(), results, filepath.Dir(home), &out, &errOut)
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if strings.Contains(string(contents), "boom") {
+		t.Errorf("second run must replace the first, not append:\n%s", contents)
+	}
+	if strings.Count(string(contents), "# WB sync issues") != 1 {
+		t.Errorf("report written more than once:\n%s", contents)
+	}
+}
+
+func TestWriteSyncIssuesReportLeavesNoTemporaryFileAfterASuccessfulWrite(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
+
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read home: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-sync-issues-") {
+			t.Errorf("temporary file left behind: %s", entry.Name())
+		}
+	}
+	// The failure path is covered by TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails.
+}
+
+func TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	// A directory sitting at the report's own path makes os.Rename fail
+	// *after* the temporary file exists, which is the only situation in which
+	// the deferred cleanup is what removes it.
+	if err := os.MkdirAll(filepath.Join(home, "last-sync-issues.md"), 0o755); err != nil {
+		t.Fatalf("stage the blocked destination: %v", err)
+	}
+	var out, errOut bytes.Buffer
+
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
+
+	if errOut.Len() == 0 {
+		t.Fatal("renaming onto a directory should have failed and been reported")
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read home: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-sync-issues-") {
+			t.Errorf("temporary file survived a failed rename: %s", entry.Name())
+		}
+	}
+}
+
+func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+	var out, errOut bytes.Buffer
+
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
+
+	if errOut.Len() == 0 {
+		t.Skip("this filesystem allowed the write; ordering is asserted by the happy path instead")
+	}
+	if !strings.Contains(errOut.String(), "sync issues report not written") {
+		t.Errorf("failure not warned about: %q", errOut.String())
+	}
+}
+
+func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	results := []fleetsync.Result{{
+		Repo:   discover.Repo{Org: "o", Name: "broken", Path: "/p/o/broken"},
+		Status: fleetsync.Failed,
+		Err:    errors.New("git pull: transport failure"),
+	}}
+	code := Finalize(syncReportMetaForTest(), results, Options{ProjectsRoot: filepath.Dir(home), Workers: 1}, Effects{}, &out, &errOut)
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	contents, err := os.ReadFile(filepath.Join(home, "last-sync-issues.md"))
+	if err != nil {
+		t.Fatalf("a run with errors must still produce a report: %v", err)
+	}
+	if !strings.Contains(string(contents), "transport failure") {
+		t.Errorf("error not reported:\n%s", contents)
+	}
+}
+
+func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+	var out, errOut bytes.Buffer
+
+	code := Finalize(syncReportMetaForTest(), nil, Options{ProjectsRoot: filepath.Dir(home), Workers: 1}, Effects{Markers: func([]fleetsync.Result, string, io.Writer) {}}, &out, &errOut)
+
+	// The exit code is the point of this test and holds either way, so it is
+	// asserted before the skip: a report WB could not write must never fail a
+	// sync, whether or not this filesystem let the write through.
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0: an unwritable report must not fail a clean sync", code)
+	}
+	if errOut.Len() == 0 {
+		t.Skip("this filesystem allowed the write; the exit-code contract is asserted above regardless")
+	}
+	if !strings.Contains(errOut.String(), "sync issues report not written") {
+		t.Errorf("failure not warned about: %q", errOut.String())
+	}
+}
+
+func TestWriteSyncIssuesReportRedactsCredentialedRemoteURLs(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	results := []fleetsync.Result{{
+		Repo:   discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"},
+		Status: fleetsync.Failed,
+		Err:    errors.New("git pull https://x-access-token:ghp_realsecret@github.com/o/r.git: authentication failed"),
+	}}
+	writeSyncIssuesReport(syncReportMetaForTest(), results, filepath.Dir(home), &out, &errOut)
+
+	contents, err := os.ReadFile(filepath.Join(home, "last-sync-issues.md"))
+	if err != nil {
+		t.Fatalf("report not written: %v", err)
+	}
+	got := string(contents)
+	if strings.Contains(got, "ghp_realsecret") {
+		t.Errorf("secret leaked into report:\n%s", got)
+	}
+	if strings.Contains(got, "x-access-token") {
+		t.Errorf("username leaked into report:\n%s", got)
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Errorf("redaction marker missing from report:\n%s", got)
+	}
+}
+
+func TestWriteSyncIssuesReportLeavesOrdinaryURLsUnchanged(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	results := []fleetsync.Result{{
+		Repo:   discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"},
+		Status: fleetsync.Failed,
+		Err:    errors.New("git pull https://github.com/o/r.git: connection reset"),
+	}}
+	writeSyncIssuesReport(syncReportMetaForTest(), results, filepath.Dir(home), &out, &errOut)
+
+	contents, err := os.ReadFile(filepath.Join(home, "last-sync-issues.md"))
+	if err != nil {
+		t.Fatalf("report not written: %v", err)
+	}
+	if !strings.Contains(string(contents), "https://github.com/o/r.git") {
+		t.Errorf("credential-free URL was altered:\n%s", contents)
+	}
+}
+
+func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
+	t.Parallel()
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, filepath.Dir(home), &out, &errOut)
+
+	info, err := os.Stat(filepath.Join(home, "last-sync-issues.md"))
+	if err != nil {
+		t.Fatalf("stat report: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("report mode = %o, want 0600: it carries verbatim git output that can include a credentialed URL", perm)
+	}
+}
+
+// The following tests exercise writeSyncIssuesFileInjected's
+// filewrite.Injector-reachable error branches (task-9 PR-2): the happy
+// path is already covered above, but reaching a create, write, close,
+// chmod, or rename failure deterministically needs the injector.
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCreateFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepOpenOrCreate, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedWriteFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepWrite, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedCloseFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepClose, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedChmodFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepChmod, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+func TestWriteSyncIssuesFileInjectedHonoursAnInjectedRenameFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "issues.md")
+	inj := &filewrite.Injector{Step: filewrite.StepRename, Err: errBoomForCmdWB}
+	if err := writeSyncIssuesFileInjected(path, "contents", inj); !errors.Is(err, errBoomForCmdWB) {
+		t.Fatalf("writeSyncIssuesFileInjected error = %v", err)
+	}
+}
+
+var errBoomForCmdWB = errors.New("command test injected failure")

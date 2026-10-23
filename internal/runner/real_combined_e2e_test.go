@@ -33,7 +33,7 @@ func TestCombinedCaptureHelperProcess(t *testing.T) {
 	os.Exit(code)
 }
 
-func TestRealRunOptsCombinedCaptureKeepsOutputOnFailure(t *testing.T) {
+func TestE2ERunOptsCombinedCaptureKeepsOutputOnFailure(t *testing.T) {
 	t.Parallel()
 	opts := runner.RunOptions{
 		Env:             append(os.Environ(), "WB_RUNNER_COMBINED_HELPER=1", "WB_RUNNER_COMBINED_EXIT=7"),
@@ -55,7 +55,7 @@ func TestRealRunOptsCombinedCaptureKeepsOutputOnFailure(t *testing.T) {
 	}
 }
 
-func TestRealRunOptsCombinedCapturePreservesAlternatingStreams(t *testing.T) {
+func TestE2ERunOptsCombinedCapturePreservesAlternatingStreams(t *testing.T) {
 	t.Parallel()
 	opts := runner.RunOptions{
 		Env:             append(os.Environ(), "WB_RUNNER_COMBINED_HELPER=1", "WB_RUNNER_COMBINED_EXIT=0"),

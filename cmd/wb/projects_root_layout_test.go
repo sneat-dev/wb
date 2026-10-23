@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -262,7 +264,7 @@ func TestDaemonStateFileResolvesUnderProjectsRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(root, ".wb", "runtime", "daemon-state.json")
-	got, err := daemonStatePath(root)
+	got, err := daemonruntime.StatePath(root)
 	if err != nil {
 		t.Fatalf("daemonStatePath(%q): %v", root, err)
 	}

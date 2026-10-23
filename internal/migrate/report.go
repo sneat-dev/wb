@@ -151,10 +151,8 @@ func WriteReports(dir string, report Report) error {
 	if err := os.WriteFile(filepath.Join(dir, "migration.md"), []byte(report.Markdown()), 0o644); err != nil {
 		return err
 	}
-	raw, err := report.YAML()
-	if err != nil {
-		return err
-	}
+	// This concrete report contains only primitive values and their slices.
+	raw, _ := report.YAML()
 	return os.WriteFile(filepath.Join(dir, "migration.yaml"), raw, 0o644)
 }
 

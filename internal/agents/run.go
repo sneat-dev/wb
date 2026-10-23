@@ -246,9 +246,9 @@ func (store Store) Render(record Record) Result {
 // NewID mints a fresh agent run ID.
 func NewID() (string, error) {
 	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("generate agent run ID: %w", err)
-	}
+	// Go 1.27 crypto/rand.Read fills the buffer or terminates the process;
+	// it never returns an error. Keep this public signature for callers.
+	_, _ = rand.Read(random[:])
 	return IDPrefix + hex.EncodeToString(random[:]), nil
 }
 

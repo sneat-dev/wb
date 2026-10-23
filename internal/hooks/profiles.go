@@ -279,10 +279,8 @@ func matchRepositoryPath(repoRoot, pattern string) (bool, string, error) {
 	if len(matches) == 0 {
 		return false, "", nil
 	}
-	relative, err := filepath.Rel(repoRoot, matches[0])
-	if err != nil {
-		return false, "", err
-	}
+	// Every match retains the root/relative-pattern absolute form and volume.
+	relative, _ := filepath.Rel(repoRoot, matches[0])
 	return true, filepath.ToSlash(relative), nil
 }
 

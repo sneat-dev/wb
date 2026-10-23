@@ -20,7 +20,11 @@ type rawExecutionPolicy struct {
 }
 
 func RawExecutionPolicyPath() (string, error) {
-	account, err := user.Current()
+	return rawExecutionPolicyPathWithCurrent(user.Current)
+}
+
+func rawExecutionPolicyPathWithCurrent(current func() (*user.User, error)) (string, error) {
+	account, err := current()
 	if err != nil {
 		return "", fmt.Errorf("resolve current OS account for daemon policy: %w", err)
 	}
@@ -33,9 +37,13 @@ func RawExecutionPolicyPath() (string, error) {
 // LoadRawExecutionPolicy enables raw subprocesses only through a protected,
 // explicit administrator opt-in outside the agent-writable projects tree.
 func LoadRawExecutionPolicy(path, projectsRoot string) (bool, error) {
+	return loadRawExecutionPolicyWithIO(path, projectsRoot, RawExecutionPolicyPath, os.Open)
+}
+
+func loadRawExecutionPolicyWithIO(path, projectsRoot string, policyPath func() (string, error), open func(string) (*os.File, error)) (bool, error) {
 	if path == "" {
 		var err error
-		path, err = RawExecutionPolicyPath()
+		path, err = policyPath()
 		if err != nil {
 			return false, err
 		}
@@ -68,7 +76,7 @@ func LoadRawExecutionPolicy(path, projectsRoot string) (bool, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		return false, fmt.Errorf("daemon raw-execution policy permissions are %o, want 600: %s", info.Mode().Perm(), resolvedPath)
 	}
-	file, err := os.Open(resolvedPath)
+	file, err := open(resolvedPath)
 	if err != nil {
 		return false, fmt.Errorf("open daemon raw-execution policy: %w", err)
 	}
@@ -106,7 +114,11 @@ func RequireRawExecutionPolicy(path, projectsRoot string) error {
 }
 
 func pathWithin(root, candidate string) (bool, error) {
-	root, err := filepath.Abs(root)
+	return pathWithinWithPaths(root, candidate, filepath.Abs, filepath.Rel)
+}
+
+func pathWithinWithPaths(root, candidate string, absolute func(string) (string, error), relativePath func(string, string) (string, error)) (bool, error) {
+	root, err := absolute(root)
 	if err != nil {
 		return false, err
 	}
@@ -114,11 +126,11 @@ func pathWithin(root, candidate string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	candidate, err = filepath.Abs(candidate)
+	candidate, err = absolute(candidate)
 	if err != nil {
 		return false, err
 	}
-	relative, err := filepath.Rel(root, candidate)
+	relative, err := relativePath(root, candidate)
 	if err != nil {
 		return false, err
 	}

@@ -1,0 +1,100 @@
+/* The two charts of Throughput. The height they keep while they load is `.throughput-slot` in styles/home.css, from the same --chart-card-min. */
+.charts-grid {
+  display: grid;
+  gap: var(--chart-card-gap, var(--space-3));
+}
+
+.chart-card {
+  height: var(--chart-card-1, 13.875rem);
+  padding: var(--space-3);
+  overflow: hidden;
+}
+
+.chart-card + .chart-card {
+  height: var(--chart-card-2, 13.875rem);
+}
+
+@media (min-width: 60rem) {
+  .charts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.chart-legend {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-2) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-left: var(--space-1);
+  border-radius: 2px;
+}
+
+.swatch.primary {
+  background: var(--chart-bar);
+}
+
+.swatch.soft {
+  background: var(--chart-bar-soft);
+}
+
+.swatch.muted {
+  background: var(--chart-bar-muted);
+}
+
+/* A phone: dense and still clear. The card is only as tall as its padding, title row and plot (the heights
+   are those of the slot that keeps its place, home.css): the title and the legend or caption share one
+   row, the legend cut with an ellipsis when it does not fit, and the cards are close. Throughput is the
+   first section of Home and "Needs you" must stay on the first screen. The figure and the chart are
+   `display: contents` so the title, the plot and the legend are the grid's items. */
+@media (max-width: 480px) {
+  .chart-card {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-content: start;
+    gap: 0 var(--space-2);
+    padding: var(--space-2);
+  }
+
+  .chart-card app-chart,
+  .chart-card app-chart .chart {
+    display: contents;
+  }
+
+  .chart-card app-chart .title {
+    grid-area: 1 / 1;
+    margin: 0 0 var(--space-1);
+    line-height: 1.125rem;
+    white-space: nowrap;
+  }
+
+  .chart-card app-chart .plot {
+    grid-area: 2 / 1 / 3 / -1;
+  }
+
+  .chart-card .chart-legend {
+    display: block;
+    grid-area: 1 / 2;
+    min-width: 0;
+    height: 1.125rem;
+    margin: 0;
+    overflow: hidden;
+    line-height: 1.125rem;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chart-legend .swatch {
+    margin: 0 var(--space-1) 0 var(--space-2);
+  }
+}

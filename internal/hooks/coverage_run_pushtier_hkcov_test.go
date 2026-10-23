@@ -402,15 +402,20 @@ func TestHkCovCachedGHPRLookupDefaultsAndBlankInputs(t *testing.T) {
 func TestHkCovCachedGHPRLookupUsesTheDefaultRunner(t *testing.T) {
 	repo := initRepo(t)
 	isolateEnvironment(t)
-	hkCovFakeGH(t, "printf '[{\"number\": 7}]'\n")
+	marker := filepath.Join(t.TempDir(), "lookup-dispatched")
+	t.Setenv("HKCOV_LOOKUP_MARKER", marker)
+	hkCovFakeGH(t, "printf dispatched > \"$HKCOV_LOOKUP_MARKER\"\nprintf '[{\"number\": 7}]'\n")
 	cachePath := filepath.Join(t.TempDir(), "pr-status-cache.json")
 	lookup := &CachedGHPRLookup{
 		RepoRoot: repo, RepoSlug: "acme/widget", CachePath: cachePath,
-		TTL: time.Minute, Timeout: 5 * time.Second,
+		TTL: time.Minute, Timeout: 30 * time.Second,
 	}
 	open, known := lookup.OpenPullRequest("feature")
 	if !open || !known {
 		t.Fatalf("OpenPullRequest = %v, %v; want a known open pull request", open, known)
+	}
+	if contents, err := os.ReadFile(marker); err != nil || string(contents) != "dispatched" {
+		t.Fatalf("native lookup dispatch = %q, %v", contents, err)
 	}
 	cache := loadPRStatusCache(cachePath)
 	if entry, found := cache["acme/widget#feature"]; !found || !entry.Open {

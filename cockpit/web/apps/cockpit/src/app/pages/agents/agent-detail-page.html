@@ -1,0 +1,8 @@
+<p class="back"><a routerLink="/agents">&larr; Agents</a></p>
+@if (exists()) {
+  <app-agent-panel [id]="id()" [page]="true" />
+} @else if (store.warmingUp() || !store.loaded()) {
+  <p class="muted">Waiting for the fleet snapshot…</p>
+} @else {
+  <p>This agent is not in the fleet document; its session may have ended or its machine stopped reporting it.</p>
+}

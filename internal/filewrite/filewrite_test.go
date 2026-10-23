@@ -14,10 +14,12 @@ import (
 
 func openTestDir(t *testing.T) *os.File {
 	t.Helper()
-	dir, err := os.Open(t.TempDir())
+	path := t.TempDir()
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := os.NewFile(uintptr(fd), path)
 	t.Cleanup(func() { _ = dir.Close() })
 	return dir
 }
@@ -224,6 +226,13 @@ func TestOpenReadOnlyOpensAnExistingFile(t *testing.T) {
 	fd, err = OpenReadOnly(int(dir.Fd()), "f", nil)
 	if err != nil {
 		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("inspect close-on-exec flag: %v", err)
+	}
+	if flags&unix.FD_CLOEXEC == 0 {
+		t.Fatal("OpenReadOnly did not set close-on-exec")
 	}
 	_ = unix.Close(fd)
 }

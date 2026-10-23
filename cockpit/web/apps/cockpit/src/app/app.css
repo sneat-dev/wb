@@ -1,0 +1,39 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.shell-main {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-4) var(--gutter) var(--space-7);
+  outline: none;
+}
+
+/* Rows that wait for the first scan sit below what has been listed, so what
+   arrives above them is never pushed by their going. */
+.page-slot[hidden] {
+  display: none;
+}
+
+.warming,
+.loading {
+  display: block;
+  margin-top: var(--space-4);
+}
+
+.skip-link {
+  position: absolute;
+  z-index: 70;
+  top: var(--space-2);
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  transform: translateY(-200%);
+}
+
+.skip-link:focus {
+  transform: none;
+}

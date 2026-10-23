@@ -45,10 +45,6 @@ func (m RunMeta) Scoped() bool { return len(m.Owners) > 0 || m.Filter != "" }
 // returns the results collected so far.
 func (m RunMeta) Interrupted() bool { return m.Discovered > 0 && m.Scanned < m.Discovered }
 
-// Complete reports whether this run may speak for the whole fleet. Only a
-// complete, unscoped, non-dry run can honestly say everything is in sync.
-func (m RunMeta) Complete() bool { return !m.Scoped() && !m.Interrupted() && !m.DryRun }
-
 // scopeLine describes the run's selection in one line, always rendered so a
 // reader never has to assume the report covered everything.
 func (m RunMeta) scopeLine() string {

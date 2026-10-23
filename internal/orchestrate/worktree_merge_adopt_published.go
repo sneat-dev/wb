@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitremote"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -47,6 +50,10 @@ type WorktreeMergePublishedCandidateAdoptionOptions struct {
 }
 
 func AdoptPublishedWorktreeMergeCandidate(ctx context.Context, options WorktreeMergePublishedCandidateAdoptionOptions) (WorktreeMergePublishedCandidateAdoption, error) {
+	return adoptPublishedWorktreeMergeCandidate(ctx, options, defaultRunner, readWorktreeMergeReceipt)
+}
+
+func adoptPublishedWorktreeMergeCandidate(ctx context.Context, options WorktreeMergePublishedCandidateAdoptionOptions, run runner.Runner, read func(string) (WorktreeMergeReceipt, error)) (WorktreeMergePublishedCandidateAdoption, error) {
 	if strings.TrimSpace(options.PullRequest) == "" {
 		return WorktreeMergePublishedCandidateAdoption{}, errors.New("pull request is required")
 	}
@@ -57,7 +64,7 @@ func AdoptPublishedWorktreeMergeCandidate(ctx context.Context, options WorktreeM
 	if err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(path)
+	receipt, err := read(path)
 	if err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, err
 	}
@@ -67,20 +74,11 @@ func AdoptPublishedWorktreeMergeCandidate(ctx context.Context, options WorktreeM
 	}
 	defer func() { _ = lock.Release() }()
 	// Every mutable fact is re-read while the lane is exclusively held.
-	receipt, err = readWorktreeMergeReceipt(path)
+	receipt, err = read(path)
 	if err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, err
 	}
-	if err := validatePublishedCandidateAdoptionReceipt(receipt, path); err != nil {
-		return WorktreeMergePublishedCandidateAdoption{}, err
-	}
-	if _, err := validateMergeAcknowledgementCandidate(ctx, options.ProjectsRoot, receipt, receipt.Candidate); err != nil {
-		return WorktreeMergePublishedCandidateAdoption{}, fmt.Errorf("validate candidate: %w", err)
-	}
-	if err := validatePublishedCandidateAdoptionSources(ctx, receipt); err != nil {
-		return WorktreeMergePublishedCandidateAdoption{}, fmt.Errorf("re-read sources: %w", err)
-	}
-	if err := provePublishedCandidatePullRequest(ctx, receipt, options.PullRequest); err != nil {
+	if err := provePublishedCandidateAdoption(ctx, run, options.ProjectsRoot, receipt, path, options.PullRequest); err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, err
 	}
 	digest, err := worktreeMergeReceiptSHA256(path)
@@ -106,6 +104,24 @@ func AdoptPublishedWorktreeMergeCandidate(ctx context.Context, options WorktreeM
 	return ack, nil
 }
 
+// provePublishedCandidateAdoption keeps the ordered native receipt, custody,
+// source and live publication proofs together before any acknowledgement is built.
+func provePublishedCandidateAdoption(ctx context.Context, run runner.Runner, projectsRoot string, receipt WorktreeMergeReceipt, path, pullRequest string) error {
+	if err := validatePublishedCandidateAdoptionReceipt(receipt, path); err != nil {
+		return err
+	}
+	if _, err := validateMergeAcknowledgementCandidateWithRunner(ctx, run, projectsRoot, receipt, receipt.Candidate); err != nil {
+		return fmt.Errorf("validate candidate: %w", err)
+	}
+	if err := validatePublishedCandidateAdoptionSources(ctx, run, receipt); err != nil {
+		return fmt.Errorf("re-read sources: %w", err)
+	}
+	if err := provePublishedCandidatePullRequest(ctx, run, receipt, pullRequest); err != nil {
+		return err
+	}
+	return nil
+}
+
 func validatePublishedCandidateAdoptionReceipt(r WorktreeMergeReceipt, path string) error {
 	if r.ReceiptPath != path || r.Phase != WorktreeMergePhasePrepare || r.Status != WorktreeMergeConflict || r.ID == "" || r.Lane != worktreeMergeLaneID(r.Repository, r.Target) || r.Repository == "" || r.Target == "" || r.Candidate.Task == "" || r.Candidate.Worktree == "" || r.Candidate.Branch == "" || r.Candidate.SHA == "" || len(r.Sources) == 0 || r.PullRequest != "" || r.PublishedCandidateSHA != "" || r.LandingSHA != "" {
 		return errors.New("receipt is not an exact unlanded prepare/conflict candidate awaiting publication adoption")
@@ -113,12 +129,12 @@ func validatePublishedCandidateAdoptionReceipt(r WorktreeMergeReceipt, path stri
 	return nil
 }
 
-func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeReceipt, selector string) error {
-	hostedRepository, err := hostedRepositoryForCandidate(ctx, r)
+func provePublishedCandidatePullRequest(ctx context.Context, run runner.Runner, r WorktreeMergeReceipt, selector string) error {
+	hostedRepository, err := hostedRepositoryForCandidate(ctx, run, r)
 	if err != nil {
 		return err
 	}
-	v, err := ReadPullRequest(ctx, hostedRepository, selector)
+	v, err := githubchecks.ReadPullRequest(ctx, hostedRepository, selector)
 	if err != nil {
 		return err
 	}
@@ -128,7 +144,7 @@ func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeRece
 	if v.Base.Ref != r.Target || v.Head.Ref != r.Candidate.Branch || v.Head.SHA != r.Candidate.SHA || v.Head.Repo == nil || v.Head.Repo.FullName != hostedRepository || v.Base.Repo == nil || v.Base.Repo.FullName != hostedRepository {
 		return fmt.Errorf("pull request %s does not match exact repository, target, candidate branch, and candidate SHA", selector)
 	}
-	remote, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+r.Candidate.Branch)
+	remote, _, err := runCommand(ctx, run, 0, 0, r.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+r.Candidate.Branch)
 	if err != nil {
 		return fmt.Errorf("read candidate remote ref: %w", err)
 	}
@@ -142,8 +158,8 @@ func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeRece
 // authenticated origin, never from the historical Work Log repository name.
 // Renames preserve the latter for WB lifecycle identity while GitHub PR reads
 // must address the repository that currently hosts the branch.
-func hostedRepositoryForCandidate(ctx context.Context, r WorktreeMergeReceipt) (string, error) {
-	origin, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "remote", "get-url", "origin")
+func hostedRepositoryForCandidate(ctx context.Context, run runner.Runner, r WorktreeMergeReceipt) (string, error) {
+	origin, _, err := runCommand(ctx, run, 0, 0, r.Candidate.Worktree, "git", "remote", "get-url", "origin")
 	if err != nil {
 		return "", fmt.Errorf("read candidate origin: %w", err)
 	}
@@ -188,52 +204,17 @@ func persistPublishedCandidateAdoption(path string, a WorktreeMergePublishedCand
 // linkPublishedCandidateAdoption = os.Link alias that used to serve as this
 // function's only test seam.
 func persistPublishedCandidateAdoptionInjected(path string, a WorktreeMergePublishedCandidateAdoption, inj *filewrite.Injector) error {
-	b, err := json.MarshalIndent(a, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	f, err := filewrite.CreateTemp(filepath.Dir(path), ".published-candidate-adoption-*.tmp", inj)
-	if err != nil {
-		return err
-	}
-	temporary := f.Name()
-	defer func() { _ = os.Remove(temporary) }()
-	if err := filewrite.ChmodFile(f, 0600, temporary, inj); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := filewrite.Write(f, b, temporary, inj); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := filewrite.Sync(f, temporary, inj); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := filewrite.Close(f, temporary, inj); err != nil {
-		return err
-	}
-	if err := filewrite.LinkPath(temporary, path, inj); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return filewrite.SyncDir(directory, inj)
+	return persistMergeAcknowledgement(path, ".published-candidate-adoption-*.tmp", a, func(temporaryPath, path string, inj *filewrite.Injector) error {
+		return publishMergeAcknowledgementAndSyncDirectory(temporaryPath, path, inj, os.Open)
+	}, inj)
 }
 
-func validatePublishedCandidateAdoptionSources(ctx context.Context, receipt WorktreeMergeReceipt) error {
+func validatePublishedCandidateAdoptionSources(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt) error {
 	for _, source := range receipt.Sources {
-		if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
+		if err := requireCleanMergeWorktreeWithRunner(ctx, run, source.Worktree); err != nil {
 			return fmt.Errorf("source %s is not clean: %w", source.Branch, err)
 		}
-		branch, _, err := runCommand(ctx, defaultRunner, 0, 0, source.Worktree, "git", "branch", "--show-current")
+		branch, _, err := runCommand(ctx, run, 0, 0, source.Worktree, "git", "branch", "--show-current")
 		if err != nil {
 			return err
 		}
@@ -241,11 +222,11 @@ func validatePublishedCandidateAdoptionSources(ctx context.Context, receipt Work
 		if branch != source.Branch {
 			return fmt.Errorf("source branch %s no longer matches receipted branch %s", branch, source.Branch)
 		}
-		head, err := mergeRevision(ctx, defaultRunner, source.Worktree, "HEAD")
+		head, err := mergeRevision(ctx, run, source.Worktree, "HEAD")
 		if err != nil {
 			return err
 		}
-		contains, err := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		contains, err := isMergeAncestorWithRunner(ctx, run, source.Worktree, source.SHA, head)
 		if err != nil || !contains {
 			if err == nil {
 				err = fmt.Errorf("source %s head %s is not a descendant of receipted %s", source.Branch, head, source.SHA)
@@ -284,6 +265,10 @@ func readPublishedCandidateAdoption(path string, r WorktreeMergeReceipt) (Worktr
 	return a, nil
 }
 func adoptedPublishedCandidate(ctx context.Context, r WorktreeMergeReceipt) (WorktreeMergePublishedCandidateAdoption, bool, error) {
+	return adoptedPublishedCandidateWithRunner(ctx, defaultRunner, r)
+}
+
+func adoptedPublishedCandidateWithRunner(ctx context.Context, run runner.Runner, r WorktreeMergeReceipt) (WorktreeMergePublishedCandidateAdoption, bool, error) {
 	a, err := readPublishedCandidateAdoption(publishedCandidateAdoptionPath(r.ReceiptPath), r)
 	if errors.Is(err, os.ErrNotExist) {
 		return WorktreeMergePublishedCandidateAdoption{}, false, nil
@@ -295,7 +280,7 @@ func adoptedPublishedCandidate(ctx context.Context, r WorktreeMergeReceipt) (Wor
 		if r.Candidate.SHA == "" {
 			return a, false, nil
 		}
-		contains, err := isMergeAncestor(ctx, r.Candidate.Worktree, a.Candidate.SHA, r.Candidate.SHA)
+		contains, err := isMergeAncestorWithRunner(ctx, run, r.Candidate.Worktree, a.Candidate.SHA, r.Candidate.SHA)
 		if err != nil || !contains {
 			if err == nil {
 				err = fmt.Errorf("materialized candidate %s does not retain adopted predecessor %s", r.Candidate.SHA, a.Candidate.SHA)
@@ -306,7 +291,7 @@ func adoptedPublishedCandidate(ctx context.Context, r WorktreeMergeReceipt) (Wor
 			return a, false, nil
 		}
 	}
-	if err := provePublishedCandidatePullRequest(ctx, r, a.PullRequest); err != nil {
+	if err := provePublishedCandidatePullRequest(ctx, run, r, a.PullRequest); err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, false, err
 	}
 	return a, true, nil

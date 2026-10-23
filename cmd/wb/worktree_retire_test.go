@@ -186,6 +186,7 @@ func TestWorktreeRetireApplyCompletesAndReleasesTheRemoteClaim(t *testing.T) {
 }
 
 func TestRetireRemoteOwnershipChecksClaimsAndMachineSnapshots(t *testing.T) {
+	t.Parallel()
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -224,6 +225,7 @@ func TestRetireRemoteOwnershipChecksClaimsAndMachineSnapshots(t *testing.T) {
 }
 
 func TestRetireReleaseClaimOnlyAfterLastTaskWorktree(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		inventory  worktrees.ListOutcome

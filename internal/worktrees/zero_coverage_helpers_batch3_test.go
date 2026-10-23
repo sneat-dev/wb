@@ -17,7 +17,7 @@ import (
 func TestZeroCoverageHelpersBatch3ErrorMessages(t *testing.T) {
 	t.Parallel()
 
-	if got := (&pullRequestHeadMismatchError{message: "exact head changed"}).Error(); got != "exact head changed" {
+	if got := (&pullRequestHeadMismatchError{Message: "exact head changed"}).Error(); got != "exact head changed" {
 		t.Fatalf("pull-request mismatch error = %q", got)
 	}
 	rename := (&RepositoryRenameMismatchError{

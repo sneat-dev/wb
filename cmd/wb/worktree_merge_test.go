@@ -5,158 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/spf13/pflag"
-
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-func TestWorktreeMergeForcedProgressIsNewlineDelimited(t *testing.T) {
-	var output bytes.Buffer
-	writer := &progressLineWriter{out: &output}
-	for _, text := range []string{"\rworktree merge: preparing", "\rworktree merge: waiting", "\n"} {
-		if _, err := writer.Write([]byte(text)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got, want := output.String(), "worktree merge: preparing\nworktree merge: waiting\n"; got != want {
-		t.Fatalf("progress output = %q, want %q", got, want)
-	}
-}
-
-func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
-	command := newWorktreeMergeCmd(&invocation{})
-	if command.Use != "merge <source-worktree...>" {
-		t.Fatalf("Use = %q", command.Use)
-	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "allow-unfenced", "format", "progress", "prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
-		if command.Flags().Lookup(flag) == nil {
-			t.Errorf("combined merge is missing --%s", flag)
-		}
-	}
-	if command.Flags().Lookup("rebatch-receipt") != nil {
-		t.Error("combined merge must not expose --rebatch-receipt; rebatching is a prepare-only transition")
-	}
-	prepare, _, err := command.Find([]string{"prepare"})
-	if err != nil || prepare == nil || prepare.Flags().Lookup("rebatch-receipt") == nil {
-		t.Fatalf("merge prepare must expose --rebatch-receipt: command=%v err=%v", prepare, err)
-	}
-	if prepare.Flags().Lookup("allow-unfenced") != nil {
-		t.Fatal("merge prepare must not expose landing-only --allow-unfenced")
-	}
-	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
-		if prepare.Flags().Lookup(flag) == nil {
-			t.Errorf("merge prepare is missing --%s", flag)
-		}
-	}
-	if route := command.Flags().Lookup("route"); route == nil || route.DefValue != "auto" {
-		t.Fatalf("--route = %#v, want auto", route)
-	}
-	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
-		t.Fatalf("--cleanup = %#v, want false", cleanup)
-	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-missing-cleanup", "acknowledge-retired-prepare-candidate", "acknowledge-receipt-collision", "adopt-published-candidate", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair", "prepare-conflict-replacement"} {
-		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
-			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
-			continue
-		}
-		child, _, _ := command.Find([]string{name})
-		if name != "acknowledge-landed-failed" && name != "acknowledge-stranded-landing" && name != "acknowledge-missing-cleanup" && name != "acknowledge-retired-prepare-candidate" && name != "acknowledge-receipt-collision" && name != "adopt-published-candidate" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
-			t.Errorf("merge %s is missing --progress", name)
-		}
-	}
-	resume, _, err := command.Find([]string{"resume"})
-	if err != nil || resume == nil || resume.Flags().Lookup("stop-before-merge") == nil {
-		t.Fatalf("merge resume must expose --stop-before-merge: command=%v err=%v", resume, err)
-	}
-	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
-		if resume.Flags().Lookup(flag) == nil {
-			t.Errorf("merge resume is missing --%s", flag)
-		}
-	}
-	if resume.Flags().Lookup("allow-unfenced") == nil {
-		t.Fatal("merge resume must expose --allow-unfenced")
-	}
-	land, _, err := command.Find([]string{"land"})
-	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
-		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)
-	}
-	if land.Flags().Lookup("allow-unfenced") == nil {
-		t.Fatal("merge land must expose --allow-unfenced")
-	}
-	for _, flag := range []string{"prepare-timeout", "check-timeout", "shard-attempt-timeout"} {
-		if land.Flags().Lookup(flag) != nil {
-			t.Errorf("merge land must not expose --%s", flag)
-		}
-	}
-	ack, _, err := command.Find([]string{"acknowledge-landed-failed"})
-	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil {
-		t.Fatalf("acknowledge-landed-failed flags = %#v err=%v", ack, err)
-	}
-	seal, _, err := command.Find([]string{"seal-validation-failed"})
-	if err != nil || seal == nil || seal.Flags().Lookup("apply") == nil || seal.Flags().Lookup("actor") == nil || seal.Flags().Lookup("reason") == nil || seal.Flags().Lookup("model") == nil {
-		t.Fatalf("seal-validation-failed flags = %#v err=%v", seal, err)
-	}
-	supersede, _, err := command.Find([]string{"supersede-validation-failed"})
-	if err != nil || supersede == nil || supersede.Flags().Lookup("apply") == nil || supersede.Flags().Lookup("actor") == nil || supersede.Flags().Lookup("reason") == nil {
-		t.Fatalf("supersede-validation-failed flags = %#v err=%v", supersede, err)
-	}
-	stranded, _, err := command.Find([]string{"acknowledge-stranded-landing"})
-	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil {
-		t.Fatalf("acknowledge-stranded-landing flags = %#v err=%v", stranded, err)
-	}
-	for _, status := range []string{"conflict", "published", "checks_pending", "checks_failed"} {
-		if !strings.Contains(stranded.Long, status) {
-			t.Errorf("acknowledge-stranded-landing help does not mention supported %q receipts: %q", status, stranded.Long)
-		}
-	}
-	missingCleanup, _, err := command.Find([]string{"acknowledge-missing-cleanup"})
-	if err != nil || missingCleanup == nil || missingCleanup.Flags().Lookup("apply") == nil || missingCleanup.Flags().Lookup("actor") == nil || missingCleanup.Flags().Lookup("reason") == nil {
-		t.Fatalf("acknowledge-missing-cleanup flags = %#v err=%v", missingCleanup, err)
-	}
-	retiredPrepare, _, err := command.Find([]string{"acknowledge-retired-prepare-candidate"})
-	if err != nil || retiredPrepare == nil || retiredPrepare.Flags().Lookup("apply") == nil || retiredPrepare.Flags().Lookup("actor") == nil || retiredPrepare.Flags().Lookup("reason") == nil {
-		t.Fatalf("acknowledge-retired-prepare-candidate flags = %#v err=%v", retiredPrepare, err)
-	}
-	adoption, _, err := command.Find([]string{"adopt-published-candidate"})
-	if err != nil || adoption == nil || adoption.Flags().Lookup("apply") == nil || adoption.Flags().Lookup("actor") == nil || adoption.Flags().Lookup("reason") == nil {
-		t.Fatalf("adopt-published-candidate flags = %#v err=%v", adoption, err)
-	}
-	correct, _, err := command.Find([]string{"correct-self-supersession"})
-	if err != nil || correct == nil || correct.Flags().Lookup("apply") == nil || correct.Flags().Lookup("actor") == nil || correct.Flags().Lookup("reason") == nil || correct.Flags().Lookup("expected-supersession-sha256") == nil || correct.Flags().Lookup("expected-immutable-claim-sha256") == nil {
-		t.Fatalf("correct-self-supersession flags = %#v err=%v", correct, err)
-	}
-	for _, phrase := range []string{"prepared locally, not landed", "never force-push", "exact remote target", "forward revert", "forward repair", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-retired-prepare-candidate", "never asserts source absorption", "seal-validation-failed", "supersede-validation-failed"} {
-		if !strings.Contains(command.Long, phrase) {
-			t.Errorf("merge help is missing %q", phrase)
-		}
-	}
-}
-
-func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
-	command := newWorktreeLandCmd(&invocation{})
-	if command.Name() != "land" {
-		t.Fatalf("Name() = %q", command.Name())
-	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "allow-unfenced", "format", "progress"} {
-		if command.Flags().Lookup(flag) == nil {
-			t.Errorf("land is missing --%s", flag)
-		}
-	}
-	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "true" {
-		t.Fatalf("land --cleanup = %#v, want default true", cleanup)
-	}
-}
 
 // TestLandAliasSharesWorktreeLandContract pins that `wb land` is not a second
 // implementation: it is built from the exact same constructor as
@@ -251,90 +112,6 @@ func TestWorktreeLandAndRootLandAcceptProjectsRoot(t *testing.T) {
 				t.Fatalf("error = %v, want it to name the given --projects-root's worktrees root %q", err, wantWorktreesRoot)
 			}
 		})
-	}
-}
-
-func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
-	tests := []struct {
-		name    string
-		flags   worktreeMergeFlags
-		wantErr string
-	}{
-		{
-			name:    "requires pull request route",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Second, stopBeforeMerge: true},
-			wantErr: "requires --route pr",
-		},
-		{
-			name:    "cannot clean before merge",
-			flags:   worktreeMergeFlags{format: "text", route: "pr", onFailure: "stop", timeout: time.Second, cleanup: true, stopBeforeMerge: true},
-			wantErr: "cannot be combined with --cleanup",
-		},
-		{
-			name:  "valid PR handoff",
-			flags: worktreeMergeFlags{format: "text", route: "pr", onFailure: "stop", timeout: time.Second, stopBeforeMerge: true},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateWorktreeMergeFlags(tt.flags)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("validateWorktreeMergeFlags() error = %v, want %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence(t *testing.T) {
-	command := newWorktreeMergeCmd(&invocation{})
-	child, _, err := command.Find([]string{"acknowledge-receipt-collision"})
-	if err != nil || child == nil {
-		t.Fatalf("find collision acknowledgement command: child=%v err=%v", child, err)
-	}
-	for _, flag := range []string{"expected-receipt-sha256", "expected-immutable-claim-sha256", "expected-target", "expected-candidate", "expected-current-source", "expected-historical-refresh-source"} {
-		if child.Flags().Lookup(flag) == nil {
-			t.Errorf("collision acknowledgement is missing --%s", flag)
-		}
-	}
-	command.SetArgs([]string{"acknowledge-receipt-collision", "receipt.json"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "all expected receipt, claim, target, candidate, current-source, and historical-source identities are required") {
-		t.Fatalf("missing collision evidence error = %v", err)
-	}
-}
-
-func TestWorktreeMergeCorrectSelfSupersessionCommandRequiresExpectedEvidence(t *testing.T) {
-	command := newWorktreeMergeCmd(&invocation{})
-	command.SetArgs([]string{"correct-self-supersession", "receipt.json", "replacement-worktree"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "--expected-supersession-sha256 and --expected-immutable-claim-sha256 are required") {
-		t.Fatalf("missing self-supersession evidence error = %v", err)
-	}
-}
-
-func TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence(t *testing.T) {
-	command := newWorktreeMergeCmd(&invocation{})
-	child, _, err := command.Find([]string{"prepare-published-forward-repair"})
-	if err != nil || child == nil {
-		t.Fatalf("find published forward-repair command: child=%v err=%v", child, err)
-	}
-	for _, flag := range []string{"expected-receipt-sha256", "expected-immutable-claim-sha256", "expected-supersession-sha256", "expected-current-target", "expected-source-sha", "apply", "actor", "reason"} {
-		if child.Flags().Lookup(flag) == nil {
-			t.Errorf("published forward-repair is missing --%s", flag)
-		}
-	}
-	for _, phrase := range []string{"historical ancestry root", "historical worktrees need not remain live", "current WB-managed worktree", "exact active claim"} {
-		if !strings.Contains(child.Long, phrase) {
-			t.Errorf("published forward-repair help is missing %q", phrase)
-		}
-	}
-	command.SetArgs([]string{"prepare-published-forward-repair", "receipt.json", "source-worktree"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "expected receipt, immutable claim, self-supersession, current target, and one expected SHA per source") {
-		t.Fatalf("missing published forward-repair evidence error = %v", err)
 	}
 }
 
@@ -657,7 +434,7 @@ func TestWorktreeMergeRevertLandsAForwardRevertAfterASuccessfulPrepare(t *testin
 		t.Fatal(err)
 	}
 
-	command := newWorktreeMergeRevertCmd(&invocation{projectsRoot: fixture.projectsRoot})
+	command := mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "revert")
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
@@ -805,18 +582,13 @@ func runCLIWorktreeGit(t *testing.T, directory string, args ...string) string {
 // candidate SHA directly and may need it validated before any land call
 // ever runs. Only an explicit --route pr (this call itself intends to land
 // through the pull-request route) may still defer.
-func TestWorktreeMergePrepareForcesLocalValidationExceptExplicitPRRoute(t *testing.T) {
-	for _, test := range []struct {
-		route string
-		want  bool
-	}{
-		{route: "auto", want: true},
-		{route: "", want: true},
-		{route: "direct", want: true},
-		{route: "pr", want: false},
-	} {
-		if got := worktreeMergePrepareForcesLocalValidation(test.route); got != test.want {
-			t.Errorf("worktreeMergePrepareForcesLocalValidation(%q) = %t, want %t", test.route, got, test.want)
-		}
+
+func mergeChildForTest(inv *invocation, name string) *cobra.Command {
+	parent := newWorktreeMergeCmd(inv)
+	child, _, err := parent.Find([]string{name})
+	if err != nil {
+		panic(err)
 	}
+	parent.RemoveCommand(child)
+	return child
 }

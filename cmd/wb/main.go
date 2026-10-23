@@ -28,6 +28,11 @@ const (
 	exitOK       = 0 // the command ran and reported nothing that needs attention
 	exitFindings = 1 // the command ran and reported failures, drift, or findings
 	exitUsage    = 2 // the invocation was rejected before any work started
+	// exitLandedIncomplete: a landing (pr land, worktree land, pr create
+	// --land) merged and verified its change on the base branch, but a
+	// follow-up step did not finish. The work is landed; the output names the
+	// exact resume command. Never re-land, re-review or revert on this status.
+	exitLandedIncomplete = 3
 )
 
 // invocation carries the mutable state one run()/runWithStdin() call reads
@@ -57,6 +62,11 @@ type invocation struct {
 	// nonInteractive holds --non-interactive: never use a terminal UI or
 	// wait for input, even on a terminal.
 	nonInteractive bool
+	// quiet holds --quiet, or WB_QUIET on a verb that consumes it: print only
+	// the outcome and any refusal, with no progress or heartbeat lines. It is
+	// true only for a verb in persistentFlagSupport["quiet"], so a helper
+	// shared with a verb that ignores the flag never reads a stray value.
+	quiet bool
 	// filterFlag holds --filter: only repos whose org/name contains this
 	// substring.
 	filterFlag string
@@ -108,20 +118,14 @@ Exit codes:
   0  success  — the command ran and reported nothing that needs attention
   1  findings — the command ran and reported failures, drift, or policy findings
   2  usage    — the invocation was rejected before any work started
+  3  landed, follow-up incomplete — wb land, wb pr land and wb pr create --land
+     only: the change IS on the base branch, but canonical sync, branch
+     retirement or cleanup did not finish; the output prints the resume command
 
 Terminal-only behaviour, including styled help and live progress reporting,
 activates only when its output stream is a terminal. Pass --non-interactive, or
 set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
 even when a terminal is attached.`
-
-// newRootCmd builds the command tree for callers that only inspect it (help
-// text, subcommand paths, flag matrices) rather than execute it through
-// runWithStdin. It is the ~50 existing test call sites' entry point, and
-// stays a zero-argument constructor: it hands newRootCmdFor a throwaway
-// invocation that is never read back.
-func newRootCmd() *cobra.Command {
-	return newRootCmdFor(&invocation{})
-}
 
 // newRootCmdFor builds the command tree for one invocation, closing over inv
 // so PersistentPreRunE and flag bindings write into it directly instead of
@@ -157,15 +161,24 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 			warnIgnoredWBHome(inv, cmd)
 			inv.commandStarted = true
 			id := persistentCommandID(cmd)
+			// WB_QUIET is the environment spelling of --quiet. Unlike the flag
+			// it is not rejected where it cannot apply, because a caller may
+			// export it for a whole shell; it simply has no effect there.
+			if console.QuietRequested() && persistentFlagSupport["quiet"][id] {
+				inv.quiet = true
+			}
 			// `wb version` (including --json) MUST stay side-effect-free
 			// (cli-install#req:version-json-side-effect-free): any fleet CLI's
 			// install/upgrade status probe execs it from inside the caller's own
 			// cwd, which may itself be a WB worktree. Recording a heartbeat or
 			// invoked-command there on every probe would make a lane a prober
 			// merely glanced at look busy, and would misattribute whatever that
-			// worktree's write path records next. Skip both for "version" alone
-			// — every other command still gets them.
-			if id == "version" {
+			// worktree's write path records next. `wb cockpit export` is the same
+			// kind of probe, run by another machine's daemon over SSH from a
+			// login directory, and is a read-only export that must write
+			// nothing. Skip both for these alone — every other command still
+			// gets them.
+			if sideEffectFreeCommand(id) {
 				return nil
 			}
 			// Publish which command is running so anything it writes into a
@@ -187,6 +200,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 	root.PersistentFlags().StringVar(&inv.filterFlag, "filter", "", "only repos whose org/name contains this substring")
 	root.PersistentFlags().StringArrayVar(&inv.extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&inv.nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
+	root.PersistentFlags().BoolVar(&inv.quiet, "quiet", false, "print only the outcome and any refusal, with no progress lines, so the verb's output never needs a pipe (also WB_QUIET=1)")
 
 	// --version is what people and agents reach for first; `wb version` carries
 	// the same information and adds --json for programmatic use.
@@ -203,6 +217,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newAgentCmd(inv), rootGroupAgent),
 		groupedRootCommand(newTaskCmd(inv), rootGroupAgent),
 		groupedRootCommand(newStreamCmd(inv), rootGroupChange),
+		groupedRootCommand(newIntegrationCmd(inv), rootGroupChange),
 		groupedRootCommand(newStatusCmd(inv), rootGroupFleet),
 		groupedRootCommand(newFleetCmd(inv), rootGroupFleet),
 		groupedRootCommand(newSyncCmd(inv), rootGroupFleet),
@@ -221,6 +236,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newRunCmd(inv), rootGroupChange),
 		groupedRootCommand(newWorkerCmd(inv, defaultDaemonDependencies()), rootGroupMaintain),
 		groupedRootCommand(newDashboardCmd(inv), rootGroupFleet),
+		groupedRootCommand(newCockpitCmd(inv), rootGroupFleet),
 		groupedRootCommand(newDaemonCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newRemoteCmd(inv), rootGroupMaintain),
 		groupedRootCommand(newPeersCmd(inv), rootGroupMaintain),
@@ -237,6 +253,14 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 	return root
 }
 
+// sideEffectFreeCommand reports whether the command with this id must record no
+// heartbeat and no invoked-command marker: `version` (a status probe, see
+// cli-install#req:version-json-side-effect-free) and `cockpit export` (a
+// read-only export, cockpit-views#req:cockpit-export-verb).
+func sideEffectFreeCommand(id string) bool {
+	return id == "version" || id == "cockpit export"
+}
+
 // persistentFlagSupport is an executable counterpart to
 // docs/cli-flag-matrix.md. A persistent flag must either affect the selected
 // command or be rejected before that command starts; accepting a flag and
@@ -246,6 +270,8 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"sync": true, "run": true, "migrate": true,
 		"sync-report publish": true,
 		"dashboard":           true,
+		"cockpit":             true,
+		"cockpit export":      true,
 		"daemon serve":        true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true, "daemon recover": true,
 		"daemon operation submit": true, "daemon operation get": true, "daemon operation wait": true, "daemon operation cancel": true,
 		// The verb-first spellings run the same implementations, so they take
@@ -272,8 +298,9 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree retire": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"worktree land": true, "land": true,
 		"pr land": true, "pr create": true, "pr update": true,
+		"pr batch add": true, "integration merge": true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge acknowledge-retired-prepare-candidate": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
-		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
+		"worktree orphans": true, "worktree backfill": true, "worktree adopt": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
@@ -296,11 +323,19 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"coverage":                 true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
 		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree retire": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
-		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true,
+		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true, "worktree adopt": true,
 		"branch list": true, "branch count": true, "branch cleanup": true, "branch quarantine": true,
 		"archive clean": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true, "fleet default-branch": true},
+	// --quiet is consumed by the lifecycle verbs whose progress lines made a
+	// caller pipe their output through tail, which hid a refusal's exit status.
+	// wb run and worktree guard keep their own local --quiet.
+	"quiet": {
+		"create": true, "worktree create": true, "land": true, "worktree land": true,
+		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true,
+		"pr create": true, "pr land": true, "worktree cleanup": true,
+	},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it
 	// would make scripts need command-specific conditionals for no benefit.
@@ -320,6 +355,12 @@ func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
 		if !supported[commandID] && !supported["*"] {
 			return fmt.Errorf("--%s is not supported by %s; see docs/cli-flag-matrix.md", flag, commandID)
 		}
+		if flag == "filter" && commandID == "worktree adopt" {
+			allExternal := cmd.Flags().Lookup("all-external")
+			if allExternal == nil || allExternal.Value.String() != "true" {
+				return fmt.Errorf("--filter requires --all-external for worktree adopt; see docs/cli-flag-matrix.md")
+			}
+		}
 		// Some leaves have both direct and fleet modes. A root selector cannot
 		// truthfully affect a named path, so accept it only when the invocation
 		// selected the fleet. Status is fleet-by-default when no path is given;
@@ -327,9 +368,6 @@ func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
 		if persistentFlagNeedsFleet(flag, commandID) && !persistentCommandSelectedFleet(cmd, commandID, args) {
 			if commandID == "status" {
 				return fmt.Errorf("--%s is not supported by status with repository-path; omit the path to select the --projects-root fleet", flag)
-			}
-			if commandID == "repo status" {
-				return fmt.Errorf("--%s is not supported by repo status; use wb fleet status for the --projects-root fleet", flag)
 			}
 			return fmt.Errorf("--%s requires --fleet for %s; see docs/cli-flag-matrix.md", flag, commandID)
 		}
@@ -380,15 +418,14 @@ func persistentCommandID(cmd *cobra.Command) string {
 }
 
 // main is deliberately only the process exit edge: every decision it used to
-// make lives in dispatch, so the hidden protocol entry points and the runtime
-// executable handoff are reachable from an in-process test instead of only
-// from a subprocess that no coverage profile can observe.
+// make lives in dispatch, so the hidden protocol entry points and runtime
+// executable handoff can be tested without invoking os.Exit.
 func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 // processHandlers are the pre-cobra entry points dispatch routes to. They are
-// function values rather than direct calls because the six secure Git helpers
+// function values rather than direct calls because the secure Git helpers
 // deliberately operate on inherited file descriptors 3..9: invoking one
 // in-process against the test binary's own descriptors corrupts the Go
 // runtime, so the routing can only be asserted by substituting the handler.
@@ -405,29 +442,25 @@ type processHandlers struct {
 	setEnv          func(string, string) error
 }
 
-// secureGitHelpers maps every hidden argv value that must be resolved before
-// cobra to its handler. It is a function rather than a package-level map so the
-// table is rebuilt per process, and so a test can assert its membership without
-// invoking a helper that expects inherited descriptors 3..9.
-func secureGitHelpers() map[string]func([]string) int {
-	return map[string]func([]string) int{
-		worktrees.SecureCleanupGitHelperArgument:        worktrees.RunSecureCleanupGitHelper,
-		hooks.SecureHooksGitHelperArgument:              hooks.RunSecureHooksGitHelper,
-		worktrees.SecureStageGitHelperArgument:          worktrees.RunSecureStageGitHelper,
-		worktrees.SecureCanonicalGitHelperArgument:      worktrees.RunSecureCanonicalGitHelper,
-		worktrees.SecureStageCanonicalGitHelperArgument: worktrees.RunSecureStageCanonicalGitHelper,
-		worktrees.SecureRenameGitHelperArgument:         worktrees.RunSecureRenameGitHelper,
+// secureGitHelperForArgument shares the worktrees protocol selector with every
+// other process owner. Hooks keep their separate post-runtime-setup path.
+func secureGitHelperForArgument(argument string) (func([]string) int, bool) {
+	if helper, known := worktrees.SecureGitHelperForArgument(argument); known {
+		return helper, true
 	}
+	if argument == hooks.SecureHooksGitHelperArgument {
+		return hooks.RunSecureHooksGitHelper, true
+	}
+	return nil, false
 }
 
 func defaultProcessHandlers() processHandlers {
-	helpers := secureGitHelpers()
 	return processHandlers{
 		privateLauncher: sessionlaunch.RunPrivateLauncher,
 		ownerCLI:        agents.OwnerCLI,
 		agentRemote:     RunAgentRemote,
 		secureGitHelper: func(argument string, args []string) (int, bool) {
-			helper, known := helpers[argument]
+			helper, known := secureGitHelperForArgument(argument)
 			if !known {
 				return 0, false
 			}
@@ -474,6 +507,12 @@ func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Read
 		// reach a flag parser, and so its request cannot be reinterpreted as
 		// shell text.
 		return handlers.agentRemote(inv, stdin, stdout, stderr)
+	}
+	// The former worktrees package init handled these child modes before any
+	// CLI setup. Keep that ordering; hooks still run after runtime setup below.
+	if _, known := worktrees.SecureGitHelperForArgument(first); known {
+		code, _ := handlers.secureGitHelper(first, rest)
+		return code
 	}
 	installSessionResolver(inv)
 	if err := propagateRuntimeWBExecutable(handlers.lookupEnv, handlers.executable, handlers.setEnv); err != nil {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,12 +20,13 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-// TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime pins
+// TestNormalizeHarnessRuntimeMapsKnownPrefixes pins
 // wb#645's review Major 2: AI_AGENT carries a raw, versioned value ("claude-
 // code_2-1-276_agent") that sessionlaunch.NormalizeRuntime rejects outright,
-// so normalizeHarnessRuntime maps a known prefix first and only falls back to
-// NormalizeRuntime's own exact aliases for anything the prefix table misses.
-func TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime(t *testing.T) {
+// so normalizeHarnessRuntime maps known prefixes directly. All accepted
+// NormalizeRuntime aliases use one of those same prefixes.
+func TestNormalizeHarnessRuntimeMapsKnownPrefixes(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"claude-code_2-1-276_agent": "claude-code",
 		"claude-code":               "claude-code",
@@ -36,6 +38,7 @@ func TestNormalizeHarnessRuntimeMapsThePrefixAndFallsBackToNormalizeRuntime(t *t
 	}
 	for raw, want := range cases {
 		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
 			if got := normalizeHarnessRuntime(raw); got != want {
 				t.Fatalf("normalizeHarnessRuntime(%q) = %q, want %q", raw, got, want)
 			}
@@ -177,7 +180,7 @@ func TestListActiveClaimSummariesIsCompactFilteredAndExcludesSealedClaims(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeWorkLogTerminal(home, runDir, outcome.claim, strings.Repeat("a", 40), "landed", "", "", nil); err != nil {
+	if _, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{Claim: outcome.claim, FinalCommit: strings.Repeat("a", 40), Disposition: "landed"}); err != nil {
 		_ = runDir.Close()
 		t.Fatal(err)
 	}
@@ -705,7 +708,7 @@ func TestExecutionIdentityCorrectionRejectsMalformedAndCrossClaimHistory(t *test
 		t.Fatal(err)
 	}
 	defer func() { _ = runDir.Close() }()
-	directory, err := openWorkLogCorrections(runDir, claims[1].ClaimID, true)
+	directory, err := correctionPorts().OpenWorkLogCorrections(runDir, claims[1].ClaimID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +718,7 @@ func TestExecutionIdentityCorrectionRejectsMalformedAndCrossClaimHistory(t *test
 	if err := writeJSONImmutableAt(directory, "forged.json", forged, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := projectExecutionIdentity(runDir, claims[1]); err == nil || !strings.Contains(err.Error(), "malformed") {
+	if _, _, err := correctionPorts().ProjectExecutionIdentity(runDir, claims[1]); err == nil || !strings.Contains(err.Error(), "malformed") {
 		t.Fatalf("cross-claim correction error = %v", err)
 	}
 }
@@ -747,7 +750,7 @@ func TestExecutionIdentityCorrectionConcurrentRetryPublishesOneEvent(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = runDir.Close() }()
-	identity, corrections, err := projectExecutionIdentity(runDir, claim)
+	identity, corrections, err := correctionPorts().ProjectExecutionIdentity(runDir, claim)
 	if err != nil || identity.CLI != "opencode" || len(corrections) != 1 {
 		t.Fatalf("concurrent projection=%#v corrections=%#v err=%v", identity, corrections, err)
 	}

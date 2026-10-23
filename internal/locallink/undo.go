@@ -18,6 +18,10 @@ import (
 //
 // Implements: dependency-streams#req:links-are-recorded-and-undoable.
 func (engine *Engine) undo(ctx context.Context, options Options) (Result, error) {
+	return engine.undoWithAbsolute(ctx, options, filepath.Abs)
+}
+
+func (engine *Engine) undoWithAbsolute(ctx context.Context, options Options, absolute func(string) (string, error)) (Result, error) {
 	result := Result{Plan: []string{
 		"read every recorded link for the named consumers from stream state",
 		"remove the untracked link artefacts, restoring the published versions the record names",
@@ -44,7 +48,7 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 	}
 	wanted := map[string]bool{}
 	for _, consumer := range options.Consumers {
-		absolute, absErr := filepath.Abs(consumer)
+		absolute, absErr := absolute(consumer)
 		if absErr != nil {
 			return result, absErr
 		}
@@ -155,7 +159,7 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 	// clear it; otherwise the refusal names something that cannot satisfy it
 	// and the worktree can never be landed.
 	for _, consumerPath := range options.Consumers {
-		consumer, absErr := filepath.Abs(consumerPath)
+		consumer, absErr := absolute(consumerPath)
 		if absErr != nil {
 			return result, absErr
 		}

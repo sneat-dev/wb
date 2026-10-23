@@ -1,0 +1,95 @@
+@if (data(); as data) {
+  <app-panel-content kind="Task" [heading]="data.task.name" [copyHeading]="true" [facts]="facts()" [commands]="commands()" [raw]="data.view.raw" [page]="page()">
+    <div class="header" panelHeader>
+      <app-panel-state [reason]="reason()">
+        <app-state-badge kind="task" [value]="data.task.state" />
+        @if (reportedBy().length > 0) {
+          <p class="source" panelNote>
+            <span>As reported by</span>
+            @for (machine of reportedBy(); track machine.id) {
+              <app-machine-cell [id]="machine.id" />
+            }
+            <span>(not this machine): nothing to land or push from here.</span>
+          </p>
+        }
+      </app-panel-state>
+      @if (elsewhereOnly() && reportedBy().length === 0) {
+        <p class="note">Every worktree of this task was read from another machine, so unpushed work is not known here.</p>
+      }
+    </div>
+
+    <section class="block" aria-label="Pull requests">
+      <h3>Pull requests</h3>
+      <ul class="rows">
+        @for (item of pullRequests(); track item.pr.id) {
+          <li class="pr">
+            @if (item.repository || manyMachines()) {
+              <span class="where">
+                @if (item.repository) {
+                  <span class="repo">{{ item.repository }}</span>
+                }
+                @if (manyMachines()) {
+                  <app-machine-cell [id]="item.pr.machine_id" />
+                }
+              </span>
+            }
+            <app-pr-chip [pullRequest]="item.pr" />
+            @if (item.pr.route === 'local') {
+              <app-action-slot [actions]="actionsFor('pull_request:' + item.pr.id)" [target]="'pull_request:' + item.pr.id" />
+            }
+          </li>
+        } @empty {
+          <li class="muted">None</li>
+        }
+      </ul>
+      @if (data.task.unobservedPullRequests > 0) {
+        <p class="note">{{ data.task.unobservedPullRequests }} of {{ data.task.pullRequests.length }} not yet checked.</p>
+      }
+    </section>
+
+    <section class="block" aria-label="Worktrees">
+      <h3>Worktrees</h3>
+      <ul class="rows">
+        @for (item of worktrees(); track item.worktree.id) {
+          <li class="wt">
+            <span class="where">
+              <a class="repo-link" [routerLink]="target(item.link)" [attr.title]="item.worktree.branch">{{ item.repository }}</a>
+              @if (item.worktree.branch !== data.task.name) {
+                <code class="branch" [attr.title]="item.worktree.branch">{{ item.worktree.branch }}</code>
+              }
+              @if (manyMachines()) {
+                <app-machine-cell [id]="item.worktree.machine_id" />
+              }
+            </span>
+            <span class="what">
+              <app-owner-state-cell [worktree]="item.worktree" />
+              <app-age [at]="item.worktree.last_activity_at" />
+            </span>
+            @if (item.worktree.route === 'local') {
+              <app-action-slot [actions]="actionsFor('worktree:' + item.worktree.id)" [target]="'worktree:' + item.worktree.id" />
+            }
+          </li>
+        } @empty {
+          <li class="muted">None</li>
+        }
+      </ul>
+    </section>
+
+    <section class="block" aria-label="Agents">
+      <h3>Agents</h3>
+      <ul class="rows">
+        @for (item of agents(); track item.agent.id) {
+          <li class="agent">
+            <a [routerLink]="target(item.link)">{{ item.title }}</a>
+            <app-state-badge kind="agent-activity" size="small" [value]="item.agent.activity" />
+            @if (manyMachines()) {
+              <app-machine-cell [id]="item.agent.machine_id" />
+            }
+          </li>
+        } @empty {
+          <li class="muted">None</li>
+        }
+      </ul>
+    </section>
+  </app-panel-content>
+}

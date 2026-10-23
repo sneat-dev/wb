@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,7 +200,7 @@ func TestPRCreateAutoMergeArmsAndRunsTheLiveLinkPreflight(t *testing.T) {
 	fixture := newPRCreateLinkPreflightFixture(t)
 	worktree := fixture.createWorktree(t, "pr-create-automerge", "feature/pr-create-automerge")
 
-	command := newPRCreateCmd(&invocation{projectsRoot: fixture.projects})
+	command := prCommandForTest(&invocation{projectsRoot: fixture.projects}, "create")
 	command.SilenceUsage = true
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
@@ -230,14 +231,14 @@ func TestPRCreateAutoMergeRefusesToArmWithALiveLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := `{"schema_version":2,"phase":"open","members":[{"repository":"acme/app"}],"linked_consumers":[` +
-		`{"repository":"acme/app","worktree":` + jsonString(linkedWorktree) + `,"links":[` +
+		`{"repository":"acme/app","worktree":` + prFixtureJSON(linkedWorktree) + `,"links":[` +
 		`{"library":"/path/to/library","library_repository":"acme/library","mechanism":"pnpm-link","identity":"@acme/library","created_at":"2026-09-06T00:00:00Z"}` +
 		`]}]}`
 	if err := os.WriteFile(filepath.Join(stateDir, "stream.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	command := newPRCreateCmd(&invocation{projectsRoot: fixture.projects})
+	command := prCommandForTest(&invocation{projectsRoot: fixture.projects}, "create")
 	command.SilenceUsage = true
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
@@ -249,4 +250,12 @@ func TestPRCreateAutoMergeRefusesToArmWithALiveLink(t *testing.T) {
 	if strings.Contains(fixture.ghLog(t), "enablePullRequestAutoMerge") {
 		t.Fatalf("auto-merge was armed despite a live link; gh log:\n%s", fixture.ghLog(t))
 	}
+}
+
+func prFixtureJSON(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }

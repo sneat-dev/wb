@@ -29,12 +29,12 @@ check pass push false false skipped skipped skipped false
 check pass pull_request false true success skipped skipped false
 check pass push false true success skipped skipped false
 check pass pull_request true false skipped success success false
-# Push reuse skips static jobs but coverage still publishes its baseline.
-check pass push true false skipped skipped success true
+# Push reuse skips every previously proven validation job, including coverage.
+check pass push true false skipped skipped skipped true
 
 # A skipped or failed job that should have run must fail branch protection.
 check fail pull_request true false skipped success skipped false
-check fail push true false skipped skipped skipped true
+check fail push true false skipped skipped success true
 check fail pull_request false true skipped skipped skipped false
 check fail pull_request false false skipped skipped skipped false failure
 

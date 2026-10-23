@@ -11,6 +11,12 @@ The canonical public Workbench site is [sneat.work/bench](https://sneat.work/ben
 For the product story, decision guide, and measured evidence, see
 [Why/when to use WB CLI? How it saves you time and money.](docs/why-use-wb.md)
 
+## WB in the DataTug development workflow
+
+[DataTug](https://datatug.app) is our flagship product. We use WB to coordinate
+its repository worktrees, checks, and delivery across the development fleet.
+Read [how we build DataTug with our tools](https://datatug.app/en/under-the-hood/tools-we-built/).
+
 ## WB
 
 Public Workbench projections are opt-in from this repository's root README:
@@ -142,7 +148,12 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. By default, a worktree is created in the central
+contains active local work. More generally, which branch a canonical clone has
+checked out is never a WB precondition: `wb pr land`, `wb worktree land`,
+`wb worktree cleanup` and the managed hooks work whatever branch it is on, clean
+or dirty (only uncommitted work is protected, and a push that merely deletes
+remote refs, which is how a merged branch is retired, sends nothing from the
+clone and passes the guard unconditionally). By default, a worktree is created in the central
 store at `<root>/.worktrees/<task>/<host>/<org>/<repository>`, where `<root>` is
 the projects root: the task is the first level, so every checkout of a
 multi-repository task stays together, and a search scoped to one task, one host,
@@ -530,6 +541,30 @@ session_move:
 On the target, the validated `remote.machine` must be `hetzner-vm1`, and
 `tmux` plus the selected harness must be available on the remote `PATH`.
 
+A target may also carry an optional `http` section, which is not a courier:
+it is where this machine's daemon reads that machine's Cockpit export in the
+background, so its worktrees and agents appear live in the Cockpit.
+
+```yaml
+session_move:
+  targets:
+    hetzner-vm1:
+      default_courier: ssh
+      ssh:
+        host: hetzner-vm1
+      http:
+        url: https://vm1.example        # https, or http on a loopback host only
+        token_file: /Users/me/.config/wb/credentials/vm1.token
+```
+
+`url` is the origin of that machine's daemon-hosted hub and `token_file` a
+private file holding a machine credential enrolled with it (`wb remote enroll
+--url <hub-url> --token-stdin`). `token_file` may be omitted when `url` is the
+hub this machine is already enrolled with (`remote.url`). Set
+`cockpit.remote_http: false` to read no machine over HTTP, and `cockpit.remote_ssh: false` to read none over SSH
+(the fallback for a machine with no HTTP route). How Cockpit is put together, its pages and routes,
+configuration keys, cadences and budgets are in [docs/cockpit.md](docs/cockpit.md).
+
 Run a same-harness move by omitting `--harness`, or explicitly move between
 the two supported harnesses, `codex` and `claude-code`:
 
@@ -585,6 +620,9 @@ remote:
   machine: <unique-name-for-this-machine>
   publish:
     unpushed: subjects   # or: counts
+    # interval: 15m      # opt in: the daemon also publishes after a local scan (minimum 5m; unset = by hand only)
+    # agents: false      # opt in: include this machine's agents in the snapshot
+    # metrics: false     # opt in: include this machine's latest CPU, memory and disk sample
 ```
 
 `wb remote publish` scans this machine's attention repositories and live task
@@ -1993,7 +2031,11 @@ ancestor of the candidate, and requires either classic or ruleset strict
 required-status-check policy with at least one required check. It does not wait
 for current target CI to turn green: an updated candidate may be the fix for a
 red target. Target movement rejects the receipt and requires reintegration.
-Merge-group observation for merge queues remains planned and fails closed.
+On a merge-queue target the source-head receipt fails closed, because the
+queue merges a merge group that exists only once the pull request is enqueued;
+`wb pr land` and `wb worktree land` enqueue it with `enqueuePullRequest` pinned
+to the observed head and observe the queue to the target, never merging
+directly.
 Missing policy authority, unsupported required-workflow names, or incomplete
 check/status pagination remain pending or fail closed. A pass requires two
 unchanged terminal observations. That is a bounded quiescence receipt, not
@@ -2308,6 +2350,18 @@ verbs of known generators (`specscore … new`, `go mod tidy`, `pnpm install`,
 `gofmt -w`) run with the clone as the working directory; and any Git invocation
 that disables the repository's managed hooks.
 
+It also refuses one construct that is not a write: a state-changing wb verb
+whose output is piped into another command (`wb worktree create … 2>&1 | tail
+-1 && …`). A pipeline reports only its last command's exit status, so the
+verb's refusal exits 0 and the `&&` chain runs on; on 2026-10-02 that opened a
+duplicate pull request. The remedy is `--quiet` on the verb (outcome and
+refusals only, no progress) instead of a pipe, or `set -o pipefail` earlier in
+the same shell (reading `PIPESTATUS` afterwards does not count, and neither
+does a pipefail that a `bash -c` payload, a closed subshell or an `&&` branch
+would not carry). Read-only verbs, a verb that ends its pipeline
+(`printf … | wb worktree create … --original-prompt-file -`), and other
+programs are not affected, and there is no override.
+
 Bash detection is deliberately partial and documented as such in
 `internal/agentguard/bash.go`. It models no shell expansion, so a working
 directory reached through a variable and a file written by a script inside a
@@ -2461,22 +2515,60 @@ the drift warning above in its opening context; `wb skills hook install`
 merges that hook into `~/.claude/settings.json` (`--dry-run` to preview).
 `wb` never edits that file on its own outside this explicit subcommand.
 
-## Operations dashboard
+## Operations dashboard (retired: use Cockpit)
 
-`wb daemon serve` starts the embedded read-only dashboard and versioned JSON
-API at `http://127.0.0.1:8766` by default. It shows managed worktrees and
-privacy-safe `wb run --` cost from the last 14 days.
+`wb daemon serve` starts Cockpit and the versioned read-only JSON API at
+`http://127.0.0.1:8766` by default; `wb cockpit` opens and signs in to
+Cockpit, and `/` redirects to `/cockpit/`. The server-rendered operations pages
+that used to live at `/` and `/metrics`, with their `/coverage` redirect and
+`GET /api/v1/overview` data route, are retired and answer 404. The fleet
+metrics view has no Cockpit page yet; read it with `wb coverage` and the hub's
+`/v0/workbench/metrics` API.
 
 ```sh
 wb daemon serve
 curl http://127.0.0.1:8766/api/v1/health
-curl http://127.0.0.1:8766/api/v1/overview
 ```
 
 The command refuses non-loopback listeners. For access from another registered
 machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
+
+`GET /api/v1/log` serves the tail of the daemon's runtime log (`?tail=<bytes>`,
+256 KiB by default, at most 4 MiB) to the owner only. The log is file content,
+so the route requires the owner session `wb cockpit` opens, on a loopback
+`Host`; any other request gets `401 {"error":"owner_session_required"}` and the
+file is not opened.
+
+An owner session has two halves, and a request must carry both:
+
+- the cookie `wb_cockpit_session_<port>`, which the login sets. A browser sends
+  it to every server on `127.0.0.1`, whatever its port, so on its own it proves
+  nothing;
+- the session key, in the request header `X-Wb-Cockpit-Session-Key`. `wb cockpit`
+  prints it in the fragment of the login URL
+  (`/cockpit/session/login?code=...#key=<key>`); the Cockpit page takes it from
+  there, keeps it in the storage of its own origin and adds the header to its
+  own requests. The login URL is a credential: it is printed only when stdout is
+  a terminal, or with `wb cockpit --print-url`.
+
+To read the log, read the file on the machine itself:
+`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's
+runtime directory elsewhere. Opening `http://127.0.0.1:8766/api/v1/log` in the
+address bar no longer works, even in the signed-in browser: an address carries
+the cookie and cannot carry the header, so it is answered 401. A client that is
+not the Cockpit page sends both halves itself:
+
+```sh
+curl -H 'Cookie: wb_cockpit_session_8766=<session id>' \
+     -H 'X-Wb-Cockpit-Session-Key: <key>' \
+     http://127.0.0.1:8766/api/v1/log
+```
+
+A reverse proxy or script that fetched `/api/v1/log` with no session is
+refused: there is no unattended credential for the route, and the daemon's owner
+token does not open it. Read the file on disk instead.
 
 ### Running the daemon under a supervisor
 
@@ -2525,6 +2617,15 @@ record that fails that check does not refuse, so an operator is never locked
 out of `wb daemon start` forever by a supervisor that is long gone.
 `--force-detached` is the explicit override for the cases that check cannot
 resolve either way.
+
+On macOS, the launchd service has one fixed label per user, so a start for one
+projects root would remove the service registered for another (and overwrite
+its plist). `wb daemon start` and `wb daemon restart` read the installed plist
+first and refuse, changing nothing, when it serves a different projects root or
+cannot be read as a plist, naming that root and its listen address.
+`--replace-other-root` is the only way to proceed; `wb cockpit`,
+`wb dashboard --local` (deprecated) and the implicit daemon starts have no flag and refuse
+with the same instruction to run `wb daemon start --replace-other-root` first.
 
 The canonical systemd user unit:
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/runner"
 )
@@ -25,7 +27,7 @@ func TestReviewStaleRefusalNamesArmedAutoMergeState(t *testing.T) {
 	// actually runs the fakes below rather than short-circuiting on "no
 	// checkout" — that path is unverifiable, not stale, and is covered by
 	// TestReviewStaleRefusalUnverifiableWithNoCheckoutDoesNotRefuse.
-	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view PullRequestView) (string, string, bool) {
+	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView) (string, string, bool) {
 		return "wt", "feature", true
 	}
 	// Any head shape that is not provably a WB update-branch advance.
@@ -34,7 +36,7 @@ func TestReviewStaleRefusalNamesArmedAutoMergeState(t *testing.T) {
 	}
 
 	options := PullRequestLandOptions{Repository: "acme/app"}
-	view := PullRequestView{}
+	view := githubchecks.PullRequestView{}
 	view.Base.Ref = "main"
 	view.Head.Ref = "feature"
 
@@ -73,12 +75,12 @@ func TestReviewStaleRefusalNamesArmedAutoMergeState(t *testing.T) {
 func TestReviewStaleRefusalUnverifiableWithNoCheckoutDoesNotRefuse(t *testing.T) {
 	restoreCheckout := resolveReviewCheckout
 	t.Cleanup(func() { resolveReviewCheckout = restoreCheckout })
-	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view PullRequestView) (string, string, bool) {
+	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView) (string, string, bool) {
 		return "", "", false
 	}
 
 	options := PullRequestLandOptions{Repository: "acme/app", ProjectsRoot: "/does/not/exist"}
-	view := PullRequestView{}
+	view := githubchecks.PullRequestView{}
 	view.Base.Ref = "main"
 	view.Head.Ref = "feature"
 
@@ -108,7 +110,7 @@ func TestReviewStaleRefusalNamesTheTransientCauseNotAlwaysNoCheckout(t *testing.
 		reviewCommitParents = restoreParents
 		resolveReviewCheckout = restoreCheckout
 	})
-	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view PullRequestView) (string, string, bool) {
+	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView) (string, string, bool) {
 		return "wt", "feature", true
 	}
 	reviewCommitParents = func(ctx context.Context, repository, sha string) ([]string, error) {
@@ -120,7 +122,7 @@ func TestReviewStaleRefusalNamesTheTransientCauseNotAlwaysNoCheckout(t *testing.
 	}
 
 	options := PullRequestLandOptions{Repository: "acme/app"}
-	view := PullRequestView{}
+	view := githubchecks.PullRequestView{}
 	view.Base.Ref = "main"
 	view.Head.Ref = "feature"
 
@@ -153,7 +155,7 @@ func TestRecordMergedByGitHubReviewBindingDowngradesAnUnprovenForeignHead(t *tes
 		reviewCommitParents = restoreParents
 		resolveReviewCheckout = restoreCheckout
 	})
-	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view PullRequestView) (string, string, bool) {
+	resolveReviewCheckout = func(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView) (string, string, bool) {
 		return "wt", "feature", true
 	}
 	// A foreign, non-merge commit: not provably descended from the reviewed
@@ -163,7 +165,7 @@ func TestRecordMergedByGitHubReviewBindingDowngradesAnUnprovenForeignHead(t *tes
 	}
 
 	options := PullRequestLandOptions{Repository: "acme/app"}
-	view := PullRequestView{}
+	view := githubchecks.PullRequestView{}
 	view.Base.Ref = "main"
 	view.Head.Ref = "feature"
 	view.Head.SHA = "foreign-merged-head"
@@ -184,7 +186,7 @@ func TestRecordMergedByGitHubReviewBindingDowngradesAnUnprovenForeignHead(t *tes
 // and this must not overwrite that with a spurious finding.
 func TestRecordMergedByGitHubReviewBindingLeavesAProvenHeadAlone(t *testing.T) {
 	options := PullRequestLandOptions{Repository: "acme/app"}
-	view := PullRequestView{}
+	view := githubchecks.PullRequestView{}
 	view.Base.Ref = "main"
 	view.Head.Ref = "feature"
 	view.Head.SHA = "reviewed-head"
@@ -204,7 +206,7 @@ func TestRecordMergedByGitHubReviewBindingLeavesAProvenHeadAlone(t *testing.T) {
 // all — locateBranchCheckout is never reached.
 func TestReviewStaleRefusalNilWhenHeadUnchanged(t *testing.T) {
 	options := PullRequestLandOptions{Repository: "acme/app", ProjectsRoot: "/does/not/exist"}
-	view := PullRequestView{}
+	view := githubchecks.PullRequestView{}
 	view.Base.Ref = "main"
 	view.Head.Ref = "feature"
 	if refusal, note := reviewStaleRefusal(context.Background(), options, view, "same", "same", false, "7"); refusal != nil || note != "" {

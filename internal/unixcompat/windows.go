@@ -43,11 +43,11 @@ const (
 
 var EEXIST = os.ErrExist
 var ENOENT = os.ErrNotExist
-var EWOULDBLOCK = errors.New("operation would block")
+var EWOULDBLOCK = win.WSAEWOULDBLOCK
 var EAGAIN = EWOULDBLOCK
 var EACCES = os.ErrPermission
 var EPERM = os.ErrPermission
-var ENOTEMPTY = errors.New("directory not empty")
+var ENOTEMPTY = win.ERROR_DIR_NOT_EMPTY
 
 type Stat_t struct {
 	Dev, Ino, Nlink uint64
@@ -74,17 +74,13 @@ func pathOf(fd int) string { files.Lock(); defer files.Unlock(); return files.pa
 func Open(path string, flags, _ int) (int, error) {
 	return openWindows(path, flags, flags&O_NOFOLLOW != 0)
 }
-func Openat(dirfd int, name string, flags, mode uint32) (int, error) {
+func Openat(dirfd int, name string, flags int, mode uint32) (int, error) {
 	dir := pathOf(dirfd)
 	if dir == "" {
 		return -1, errors.New("unknown directory handle")
 	}
 	path := filepath.Join(dir, name)
 	return Open(path, int(flags), int(mode))
-}
-
-func openNoFollow(path string, flags int) (int, error) {
-	return openWindows(path, flags, true)
 }
 
 func openWindows(path string, flags int, noFollow bool) (int, error) {
@@ -184,10 +180,7 @@ func Fchmod(fd int, mode uint32) error { return nil }
 func Fsync(fd int) error               { return win.FlushFileBuffers(win.Handle(fd)) }
 func Flock(fd, op int) error           { return nil }
 func Dup(fd int) (int, error) {
-	process, err := win.GetCurrentProcess()
-	if err != nil {
-		return -1, err
-	}
+	process := win.CurrentProcess()
 	var duplicate win.Handle
 	if err := win.DuplicateHandle(process, win.Handle(fd), process, &duplicate, 0, false, win.DUPLICATE_SAME_ACCESS); err != nil {
 		return -1, err
@@ -216,4 +209,8 @@ func Linkat(olddirfd int, oldname string, newdirfd int, newname string, flags in
 	return os.Link(filepath.Join(pathOf(olddirfd), oldname), filepath.Join(pathOf(newdirfd), newname))
 }
 
-func SyncDirectory(file *os.File) error { return nil }
+// SyncDirectory validates the handle without an unsupported directory flush.
+func SyncDirectory(file *os.File) error {
+	_, err := file.Stat()
+	return err
+}

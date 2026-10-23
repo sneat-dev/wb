@@ -15,6 +15,35 @@ spec/plans/coverage-to-100/README.md task-3) is command-specific, not root:
 `--test-shards`. Under `--changed`, `--format` accepts only `markdown` or
 `json`.
 
+`coverage --changed --affected-packages` selects changed packages and transitive
+reverse dependents from the union of base/head default and native-tag import
+and test-import graphs. Both measurements use the same logical selection;
+new/deleted packages contribute only at revisions where they exist. Package
+fixtures and embedded assets retain owning-package ratchets; all production,
+test and external-test embedding consumers also own the asset change. Shared build inputs
+select the full module, and graph discovery errors fail validation. A selected
+package whose default/native tag membership differs also uses full-module
+measurement, so the Go tool handles excluded packages in each tier. Scope
+reports identify the exact base/head revisions and a private build-environment
+hash; differing effective Go versions or build flags fail the comparison. Selected runs
+reject `--minimum` and ignore published full-module baseline artifacts; their
+profiles are unsuitable for repository-wide coverage summaries. CI uses this
+selection unless it reuses an exact trusted PR receipt. Full-module coverage,
+the 94% floor, baseline and summary artifacts run in the nightly workflow on
+main (including manual dispatch from main). Core changes can select many
+dependents; this policy makes no latency guarantee.
+
+`coverage --include-e2e` measures the default tier and native E2E/contract tests
+separately, then merges their actual coverage profiles. It is disabled by default
+and rejected with `--ci` or `--resume`. `coverage baseline --include-e2e` records
+the same tier identity; a mismatched baseline triggers a fresh merge-base run.
+
+`cockpit` also has the command-specific `--listen <host:port>` (loopback only; names the
+address to start on, default `127.0.0.1:8766`, and never moves a running daemon), `--hosted`, `--format`, `--json` and
+`--print-url` (print the login URL, which is a credential, though stdout is not a terminal; in JSON as `login_url`).
+`cockpit export` has the command-specific `--format json` and `--metrics-only` (omit the fleet); it reads the
+running daemon's record under `--projects-root` and never starts a daemon.
+
 `coverage baseline <coverage-profile>` (the per-change coverage ratchet's
 baseline publisher) is also command-specific: `--module` (the Go module
 root, default `.`), `--sha` (the commit the profile was measured at, for
@@ -30,7 +59,7 @@ and `--format` (`text`, the default, or `json`).
 
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
-acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
+acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-target-absorbed`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
 `--initiator` (only `--apply` requires admission); `worktree own` and
 `worktree correct-identity` always mutate and therefore use the same flags.
 Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
@@ -54,6 +83,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `sync-report publish` | yes | rejected | rejected | yes |
 | `run` | yes | yes | yes | yes |
 | `worker connect` | yes | rejected | rejected | yes |
+| `cockpit` | yes | rejected | rejected | yes |
+| `cockpit export` | yes | rejected | rejected | yes |
 | `daemon serve`, `start`, `status`, `stop`, `restart`, `recover`; `daemon operation submit`, `get`, `wait`, `cancel` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
@@ -95,21 +126,28 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `repo status` | rejected | rejected | rejected | yes |
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
 | `worktree active`, `list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree join`, `leave`, `take-ownership`, `transfer-ownership`, `rebind`, `message send`, `message inbox`, `message ack` | yes | rejected | rejected | yes |
 | `pr create` | yes | rejected | rejected | yes |
 | `pr update` | yes | rejected | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
+| `pr batch add` | yes | rejected | rejected | yes |
+| `integration merge` | yes | rejected | rejected | yes |
+| `pr batch delta` | rejected | rejected | rejected | yes |
+| `integration promote` | rejected | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `create` (root alias), `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree end` | yes | rejected | rejected | yes |
 | `land` (root alias), `worktree land` | yes | rejected | rejected | yes |
-| `worktree merge`, `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-prepare-candidate`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
+| `worktree merge`, `merge prepare` (including `--rebatch-receipt`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-target-absorbed`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-prepare-candidate`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
+| `worktree adopt` | yes | yes with `--all-external`; rejected with a path | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `count` | yes | yes | yes; exact owner of locally discovered canonical clones only | yes |
-| `branch cleanup`, `quarantine` | yes | yes | rejected | yes |
+| `branch cleanup` | yes | yes | rejected | yes |
+| `branch quarantine` (leaf flags include `--annotate`, `--description`, repeatable `--replacement`, and `--retention`) | yes | yes | rejected | yes |
 | `branch archive-target` | rejected | rejected | rejected | yes |
 | `version`, `self-update`, `install`, `upgrade` | rejected | rejected | rejected | yes |
 | `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
@@ -175,12 +213,34 @@ reason. `--apply` records which tasks an inclusion covered in its manifest;
   terminal `--disposition discarded`. It fetches and verifies the named PR
   receipt before a clean source is removed; `--absorbed-by` never widens a
   handoff or converts a commit message into deletion authority.
+- `worktree abort --closed-pr <pr-number|pr-url> --reason <text>` is accepted
+  only with the terminal `--disposition discarded` and excludes
+  `--absorbed-by`. It discards a clean checkout whose pull request GitHub
+  reports closed unmerged with head branch and commit exactly equal to the
+  checkout's, re-proves that under the task lock, and writes an audit record
+  to `closed-pr-discards/` under WB home before removal.
 - `--non-interactive` disables every live terminal UI and progress line,
   including sync, status, fleet quality checks, CI waits, dependency campaigns,
   npm publication, remote publication, and hierarchical migration.
   `WB_NON_INTERACTIVE=1` has the same rendering effect; it is not a universal
   JSON mode. Structured command output remains on stdout while interactive
   progress uses stderr.
+- `--quiet` prints only the outcome and any refusal: no progress, heartbeat,
+  inspection-progress, remote-claim success, `info:` (bar the `applied=true`
+  cleanup line, which says a mutation happened) or `suggestion:` lines.
+  Stdout outcome lines, refusal blocks (`refusal:`, `resolve with:`), warnings,
+  errors, exit codes, and the `--format json` document are unchanged. It is
+  consumed only by `create`, `worktree create`, `land`, `worktree land`,
+  `worktree merge` (and `prepare`, `land`, `resume`, `revert`), `pr create`,
+  `pr land`, and `worktree cleanup`; every other command rejects it before it
+  starts, except `run` and `worktree guard`, which keep their own local
+  `--quiet`. `WB_QUIET=1` has the same effect on the consuming verbs and none
+  elsewhere. It differs from `--non-interactive`: that removes terminal-only UI
+  while a non-terminal agent still receives newline-delimited progress; quiet
+  removes the progress too. It exists so a caller never has to pipe a verb
+  through `tail`, which hides the verb's exit status
+  (spec/features/quiet-verbs-and-masked-status-guard); the agent pre-tool-use
+  hook refuses that pipe.
 - `--format`/`--json`, `--dry-run`, `--apply`, `--check`, and config flags are
   command-specific. They are never advertised as root flags. Commands that
   mutate default to their documented dry-run/plan behavior unless their own

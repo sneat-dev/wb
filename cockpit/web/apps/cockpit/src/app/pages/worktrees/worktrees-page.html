@@ -1,0 +1,15 @@
+<app-list page="worktrees" [columns]="columns" [panelLabel]="panelLabel">
+  <ng-template appCell="worktree" let-w><app-identity-cell [name]="w.task" [secondary]="repoName(w)" [link]="taskLink(w)" copyLabel="Copy task name" /></ng-template>
+  <ng-template appCell="branch" let-w>
+    <span class="with-copy">
+      <span class="ellipsis">{{ w.branch }}</span>
+      <app-copy-icon [value]="w.branch" label="Copy branch name" [tabbable]="false" />
+    </span>
+  </ng-template>
+  <ng-template appCell="machine" let-w><app-machine-cell [id]="w.machine_id" /></ng-template>
+  <ng-template appCell="state" let-w><app-owner-state-cell [worktree]="w" /></ng-template>
+  <ng-template appCell="pr" let-w><app-pr-cell [pullRequests]="pullRequests(w)" /></ng-template>
+  <ng-template appCell="index" let-w><app-code-index-cell [states]="w.code_index" /></ng-template>
+  <ng-template appCell="activity" let-w><app-age [at]="w.last_activity_at" /></ng-template>
+  <ng-template appListPanel let-w><app-worktree-panel [id]="w.id" /></ng-template>
+</app-list>

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -60,6 +61,43 @@ type HandlerOptions struct {
 	// the route exactly as before, which is what the hosted instance's own
 	// OAuth-viewer-gated deployment keeps doing without changing a line here.
 	DisableSelfHostedEnrollment bool
+	// MachineExport mounts GET MachineExportPath, the host machine's own Cockpit
+	// export, on a daemon-hosted hub (cockpit-views#req:hub-export-route). Nil,
+	// which is what the hosted multi-identity service leaves it, means the route
+	// does not exist.
+	MachineExport *MachineExport
+	// OperatorWrites marks a daemon-hosted hub, whose viewer is a fixed local
+	// identity and therefore proves nothing about the caller
+	// (self-hosted-bench#req:hub-writes-need-a-credential). When set, the routes
+	// that write to the store or begin a GitHub installation connection require
+	// the credential it names. Nil, which is what the hosted multi-identity
+	// service leaves it, changes nothing: its own viewer and bearer checks decide.
+	OperatorWrites *OperatorWrites
+}
+
+// OperatorWrites is the credential a daemon-hosted hub requires for a write.
+type OperatorWrites struct {
+	// OwnerIdentityID is the identity of the host owner. A machine bearer of
+	// this identity that is not a peer credential may write.
+	OwnerIdentityID string
+	// Owner reports whether a request acts as the owner principal: the seam the
+	// daemon fills with Cockpit's own session check. Nil means no browser
+	// session can write, so only a machine bearer does.
+	Owner func(*http.Request) bool
+}
+
+// operatorWriteAllowed reports whether a write may proceed. A hosted hub has
+// no such gate; a daemon-hosted hub fails closed unless the request carries a
+// machine bearer of the host owner or the owner's own session.
+func (h apiHandler) operatorWriteAllowed(r *http.Request) bool {
+	gate := h.options.OperatorWrites
+	if gate == nil {
+		return true
+	}
+	if machine, ok := h.machine(r); ok && gate.OwnerIdentityID != "" && machine.IdentityID == gate.OwnerIdentityID && !isPeerScopes(machine.Scopes) {
+		return true
+	}
+	return gate.Owner != nil && gate.Owner(r)
 }
 
 func NewHandler(options HandlerOptions) http.Handler {
@@ -68,10 +106,13 @@ func NewHandler(options HandlerOptions) http.Handler {
 	} else {
 		options.WebhookSecret = append([]byte(nil), options.WebhookSecret...)
 	}
-	handler := apiHandler{options: options}
+	handler := apiHandler{options: options, exports: &exportLimiter{}}
 	mux := http.NewServeMux()
 	if !options.DisableSelfHostedEnrollment {
 		mux.HandleFunc("POST "+MachineEnrollmentPath, handler.enroll)
+	}
+	if options.MachineExport.usable() {
+		mux.HandleFunc("GET "+MachineExportPath, handler.exportMachine)
 	}
 	mux.HandleFunc("POST "+machinesnapshot.SnapshotPath, handler.publishSnapshot)
 	mux.HandleFunc("GET "+machinesnapshot.SnapshotPath, handler.listSnapshots)
@@ -155,7 +196,11 @@ func (h apiHandler) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-type apiHandler struct{ options HandlerOptions }
+type apiHandler struct {
+	options HandlerOptions
+	// exports limits the rate of the machine export route, per credential.
+	exports *exportLimiter
+}
 
 func (h apiHandler) viewer(r *http.Request) (Viewer, bool) {
 	if h.options.ViewerResolver == nil {
@@ -247,7 +292,7 @@ func (h apiHandler) listSnapshots(w http.ResponseWriter, r *http.Request) {
 
 func (h apiHandler) connectInstallation(w http.ResponseWriter, r *http.Request) {
 	v, ok := h.viewer(r)
-	if !ok {
+	if !ok || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "viewer_unauthorized")
 		return
 	}
@@ -301,7 +346,7 @@ func (h apiHandler) continueInstallation(w http.ResponseWriter, r *http.Request)
 
 func (h apiHandler) authorizeInstallationOpener(w http.ResponseWriter, r *http.Request) {
 	viewer, ok := h.viewer(r)
-	if !ok {
+	if !ok || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "viewer_unauthorized")
 		return
 	}
@@ -334,7 +379,10 @@ func (h apiHandler) authorizeInstallationOpener(w http.ResponseWriter, r *http.R
 
 func writeInstallationOpenerPage(w http.ResponseWriter, state, challenge string, inert bool) {
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+	// The page's one script runs by a nonce minted for this response, so
+	// nothing else inline can run on it.
+	nonce := rand.Text()
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -344,7 +392,7 @@ func writeInstallationOpenerPage(w http.ResponseWriter, state, challenge string,
 		_, _ = io.WriteString(w, "<!doctype html><title>GitHub connection unavailable</title><p>Return to Sneat Work and start the GitHub connection again.</p>")
 		return
 	}
-	_, _ = io.WriteString(w, `<!doctype html><title>Connecting GitHub</title><p>Continue in the Sneat Work window.</p><script>(()=>{const state=`+string(stateJSON)+`;const challenge=`+string(challengeJSON)+`;const opener=window.opener;if(!opener)return;opener.postMessage({type:"workbench-github-installation-challenge",state,challenge},"`+installationOpenerOrigin+`");window.addEventListener("message",event=>{if(event.origin!=="`+installationOpenerOrigin+`"||event.source!==opener)return;const data=event.data;if(!data||data.type!=="workbench-github-installation-authorized"||data.challenge!==challenge)return;window.location.reload();});})();</script>`)
+	_, _ = io.WriteString(w, `<!doctype html><title>Connecting GitHub</title><p>Continue in the Sneat Work window.</p><script nonce="`+nonce+`">(()=>{const state=`+string(stateJSON)+`;const challenge=`+string(challengeJSON)+`;const opener=window.opener;if(!opener)return;opener.postMessage({type:"workbench-github-installation-challenge",state,challenge},"`+installationOpenerOrigin+`");window.addEventListener("message",event=>{if(event.origin!=="`+installationOpenerOrigin+`"||event.source!==opener)return;const data=event.data;if(!data||data.type!=="workbench-github-installation-authorized"||data.challenge!==challenge)return;window.location.reload();});})();</script>`)
 }
 
 func (h apiHandler) completeSetup(w http.ResponseWriter, r *http.Request) {
@@ -643,7 +691,7 @@ func (h apiHandler) getCoverage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizedForCoverage(r) {
+	if !h.authorizedForCoverage(r) || !h.operatorWriteAllowed(r) {
 		writeError(w, http.StatusUnauthorized, "coverage_unauthorized")
 		return
 	}
@@ -657,7 +705,13 @@ func (h apiHandler) saveCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.options.Coverage.SaveCoverage(r.Context(), record); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// The store's error names the repository and may wrap the engine's own
+		// message, a path included: the caller gets a closed code instead.
+		if errors.Is(err, errInvalidCoverageRecord) {
+			writeError(w, http.StatusBadRequest, "invalid_coverage_record")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "coverage_failed")
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, record)

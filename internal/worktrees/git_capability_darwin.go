@@ -54,9 +54,7 @@ func platformGitFilesystemCapabilityConfines() bool {
 }
 
 func runPlatformGitWithFilesystemCapability(_ gitFilesystemCapability, executable string, args, environment []string) int {
-	if err := syscall.Exec(executable, append([]string{executable}, args...), environment); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb Git helper: exec Git: %v\n", err)
-		return 1
-	}
+	err := syscall.Exec(executable, append([]string{executable}, args...), environment)
+	_, _ = fmt.Fprintf(os.Stderr, "wb Git helper: exec Git: %v\n", err)
 	return 1
 }

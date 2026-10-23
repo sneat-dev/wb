@@ -2,114 +2,33 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/url"
-	"strings"
 
+	"github.com/sneat-dev/wb/internal/cli/cmddashboard"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 	"github.com/spf13/cobra"
 )
 
-const hostedDashboardURL = "https://sneat.work/bench/dashboard/"
-
-type dashboardOpenResult struct {
-	URL    string `json:"url"`
-	Scope  string `json:"scope"`
-	Opened bool   `json:"opened"`
-}
-
-type dashboardCommandDependencies struct {
-	open func(string) error
-	// localURL also returns a non-fatal warning (sneat-dev/wb#622 review
-	// round 3, item M1): an implicit Start that found a live, healthy,
-	// supervised daemon under a different binary than this invocation's own
-	// returns that daemon with a warning rather than an error (review round
-	// 2, item 9), and this command must not silently drop it.
-	localURL func(context.Context, string) (url string, warning string, err error)
-}
-
-func defaultDashboardCommandDependencies() dashboardCommandDependencies {
-	return dashboardCommandDependencies{
-		open: openBrowser,
-		localURL: func(ctx context.Context, root string) (string, string, error) {
-			result, err := newDaemonController(defaultDaemonDependencies(), root).Start(ctx, daemonDefaultListen)
-			if err != nil {
-				return "", "", err
-			}
-			address := result.State.Listen
-			if address == "" {
-				address = daemonDefaultListen
-			}
-			return (&url.URL{Scheme: "http", Host: address, Path: "/"}).String(), result.Warning, nil
-		},
-	}
-}
-
 func newDashboardCmd(inv *invocation) *cobra.Command {
-	return newDashboardCmdWithDependencies(inv, defaultDashboardCommandDependencies())
+	return cmddashboard.New(newCLIRuntime(inv), defaultDashboardCommandDependencies())
 }
-
-func newDashboardCmdWithDependencies(inv *invocation, deps dashboardCommandDependencies) *cobra.Command {
-	var local, metricsFlag, coverageFlag, jsonOut bool
-	var format string
-	command := &cobra.Command{
-		Use:   "dashboard",
-		Short: "Open the hosted cross-machine Workbench dashboard",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			format, err := daemonOutputFormat(format, jsonOut)
-			if err != nil {
-				return usageError(err.Error())
-			}
-			target, scope := hostedDashboardURL, "hosted"
-			if metricsFlag || coverageFlag {
-				local = true
-			}
-			if local {
-				var warning string
-				target, warning, err = deps.localURL(command.Context(), inv.projectsRoot)
-				if err != nil {
-					return err
-				}
-				if warning != "" {
-					_, _ = fmt.Fprintln(command.ErrOrStderr(), "wb:", warning)
-				}
-				scope = "local"
-				if metricsFlag {
-					target = strings.TrimSuffix(target, "/") + "/metrics"
-					scope = "metrics"
-				} else if coverageFlag {
-					target = strings.TrimSuffix(target, "/") + "/coverage"
-					scope = "coverage"
-				}
-			}
-			result := dashboardOpenResult{URL: target, Scope: scope}
-			if format == "text" && !inv.nonInteractive {
-				if err := deps.open(target); err != nil {
-					return fmt.Errorf("open %s dashboard %s: %w", scope, target, err)
-				}
-				result.Opened = true
-			}
-			return writeDashboardOpenResult(command.OutOrStdout(), format, result)
-		},
-	}
-	command.Flags().BoolVar(&local, "local", false, "open this machine's loopback daemon dashboard")
-	command.Flags().BoolVar(&metricsFlag, "metrics", false, "open this machine's fleet metrics dashboard")
-	command.Flags().BoolVar(&coverageFlag, "coverage", false, "open this machine's fleet coverage dashboard")
-	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	command.Flags().BoolVar(&jsonOut, "json", false, "shortcut for --format=json")
-	return command
+func defaultDashboardCommandDependencies() cmddashboard.Operations {
+	return cmddashboard.Operations{Open: openBrowser, LocalURL: func(ctx context.Context, root string) (string, string, error) {
+		return dashboardLocalURL(ctx, root, defaultDaemonDependencies())
+	}}
 }
-
-func writeDashboardOpenResult(out io.Writer, format string, result dashboardOpenResult) error {
-	if format == "json" {
-		return json.NewEncoder(out).Encode(result)
+func dashboardLocalURL(ctx context.Context, root string, dependencies daemonDependencies) (string, string, error) {
+	result, err := newDaemonController(dependencies, root).Start(ctx, daemonruntime.DefaultListen)
+	if err != nil {
+		return "", "", err
 	}
-	action := "dashboard"
-	if result.Opened {
-		action = "opened dashboard"
+	address, warning := dashboardStartedURL(result)
+	return address, warning, nil
+}
+func dashboardStartedURL(result daemonruntime.Result) (address, warning string) {
+	listen := result.State.Listen
+	if listen == "" {
+		listen = daemonruntime.DefaultListen
 	}
-	_, err := fmt.Fprintf(out, "%s: %s\n", action, result.URL)
-	return err
+	return (&url.URL{Scheme: "http", Host: listen, Path: "/"}).String(), result.Warning
 }

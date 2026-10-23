@@ -9,9 +9,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/sneat-dev/wb/hub"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/peers"
+
 	"github.com/sneat-dev/wb/internal/daemon"
 )
 
@@ -27,215 +28,12 @@ import (
 // network access this environment does not have, so this task takes the
 // spec's explicit fallback instead: plain JSON handlers behind the same
 // owner-token check. See the PR description for the tradeoff.
-const peersRPCPrefix = "/wb.peers.v1/"
+const peersRPCPrefix = peers.RPCPrefix
 
 // newPeerAdminHTTPHandler serves the owner-token peer admin routes. mount is
 // nil, or has a nil PeerAdmin, when no hub is configured — every route then
 // answers 503 rather than panicking, so the RPC surface exists identically
 // whether or not this daemon self-hosts.
-func newPeerAdminHTTPHandler(mount *hubMount) http.Handler {
-	mux := http.NewServeMux()
-	if mount == nil || mount.PeerAdmin == nil {
-		mux.HandleFunc(peersRPCPrefix, func(w http.ResponseWriter, _ *http.Request) {
-			writePeerAdminError(w, http.StatusServiceUnavailable, "no hub is configured on this daemon")
-		})
-		return mux
-	}
-	handler := peerAdminHandler{admin: mount.PeerAdmin, enrollment: mount.Enrollment, viewer: mount.viewer}
-	mux.HandleFunc("POST "+peersRPCPrefix+"invite", handler.invite)
-	mux.HandleFunc("POST "+peersRPCPrefix+"block", handler.block)
-	mux.HandleFunc("POST "+peersRPCPrefix+"unblock", handler.unblock)
-	mux.HandleFunc("POST "+peersRPCPrefix+"disconnect", handler.disconnect)
-	// enroll moves self-hosted machine enrollment to the owner RPC
-	// (peer-connectivity#req:admin-requires-owner-credential); no CLI verb
-	// calls it yet (ensureLocalEnrollment stays in-process, as the plan
-	// requires), but the capability now exists off the loopback HTTP surface.
-	mux.HandleFunc("POST "+peersRPCPrefix+"enroll", handler.enroll)
-	return mux
-}
-
-type peerAdminHandler struct {
-	admin      *hub.PeerAdminService
-	enrollment *hub.MachineEnrollmentService
-	viewer     hub.Viewer
-}
-
-type peerInviteRequest struct {
-	Name   string `json:"name"`
-	Rotate bool   `json:"rotate"`
-}
-
-type peerInviteResponse struct {
-	PeerID    string    `json:"peer_id"`
-	Name      string    `json:"name"`
-	Token     string    `json:"token"`
-	CreatedAt time.Time `json:"created_at"`
-	Rotated   bool      `json:"rotated"`
-}
-
-func (handler peerAdminHandler) invite(w http.ResponseWriter, r *http.Request) {
-	var request peerInviteRequest
-	if err := decodePeerAdminJSON(r, &request); err != nil {
-		writePeerAdminError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := handler.admin.Invite(r.Context(), request.Name, request.Rotate)
-	if err != nil {
-		writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
-		return
-	}
-	writePeerAdminJSON(w, http.StatusOK, peerInviteResponse{
-		PeerID: result.PeerID, Name: result.Name, Token: result.Token, CreatedAt: result.CreatedAt, Rotated: result.Rotated,
-	})
-}
-
-type peerNameOrIDRequest struct {
-	Peer string `json:"peer"`
-}
-
-type peerTrustResponse struct {
-	PeerID         string    `json:"peer_id"`
-	Name           string    `json:"name"`
-	Trust          string    `json:"trust"`
-	ResetPending   bool      `json:"reset_pending"`
-	TrustChangedAt time.Time `json:"trust_changed_at"`
-}
-
-func peerTrustResponseFrom(record hub.PeerRecord) peerTrustResponse {
-	return peerTrustResponse{
-		PeerID: record.MachineID, Name: record.Name, Trust: string(record.Trust),
-		ResetPending: record.ResetPending, TrustChangedAt: record.TrustChangedAt,
-	}
-}
-
-func (handler peerAdminHandler) block(w http.ResponseWriter, r *http.Request) {
-	var request peerNameOrIDRequest
-	if err := decodePeerAdminJSON(r, &request); err != nil {
-		writePeerAdminError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	record, err := handler.admin.Block(r.Context(), request.Peer)
-	if err != nil {
-		writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
-		return
-	}
-	writePeerAdminJSON(w, http.StatusOK, peerTrustResponseFrom(record))
-}
-
-func (handler peerAdminHandler) unblock(w http.ResponseWriter, r *http.Request) {
-	var request peerNameOrIDRequest
-	if err := decodePeerAdminJSON(r, &request); err != nil {
-		writePeerAdminError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	record, err := handler.admin.Unblock(r.Context(), request.Peer)
-	if err != nil {
-		writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
-		return
-	}
-	writePeerAdminJSON(w, http.StatusOK, peerTrustResponseFrom(record))
-}
-
-type peerDisconnectResponse struct {
-	PeerID       string `json:"peer_id"`
-	Name         string `json:"name"`
-	Disconnected bool   `json:"disconnected"`
-	Message      string `json:"message"`
-}
-
-func (handler peerAdminHandler) disconnect(w http.ResponseWriter, r *http.Request) {
-	var request peerNameOrIDRequest
-	if err := decodePeerAdminJSON(r, &request); err != nil {
-		writePeerAdminError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := handler.admin.Disconnect(r.Context(), request.Peer)
-	if err != nil {
-		writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
-		return
-	}
-	writePeerAdminJSON(w, http.StatusOK, peerDisconnectResponse{
-		PeerID: result.Peer.MachineID, Name: result.Peer.Name, Disconnected: result.Disconnected, Message: result.Message,
-	})
-}
-
-type peerEnrollRequest struct {
-	Name string `json:"name"`
-}
-
-type peerEnrollResponse struct {
-	MachineID   string    `json:"machine_id"`
-	MachineName string    `json:"machine_name"`
-	IdentityID  string    `json:"identity_id"`
-	Token       string    `json:"token"`
-	EnrolledAt  time.Time `json:"enrolled_at"`
-}
-
-func (handler peerAdminHandler) enroll(w http.ResponseWriter, r *http.Request) {
-	if handler.enrollment == nil {
-		writePeerAdminError(w, http.StatusServiceUnavailable, "machine enrollment is unavailable")
-		return
-	}
-	var request peerEnrollRequest
-	if err := decodePeerAdminJSON(r, &request); err != nil {
-		writePeerAdminError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// The owner RPC's "enroll" route mints a plain (non-peer) machine
-	// credential. It must never shadow a peer's own name or the hub's own
-	// machine name — ensureLocalEnrollment's in-process self-bootstrap is
-	// the one caller allowed to enrol the hub's own name, and it never goes
-	// through this route.
-	if handler.admin != nil {
-		if err := handler.admin.RefuseIfPeerNameCollision(r.Context(), request.Name); err != nil {
-			writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
-			return
-		}
-	}
-	response, err := handler.enrollment.Enroll(r.Context(), handler.viewer, hub.MachineEnrollmentRequest{Name: request.Name})
-	if err != nil {
-		writePeerAdminError(w, peerAdminErrorStatus(err), err.Error())
-		return
-	}
-	writePeerAdminJSON(w, http.StatusOK, peerEnrollResponse{
-		MachineID: response.Machine.ID, MachineName: response.Machine.Name,
-		IdentityID: response.Identity.ID, Token: response.Token, EnrolledAt: response.EnrolledAt,
-	})
-}
-
-func peerAdminErrorStatus(err error) int {
-	switch {
-	case errors.Is(err, hub.ErrPeerNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, hub.ErrUnavailable):
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusBadRequest
-	}
-}
-
-func decodePeerAdminJSON(r *http.Request, out any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<10))
-	if err := decoder.Decode(out); err != nil {
-		return fmt.Errorf("decode request: %w", err)
-	}
-	return nil
-}
-
-func writePeerAdminJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
-}
-
-func writePeerAdminError(w http.ResponseWriter, status int, message string) {
-	writePeerAdminJSON(w, status, map[string]string{"error": message})
-}
-
-// peerAdminClient is the CLI's write path: an authenticated HTTP client
-// bound to the daemon's unix-socket owner-token RPC, exactly like
-// daemonOperationClient's connect-go counterpart but for the plain-JSON peer
-// admin routes.
 type peerAdminClient struct{ httpClient *http.Client }
 
 // newPeerAdminClient starts the local daemon if needed (an admin operation
@@ -243,20 +41,20 @@ type peerAdminClient struct{ httpClient *http.Client }
 // against it.
 func newPeerAdminClient(ctx context.Context, deps daemonDependencies, root string) (*peerAdminClient, error) {
 	controller := newDaemonController(deps, root)
-	result, err := controller.Start(ctx, daemonDefaultListen)
+	result, err := controller.Start(ctx, daemonruntime.DefaultListen)
 	if err != nil {
 		return nil, fmt.Errorf("start local daemon: %w", err)
 	}
-	state, found, err := controller.store.Load()
+	state, found, err := controller.LoadState()
 	if err != nil {
 		return nil, err
 	}
 	if !found || state.Status != daemon.StatusReady || !result.ProcessManagerRunning {
 		return nil, errors.New("local daemon is not ready")
 	}
-	localClient := deps.localClient
+	localClient := deps.LocalClient
 	if localClient == nil {
-		localClient = daemonLocalHTTPClient
+		localClient = daemonruntime.LocalHTTPClient
 	}
 	httpClient, err := localClient(root, state.OwnerToken)
 	if err != nil {
@@ -275,7 +73,7 @@ func (client *peerAdminClient) call(ctx context.Context, path string, request, r
 	if err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, daemonRPCBaseURL+path, bytes.NewReader(body))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, daemonruntime.RPCBaseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -319,7 +117,7 @@ func (client *peerAdminClient) call(ctx context.Context, path string, request, r
 // silently opened.
 func daemonListenAddress(deps daemonDependencies, root string) (string, error) {
 	controller := newDaemonController(deps, root)
-	state, found, err := controller.store.Load()
+	state, found, err := controller.LoadState()
 	if err != nil {
 		return "", err
 	}

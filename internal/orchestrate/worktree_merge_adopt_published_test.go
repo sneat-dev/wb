@@ -220,7 +220,7 @@ func TestPublishedCandidateAdoptionRefusesDriftedPullRequestIdentity(t *testing.
 			t.Setenv("WB_TEST_PR_HEAD_REPO", tc.headRepo)
 			t.Setenv("WB_TEST_PR_BASE", tc.base)
 			t.Setenv("WB_TEST_PR_BASE_REPO", tc.baseRepo)
-			if err := provePublishedCandidatePullRequest(context.Background(), receipt, "7"); err == nil {
+			if err := provePublishedCandidatePullRequest(context.Background(), defaultRunner, receipt, "7"); err == nil {
 				t.Fatal("expected refusal")
 			}
 		})
@@ -250,7 +250,7 @@ func TestPublishedCandidateAdoptionSourceProofRefusesDirtyMovedAndNonDescendant(
 				t.Fatal(err)
 			}
 			tc.mutate(t, f, s)
-			if err := validatePublishedCandidateAdoptionSources(context.Background(), r); err == nil {
+			if err := validatePublishedCandidateAdoptionSources(context.Background(), defaultRunner, r); err == nil {
 				t.Fatal("expected refusal")
 			}
 		})

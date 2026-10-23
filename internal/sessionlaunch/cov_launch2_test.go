@@ -333,10 +333,11 @@ func slCovNewAuthorityFixture(t *testing.T) *slCovAuthorityFixture {
 		WBExecutable: slCovExecutable(t, binDir, "wb"), HarnessExecutable: slCovExecutable(t, binDir, spec.Executable),
 		HarnessArgs: spec.Args,
 	}
-	handoff, err := os.Open(handoffDir)
+	handoffFD, err := unix.Open(handoffDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	handoff := os.NewFile(uintptr(handoffFD), handoffDir)
 	state, err := openLaunchStateFromHandoff(handoffID, handoff, true)
 	if err != nil {
 		t.Fatal(err)
@@ -344,10 +345,11 @@ func slCovNewAuthorityFixture(t *testing.T) *slCovAuthorityFixture {
 	if _, _, _, err := state.savePlan(plan); err != nil {
 		t.Fatal(err)
 	}
-	fenceHandoff, err := os.Open(handoffDir)
+	fenceFD, err := unix.Open(handoffDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	fenceHandoff := os.NewFile(uintptr(fenceFD), handoffDir)
 	tmux := &slCovFlexTmux{}
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	deps := dependencies{

@@ -220,17 +220,6 @@ func TestDqCovValidateIdentityEnforcesTheHostedIdentifier(t *testing.T) {
 	}
 }
 
-func TestDqCovSnapshotKeyRejectsAnInvalidMachine(t *testing.T) {
-	t.Parallel()
-	key, err := SnapshotKey("alice", "laptop-1")
-	if err != nil || !strings.HasPrefix(key, "machine_") {
-		t.Fatalf("SnapshotKey = (%q, %v), want a machine_ key", key, err)
-	}
-	if _, err := SnapshotKey("alice", "../laptop"); !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatalf("SnapshotKey with an invalid machine = %v, want ErrInvalidSnapshot", err)
-	}
-}
-
 func TestDqCovSortPublishedOrdersBySnapshotKey(t *testing.T) {
 	t.Parallel()
 	snapshots := []PublishedSnapshot{

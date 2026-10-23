@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/gitremote"
-	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 )
 
@@ -109,9 +108,6 @@ func validateRemoteParkedMember(ctx context.Context, projectsRoot string, prepar
 	}
 	if err := corroborateProjectionAcrossHomes(projectsRoot, prepared.resolvedWorktreeDir, projection); err != nil {
 		return fmt.Errorf("corroborate source Work Log claim: %w", err)
-	}
-	if _, err := sessionmove.ParseWorkLogReference(member.WorkLogReference); err != nil {
-		return fmt.Errorf("source Work Log reference is invalid")
 	}
 	events, _, err := readLocalEventsForAppend(prepared.journal)
 	if err != nil {

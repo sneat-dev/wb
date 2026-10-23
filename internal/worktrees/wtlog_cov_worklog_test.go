@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,33 +13,33 @@ import (
 
 func TestWtLogCovSameEvidencePointers(t *testing.T) {
 	t.Parallel()
-	if !sameFinalizeReport(nil, nil) || sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, nil) || sameFinalizeReport(nil, &workLogFinalizeReport{Result: "x"}) {
+	if !worktreeclaims.SameFinalizeReport(nil, nil) || worktreeclaims.SameFinalizeReport(&workLogFinalizeReport{Result: "x"}, nil) || worktreeclaims.SameFinalizeReport(nil, &workLogFinalizeReport{Result: "x"}) {
 		t.Fatal("sameFinalizeReport nil handling is wrong")
 	}
-	if !sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "x"}) {
+	if !worktreeclaims.SameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "x"}) {
 		t.Fatal("equal finalize reports must match")
 	}
-	if sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "y"}) {
+	if worktreeclaims.SameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "y"}) {
 		t.Fatal("different finalize reports must not match")
 	}
 
-	if !sameOrphanedEvidence(nil, nil) || sameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, nil) || sameOrphanedEvidence(nil, &workLogOrphanedEvidence{Version: 1}) {
+	if !worktreeclaims.SameOrphanedEvidence(nil, nil) || worktreeclaims.SameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, nil) || worktreeclaims.SameOrphanedEvidence(nil, &workLogOrphanedEvidence{Version: 1}) {
 		t.Fatal("sameOrphanedEvidence nil handling is wrong")
 	}
-	if !sameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1, Actor: "a"}, &workLogOrphanedEvidence{Version: 1, Actor: "a"}) {
+	if !worktreeclaims.SameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1, Actor: "a"}, &workLogOrphanedEvidence{Version: 1, Actor: "a"}) {
 		t.Fatal("equal orphaned evidence must match")
 	}
-	if sameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, &workLogOrphanedEvidence{Version: 2}) {
+	if worktreeclaims.SameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, &workLogOrphanedEvidence{Version: 2}) {
 		t.Fatal("different orphaned evidence must not match")
 	}
 
-	if !sameDirtyWorktreeEvidence(nil, nil) || sameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, nil) {
+	if !worktreeclaims.SameDirtyWorktreeEvidence(nil, nil) || worktreeclaims.SameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, nil) {
 		t.Fatal("sameDirtyWorktreeEvidence nil handling is wrong")
 	}
-	if !sameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a", Files: 2}, &DirtyWorktreeEvidence{SHA256: "a", Files: 2}) {
+	if !worktreeclaims.SameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a", Files: 2}, &DirtyWorktreeEvidence{SHA256: "a", Files: 2}) {
 		t.Fatal("equal dirty evidence must match")
 	}
-	if sameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, &DirtyWorktreeEvidence{SHA256: "b"}) {
+	if worktreeclaims.SameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, &DirtyWorktreeEvidence{SHA256: "b"}) {
 		t.Fatal("different dirty evidence must not match")
 	}
 }
@@ -241,43 +242,6 @@ func TestWtLogCovDeclaredBy(t *testing.T) {
 	}
 	if got := declaredBy(WorkLogOptions{}); got != "unknown" {
 		t.Fatalf("declaredBy fallback = %q", got)
-	}
-}
-
-func TestWtLogCovRemovedTerminalExpectations(t *testing.T) {
-	t.Parallel()
-	valid := TerminalWorkLogExpectation{Task: "task", Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main", FinalCommit: "sha"}
-	if err := validateRemovedTerminalExpectation(valid); err != nil {
-		t.Fatalf("valid expectation rejected: %v", err)
-	}
-	for name, mutate := range map[string]func(*TerminalWorkLogExpectation){
-		"task":     func(e *TerminalWorkLogExpectation) { e.Task = "../x" },
-		"repo":     func(e *TerminalWorkLogExpectation) { e.Repository = " " },
-		"worktree": func(e *TerminalWorkLogExpectation) { e.Worktree = "" },
-		"branch":   func(e *TerminalWorkLogExpectation) { e.Branch = "" },
-		"commit":   func(e *TerminalWorkLogExpectation) { e.FinalCommit = "" },
-	} {
-		expectation := valid
-		mutate(&expectation)
-		if err := validateRemovedTerminalExpectation(expectation); err == nil {
-			t.Errorf("invalid expectation %q was accepted", name)
-		}
-	}
-
-	claim := workLogClaim{Version: 1, EffortID: "task", RunID: "run", ClaimID: strings.Repeat("a", 64),
-		Task: "task", Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main", Lifecycle: "active"}
-	if !matchesRemovedTerminalExpectation(claim, valid) {
-		t.Fatal("matching claim was not recognized")
-	}
-	wrongBranch := valid
-	wrongBranch.Branch = "wb/other"
-	if matchesRemovedTerminalExpectation(claim, wrongBranch) {
-		t.Fatal("claim with a different branch matched")
-	}
-	terminalClaim := claim
-	terminalClaim.Lifecycle = "terminal"
-	if matchesRemovedTerminalExpectation(terminalClaim, valid) {
-		t.Fatal("terminal lifecycle must not match an active expectation")
 	}
 }
 

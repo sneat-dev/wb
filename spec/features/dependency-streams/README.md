@@ -808,6 +808,37 @@ signals independently: state alone would miss a hand-written `go.work`, and
 `go.work` alone would miss an npm link. There MUST be no flag that both bypasses
 this guard and pushes.
 
+`wb pr land` MUST apply the same guard before arming auto-merge or merging,
+including with `--keep`, to worktrees matching the authoritative pull request
+head repository (case-insensitively) and exact branch. Discovery MUST preserve
+repository case variants without changing physical paths. Other branches and
+repositories MUST remain independent. Missing source identity or unreadable source inventory/link
+evidence MUST refuse. A fork's head MUST NOT select or retire a same-named
+branch in the target repository; fork source worktrees are retained explicitly.
+
+Source admission MUST discover producers from the exact repository's canonical
+Git worktree registry before inspecting task or recovery state. It MUST inspect
+the exact source branch and detached or unidentified potential producers.
+Unregistered log-only residue and unrelated recovery artifacts MUST remain
+visible to ordinary global inventory without blocking source admission or
+receiving cleanup authority. Registered source producers inside a recovery
+artifact MUST still refuse when their evidence cannot be established.
+
+Canonical lookup MUST preserve physical path spelling across repository case
+variants. Registered producer roots and common Git directories MUST agree by
+physical identity, including case and symbolic aliases; missing ownership,
+broken metadata, unreadable or malformed registry evidence, contradictory HEAD
+or branch identity, and identity changes during inspection MUST refuse.
+Landing cleanup MUST discover its source tasks through the same scoped query
+and retain the ordinary claim- and receipt-validated cleanup transaction.
+
+A missing work-log claim on a detached checkout MUST NOT block an unrelated
+PR only when its physical repository and directory identity, actual Git HEAD,
+and canonical worktree registration agree, its tracked and untracked status
+is clean, and its full commit differs from the authoritative PR head SHA.
+Same-head, dirty, missing, unreadable, malformed, or contradictory evidence
+MUST refuse; this distinction grants no cleanup authority over that checkout.
+
 #### REQ: verification-prints-its-active-links
 
 Every verification run against a linked consumer MUST print the links in effect,
@@ -1445,6 +1476,31 @@ behaviour such as `--slurp`. A verb that breaks on the installed client forces
 operators back to raw `gh pr merge`, which is exactly how the cleanup path was
 bypassed.
 
+#### REQ: landing-allows-waiving-non-required-checks-failing-on-target-tip
+
+`wb pr land` MUST allow landing past one or more failing or cancelled checks via
+repeatable `--waive-check <name>` flags with a mandatory `--waive-reason <text>`,
+provided that for every named check, all of the following hold:
+1. the check failed or was cancelled on the pull request's head;
+2. the target branch's server-enforced policy does not require it;
+3. the check has the same failing conclusion on the target branch's current tip
+   commit at an authoritative, exact SHA.
+
+A named check that is required by the target branch, is green on the target tip,
+is absent on the target tip, has a different conclusion on the target tip, or is
+not failed on the pull request head MUST be refused with a specific refusal code
+naming the check and the target SHA compared.
+A target branch with no server-enforced required checks cannot use waivers.
+Any failed check on the pull request head that is not explicitly waived MUST still
+cause `wb pr land` to refuse with `checks-failed`.
+When `checks-failed` is reported, wb MUST indicate for each failed check whether it
+is required by target policy and whether it also fails on the target's tip SHA,
+and when every failed check qualifies for a waiver, the refusal MUST print the
+exact `wb pr land ... --waive-check ... --waive-reason ...` command.
+The landing receipt MUST record each waived check's name, head conclusion, target
+SHA, and the waiver reason.
+
+
 #### REQ: reviews-use-a-tracked-review-checkout
 
 `wb worktree review <owner/repo#N>` MUST create a **tracked, claimed,
@@ -1962,6 +2018,30 @@ committed modules in that repository
 command that clears it, and no flag combination both bypasses the guard and
 pushes; the committed intrinsic workspace is accepted.
 
+**Given** two worktrees of one repository, where only the unrelated branch has
+a live link or malformed `go.work`
+**When** `wb pr land` lands the other branch with or without `--keep`
+**Then** the unrelated worktree does not block admission and is preserved;
+moving either a recorded link or a hand-written unpublished workspace to the
+actual PR source refuses before auto-merge or merge, even with `--keep`.
+
+**Given** an uncorroborated manifest on a real detached checkout registered in
+the source repository at a different commit from the PR head
+**When** `wb pr land` preflights with or without `--keep`
+**Then** a clean checkout with consistent physical and Git evidence is left
+untouched and does not block admission; the same-head checkout, tracked or
+untracked changes, and inconsistent or unreadable evidence refuse before any
+auto-merge or merge.
+
+**Given** those foreign states together with a log-only unregistered task
+residue, a clean source, and source producers registered through physical case
+or symbolic aliases inside recovery state
+**When** source admission and landing cleanup run
+**Then** only the registered source is selected; global audit retains unrelated
+diagnostics, foreign files remain unchanged, and missing source claims, broken
+Git metadata, or live hand-written and recorded source links refuse with and
+without `--keep` before any irreversible action.
+
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 
 **Requirements:** dependency-streams#req:batch-verifies-once, dependency-streams#req:the-batch-element-is-defined, dependency-streams#req:batch-failure-is-found-by-prefix-re-apply, dependency-streams#req:verbs-state-and-deduplicate-their-work
@@ -2343,7 +2423,25 @@ and `--family` overrides the selection.
 to its lesson id, and a `--dispute` round's brief carries both positions and asks
 for a ruling rather than a re-verification.
 
+### AC: land-past-failed-non-required-check-failing-on-target-tip
+
+**Requirements:** dependency-streams#req:landing-allows-waiving-non-required-checks-failing-on-target-tip, dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** a pull request whose head has a failed check that is not required by the
+target branch policy and is also failing with the same conclusion on the target branch's current tip commit
+**When** the operator runs `wb pr land` without a waiver
+**Then** the command refuses with `checks-failed`, indicates that the check is not
+required and fails on the target tip with its SHA, and suggests the exact sanctioned
+`wb pr land <repo#pr> --waive-check <name> --waive-reason <reason>` command.
+**When** the operator runs `wb pr land` with `--waive-check <name> --waive-reason <reason>`
+**Then** the waiver is verified against the target tip SHA, the pull request lands,
+and the landing receipt records the waived check and reason in text and JSON.
+**When** the operator attempts to waive a check that is required, green on target,
+absent on target, or on a target branch with no server-enforced required checks
+**Then** the command refuses with the corresponding specific refusal code.
+
 ## Rehearse Integration
+
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, or process
 surface. Pending scenario stubs live under `_tests/` and are intended to use

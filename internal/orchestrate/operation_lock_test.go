@@ -207,7 +207,9 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 	if err := os.WriteFile(path, []byte(successor), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_ = lock.Release()
+	if err := lock.Release(); err == nil {
+		t.Fatal("release accepted a late successor lock")
+	}
 	if contents, err := os.ReadFile(path); err != nil || string(contents) != successor {
 		t.Fatalf("late successor was removed: contents=%q err=%v", contents, err)
 	}

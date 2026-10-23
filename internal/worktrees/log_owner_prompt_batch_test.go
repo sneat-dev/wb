@@ -20,7 +20,7 @@ func TestPreparedWorkLogPromptRejectsChangedRunArchive(t *testing.T) {
 	}
 	options := WorkLogOptions{EffortID: "coverage", RunID: "run-1", Model: "unknown", OriginalPrompt: prompt, RequireOriginalPrompt: true}
 	prepared, err := PrepareWorkLogOptions(projects, "coverage", options)
-	if err != nil || string(prepared.originalPromptContents) != "original request\n" {
+	if err != nil || string(prepared.snapshot.Contents) != "original request\n" {
 		t.Fatalf("prepared prompt = %#v, %v", prepared, err)
 	}
 	home, err := wbhome.Root(projects)
@@ -78,10 +78,10 @@ func TestSnapshotOriginalPromptRequiresRegularNonemptyFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte("exact bytes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := snapshotOriginalPrompt(&options); err != nil || string(options.originalPromptContents) != "exact bytes\n" {
+	if err := snapshotOriginalPrompt(&options); err != nil || string(options.snapshot.Contents) != "exact bytes\n" {
 		t.Fatalf("snapshot = %#v, %v", options, err)
 	}
-	options.originalPromptDigest = "wrong"
+	options.snapshot.Digest = "wrong"
 	if err := snapshotOriginalPrompt(&options); err == nil || !strings.Contains(err.Error(), "internally inconsistent") {
 		t.Fatalf("tampered snapshot = %v", err)
 	}
@@ -129,7 +129,7 @@ func TestPromptArchiveReservationValidatesImmutableBytesAndIndex(t *testing.T) {
 			t.Errorf("close prompt reservation run: %v", err)
 		}
 	})
-	if err := validateReservationPrompt(run, options.originalPromptDigest); err != nil {
+	if err := validateReservationPrompt(run, options.snapshot.Digest); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateReservationPrompt(run, "different"); err == nil {
@@ -238,7 +238,7 @@ func TestActiveClaimReadersPreserveImmutableIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, projection, claimPath, err := activeWorkLogClaimWithMode(home, worktree, true)
+	claim, projection, claimPath, err := activeClaimPorts().ActiveWorkLogClaimWithMode(home, worktree, true)
 	if err != nil || claim.ClaimID == "" || claimPath == "" || projection.Lifecycle != "active" {
 		t.Fatalf("active claim = %#v, %#v, %q, %v", claim, projection, claimPath, err)
 	}

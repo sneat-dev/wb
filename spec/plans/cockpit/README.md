@@ -1,10 +1,10 @@
 ---
 format: https://specscore.md/plan-specification
-status: Approved
+status: Implemented
 ---
 # Plan: Cockpit shell
 
-**Status:** Approved
+**Status:** Implemented
 **Source Feature:** cockpit
 **Date:** 2026-10-01
 **Owner:** alex
@@ -30,7 +30,7 @@ and the repository README asks for an owner session.
 
 ## Approach
 
-Nine tasks. The Go side is built bottom-up — mount and guard, then the
+Nine tasks, and a tenth added after the plan was implemented. The Go side is built bottom-up — mount and guard, then the
 session, then the command that issues it, then the read model — so every
 route exists and is protected before any browser code calls it. The
 application is split in three so no pull request carries the whole of it:
@@ -44,9 +44,9 @@ coverage. Every task keeps the code it adds at 100% coverage: Go through `wb cov
 ### Task 1: Mount, configuration and request guard
 
 **Id:** task-1
-**Verifies:** cockpit#ac:unbuilt-application-says-so, cockpit#ac:foreign-host-is-refused, cockpit#ac:dashboard-command-is-unchanged
+**Verifies:** cockpit#ac:unbuilt-application-says-so, cockpit#ac:foreign-host-is-refused, cockpit#ac:legacy-dashboard-is-retired
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
 
 Add `cockpit.hosted_url`, `cockpit.code_browser_url`,
 `cockpit.anonymous_metadata` and `cockpit.refresh_interval` to
@@ -58,13 +58,15 @@ built" page, as `hub/web/embed.go` does. Mount `/cockpit/` and
 whatever the port, and redirects page requests on a loopback alias to the canonical origin.
 Tests: the guard table, the unbuilt page, and a regression test that `/`,
 `/metrics`, `/api/v1/overview` and `wb dashboard --local` answer as before.
+(Superseded 2026-10-02: the operations pages and `/api/v1/overview` were
+retired; that test now asserts the retirement, cockpit#req:legacy-dashboard-retired.)
 
 ### Task 2: Owner session, principals and cross-origin rule
 
 **Id:** task-2
 **Verifies:** cockpit#ac:login-code-is-single-use, cockpit#ac:session-ends-on-logout-and-restart, cockpit#ac:proxied-request-needs-a-session, cockpit#ac:only-the-hosted-origin-may-read-cross-origin, cockpit#ac:session-reports-principal-and-capabilities
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Add a login-code operation to the owner-token service on the daemon's unix
 socket: single use, 60-second life, injectable clock. Add
@@ -85,7 +87,7 @@ canonical origin plus JSON on state-changing routes.
 **Id:** task-3
 **Verifies:** cockpit#ac:command-opens-local-cockpit, cockpit#ac:json-output-carries-no-code, cockpit#ac:hosted-flag-uses-configured-url, cockpit#ac:manifest-rows-exist
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Add `cmd/wb/cockpit.go`, reusing the daemon start-or-reuse path that
 `wb dashboard --local` uses. It requests a login code over the owner RPC,
@@ -99,14 +101,16 @@ flag-matrix line and the persistent-flag support declaration.
 ### Task 4: Fleet read model
 
 **Id:** task-4
-**Verifies:** cockpit#ac:read-model-lists-local-state, cockpit#ac:request-does-not-scan, cockpit#ac:anonymous-local-gets-metadata-only
+**Verifies:** cockpit#ac:read-model-lists-local-state, cockpit#ac:request-does-not-scan, cockpit#ac:anonymous-local-gets-metadata-only, cockpit#ac:future-dated-snapshot-is-unknown-and-stale
 **Depends-On:** 2
-**Status:** planning
+**Status:** complete
 
 Add a background snapshotter in the daemon that builds the fleet document
-from `discover.ScanLocalIndexed`, `worktrees.ListWithDiagnostics`,
-`worktrees.BranchList`, pull request evidence, the session and agent run
-records, and `remotestate.ReadStatus` for other machines, giving every entry
+from `discover.ScanLocalIndexed`, the cheap worktree
+enumeration the existing dashboard uses, one `git for-each-ref` per repository,
+locally recorded pull requests, the session and agent run
+records, and a local-only read of the local copy of the remote state store for
+other machines, giving every entry
 a stable `id`, its `machine`, `route` and `observed_at`. It refreshes on
 `cockpit.refresh_interval`, skipping repositories whose fingerprint is
 unchanged, and can refresh one repository on request from inside the daemon;
@@ -124,7 +128,7 @@ answers 401 without a session.
 **Id:** task-5
 **Verifies:** cockpit#ac:release-build-includes-cockpit, cockpit#ac:coverage-gates-hold
 **Depends-On:** 1
-**Status:** planning
+**Status:** complete
 
 Create the Angular 22 project at `cockpit/web` with PrimeNG 22, the CDK,
 Vitest and Playwright: an empty shell that builds, is embedded, and is served
@@ -141,7 +145,7 @@ with an assertion that its output exists.
 **Id:** task-6
 **Verifies:** cockpit#ac:every-page-lists-its-collection, cockpit#ac:counts-drill-down, cockpit#ac:repository-links-to-code-browser
 **Depends-On:** 2, 4, 5
-**Status:** planning
+**Status:** complete
 
 Build the shell and navigation, and the Dashboard, Repositories, Worktrees,
 Agents and Machines pages as tables filterable by machine and repository,
@@ -149,13 +153,14 @@ with route and age labels on cached rows, the hover card and drill-down for
 every count, the link from each repository
 to the CodeGrapher browser built from `cockpit.code_browser_url`, and light
 and dark themes. Controls are driven by `GET /api/v1/cockpit/session`.
+Branch and pull-request counts are not shown until they have list pages.
 
 ### Task 7: Code-index freshness
 
 **Id:** task-7
 **Verifies:** cockpit#ac:code-index-freshness-appears
 **Depends-On:** 4, 6
-**Status:** planning
+**Status:** complete
 
 Add `code_index` freshness to each repository and worktree in the read model,
 in the six states `code-index-freshness` defines, read from indexer receipts.
@@ -169,7 +174,7 @@ tables.
 **Id:** task-8
 **Verifies:** cockpit#ac:readme-needs-owner, cockpit#ac:hostile-readme-is-inert, cockpit#ac:code-index-panel
 **Depends-On:** 4, 6, 7
-**Status:** planning
+**Status:** complete
 
 Render the README as sanitized Markdown on the repository page, with the
 owner-session notice for other callers. Add the code-index provider
@@ -183,20 +188,75 @@ the repository and worktree pages.
 **Id:** task-9
 **Verifies:** cockpit#ac:whole-journey-e2e
 **Depends-On:** 3, 6, 8
-**Status:** planning
+**Status:** complete
 
 One Playwright test against a real daemon on a temporary projects root: run
 `wb cockpit`, follow the printed URL, assert the Dashboard as owner, hover
 and click the worktree count, assert the filtered table, clear the cookie,
 reload, and assert that lists load while the README asks for an owner
-session. No reloads or manual steps beyond those the journey names.
+session. No reloads or manual steps beyond those the journey names. The journey
+runs on Linux in CI only, because on macOS the daemon is a launchd service with
+one fixed label per user.
+
+### Task 10: The daemon's log is the owner's alone
+
+**Id:** task-10
+**Verifies:** cockpit#ac:daemon-log-needs-an-owner-session, cockpit#ac:daemon-log-fails-closed-without-an-owner-check, cockpit#ac:daemon-log-error-names-no-path
+**Depends-On:** 2
+**Status:** complete
+
+Added 2026-10-02, after the founder's rule that anything returning the content
+of a file requires authentication. The dashboard's `GET /api/v1/log` takes an
+owner check through `dashboard.Options.Owner`, which the daemon fills with
+`cockpit.Server.IsOwner`: a loopback `Host`, the canonical origin or none, and a
+live session. Without an owner the route answers 401 before the file is opened,
+without an owner check it answers 403, and its failures carry a closed code and
+no path.
+
+### Task 11: The dashboard's JSON routes answer only on a loopback host
+
+**Id:** task-11
+**Verifies:** cockpit#ac:dashboard-json-routes-answer-only-on-loopback
+**Depends-On:** 10
+**Status:** complete
+
+Added 2026-10-02, from the whole-branch security review. `GET /api/v1/health`
+and, then, `GET /api/v1/overview` apply the Host check, by the rule Cockpit's guard
+applies (package `internal/loopbackhost`, which both ask), and a failed overview
+answers a closed code and a fixed message while its reason goes to the daemon's
+log. (2026-10-02: the overview route and the operations pages are retired; the
+root redirect and `GET /api/v1/health` keep the Host check.)
+
+### Task 12: The session cookie alone is not an owner
+
+**Id:** task-12
+**Verifies:** cockpit#ac:replayed-cookie-is-not-the-owner, cockpit#ac:session-key-reaches-the-page-in-the-fragment, cockpit#ac:a-reload-and-a-second-tab-keep-the-owner-session, cockpit#ac:session-key-ends-with-its-session, cockpit#ac:session-key-is-never-served, cockpit#ac:login-url-is-printed-only-where-asked, cockpit#ac:records-with-markup-are-refused
+**Depends-On:** 2, 3, 10
+**Status:** complete
+
+Added 2026-10-02, from the security review: the session cookie is scoped to the
+loopback host, so every other local server is sent it and could replay it. The
+daemon mints a session key with each login code and answers it on the owner
+channel only; `wb cockpit` prints it in the login URL's fragment; the page takes
+it out of the address, keeps it in its origin's local storage and sends it in
+`X-Wb-Cockpit-Session-Key` (`libs/fleet-data` `session-key.ts`, added to every
+request by the `FETCH` token). `cockpit.Server` resolves the owner only from
+the cookie and the key together (`sessionID`), which `IsOwner` and so the
+daemon's log route share. `GET /api/v1/log` typed into the address bar is no
+longer the owner's: the documentation names the file and the two headers.
+
+The key is readable by every page of the origin, so the review's second round
+closed the ways a script could be injected into one: the dashboard's `/` and
+`/metrics` pages built what they showed from elements and text, with scripts
+that were files of the origin (both pages and their jsdom test were retired on
+2026-10-02), the listener's policy refuses inline script, and the hub refuses a
+metric or coverage record that holds markup (`hub/record_validation.go`). The
+login URL is printed only on a terminal or with `--print-url`, and a daemon too
+old to issue a key is refused.
 
 ## Open Questions
 
 - The Go package layout under `internal/cockpit` is settled in Task 1.
-- Whether `cockpit/web` is a plain Angular workspace or an Nx workspace like
-  the CodeGrapher web UI is settled in Task 5; sharing components later
-  favors matching it.
 
 ---
 *This document follows the https://specscore.md/plan-specification*

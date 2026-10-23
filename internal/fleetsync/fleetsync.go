@@ -212,13 +212,17 @@ func withHeadSHA(res Result) Result {
 }
 
 func classify(ctx context.Context, repo discover.Repo, projectsRoot string, dryRun, pruneArchived bool) Result {
+	return classifyWithRelocate(ctx, repo, projectsRoot, dryRun, pruneArchived, worktrees.RelocateRepository)
+}
+
+func classifyWithRelocate(ctx context.Context, repo discover.Repo, projectsRoot string, dryRun, pruneArchived bool, relocate func(context.Context, worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error)) Result {
 	res := Result{Repo: repo, Archived: repo.Archived}
 	if repo.TransferError != "" {
 		res.Status, res.Err = Failed, errors.New(repo.TransferError)
 		return res
 	}
 	if repo.TransferFrom != "" {
-		relocated, err := worktrees.RelocateRepository(ctx, worktrees.RepositoryRelocateOptions{
+		relocated, err := relocate(ctx, worktrees.RepositoryRelocateOptions{
 			ProjectsRoot: projectsRoot, SourceRepository: repo.TransferFrom, DestinationRepository: repo.Slug(),
 			RemoteURL: repo.CloneURL, DefaultBranch: repo.DefaultBranch, Apply: !dryRun,
 		})

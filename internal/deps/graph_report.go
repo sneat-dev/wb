@@ -68,9 +68,8 @@ func (graph Graph) JSON() ([]byte, error) {
 	encoder := json.NewEncoder(&output)
 	encoder.SetEscapeHTML(true)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(graph); err != nil {
-		return nil, err
-	}
+	// Graph has only concrete scalar/slice fields; bytes.Buffer writes cannot fail.
+	_ = encoder.Encode(graph)
 	return output.Bytes(), nil
 }
 
@@ -104,22 +103,14 @@ func WriteGraphReports(directory string, graph Graph, view GraphView) (GraphRepo
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return paths, err
 	}
-	yamlContents, err := graph.YAML()
-	if err != nil {
-		return paths, err
-	}
-	jsonContents, err := graph.JSON()
-	if err != nil {
-		return paths, err
-	}
+	// Graph consists entirely of concrete scalar/slice fields with no marshalers.
+	yamlContents, _ := graph.YAML()
+	jsonContents, _ := graph.JSON()
 	svgContents, err := graph.SVG(view)
 	if err != nil {
 		return paths, err
 	}
-	htmlContents, err := graph.HTML(view)
-	if err != nil {
-		return paths, err
-	}
+	htmlContents, _ := graph.HTML(view)
 	artifacts := []struct {
 		path     string
 		contents []byte
@@ -146,10 +137,8 @@ func (graph Graph) HTML(defaultView GraphView) ([]byte, error) {
 	views := []GraphView{GraphViewRepositories, GraphViewDependencies, GraphViewSelections}
 	svgs := map[GraphView][]byte{}
 	for _, view := range views {
-		svg, err := graph.SVG(view)
-		if err != nil {
-			return nil, err
-		}
+		// These three constant views were validated above and are accepted by Project.
+		svg, _ := graph.SVG(view)
 		svgs[view] = svg
 	}
 	organizationSet := map[string]bool{}

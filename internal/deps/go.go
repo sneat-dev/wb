@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -164,8 +165,12 @@ type goManifest struct {
 }
 
 func goManifests(root, dependency string) ([]goManifest, error) {
+	return goManifestsWithWalk(root, dependency, filepath.WalkDir)
+}
+
+func goManifestsWithWalk(root, dependency string, walk func(string, fs.WalkDirFunc) error) ([]goManifest, error) {
 	var manifests []goManifest
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := walk(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -181,10 +186,8 @@ func goManifests(root, dependency string) ([]goManifest, error) {
 		if entry.Name() != "go.mod" {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(root, path)
 		relative = filepath.ToSlash(relative)
 		if ignoredManifestPath(relative) {
 			return nil
@@ -258,10 +261,8 @@ func validatePublishableGoManifests(root string) error {
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(root, path)
 		parsed, err := modfile.Parse(relative, contents, nil)
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", filepath.ToSlash(relative), err)

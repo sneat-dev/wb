@@ -342,7 +342,8 @@ func TestWtLifeCovActiveWorkLogClaimAtPathFindsActiveClaim(t *testing.T) {
 
 	claims := filepath.Join(home, "worklogs", "task-one", "runs", "run-one", "claims")
 	wtLifeCovWriteJSON(t, filepath.Join(claims, claimID+".json"), workLogClaim{
-		Version: 1, Task: "task-one", Repository: "acme/app", Worktree: worktree, Lifecycle: "active",
+		Version: 1, EffortID: "task-one", RunID: "run-one", ClaimID: claimID,
+		Task: "task-one", Repository: "acme/app", Worktree: worktree, Lifecycle: "active",
 	})
 	found, err := activeWorkLogClaimAtPath(home, worktree, nil)
 	if err != nil || found == nil || found.Task != "task-one" {

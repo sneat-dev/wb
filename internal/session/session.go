@@ -105,9 +105,8 @@ func recordPath(dir string, pid int) string {
 // runtime-specific identifier and safe to carry in file and tmux names.
 func NewID() (string, error) {
 	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("generate WB session ID: %w", err)
-	}
+	// crypto/rand.Read fills the buffer or terminates the process; it never returns an error.
+	_, _ = rand.Read(random[:])
 	return fmt.Sprintf("wbs-%x", random[:]), nil
 }
 
@@ -121,6 +120,10 @@ func NewID() (string, error) {
 func ProcessAlive(pid int) bool { return processAlive(pid) }
 
 func Register(dir string, record Record) (Record, error) {
+	return registerWithMachineAndMode(dir, record, os.Hostname, os.Chmod)
+}
+
+func registerWithMachineAndMode(dir string, record Record, hostnameForMachine func() (string, error), chmod func(string, os.FileMode) error) (Record, error) {
 	if record.PID <= 0 {
 		return Record{}, fmt.Errorf("a session must declare a positive PID")
 	}
@@ -184,14 +187,11 @@ func Register(dir string, record Record) (Record, error) {
 		}
 	}
 	if record.WBSessionID == "" {
-		id, err := NewID()
-		if err != nil {
-			return Record{}, err
-		}
+		id, _ := NewID()
 		record.WBSessionID = id
 	}
 	if record.Machine == "" {
-		hostname, err := os.Hostname()
+		hostname, err := hostnameForMachine()
 		if err != nil {
 			return Record{}, fmt.Errorf("resolve session machine: %w", err)
 		}
@@ -219,7 +219,7 @@ func Register(dir string, record Record) (Record, error) {
 	if err := os.WriteFile(path, append(encoded, '\n'), 0o644); err != nil {
 		return Record{}, fmt.Errorf("write session record: %w", err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := chmod(path, 0o644); err != nil {
 		return Record{}, fmt.Errorf("set session record mode: %w", err)
 	}
 	return record, nil
@@ -241,6 +241,10 @@ func MarkParked(dir string, pid int, parkedID string) (Record, error) {
 // filewrite.CreateExclusivePath uses the identical
 // O_WRONLY|O_CREATE|O_EXCL flag set the original os.OpenFile call used.
 func markParkedInjected(dir string, pid int, parkedID string, inj *filewrite.Injector) (Record, error) {
+	return markParkedAt(dir, pid, parkedID, inj, time.Now)
+}
+
+func markParkedAt(dir string, pid int, parkedID string, inj *filewrite.Injector, now func() time.Time) (Record, error) {
 	record, ok := readRecord(recordPath(dir, pid))
 	if !ok {
 		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
@@ -274,7 +278,7 @@ func markParkedInjected(dir string, pid int, parkedID string, inj *filewrite.Inj
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
 		return Record{}, err
 	}
-	marker := parkedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID, At: time.Now().UTC()}
+	marker := parkedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID, At: now().UTC()}
 	raw, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return Record{}, err
@@ -315,6 +319,14 @@ func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Re
 // markerDir itself, not the marker file, and is not one of the sites task-9
 // PR-7 slots) and stays bare.
 func markResumedInjected(dir string, pid int, parkedID, successorWBSessionID string, inj *filewrite.Injector) (Record, error) {
+	return markResumedAtWithSync(dir, pid, parkedID, successorWBSessionID, inj, time.Now, syncDirectory)
+}
+
+func markResumedAtWithSync(dir string, pid int, parkedID, successorWBSessionID string, inj *filewrite.Injector, now func() time.Time, syncDir func(*os.File) error) (Record, error) {
+	return markResumedWithIO(dir, pid, parkedID, successorWBSessionID, inj, now, syncDir, os.MkdirAll)
+}
+
+func markResumedWithIO(dir string, pid int, parkedID, successorWBSessionID string, inj *filewrite.Injector, now func() time.Time, syncDir func(*os.File) error, mkdirAll func(string, os.FileMode) error) (Record, error) {
 	record, ok := readRecord(recordPath(dir, pid))
 	if !ok {
 		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
@@ -335,11 +347,11 @@ func markResumedInjected(dir string, pid int, parkedID, successorWBSessionID str
 		return record, nil
 	}
 	markerDir := filepath.Join(dir, "lifecycle")
-	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+	if err := mkdirAll(markerDir, 0o755); err != nil {
 		return Record{}, err
 	}
 	marker := resumedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID,
-		SuccessorWBSessionID: successorWBSessionID, At: time.Now().UTC()}
+		SuccessorWBSessionID: successorWBSessionID, At: now().UTC()}
 	raw, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return Record{}, err
@@ -371,7 +383,7 @@ func markResumedInjected(dir string, pid int, parkedID, successorWBSessionID str
 	if err != nil {
 		return Record{}, err
 	}
-	err = syncDirectory(directory)
+	err = syncDir(directory)
 	_ = directory.Close()
 	if err != nil {
 		return Record{}, err

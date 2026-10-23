@@ -3,10 +3,14 @@
 package unix
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	win "golang.org/x/sys/windows"
 )
 
 func TestOpenNoFollowRejectsSymlink(t *testing.T) {
@@ -98,5 +102,19 @@ func TestFstatIdentityMatchesFstatat(t *testing.T) {
 	if opened.Dev != named.Dev || opened.Ino != named.Ino || opened.Nlink != named.Nlink {
 		t.Fatalf("opened identity (%d,%d,%d) != named identity (%d,%d,%d)",
 			opened.Dev, opened.Ino, opened.Nlink, named.Dev, named.Ino, named.Nlink)
+	}
+}
+
+func TestWindowsPortableSentinelsMatchNativeErrors(t *testing.T) {
+	t.Parallel()
+	if EAGAIN != EWOULDBLOCK || !errors.Is(fmt.Errorf("socket: %w", win.WSAEWOULDBLOCK), EWOULDBLOCK) {
+		t.Fatal("would-block aliases do not match the wrapped native socket error")
+	}
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "child"), []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(directory); !errors.Is(err, ENOTEMPTY) {
+		t.Fatalf("remove nonempty directory error = %v, want native ENOTEMPTY", err)
 	}
 }

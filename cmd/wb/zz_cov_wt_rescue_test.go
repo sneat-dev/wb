@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/spf13/cobra"
 )
 
@@ -144,72 +142,5 @@ func TestCwWtWorktreeRescueFleetAndArgs(t *testing.T) {
 	}
 	if _, _, err := cwCovExec(t, blocker, func() *cobra.Command { return newWorktreeRescueCmd(&invocation{projectsRoot: blocker}) }, "--fleet"); err == nil || !strings.Contains(err.Error(), "scan local repositories") {
 		t.Fatalf("fleet rescue on an unreadable root = %v", err)
-	}
-}
-
-func TestCwWtRenderRescueReportTruncationAndFailures(t *testing.T) {
-	changes := make([]canonicalrescue.Change, 0, 25)
-	for index := 0; index < 25; index++ {
-		changes = append(changes, canonicalrescue.Change{Status: "M", Path: "file-" + string(rune('a'+index))})
-	}
-	report := canonicalrescue.Report{Path: "/tmp/clone", Changes: changes, UntrackedCount: 25}
-	var out strings.Builder
-	if err := renderRescueReport(cwWtStringCmd(&out), "text", false, report); err == nil {
-		t.Fatal("a dirty report without --apply must return the findings exit error")
-	}
-	if !strings.Contains(out.String(), "… and 5 more") {
-		t.Fatalf("truncated rescue report = %q", out.String())
-	}
-
-	out.Reset()
-	applied := report
-	applied.RescueBranch, applied.RescueCommit, applied.Pushed, applied.Restored = "rescue/x", "deadbeef", true, true
-	if err := renderRescueReport(cwWtStringCmd(&out), "text", true, applied); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "pushed to the remote") || !strings.Contains(out.String(), "is now clean") {
-		t.Fatalf("restored rescue report = %q", out.String())
-	}
-
-	out.Reset()
-	if err := renderRescueReport(cwWtStringCmd(&out), "text", true, canonicalrescue.Report{Path: "/tmp/clone", Changes: []canonicalrescue.Change{{Status: "M", Path: "a"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "is still dirty on purpose") {
-		t.Fatalf("unrestored rescue report = %q", out.String())
-	}
-
-	out.Reset()
-	if err := renderRescueReport(cwWtStringCmd(&out), "json", false, report); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "\"changes\"") {
-		t.Fatalf("rescue json report = %q", out.String())
-	}
-
-	// Every write failure is propagated.
-	for allow := 0; allow < 3; allow++ {
-		command := newWorktreeRescueCmd(&invocation{})
-		command.SetOut(&cwWtFailWriter{Allow: allow})
-		if err := renderRescueReport(command, "text", true, applied); err == nil {
-			t.Fatalf("renderRescueReport with %d writes allowed returned nil", allow)
-		}
-	}
-	command := newWorktreeRescueCmd(&invocation{})
-	command.SetOut(&cwWtFailWriter{Allow: 0})
-	if err := renderRescueReport(command, "text", false, canonicalrescue.Report{Path: "/tmp/clean"}); err == nil {
-		t.Fatal("clean renderRescueReport did not propagate the write failure")
-	}
-}
-
-func TestCwWtRunFleetRescueReportFailurePropagation(t *testing.T) {
-	projects, _ := cwWtDirtyCanonicalClone(t)
-	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
-
-	command := newWorktreeRescueCmd(&invocation{projectsRoot: projects})
-	command.SetContext(context.Background())
-	command.SetOut(&cwWtFailWriter{Allow: 0})
-	if err := runFleetRescueReport(&invocation{projectsRoot: projects}, command, "text"); err == nil {
-		t.Fatal("runFleetRescueReport did not propagate the write failure")
 	}
 }

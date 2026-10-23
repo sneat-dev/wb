@@ -35,10 +35,14 @@ func gitOutput(repoPath string, args ...string) (string, error) {
 
 // RepositoryRoot resolves path to the enclosing non-bare Git worktree.
 func RepositoryRoot(path string) (string, error) {
+	return repositoryRootWithAbsolute(path, filepath.Abs)
+}
+
+func repositoryRootWithAbsolute(path string, absolutePath func(string) (string, error)) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		path = "."
 	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := absolutePath(path)
 	if err != nil {
 		return "", err
 	}
@@ -64,31 +68,31 @@ func gitCommonDir(repoRoot string) (string, error) {
 	return filepath.Clean(dir), nil
 }
 
-func currentHooksPath(repoRoot string) (string, error) {
-	path, err := configuredHooksPath(repoRoot)
-	if err != nil || path == "" {
-		return path, err
+func currentHooksPath(repoRoot string) string {
+	path := configuredHooksPath(repoRoot)
+	if path == "" {
+		return path
 	}
-	return resolveGitPath(path), nil
+	return resolveGitPath(path)
 }
 
 // configuredHooksPath preserves the lexical core.hooksPath spelling that Git
 // stores. Installers use this before resolving symlinks so a configured
 // .git/wb-hooks symlink cannot be misclassified as an unrelated external
 // hooks directory and skipped by a safety check.
-func configuredHooksPath(repoRoot string) (string, error) {
+func configuredHooksPath(repoRoot string) string {
 	value, err := gitOutput(repoRoot, "config", "--local", "--get", "core.hooksPath")
 	if err != nil {
 		// git config exits 1 when the key is absent.
-		return "", nil
+		return ""
 	}
 	if value == "" {
-		return "", nil
+		return ""
 	}
 	if !filepath.IsAbs(value) {
 		value = filepath.Join(repoRoot, value)
 	}
-	return filepath.Clean(value), nil
+	return filepath.Clean(value)
 }
 
 func resolveGitPath(path string) string {
@@ -107,18 +111,28 @@ func resolveGitPath(path string) string {
 // multi-threaded process). go-git opens repositories by path name and would not
 // give this by default; see README "Why WB runs the `git` CLI".
 func setHooksPathAt(repo, common *os.File, path string) error {
+	return setHooksPathAtResolved(repo, common, path, secureHooksGitResolver{os.Executable, exec.LookPath, filepath.Abs})
+}
+
+type secureHooksGitResolver struct {
+	executable func() (string, error)
+	lookPath   func(string) (string, error)
+	absolute   func(string) (string, error)
+}
+
+func setHooksPathAtResolved(repo, common *os.File, path string, resolver secureHooksGitResolver) error {
 	if repo == nil || common == nil {
 		return fmt.Errorf("repository or Git common-directory descriptor is unavailable")
 	}
-	executable, err := os.Executable()
+	executable, err := resolver.executable()
 	if err != nil {
 		return fmt.Errorf("locate WB hooks helper: %w", err)
 	}
-	gitExecutable, err := exec.LookPath("git")
+	gitExecutable, err := resolver.lookPath("git")
 	if err != nil {
 		return fmt.Errorf("locate Git for hooks configuration: %w", err)
 	}
-	gitExecutable, err = filepath.Abs(gitExecutable)
+	gitExecutable, err = resolver.absolute(gitExecutable)
 	if err != nil {
 		return fmt.Errorf("make Git path absolute for hooks configuration: %w", err)
 	}
@@ -142,16 +156,8 @@ func RunSecureHooksGitHelper(args []string) int {
 		return 1
 	}
 	repo := os.NewFile(uintptr(3), "wb-hooks-repository")
-	if repo == nil {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure hooks helper: inherited repository directory is unavailable")
-		return 1
-	}
 	defer func() { _ = repo.Close() }()
 	common := os.NewFile(uintptr(4), "wb-hooks-common-directory")
-	if common == nil {
-		_, _ = fmt.Fprintln(os.Stderr, "wb secure hooks helper: inherited Git common directory is unavailable")
-		return 1
-	}
 	defer func() { _ = common.Close() }()
 	if err := unix.Fchdir(int(common.Fd())); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure hooks helper: enter inherited Git common directory: %v\n", err)

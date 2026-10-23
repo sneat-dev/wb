@@ -250,15 +250,15 @@ func TestCoverageEndpoints_StoreErrors(t *testing.T) {
 		t.Errorf("direct status = %d, want 404", recDirect.Code)
 	}
 
-	// 3. Save error -> 400
+	// 3. Save error the store did not mark as an invalid record -> 503
 	hSaveErr := NewHandler(HandlerOptions{Coverage: mockErrCoverageStore{saveErr: errors.New("save failed")}})
 	validRecord := StoredRepositoryCoverage{Repository: "o/r", Statements: 10, Covered: 10}
 	data, _ := json.Marshal(validRecord)
 	req = httptest.NewRequest(http.MethodPost, CoveragePath, bytes.NewReader(data))
 	rec = httptest.NewRecorder()
 	hSaveErr.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
 	}
 
 	// 4. GET and POST without Coverage configured -> 503

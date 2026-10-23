@@ -10,9 +10,47 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
+	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
 func retireAllowRemoteOwner(context.Context, string) error { return nil }
+
+//nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
+func TestRetireArchiveReadOnlyProjectionAdapters(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "retire-archive-adapter", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	ports := retireArchivePorts()
+	claim, err := ports.ReadClaim(fixture.home, worktree)
+	if err != nil || claim.ClaimID == "" || claim.Repository != "acme/app" || claim.Branch != "retire-archive-adapter" {
+		t.Fatalf("claim projection = (%+v, %v)", claim, err)
+	}
+	if terminal, err := ports.ReadTerminal(fixture.home, worktree); err != nil || terminal != nil {
+		t.Fatalf("active terminal projection = (%+v, %v)", terminal, err)
+	}
+	if _, err := ports.ReadClaim(fixture.home, filepath.Join(fixture.projectsRoot, "missing")); err == nil {
+		t.Fatal("missing claim accepted")
+	}
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Result: "failure", Apply: true, Report: []byte("archive report")}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := ports.ReadTerminal(fixture.home, worktree)
+	if err != nil || terminal == nil || terminal.ClaimID != claim.ClaimID || terminal.ReportPath == "" {
+		t.Fatalf("terminal projection = (%+v, %v)", terminal, err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".wb-worklog", "recovery.json"), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if terminal, err := ports.ReadTerminal(fixture.home, worktree); err == nil || terminal != nil {
+		t.Fatalf("malformed terminal projection = (%+v, %v)", terminal, err)
+	}
+}
 
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
 func TestRetireCommitSourceDoesNotCommitBeforeDurableIntent(t *testing.T) {
@@ -144,7 +182,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 	}
 	changedManifest := manifest
 	changedManifest.ClaimID = strings.Repeat("f", len(manifest.ClaimID))
-	if err := retireVerifyArchive(context.Background(), fixture.canonical, archive, "refs/heads/"+applied.ArchiveRef, applied.ArchiveSHA, changedManifest); err == nil || !strings.Contains(err.Error(), "manifest identity mismatch") {
+	if err := worktreeretire.VerifyArchive(context.Background(), fixture.canonical, archive, "refs/heads/"+applied.ArchiveRef, applied.ArchiveSHA, changedManifest, retireArchivePorts()); err == nil || !strings.Contains(err.Error(), "manifest identity mismatch") {
 		t.Fatalf("changed archive manifest expectation = %v", err)
 	}
 	changedClaim := applied
@@ -158,7 +196,7 @@ func TestRetireBareRemotePreservesSourceAndPlainWorkLog(t *testing.T) {
 		t.Fatalf("removed checkout without renewed authority = %v", err)
 	}
 	idempotentSource := applied
-	if err := retirePublishSource(context.Background(), &idempotentSource); err != nil || idempotentSource.Phase != "source_published" {
+	if err := worktreeretire.PublishSource(context.Background(), &idempotentSource, retireTransactionPorts()); err != nil || idempotentSource.Phase != "source_published" {
 		t.Fatalf("idempotent retired source publication = (%+v, %v)", idempotentSource, err)
 	}
 }
@@ -277,7 +315,7 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 				t.Fatalf("partial phase=%s err=%v", partial.Phase, err)
 			}
 			if phase == "original_delete_pushed" {
-				proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial))
+				proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial))
 				if !strings.HasPrefix(proof, partial.SourceSHA+"\t") {
 					t.Fatalf("atomic deletion proof missing after push: %s", proof)
 				}
@@ -291,7 +329,7 @@ func TestRetireResumesAfterRemotePhases(t *testing.T) {
 				t.Fatalf("resume changed identity: partial=%#v finished=%#v", partial, finished)
 			}
 			if phase == "source_committed" {
-				if finished.IntentParentSHA != partial.SourceSHA || finished.RetiredRef != retiredBranchDestination(partial.IntentAt, partial.Branch, finished.SourceSHA) {
+				if finished.IntentParentSHA != partial.SourceSHA || finished.RetiredRef != worktreebranches.RetiredBranchDestination(partial.IntentAt, partial.Branch, finished.SourceSHA) {
 					t.Fatalf("resume did not honor durable commit intent: partial=%#v finished=%#v", partial, finished)
 				}
 			} else if finished.SourceSHA != partial.SourceSHA || finished.RetiredRef != partial.RetiredRef {
@@ -373,7 +411,7 @@ func TestRetireRefusesExternallyDeletedOriginalWithoutAtomicProof(t *testing.T) 
 			if err == nil {
 				t.Fatal("external deletion without atomic WB proof was accepted")
 			}
-			if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); proof != "" {
+			if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial)); proof != "" {
 				t.Fatalf("external deletion produced WB proof: %s", proof)
 			}
 			if _, err := os.Stat(worktree); err != nil {
@@ -409,7 +447,7 @@ func TestRetireRefusesRemoteWithoutAtomicPush(t *testing.T) {
 	if original := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/retire-atomic"); !strings.HasPrefix(original, originalSHA+"\t") {
 		t.Fatalf("non-atomic remote lost original: %s", original)
 	}
-	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", retireDeletionProofRef(partial)); proof != "" {
+	if proof := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", worktreeretire.DeletionProofRef(partial)); proof != "" {
 		t.Fatalf("non-atomic remote created proof: %s", proof)
 	}
 	if _, err := os.Stat(worktree); err != nil {

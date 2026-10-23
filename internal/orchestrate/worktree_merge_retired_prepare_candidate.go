@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/retiredcandidateack"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 type WorktreeMergeRetiredPrepareCandidateAcknowledgementOptions struct {
@@ -20,11 +21,15 @@ type WorktreeMergeRetiredPrepareCandidateAcknowledgementOptions struct {
 // receipted candidate. In particular it neither proves nor records that a
 // source landed, and it deliberately leaves the old merge lane untouched.
 func AcknowledgeRetiredPrepareCandidate(ctx context.Context, options WorktreeMergeRetiredPrepareCandidateAcknowledgementOptions) (retiredcandidateack.Acknowledgement, error) {
+	return acknowledgeRetiredPrepareCandidate(ctx, options, readWorktreeMergeReceipt, defaultRunner, retiredcandidateack.FileSHA256, retiredcandidateack.Persist)
+}
+
+func acknowledgeRetiredPrepareCandidate(ctx context.Context, options WorktreeMergeRetiredPrepareCandidateAcknowledgementOptions, readReceipt func(string) (WorktreeMergeReceipt, error), run runner.Runner, hash func(string) (string, error), persist func(string, retiredcandidateack.Acknowledgement) error) (retiredcandidateack.Acknowledgement, error) {
 	path, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(path)
+	receipt, err := readReceipt(path)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
@@ -39,14 +44,14 @@ func AcknowledgeRetiredPrepareCandidate(ctx context.Context, options WorktreeMer
 		return retiredcandidateack.Acknowledgement{}, err
 	}
 	defer func() { _ = lock.Release() }()
-	receipt, err = readWorktreeMergeReceipt(path)
+	receipt, err = readReceipt(path)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
 	if err := validateRetiredPrepareCandidateReceipt(receipt, path); err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
-	ack, err := proveRetiredPrepareCandidate(ctx, path, receipt, options.Actor, options.Reason)
+	ack, err := proveRetiredPrepareCandidate(ctx, run, hash, path, receipt, options.Actor, options.Reason)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
@@ -54,7 +59,7 @@ func AcknowledgeRetiredPrepareCandidate(ctx context.Context, options WorktreeMer
 		return ack, nil
 	}
 	// Re-observe every mutable ref/worktree fact immediately before a write.
-	ack, err = proveRetiredPrepareCandidate(ctx, path, receipt, options.Actor, options.Reason)
+	ack, err = proveRetiredPrepareCandidate(ctx, run, hash, path, receipt, options.Actor, options.Reason)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
@@ -64,7 +69,7 @@ func AcknowledgeRetiredPrepareCandidate(ctx context.Context, options WorktreeMer
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return retiredcandidateack.Acknowledgement{}, loadErr
 	}
-	if err := retiredcandidateack.Persist(ackPath, ack); err != nil {
+	if err := persist(ackPath, ack); err != nil {
 		if !errors.Is(err, os.ErrExist) {
 			return retiredcandidateack.Acknowledgement{}, err
 		}
@@ -100,40 +105,40 @@ func retiredPrepareCandidateIdentity(r WorktreeMergeReceipt, path string) retire
 	return retiredcandidateack.ReceiptIdentity{Path: path, ID: r.ID, Phase: string(r.Phase), Status: string(r.Status), Lane: r.Lane, Repository: r.Repository, Target: r.Target, TargetSHA: r.TargetSHA, Candidate: retiredcandidateack.Source{Task: r.Candidate.Task, Worktree: r.Candidate.Worktree, Branch: r.Candidate.Branch, SHA: r.TargetSHA}, Sources: retiredPrepareSources(r)}
 }
 
-func proveRetiredPrepareCandidate(ctx context.Context, path string, r WorktreeMergeReceipt, actor, reason string) (retiredcandidateack.Acknowledgement, error) {
-	branch, head, err := retiredPrepareCandidateState(ctx, r)
+func proveRetiredPrepareCandidate(ctx context.Context, run runner.Runner, hashReceipt func(string) (string, error), path string, r WorktreeMergeReceipt, actor, reason string) (retiredcandidateack.Acknowledgement, error) {
+	branch, head, err := retiredPrepareCandidateState(ctx, run, r)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
 	if branch != r.Candidate.Branch || head != r.TargetSHA {
 		return retiredcandidateack.Acknowledgement{}, errors.New("candidate branch or HEAD no longer matches the immutable receipt target")
 	}
-	if err := requireAbsorbedConflictCandidateUnpublished(ctx, r.Candidate.Worktree, r); err != nil {
+	if err := requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx, run, r.Candidate.Worktree, r); err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
-	absent, err := retiredPrepareRefAbsent(ctx, r.Candidate.Worktree, r.Target)
+	absent, err := retiredPrepareRefAbsent(ctx, run, r.Candidate.Worktree, r.Target)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
 	if !absent {
 		return retiredcandidateack.Acknowledgement{}, fmt.Errorf("recorded target branch %s still exists", r.Target)
 	}
-	defaultBranch, err := retiredPrepareDefaultBranch(ctx, r.Candidate.Worktree)
+	defaultBranch, err := retiredPrepareDefaultBranch(ctx, run, r.Candidate.Worktree)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
-	defaultSHA, err := fetchExactMergeTarget(ctx, r.Candidate.Worktree, defaultBranch)
+	defaultSHA, err := fetchExactMergeTargetWithRunner(ctx, run, r.Candidate.Worktree, defaultBranch)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
-	contained, err := isMergeAncestor(ctx, r.Candidate.Worktree, head, defaultSHA)
+	contained, err := isMergeAncestorWithRunner(ctx, run, r.Candidate.Worktree, head, defaultSHA)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
 	if !contained {
 		return retiredcandidateack.Acknowledgement{}, fmt.Errorf("candidate %s is not contained in freshly fetched origin/%s", head, defaultBranch)
 	}
-	hash, err := retiredcandidateack.FileSHA256(path)
+	hash, err := hashReceipt(path)
 	if err != nil {
 		return retiredcandidateack.Acknowledgement{}, err
 	}
@@ -142,30 +147,30 @@ func proveRetiredPrepareCandidate(ctx context.Context, path string, r WorktreeMe
 	return ack, nil
 }
 
-func retiredPrepareCandidateState(ctx context.Context, r WorktreeMergeReceipt) (string, string, error) {
-	status, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "status", "--porcelain")
+func retiredPrepareCandidateState(ctx context.Context, run runner.Runner, r WorktreeMergeReceipt) (string, string, error) {
+	status, _, err := runCommand(ctx, run, 0, 0, r.Candidate.Worktree, "git", "status", "--porcelain")
 	if err != nil {
 		return "", "", err
 	}
 	if strings.TrimSpace(status) != "" {
 		return "", "", errors.New("candidate worktree has local changes")
 	}
-	branch, _, err := runCommand(ctx, defaultRunner, 0, 0, r.Candidate.Worktree, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch, _, err := runCommand(ctx, run, 0, 0, r.Candidate.Worktree, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return "", "", fmt.Errorf("read candidate branch: %w", err)
 	}
-	head, err := mergeRevision(ctx, defaultRunner, r.Candidate.Worktree, "HEAD")
+	head, err := mergeRevision(ctx, run, r.Candidate.Worktree, "HEAD")
 	if err != nil {
 		return "", "", err
 	}
 	return strings.TrimSpace(branch), head, nil
 }
-func retiredPrepareRefAbsent(ctx context.Context, root, branch string) (bool, error) {
-	out, _, err := runCommand(ctx, defaultRunner, 0, 0, root, "git", "ls-remote", "origin", "refs/heads/"+branch)
+func retiredPrepareRefAbsent(ctx context.Context, run runner.Runner, root, branch string) (bool, error) {
+	out, _, err := runCommand(ctx, run, 0, 0, root, "git", "ls-remote", "origin", "refs/heads/"+branch)
 	return strings.TrimSpace(out) == "", err
 }
-func retiredPrepareDefaultBranch(ctx context.Context, root string) (string, error) {
-	out, _, err := runCommand(ctx, defaultRunner, 0, 0, root, "git", "ls-remote", "--symref", "origin", "HEAD")
+func retiredPrepareDefaultBranch(ctx context.Context, run runner.Runner, root string) (string, error) {
+	out, _, err := runCommand(ctx, run, 0, 0, root, "git", "ls-remote", "--symref", "origin", "HEAD")
 	if err != nil {
 		return "", err
 	}

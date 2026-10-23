@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -153,7 +155,7 @@ func TestEnginePrepareWorktreeResumeBoundaries(t *testing.T) {
 
 func installEngineWorkflowGH(t *testing.T, fixture engineFixture, script string) {
 	t.Helper()
-	orchCovInstallGH(t, script)
+	testfixture.InstallGH(t, script)
 	t.Setenv("WB_HOLD_REMOTE", fixture.repository.CloneURL)
 	t.Setenv("WB_HOLD_BREACH", filepath.Join(t.TempDir(), "merge-invoked"))
 }
@@ -357,7 +359,7 @@ func (engineReportedHandler) AppliedFiles(string) []string { return []string{"re
 func TestEngineChangedFilesSinceIncludesReportedAndRenamedFiles(t *testing.T) {
 	t.Parallel()
 	fake := runnertest.New(t)
-	fake.ExpectArgv([]string{"git", "status", "--porcelain=v1", "-z"}, runner.Result{Stdout: "R  old.txt -> new.txt\x00"}, nil)
+	fake.ExpectArgv([]string{"git", "status", "--porcelain=v1", "-z"}, runner.Result{Stdout: "R  new.txt\x00old.txt\x00"}, nil)
 	files, err := changedFilesSince(context.Background(), t.TempDir(), nil,
 		engineReportedHandler{}, "metadata", Options{run: fake})
 	if err != nil || len(files) != 2 || files[0] != "new.txt" || files[1] != "reported.txt" {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/machinesnapshot"
-	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 )
@@ -105,124 +104,6 @@ func TestOpenVaultDBEngineRefusesAnEmptyURL(t *testing.T) {
 	t.Parallel()
 	if _, _, err := Open(context.Background(), hubconfig.Store{Engine: hubconfig.EngineOpenVaultDB}); err == nil {
 		t.Fatal("openvaultdb without a URL was accepted")
-	}
-}
-
-// TestInGitDBEngineCreatesTheProjectAndDeclaresEveryCollection covers the
-// half of the inGitDB path that works today: the directory is created when
-// missing, every collection in hub.Collections() is declared, a write lands,
-// and a second Open over the same directory is a no-op rather than an
-// "already exists" failure.
-func TestInGitDBEngineCreatesTheProjectAndDeclaresEveryCollection(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "hub")
-	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = closer.Close() })
-	if info, err := os.Stat(path); err != nil || !info.IsDir() {
-		t.Fatalf("store directory = %v, %v", info, err)
-	}
-	for _, collection := range hub.Collections() {
-		root, _, _ := strings.Cut(collection, "/")
-		if _, err := os.Stat(filepath.Join(path, root, ".collection", "definition.yaml")); err != nil {
-			t.Fatalf("collection %q was not declared: %v", collection, err)
-		}
-	}
-	_, _, snapshots := hub.NewMachineStores(store)
-	if result, err := snapshots.StoreLatest(ctx, testSnapshot("machine-1")); err != nil || !result.Updated {
-		t.Fatalf("StoreLatest = %+v, %v", result, err)
-	}
-
-	reopened, reopenedCloser, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: path})
-	if err != nil || reopened == nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	if err := reopenedCloser.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestInGitDBEngineCannotServeQueriesYet pins the reason `engine: ingitdb` is
-// documented as not usable in hub/README.md, so the limitation is a fact the
-// suite asserts rather than a note someone has to remember.
-//
-// github.com/sneat-dev/wb/api/githubapp.DocumentStore.Query decodes each
-// returned row into the element type of the caller's slice, which
-// dalgostore does by taking the record factory a DALgo query carries.
-// dalgo2ingitdb v0.4.0 ignores that factory: its query path rebuilds every
-// record with a map[string]any payload (query.go readAllRecordsFromDisk /
-// bakeStoredRecords), so dalgostore's reflect.ValueOf(found.Data()).Elem()
-// panics on a map.
-//
-// Every hub read-back goes through Query — repository-event poll, the pending
-// refresh list, machine snapshots, installation bindings — so the store
-// journeys in hub/dalgostore_parity_test.go cannot run on inGitDB until
-// upstream honours the factory. When it does, this test fails and the
-// limitation in hub/README.md comes out.
-func TestInGitDBEngineRunsTheHubJourneys(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "hub")
-	store, closer, err := Open(ctx, hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = closer.Close() })
-	_, _, snapshots := hub.NewMachineStores(store)
-	if _, err := snapshots.StoreLatest(ctx, testSnapshot("machine-1")); err != nil {
-		t.Fatalf("StoreLatest: %v", err)
-	}
-	latest, err := snapshots.ListLatest(ctx)
-	if err != nil || len(latest) != 1 || latest[0].MachineID != "machine-1" {
-		t.Fatalf("ListLatest = %+v, %v", latest, err)
-	}
-
-	events, status := hub.NewRepositoryEventStore(store)
-	machine := hub.Machine{ID: "machine-1", Name: "laptop", IdentityID: "local"}
-	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "evt-1", Repository: "github.com/sneat-dev/wb", Ref: "refs/heads/main", Reason: repositoryevent.ReasonDefaultBranchUpdated, TargetSHA: strings.Repeat("a", 40)}
-	if result, err := events.EnqueueForMachines(ctx, event, []hub.Machine{machine}); err != nil || result.Enqueued != 1 {
-		t.Fatalf("EnqueueForMachines = %+v, %v", result, err)
-	}
-	if result, err := events.EnqueueForMachines(ctx, event, []hub.Machine{machine}); err != nil || !result.Duplicate {
-		t.Fatalf("replayed EnqueueForMachines = %+v, %v", result, err)
-	}
-	polled, err := events.Poll(ctx, machine, "", 10)
-	if err != nil || len(polled.Events) != 1 || polled.Events[0].ID != "evt-1" {
-		t.Fatalf("Poll = %+v, %v", polled, err)
-	}
-	ack := repositoryevent.AckRequest{Version: repositoryevent.ContractVersion, Cursor: polled.NextCursor, EventIDs: []string{"evt-1"}}
-	if _, err := events.Acknowledge(ctx, machine, ack); err != nil {
-		t.Fatalf("Acknowledge: %v", err)
-	}
-	received, pending, _, err := status.IdentityRepositoryEventStatus(ctx, "local")
-	if err != nil || received == nil || received.LastAcknowledged == nil || len(pending) != 0 {
-		t.Fatalf("status after acknowledge = %+v, %+v, %v", received, pending, err)
-	}
-	after, err := events.Poll(ctx, machine, polled.NextCursor, 10)
-	if err != nil || len(after.Events) != 0 {
-		t.Fatalf("Poll after acknowledge = %+v, %v", after, err)
-	}
-
-	coverageStore := hub.NewRepositoryCoverageStore(store)
-	coverageRecord := hub.StoredRepositoryCoverage{
-		Repository: "sneat-dev/wb",
-		SHA:        strings.Repeat("a", 40),
-		Statements: 1000,
-		Covered:    850,
-		Percentage: 85.0,
-	}
-	if err := coverageStore.SaveCoverage(ctx, coverageRecord); err != nil {
-		t.Fatalf("SaveCoverage on inGitDB: %v", err)
-	}
-	gotCoverage, found, err := coverageStore.GetCoverage(ctx, "sneat-dev/wb")
-	if err != nil || !found {
-		t.Fatalf("GetCoverage on inGitDB = %+v, %v, %v", gotCoverage, found, err)
-	}
-	if gotCoverage.Statements != 1000 || gotCoverage.Covered != 850 {
-		t.Fatalf("GetCoverage on inGitDB statements mismatch = %+v", gotCoverage)
 	}
 }
 

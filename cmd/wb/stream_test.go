@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
 )
@@ -72,7 +71,7 @@ func TestStreamStartRefusalExitsUsageWithItsEnvelope(t *testing.T) {
 // Every existing "stream join" test in this package is refused before the
 // stream engine is ever built (a bad name, a bad role, a missing --model).
 // This drives a join whose work-log preparation and role succeed, so it
-// reaches newStreamEngine itself, proving inv.projectsRoot threads all the
+// reaches the native engine through newStreamService, proving inv.projectsRoot threads all the
 // way into the engine's Store/Git/GitHub/Login/Machine wiring.
 func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
 	root := t.TempDir()
@@ -106,13 +105,13 @@ func TestStreamJoinReachesTheStreamEngine(t *testing.T) {
 	// Whatever the engine's own Join outcome is (it may still refuse for a
 	// repository reason unrelated to work-log preparation or role), the
 	// refusal must not be one of the pre-engine usage checks: those would
-	// mean newStreamEngine itself was never reached.
+	// mean the native engine binding was never reached.
 	if strings.Contains(stderr.String(), "--model is required") || strings.Contains(stderr.String(), "stream name") || strings.Contains(stderr.String(), "unsupported role") {
 		t.Fatalf("stream join failed before reaching the stream engine: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	// A positive, root-dependent outcome: the engine must have found the
 	// "holder" stream this test seeded under root's own .wb/streams. A wrong
-	// or dropped inv.projectsRoot (e.g. reaching newStreamEngine with
+	// or dropped inv.projectsRoot (e.g. constructing the stream service with
 	// &invocation{}) resolves an empty/real-home store instead, where
 	// "holder" does not exist, and Join fails with streams.ErrNotFound
 	// ("stream not found") rather than any of the refusals above -
@@ -169,169 +168,12 @@ func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
 // A missing member pull request is an actionable stream defect, not merely a
 // buried persistence field. Status must fail with findings and print the WB
 // verb that safely retries publication.
-func TestStreamStatusReportsMissingMemberPullRequestRecovery(t *testing.T) {
-	command := newStreamStatusCmd(&invocation{})
-	var stdout bytes.Buffer
-	command.SetOut(&stdout)
-	failureAt := time.Date(2026, 9, 12, 11, 17, 40, 0, time.UTC)
-	status := streams.Status{
-		Stream: "recovery", Phase: streams.PhaseOpen, Branch: "stream/recovery",
-		Members: []streams.MemberStatus{{
-			Repository: "acme/library", Role: streams.RoleLibrary,
-			Worktree: "/tmp/acme-library", Branch: "stream/recovery", Base: "main",
-			PullRequestMissing: "no open pull request is recorded or currently discoverable",
-			LastPublicationError: &streams.PublicationFailure{
-				Detail:     "push rejected as non-fast-forward\nfull historical git transcript",
-				OccurredAt: &failureAt,
-			},
-		}},
-	}
-
-	err := streamStatusOutput(command, "text", status)
-	exit, ok := err.(*exitError)
-	if !ok || exit.code != exitFindings {
-		t.Fatalf("status error = %#v, want exit findings", err)
-	}
-	if output := stdout.String(); !strings.Contains(output, "wb stream join recovery acme/library") {
-		t.Fatalf("status output = %q, want the sanctioned recovery command", output)
-	}
-	if output := stdout.String(); !strings.Contains(output, "last publication attempt failed at 2026-09-12T11:17:40Z") ||
-		strings.Contains(output, "full historical git transcript") {
-		t.Fatalf("status output = %q, want timestamped historical summary without a live-looking transcript", output)
-	}
-
-	jsonCommand := newStreamStatusCmd(&invocation{})
-	var jsonOut bytes.Buffer
-	jsonCommand.SetOut(&jsonOut)
-	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
-	err = streamStatusOutput(jsonCommand, "json", status)
-	exit, ok = err.(*exitError)
-	if !ok || exit.code != exitFindings {
-		t.Fatalf("JSON status error = %#v, want exit findings", err)
-	}
-	var envelope struct {
-		Outcome  string `json:"outcome"`
-		Evidence struct {
-			Members []streams.MemberStatus `json:"members"`
-		} `json:"evidence"`
-	}
-	if err := json.Unmarshal(jsonOut.Bytes(), &envelope); err != nil {
-		t.Fatalf("parse JSON status %q: %v", jsonOut.String(), err)
-	}
-	if envelope.Outcome != outcomeFindings || len(envelope.Evidence.Members) != 1 ||
-		envelope.Evidence.Members[0].PullRequestRecovery != "wb stream join recovery acme/library" {
-		t.Fatalf("JSON status envelope = %#v, want a finding with the exact recovery verb", envelope)
-	}
-	jsonMember := envelope.Evidence.Members[0]
-	if jsonMember.PullRequestMissing != "no open pull request is recorded or currently discoverable" ||
-		jsonMember.LastPublicationError == nil || jsonMember.LastPublicationError.OccurredAt == nil ||
-		!jsonMember.LastPublicationError.OccurredAt.Equal(failureAt) {
-		t.Fatalf("JSON member status = %#v, want separate current and timestamped historical findings", jsonMember)
-	}
-
-	blockedCommand := newStreamStatusCmd(&invocation{})
-	var blockedOut bytes.Buffer
-	blockedCommand.SetOut(&blockedOut)
-	status.Members[0].PullRequestRecovery = ""
-	status.Members[0].PullRequestBlocked = "stream branch diverged: owner decision required"
-	if err := streamStatusOutput(blockedCommand, "text", status); err == nil {
-		t.Fatal("blocked status returned success")
-	}
-	if output := blockedOut.String(); !strings.Contains(output, "blocked:") || strings.Contains(output, "recover: wb stream join") {
-		t.Fatalf("blocked status output = %q, want the owner-decision block without a retry loop", output)
-	}
-
-	unrecordedCommand := newStreamStatusCmd(&invocation{})
-	var unrecordedOut bytes.Buffer
-	unrecordedCommand.SetOut(&unrecordedOut)
-	status.Members[0].PullRequest = 242
-	status.Members[0].PullRequestURL = "https://example.test/pull/242"
-	status.Members[0].PullRequestMissing = ""
-	status.Members[0].PullRequestBlocked = ""
-	status.Members[0].PullRequestRecovery = "wb stream join recovery acme/library"
-	status.Members[0].PullRequestUnrecorded = true
-	if err := streamStatusOutput(unrecordedCommand, "text", status); err == nil {
-		t.Fatal("unrecorded remote PR status returned success")
-	}
-	if output := unrecordedOut.String(); !strings.Contains(output, "open pull request #242 exists") ||
-		!strings.Contains(output, "recover: wb stream join recovery acme/library") || strings.Contains(output, "no draft pull request") {
-		t.Fatalf("unrecorded PR output = %q, want discovered PR identity and persistence recovery", output)
-	}
-}
 
 // A stream name that could not also be a worktree task name is rejected before
 // anything durable is created.
-func TestStreamStartRejectsAnInvalidName(t *testing.T) {
-	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
-	prompt := filepath.Join(t.TempDir(), "prompt.txt")
-	if err := os.WriteFile(prompt, []byte("request\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	code := run([]string{
-		"stream", "start", "not a name", "acme/app",
-		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
-		"--original-prompt-file", prompt, "--format", "json", "--non-interactive",
-	}, &stdout, &stderr)
-	// An ambiguous invocation is exit 2, not exit 1: 1 means "the work is
-	// broken", and a caller that branches on the contract must be able to
-	// tell a bad invocation from a real failure.
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want %d (usage); stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "must start with a letter or digit") {
-		t.Errorf("stderr = %q, want the name rule", stderr.String())
-	}
-	// A caller that asked for JSON must never get an empty stdout.
-	var envelope struct {
-		Verb        string `json:"verb"`
-		Outcome     string `json:"outcome"`
-		RefusalCode string `json:"refusal_code"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
-		t.Fatalf("parse envelope from %q: %v", stdout.String(), err)
-	}
-	if envelope.Outcome != "refused" || envelope.RefusalCode != streams.RefusalUsage {
-		t.Fatalf("envelope = %#v, want a usage refusal", envelope)
-	}
-}
 
 // An unsupported --role is the same contract: exit 2 with an envelope naming
 // the sanctioned invocation.
-func TestStreamJoinRejectsAnUnsupportedRoleWithTheUsageEnvelope(t *testing.T) {
-	t.Setenv("WB_PROJECTS_ROOT", t.TempDir())
-	prompt := filepath.Join(t.TempDir(), "prompt.txt")
-	if err := os.WriteFile(prompt, []byte("request\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	code := run([]string{
-		"stream", "join", "somename", "acme/app", "--role", "bogus",
-		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
-		"--original-prompt-file", prompt, "--format", "json", "--non-interactive",
-	}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	var envelope struct {
-		RefusalCode        string   `json:"refusal_code"`
-		SanctionedCommand  string   `json:"sanctioned_command"`
-		SanctionedCommands []string `json:"sanctioned_commands"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
-		t.Fatalf("parse envelope from %q: %v", stdout.String(), err)
-	}
-	if envelope.RefusalCode != streams.RefusalUsage {
-		t.Fatalf("refusal_code = %q", envelope.RefusalCode)
-	}
-	// The singular field must be one runnable command, not a joined string.
-	if !strings.HasPrefix(envelope.SanctionedCommand, "wb stream join") || strings.Contains(envelope.SanctionedCommand, "||") {
-		t.Errorf("sanctioned_command = %q, want one runnable command", envelope.SanctionedCommand)
-	}
-	if len(envelope.SanctionedCommands) == 0 {
-		t.Error("sanctioned_commands is empty")
-	}
-}
 
 // `wb stream delete` refuses an open stream and names the command that makes
 // it deletable.

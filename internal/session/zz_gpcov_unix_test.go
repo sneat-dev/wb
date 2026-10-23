@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -235,8 +236,8 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	if want := filepath.Base(os.Args[0]); filepath.Base(ownEvidence.Executable) != want {
 		t.Fatalf("own executable = %q, want a path ending in %q", ownEvidence.Executable, want)
 	}
-	if len(ownEvidence.Args) == 0 || filepath.Base(ownEvidence.Args[0]) != filepath.Base(os.Args[0]) {
-		t.Fatalf("own args = %#v, want the running command line", ownEvidence.Args)
+	if !slices.Equal(ownEvidence.Args, os.Args) {
+		t.Fatalf("own args = %#v, want exact running argv %#v", ownEvidence.Args, os.Args)
 	}
 
 	namedPID, childPID := gpCovHarnessNamedProcess(t, "cursor-agent")
@@ -249,16 +250,22 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	if got := filepath.Base(namedEvidence.Executable); got != "cursor-agent" {
 		t.Fatalf("named executable = %q, want a path ending in %q", namedEvidence.Executable, "cursor-agent")
 	}
+	if len(namedEvidence.Args) != 2 || filepath.Base(namedEvidence.Args[0]) != "cursor-agent" ||
+		namedEvidence.Args[1] != "-test.run=^TestGpCovHarnessHelperProcess$" {
+		t.Fatalf("named process argv = %#v, want the exact helper invocation", namedEvidence.Args)
+	}
 
 	childEvidence, ok := processEvidence(childPID)
 	if !ok {
 		t.Fatalf("processEvidence(%d) for the sleeping child reported no evidence", childPID)
 	}
-	// The kernel command name is a fixed-width field that an exec rewrites but
-	// does not clear, so only the NUL-terminated prefix identifies the child on
-	// platforms that leave the rest of the field alone.
-	if got, _, _ := strings.Cut(childEvidence.Executable, "\x00"); filepath.Base(got) != "sleep" {
+	// The kernel command name is a fixed-width field; only the bytes before
+	// its first NUL identify this child, even when stale bytes follow it.
+	if got := filepath.Base(childEvidence.Executable); got != "sleep" {
 		t.Fatalf("child executable = %q, want the process named sleep", childEvidence.Executable)
+	}
+	if len(childEvidence.Args) != 2 || filepath.Base(childEvidence.Args[0]) != "sleep" || childEvidence.Args[1] != "30" {
+		t.Fatalf("sleep argv = %#v, want exactly [/bin/sleep 30]", childEvidence.Args)
 	}
 }
 

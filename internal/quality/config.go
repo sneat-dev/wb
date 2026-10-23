@@ -17,7 +17,8 @@ type repositoryQualityConfig struct {
 	GoLint  struct {
 		Commands [][]string `yaml:"commands"`
 	} `yaml:"go_lint"`
-	GoTest *struct {
+	IntegrationChecks []string `yaml:"integration_checks"`
+	GoTest            *struct {
 		Shards   int      `yaml:"shards"`
 		Packages []string `yaml:"packages"`
 	} `yaml:"go_test"`
@@ -53,6 +54,23 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 	if config.Version != 1 {
 		return base, fmt.Errorf("repository quality policy %s has version %d; want 1", path, config.Version)
 	}
+	if config.IntegrationChecks != nil {
+		if len(config.IntegrationChecks) == 0 {
+			return base, fmt.Errorf("repository quality policy %s integration_checks must list at least one check", path)
+		}
+		for _, entry := range config.IntegrationChecks {
+			// ParseChecks reads an all-blank list as "use the default";
+			// a recipe entry must name a check.
+			if strings.TrimSpace(entry) == "" {
+				return base, fmt.Errorf("repository quality policy %s integration_checks contains an empty check", path)
+			}
+		}
+		checks, err := ParseChecks(strings.Join(config.IntegrationChecks, ","))
+		if err != nil {
+			return base, fmt.Errorf("repository quality policy %s integration_checks: %w", path, err)
+		}
+		base.IntegrationChecks = checks
+	}
 	if config.GoTest != nil {
 		if config.GoTest.Shards < 2 {
 			return base, fmt.Errorf("repository quality policy %s go_test.shards must be at least 2", path)
@@ -70,8 +88,11 @@ func RepositoryRunOptions(root string, base RunOptions) (RunOptions, error) {
 			}
 			seen[packagePath] = true
 		}
-		base.GoTestShards = config.GoTest.Shards
-		base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
+		if !base.ExplicitGoTestSharding {
+			base.configGoShardPackages = true
+			base.GoTestShards = config.GoTest.Shards
+			base.GoShardPackages = append([]string(nil), config.GoTest.Packages...)
+		}
 	}
 	for commandIndex, command := range config.GoLint.Commands {
 		if len(command) == 0 {

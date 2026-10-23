@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
@@ -50,6 +51,30 @@ func TestBranchesCoverageBatchNormalizeOptions(t *testing.T) {
 	}
 }
 
+func TestBranchesCoverageBatchSHAShorteningAndReceiptedBranchEvidence(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+
+	if got := shortSHA("short"); got != "short" {
+		t.Fatalf("short SHA = %q", got)
+	}
+	if got := shortSHA("123456789012345"); got != "123456789012" {
+		t.Fatalf("trimmed SHA = %q", got)
+	}
+
+	pullRequest := &PullRequest{Number: 17}
+	explicit := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
+	if explicit.Disposition != BranchReceipted || explicit.LandingSHA != sha || explicit.ReceiptPullRequest != pullRequest ||
+		!strings.Contains(explicit.Evidence, "--absorbed-by 17") || !strings.Contains(explicit.Reason, "eligible") {
+		t.Fatalf("explicit receipt classification = %#v", explicit)
+	}
+	automatic := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
+	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
+		!strings.Contains(automatic.Reason, "--receipts") {
+		t.Fatalf("automatic receipt classification = %#v", automatic)
+	}
+}
+
 func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -75,9 +100,9 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	repository := discover.Repo{Org: "acme", Name: "app", Path: root}
 	entries := []BranchEntry{}
 	names := map[string]bool{}
-	count := appendRetiredEntries(ctx, &entries, names, repository, branchSweepOptions{
+	count := branchInventoryService().AppendRetiredEntries(ctx, &entries, names, branchInventoryRepository(repository), (branchSweepOptions{
 		Now: now, Name: "retired/*",
-	}, []branchRef{
+	}).branchInventorySweep(), []branchRef{
 		{Name: "active/one"},
 		{Name: "retired/one", UnknownDate: true},
 	}, BranchScopeLocal)
@@ -147,10 +172,10 @@ func TestBranchesCoverageBatchPureInventory(t *testing.T) {
 	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if repositories, err := discoverBranchRepositories(fileRoot, ""); err == nil || repositories != nil {
+	if repositories, err := branchInventoryService().DiscoverBranchRepositories(fileRoot, ""); err == nil || repositories != nil {
 		t.Fatalf("repository discovery through file = %#v/%v", repositories, err)
 	}
-	if repositories, err := discoverBranchRepositories(root, "missing"); err != nil || len(repositories) != 0 {
+	if repositories, err := branchInventoryService().DiscoverBranchRepositories(root, "missing"); err != nil || len(repositories) != 0 {
 		t.Fatalf("filtered repository discovery = %#v/%v", repositories, err)
 	}
 	if index, diagnostic := branchInUseIndex(ctx, fileRoot, ""); diagnostic == "" || len(index) != 0 {
@@ -186,14 +211,14 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 		{Name: "active/old", CommitterDate: now.Add(-2 * time.Hour)},
 	}
 	counts, names := map[string]int{}, map[string]bool{}
-	accumulateRetiredCounts(sweep, repositories[0], refs, BranchScopeLocal, counts, names)
+	worktreebranches.AccumulateRetiredCounts(sweep.branchPolicyOptions(), repositories[0].Slug(), refs, BranchScopeLocal, counts, names)
 	if counts[BranchScopeLocal] != 1 || !names["acme/one|retired/old"] || len(names) != 1 {
 		t.Fatalf("retired counts = %#v/%#v", counts, names)
 	}
 
 	entries := []BranchEntry{}
 	tagNames := map[string]bool{}
-	if count := appendRetiredTagEntries(ctx, &entries, tagNames, repositories[0], sweep,
+	if count := branchInventoryService().AppendRetiredTagEntries(ctx, &entries, tagNames, branchInventoryRepository(repositories[0]), sweep.branchInventorySweep(),
 		[]branchRef{{Name: "retired/old", CommitterDate: now.Add(-2 * time.Hour)}}, BranchScopeRemote); count != 1 {
 		t.Fatalf("appended retired tags = %d", count)
 	}
@@ -212,9 +237,9 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 	}
 
 	var progress bytes.Buffer
-	reportBranchProgress(nil, 1, 1, "ignored")
-	reportBranchProgress(&progress, 2, 3, "acme/one")
-	reportBranchSummary(&progress, map[string]int{BranchUnique: 2, BranchContained: 1}, 1500*time.Millisecond)
+	worktreebranches.ReportBranchProgress(nil, 1, 1, "ignored")
+	worktreebranches.ReportBranchProgress(&progress, 2, 3, "acme/one")
+	worktreebranches.ReportBranchSummary(&progress, map[string]int{BranchUnique: 2, BranchContained: 1}, 1500*time.Millisecond)
 	if output := progress.String(); !strings.Contains(output, "[2/3] scanning acme/one") ||
 		!strings.Contains(output, "contained=1 unique=2") {
 		t.Fatalf("progress output = %q", output)
@@ -242,6 +267,127 @@ func TestBranchesCoverageBatchRefactoredInventoryHelpers(t *testing.T) {
 		})
 	if len(heartbeatEntries) != 1 || heartbeatDiagnostic != "" || !strings.Contains(heartbeat.String(), "still scanning acme/one") {
 		t.Fatalf("heartbeat inspection = %#v/%q/%q", heartbeatEntries, heartbeatDiagnostic, heartbeat.String())
+	}
+}
+
+func TestBranchesCoverageBatchClassificationBoundaries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := discover.Repo{Org: "acme", Name: "app", Path: filepath.Join(t.TempDir(), "missing")}
+	sha := strings.Repeat("a", 40)
+	target := strings.Repeat("b", 40)
+	sweep := branchSweepOptions{Base: "main"}
+
+	protected := classifyBranch(ctx, repository, sweep, branchRef{Name: "main", SHA: sha}, BranchScopeLocal,
+		target, "trunk", nil, nil, nil)
+	if protected.Disposition != BranchProtected || !strings.Contains(protected.Evidence, "base branch") {
+		t.Fatalf("protected classification = %#v", protected)
+	}
+	inUse := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/one", SHA: sha}, BranchScopeLocal,
+		target, "main", map[string]string{"acme/app|feature/one": "task-1"}, nil, nil)
+	if inUse.Disposition != BranchInUse || inUse.Task != "task-1" || !strings.Contains(inUse.Reason, "task-1") {
+		t.Fatalf("claimed classification = %#v", inUse)
+	}
+	checkedOut := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/two", SHA: sha}, BranchScopeLocal,
+		target, "main", nil, map[string]bool{"feature/two": true}, nil)
+	if checkedOut.Disposition != BranchInUse || checkedOut.Task != "" || !strings.Contains(checkedOut.Reason, "working tree") {
+		t.Fatalf("checked-out classification = %#v", checkedOut)
+	}
+	unreadable := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/three", SHA: sha}, BranchScopeLocal,
+		target, "main", nil, nil, nil)
+	if unreadable.Disposition != BranchUnreadable {
+		t.Fatalf("unreadable classification = %#v", unreadable)
+	}
+
+	if got := shortSHA("short"); got != "short" {
+		t.Fatalf("short SHA = %q", got)
+	}
+	if got := shortSHA("123456789012345"); got != "123456789012" {
+		t.Fatalf("trimmed SHA = %q", got)
+	}
+	if got := protectedEvidence("main", "main", "trunk"); !strings.Contains(got, "base") {
+		t.Fatalf("base evidence = %q", got)
+	}
+	if got := protectedEvidence("trunk", "main", "trunk"); !strings.Contains(got, "current HEAD") {
+		t.Fatalf("HEAD evidence = %q", got)
+	}
+	if got := protectedEvidence("develop", "main", "trunk"); !strings.Contains(got, "configured") {
+		t.Fatalf("configured evidence = %q", got)
+	}
+
+	cache := map[string][]githubPullRequest{sha: {}}
+	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no merged pull request") {
+		t.Fatalf("missing receipt = %#v/%q", receipt, note)
+	}
+	mergedAt := time.Now().UTC()
+	cache[sha] = []githubPullRequest{{
+		Number: 7, MergedAt: &mergedAt, MergeCommitSHA: "invalid",
+		Base: githubRef{Ref: "main"}, Head: githubRef{SHA: sha},
+	}}
+	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no valid merge commit") {
+		t.Fatalf("invalid receipt = %#v/%q", receipt, note)
+	}
+	if absorbed, evidence, unique, err := classifyAbsorbedOrUnique(ctx, repository.Path, target, sha); err == nil || absorbed || evidence != "" || unique != 0 {
+		t.Fatalf("unreadable absorption = %t/%q/%d/%v", absorbed, evidence, unique, err)
+	}
+
+	pullRequest := &PullRequest{Number: 17}
+	explicit := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
+	if explicit.Disposition != BranchReceipted || explicit.LandingSHA != sha || explicit.ReceiptPullRequest != pullRequest ||
+		!strings.Contains(explicit.Evidence, "--absorbed-by 17") || !strings.Contains(explicit.Reason, "eligible") {
+		t.Fatalf("explicit receipt classification = %#v", explicit)
+	}
+	automatic := worktreebranches.ReceiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
+	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
+		!strings.Contains(automatic.Reason, "--receipts") {
+		t.Fatalf("automatic receipt classification = %#v", automatic)
+	}
+
+	brokenGit := runnertest.New(t)
+	brokenGit.ExpectArgv(
+		[]string{"git", "-C", repository.Path, "merge-base", "--is-ancestor", sha, target},
+		runner.Result{ExitCode: 1}, errors.New("not an ancestor"),
+	)
+	brokenGit.ExpectArgv(
+		[]string{"git", "-C", repository.Path, "cherry", target, sha},
+		runner.Result{}, errors.New("unreadable cherry evidence"),
+	)
+	unreadableCherry := classifyBranch(withGitRunner(context.Background(), brokenGit), repository, sweep,
+		branchRef{Name: "feature/unreadable-cherry", SHA: sha}, BranchScopeLocal, target, "main", nil, nil, nil)
+	if unreadableCherry.Disposition != BranchUnreadable || !strings.Contains(unreadableCherry.Evidence, "unreadable cherry evidence") {
+		t.Fatalf("unreadable cherry classification = %#v", unreadableCherry)
+	}
+}
+
+func TestBranchesCoverageBatchGitFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "missing")
+	repository := discover.Repo{Org: "acme", Name: "app", Path: missing}
+	sweep := branchSweepOptions{Base: "main", Scope: BranchScopeAll, Now: time.Now()}
+
+	entries, diagnostic := inspectRepositoryBranches(ctx, repository, sweep, nil)
+	if len(entries) != 1 || entries[0].Disposition != BranchUnreadable || diagnostic == "" {
+		t.Fatalf("unreadable repository = %#v/%q", entries, diagnostic)
+	}
+	entry := BranchEntry{}
+	decorateBranchCommit(ctx, missing, &entry)
+	entry.SHA = strings.Repeat("a", 40)
+	decorateBranchCommit(ctx, missing, &entry)
+	if entry.Author != "" || entry.Title != "" {
+		t.Fatalf("failed decoration mutated entry = %#v", entry)
+	}
+	if refs, diagnostic := listRemoteRefs(ctx, missing); refs != nil || diagnostic == "" {
+		t.Fatalf("remote refs failure = %#v/%q", refs, diagnostic)
+	}
+	if refs, diagnostic := listRetiredTags(ctx, missing, false, false); refs != nil || diagnostic == "" {
+		t.Fatalf("local retired tags failure = %#v/%q", refs, diagnostic)
+	}
+	if refs, diagnostic := listRetiredTags(ctx, missing, true, false); refs != nil || diagnostic == "" {
+		t.Fatalf("remote retired tags failure = %#v/%q", refs, diagnostic)
+	}
+	if refs, diagnostic := listRefs(ctx, missing, "refs/heads/", ""); refs != nil || diagnostic == "" {
+		t.Fatalf("generic refs failure = %#v/%q", refs, diagnostic)
 	}
 }
 
@@ -311,38 +457,6 @@ func TestBranchesCoverageBatchRefParsingWithFakeGit(t *testing.T) {
 	}
 }
 
-func TestBranchesCoverageBatchGitFailureSurfaces(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	missing := filepath.Join(t.TempDir(), "missing")
-	repository := discover.Repo{Org: "acme", Name: "app", Path: missing}
-	sweep := branchSweepOptions{Base: "main", Scope: BranchScopeAll, Now: time.Now()}
-
-	entries, diagnostic := inspectRepositoryBranches(ctx, repository, sweep, nil)
-	if len(entries) != 1 || entries[0].Disposition != BranchUnreadable || diagnostic == "" {
-		t.Fatalf("unreadable repository = %#v/%q", entries, diagnostic)
-	}
-	entry := BranchEntry{}
-	decorateBranchCommit(ctx, missing, &entry)
-	entry.SHA = strings.Repeat("a", 40)
-	decorateBranchCommit(ctx, missing, &entry)
-	if entry.Author != "" || entry.Title != "" {
-		t.Fatalf("failed decoration mutated entry = %#v", entry)
-	}
-	if refs, diagnostic := listRemoteRefs(ctx, missing); refs != nil || diagnostic == "" {
-		t.Fatalf("remote refs failure = %#v/%q", refs, diagnostic)
-	}
-	if refs, diagnostic := listRetiredTags(ctx, missing, false, false); refs != nil || diagnostic == "" {
-		t.Fatalf("local retired tags failure = %#v/%q", refs, diagnostic)
-	}
-	if refs, diagnostic := listRetiredTags(ctx, missing, true, false); refs != nil || diagnostic == "" {
-		t.Fatalf("remote retired tags failure = %#v/%q", refs, diagnostic)
-	}
-	if refs, diagnostic := listRefs(ctx, missing, "refs/heads/", ""); refs != nil || diagnostic == "" {
-		t.Fatalf("generic refs failure = %#v/%q", refs, diagnostic)
-	}
-}
-
 func TestBranchesCoverageBatchSharedCommitDecoration(t *testing.T) {
 	t.Parallel()
 	const repository = "/fixture/repository"
@@ -366,94 +480,5 @@ func TestBranchesCoverageBatchSharedCommitDecoration(t *testing.T) {
 	decorateBranchCommit(ctx, repository, &single)
 	if single.Author != entries[0].Author || single.Title != entries[0].Title {
 		t.Fatalf("single decoration = %#v, batch = %#v", single, entries[0])
-	}
-}
-
-func TestBranchesCoverageBatchClassificationBoundaries(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	repository := discover.Repo{Org: "acme", Name: "app", Path: filepath.Join(t.TempDir(), "missing")}
-	sha := strings.Repeat("a", 40)
-	target := strings.Repeat("b", 40)
-	sweep := branchSweepOptions{Base: "main"}
-
-	protected := classifyBranch(ctx, repository, sweep, branchRef{Name: "main", SHA: sha}, BranchScopeLocal,
-		target, "trunk", nil, nil, nil)
-	if protected.Disposition != BranchProtected || !strings.Contains(protected.Evidence, "base branch") {
-		t.Fatalf("protected classification = %#v", protected)
-	}
-	inUse := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/one", SHA: sha}, BranchScopeLocal,
-		target, "main", map[string]string{"acme/app|feature/one": "task-1"}, nil, nil)
-	if inUse.Disposition != BranchInUse || inUse.Task != "task-1" || !strings.Contains(inUse.Reason, "task-1") {
-		t.Fatalf("claimed classification = %#v", inUse)
-	}
-	checkedOut := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/two", SHA: sha}, BranchScopeLocal,
-		target, "main", nil, map[string]bool{"feature/two": true}, nil)
-	if checkedOut.Disposition != BranchInUse || checkedOut.Task != "" || !strings.Contains(checkedOut.Reason, "working tree") {
-		t.Fatalf("checked-out classification = %#v", checkedOut)
-	}
-	unreadable := classifyBranch(ctx, repository, sweep, branchRef{Name: "feature/three", SHA: sha}, BranchScopeLocal,
-		target, "main", nil, nil, nil)
-	if unreadable.Disposition != BranchUnreadable {
-		t.Fatalf("unreadable classification = %#v", unreadable)
-	}
-
-	if got := shortSHA("short"); got != "short" {
-		t.Fatalf("short SHA = %q", got)
-	}
-	if got := shortSHA("123456789012345"); got != "123456789012" {
-		t.Fatalf("trimmed SHA = %q", got)
-	}
-	if got := protectedEvidence("main", "main", "trunk"); !strings.Contains(got, "base") {
-		t.Fatalf("base evidence = %q", got)
-	}
-	if got := protectedEvidence("trunk", "main", "trunk"); !strings.Contains(got, "current HEAD") {
-		t.Fatalf("HEAD evidence = %q", got)
-	}
-	if got := protectedEvidence("develop", "main", "trunk"); !strings.Contains(got, "configured") {
-		t.Fatalf("configured evidence = %q", got)
-	}
-
-	cache := map[string][]githubPullRequest{sha: {}}
-	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no merged pull request") {
-		t.Fatalf("missing receipt = %#v/%q", receipt, note)
-	}
-	mergedAt := time.Now().UTC()
-	cache[sha] = []githubPullRequest{{
-		Number: 7, MergedAt: &mergedAt, MergeCommitSHA: "invalid",
-		Base: githubRef{Ref: "main"}, Head: githubRef{SHA: sha},
-	}}
-	if receipt, note := classifyLandingReceipt(ctx, repository, branchRef{Name: "feature", SHA: sha}, "main", target, cache); receipt != nil || !strings.Contains(note, "no valid merge commit") {
-		t.Fatalf("invalid receipt = %#v/%q", receipt, note)
-	}
-	if absorbed, evidence, unique, err := classifyAbsorbedOrUnique(ctx, repository.Path, target, sha); err == nil || absorbed || evidence != "" || unique != 0 {
-		t.Fatalf("unreadable absorption = %t/%q/%d/%v", absorbed, evidence, unique, err)
-	}
-
-	pullRequest := &PullRequest{Number: 17}
-	explicit := receiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "17")
-	if explicit.Disposition != BranchReceipted || explicit.LandingSHA != sha || explicit.ReceiptPullRequest != pullRequest ||
-		!strings.Contains(explicit.Evidence, "--absorbed-by 17") || !strings.Contains(explicit.Reason, "eligible") {
-		t.Fatalf("explicit receipt classification = %#v", explicit)
-	}
-	automatic := receiptedBranch(BranchEntry{Base: "main"}, sha, pullRequest, "")
-	if automatic.Disposition != BranchReceipted || !strings.Contains(automatic.Evidence, "pull request #17") ||
-		!strings.Contains(automatic.Reason, "--receipts") {
-		t.Fatalf("automatic receipt classification = %#v", automatic)
-	}
-
-	brokenGit := runnertest.New(t)
-	brokenGit.ExpectArgv(
-		[]string{"git", "-C", repository.Path, "merge-base", "--is-ancestor", sha, target},
-		runner.Result{ExitCode: 1}, errors.New("not an ancestor"),
-	)
-	brokenGit.ExpectArgv(
-		[]string{"git", "-C", repository.Path, "cherry", target, sha},
-		runner.Result{}, errors.New("unreadable cherry evidence"),
-	)
-	unreadableCherry := classifyBranch(withGitRunner(context.Background(), brokenGit), repository, sweep,
-		branchRef{Name: "feature/unreadable-cherry", SHA: sha}, BranchScopeLocal, target, "main", nil, nil, nil)
-	if unreadableCherry.Disposition != BranchUnreadable || !strings.Contains(unreadableCherry.Evidence, "unreadable cherry evidence") {
-		t.Fatalf("unreadable cherry classification = %#v", unreadableCherry)
 	}
 }

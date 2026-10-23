@@ -90,10 +90,8 @@ func ScanLocalIndexed(projectsRoot string, options LocalIndexOptions) (LocalInde
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		result.Diagnostics = append(result.Diagnostics, "read local fleet index: "+readErr.Error())
 	}
-	repositories, err := scanLocalOrganizations(snapshot.owners)
-	if err != nil {
-		return LocalIndexResult{}, err
-	}
+	// Organization reads skip unreadable entries and never return an error.
+	repositories, _ := scanLocalOrganizations(snapshot.owners)
 	result.Repositories = repositories
 	result.ObservedAt = now
 	cache := persistedLocalIndex{
@@ -108,7 +106,11 @@ func ScanLocalIndexed(projectsRoot string, options LocalIndexOptions) (LocalInde
 }
 
 func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
-	root, err := filepath.Abs(projectsRoot)
+	return snapshotLocalSourceResolved(projectsRoot, filepath.Abs, os.Stat)
+}
+
+func snapshotLocalSourceResolved(projectsRoot string, absolutePath func(string) (string, error), stat func(string) (os.FileInfo, error)) (localSourceSnapshot, error) {
+	root, err := absolutePath(projectsRoot)
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
@@ -116,7 +118,7 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := stat(root)
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
@@ -127,7 +129,7 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 	parts := []string{root, fileInfoFingerprint(rootInfo)}
 	seenHosts := make(map[string]bool, len(owners))
 	for _, owner := range owners {
-		info, infoErr := os.Stat(owner.Path)
+		info, infoErr := stat(owner.Path)
 		if infoErr != nil {
 			continue
 		}
@@ -140,7 +142,7 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 			continue
 		}
 		seenHosts[owner.Host] = true
-		if hostInfo, hostErr := os.Stat(filepath.Join(root, owner.Host)); hostErr == nil {
+		if hostInfo, hostErr := stat(filepath.Join(root, owner.Host)); hostErr == nil {
 			parts = append(parts, owner.Host+"\x00"+fileInfoFingerprint(hostInfo))
 		}
 	}

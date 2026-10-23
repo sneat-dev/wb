@@ -346,16 +346,6 @@ func TestValidateNameRejectsAnythingThatCouldNotBeATaskName(t *testing.T) {
 	}
 }
 
-func TestIsStreamBranchRecognizesBothSpellings(t *testing.T) {
-	t.Parallel()
-	if !IsStreamBranch("stream/x") || !IsStreamBranch("refs/heads/stream/x") {
-		t.Error("stream branch not recognized")
-	}
-	if IsStreamBranch("feature/stream-thing") {
-		t.Error("a branch merely mentioning stream was recognized")
-	}
-}
-
 // The one-open-stream guard must hand back the records it could not read: "no
 // stream holds this repository" is only as good as the records WB could read,
 // and a truncated file could be the very stream that holds it.

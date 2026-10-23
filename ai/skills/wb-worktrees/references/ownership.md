@@ -16,7 +16,7 @@ its identity, so it declares it.
 Once per session, through the environment — every later WB command picks it up:
 
 ```sh
-export WB_AGENT_PID=$$ WB_AGENT_RUNTIME=claude-code
+export WB_AGENT_PID=$PPID WB_AGENT_RUNTIME=claude-code
 export WB_AGENT_MODEL=<model> WB_AGENT_ID=<session-id>
 ```
 
@@ -63,7 +63,8 @@ preallocated identity and lineage explicitly:
 
 ```sh
 wb session register --pid 12345 --wb-session-id wbs-successor \
-  --machine hetzner-vm1 --runtime codex --native-harness-id native-123 \
+  --machine hetzner-vm1 --runtime codex --model unknown \
+  --native-harness-id native-123 \
   --tmux-name wb-session-wbs-successor \
   --predecessor-wb-session-id wbs-source --handoff-id handoff-123
 ```
@@ -222,6 +223,16 @@ cannot redirect the handoff. Do not start a fresh move to recover an ambiguous
 attempt. For a whole-session transfer that may be dirty, park then pickup.
 
 ## Park and resume an agent session
+
+**`owner_state: active` means a process is alive, not that the task is in
+use.** The recorded owner is the session harness above the `wb` invocation, so
+a task a subagent created carries its coordinating session's process id and
+reads `active` for as long as that session lives, hours after the subagent
+finished. `wb worktree cleanup` never refuses on it: a clean, pushed head
+contained in its target is eligible whoever is still alive. `wb worktree gc`
+decides in-use from recent activity (heartbeat, edited file, Work Log event,
+commit) and reports a live process id with no activity as recycled. Only
+`wb worktree relocate` refuses an active owner.
 
 **Registration is not a precondition. Park registers you if needed:**
 

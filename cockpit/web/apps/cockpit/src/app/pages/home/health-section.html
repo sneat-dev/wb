@@ -1,0 +1,26 @@
+<section class="home-section" aria-labelledby="home-health-h">
+  <h2 id="home-health-h" class="home-h">Fleet health <span class="home-count warn" title="The problems listed below: each row says where it is and links to the entities">{{ count() }}</span></h2>
+  <ul class="home-card">
+    @for (row of rows(); track row.id) {
+      <li class="home-row health-row">
+        <div class="home-main">
+          @if (row.link; as link) {
+            <a class="home-task" [routerLink]="link.path" [queryParams]="link.query">{{ row.text }}</a>
+          } @else {
+            <span class="home-task">{{ row.text }}</span>
+          }
+        </div>
+        <div class="home-action">
+          @if (row.command; as command) {
+            @if ('text' in command) {
+              <span class="home-where-run">{{ row.where }}</span>
+              <app-copy-button [text]="command.text" [idleWord]="word(command.needsEdit)" [label]="name(command, row.text)" />
+            } @else {
+              <span class="home-reason">{{ command.reason }}</span>
+            }
+          }
+        </div>
+      </li>
+    }
+  </ul>
+</section>

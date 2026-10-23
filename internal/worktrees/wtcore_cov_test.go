@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
+
 	"github.com/sneat-dev/wb/internal/console"
 )
 
@@ -394,9 +396,49 @@ func TestWTCoreCovHeartbeatAtRejectsCorruptRecord(t *testing.T) {
 	}
 	// A directory tree with no WB journal anywhere above it is not a worktree,
 	// so the upward walk reaches the filesystem root and reports nothing.
-	if root, err := worktreeRootOf(filepath.Join(t.TempDir(), "no-manifest")); err != nil || root != "" {
+	if root, err := heartbeatPorts().WorktreeRootOf(filepath.Join(t.TempDir(), "no-manifest")); err != nil || root != "" {
 		t.Fatalf("worktreeRootOf outside a worktree = %q, err=%v", root, err)
 	}
+}
+
+// TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries asserts the Work
+// Log freshness signal is scoped to a real WB journal directory.
+//
+// The positive case is currently unreachable: newestWorkLogEventTime opens the
+// journal with os.NewFile(fd, "wb-journal") and then calls DirEntry.Info(),
+// which resolves each entry name relative to that synthetic file name
+// ("wb-journal/manifest.yaml"), so the lstat always fails and the function
+// always returns the zero time. Covering it would require a source change, so
+// only the honest negative behaviour is asserted here; see the report.
+func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
+	if got := heartbeatPorts().NewestWorkLogEventTime(t.TempDir()); !got.IsZero() {
+		t.Fatalf("non-worktree work log signal = %v, want zero", got)
+	}
+}
+
+// TestWTCoreCovExtraStringTrimsOnlyStrings asserts the helper reports an empty
+// string for a missing key and for a non-string value, and trims a real one.
+func TestWTCoreCovExtraStringTrimsOnlyStrings(t *testing.T) {
+	t.Parallel()
+	extra := map[string]any{"present": "  value  ", "number": 7, "null": nil}
+	if got := worktreeclaims.ExtraString(extra, "present"); got != "value" {
+		t.Fatalf("worktreeclaims.ExtraString(present) = %q, want %q", got, "value")
+	}
+	for _, key := range []string{"missing", "number", "null"} {
+		if got := worktreeclaims.ExtraString(extra, key); got != "" {
+			t.Fatalf("worktreeclaims.ExtraString(%s) = %q, want empty", key, got)
+		}
+	}
+}
+
+// wtCoreCovCommitFile writes and commits one file in repository.
+func wtCoreCovCommitFile(t *testing.T, repository, name, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, repository, "add", name)
+	gitTest(t, repository, "commit", "-m", message)
 }
 
 // TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion asserts Git's own
@@ -454,44 +496,4 @@ func TestWTCoreCovNewestChangedFileTimeReadsRenameAndDeletion(t *testing.T) {
 	if _, err := gitRawOutput(ctx, filepath.Join(t.TempDir(), "not-a-repository"), "status", "--porcelain"); err == nil {
 		t.Fatal("gitRawOutput outside a repository must fail")
 	}
-}
-
-// TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries asserts the Work
-// Log freshness signal is scoped to a real WB journal directory.
-//
-// The positive case is currently unreachable: newestWorkLogEventTime opens the
-// journal with os.NewFile(fd, "wb-journal") and then calls DirEntry.Info(),
-// which resolves each entry name relative to that synthetic file name
-// ("wb-journal/manifest.yaml"), so the lstat always fails and the function
-// always returns the zero time. Covering it would require a source change, so
-// only the honest negative behaviour is asserted here; see the report.
-func TestWTCoreCovNewestWorkLogEventTimeReadsRealJournalEntries(t *testing.T) {
-	if got := newestWorkLogEventTime(t.TempDir()); !got.IsZero() {
-		t.Fatalf("non-worktree work log signal = %v, want zero", got)
-	}
-}
-
-// TestWTCoreCovExtraStringTrimsOnlyStrings asserts the helper reports an empty
-// string for a missing key and for a non-string value, and trims a real one.
-func TestWTCoreCovExtraStringTrimsOnlyStrings(t *testing.T) {
-	t.Parallel()
-	extra := map[string]any{"present": "  value  ", "number": 7, "null": nil}
-	if got := extraString(extra, "present"); got != "value" {
-		t.Fatalf("extraString(present) = %q, want %q", got, "value")
-	}
-	for _, key := range []string{"missing", "number", "null"} {
-		if got := extraString(extra, key); got != "" {
-			t.Fatalf("extraString(%s) = %q, want empty", key, got)
-		}
-	}
-}
-
-// wtCoreCovCommitFile writes and commits one file in repository.
-func wtCoreCovCommitFile(t *testing.T, repository, name, content, message string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, repository, "add", name)
-	gitTest(t, repository, "commit", "-m", message)
 }

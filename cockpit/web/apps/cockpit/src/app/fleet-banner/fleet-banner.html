@@ -1,0 +1,22 @@
+@if (store.error(); as error) {
+  @if (store.schemaMismatch() === null) {
+    <p class="notice error" role="alert"><app-icon name="alert" />{{ error }}</p>
+  }
+}
+@if (documentError(); as problem) {
+  <p class="notice error" role="alert"><app-icon name="alert" />{{ problem }}</p>
+}
+@if (document().diagnostics > 0) {
+  <p class="notice" role="status">
+    <app-icon name="alert" />{{ document().diagnostics }} pull request{{ document().diagnostics === 1 ? '' : 's' }} could not be matched to a single repository.
+  </p>
+}
+@if (agentsCut()) {
+  <p class="notice" role="status"><app-icon name="alert" />The agents list is capped; not every agent is shown, so the counts of agents are at least those numbers.</p>
+}
+@if (store.droppedEntries() > 0) {
+  <p class="notice" role="status">
+    <app-icon name="alert" />{{ store.droppedEntries() }} {{ store.droppedEntries() === 1 ? 'entry' : 'entries' }} in the fleet document could not be read and
+    {{ store.droppedEntries() === 1 ? 'is' : 'are' }} left out.
+  </p>
+}

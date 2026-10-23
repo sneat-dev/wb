@@ -342,6 +342,17 @@ the target tree, rechecks every mutable boundary, and leaves the failed receipt
 and all existing Work Logs byte-for-byte unchanged. Missing ancestry, target
 drift, source drift, claim drift, dirtiness, or any tree change refuses closed.
 
+### AC: already-merged-source-head-retires-cleanly
+
+Given a worktree whose candidate head and all source heads are already contained
+in the fetched remote target branch (e.g. the change was merged on GitHub outside
+the verb), `wb worktree land` (or `wb worktree merge land`) recognises that the
+change is already contained in the target. It avoids pushing an empty integration
+branch or creating a pull request with no commits, sets `LandingSHA` to the fetched
+remote target, verifies post-target checks and canonical synchronization, and
+proceeds directly to receipt-gated cleanup and retirement of the candidate and
+source worktrees.
+
 ### AC: agents-discover-merge-from-creation-and-completion-intent
 
 Given an AI agent that is creating a WB worktree or trying to merge, integrate,

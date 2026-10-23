@@ -1,0 +1,44 @@
+/* Cleanup and Fleet health; they share the row styles of home-page.css. */
+app-home-more {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.cleanup-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+}
+
+.cleanup-text {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.cleanup-text a {
+  font-weight: var(--fw-semibold);
+}
+
+.cleanup-chart {
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.health-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+@media (max-width: 52rem) {
+  .health-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .health-row .home-action {
+    justify-content: flex-start;
+  }
+}

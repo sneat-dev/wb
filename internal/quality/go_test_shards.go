@@ -63,7 +63,32 @@ func mergeCoverageProfiles(paths []string, output string) error {
 	mode := ""
 	blocks := map[string]coverageBlock{}
 	for _, path := range paths {
-		profileMode, profileBlocks, err := readCoverageProfile(path)
+		var conflict error
+		profileMode, err := scanCoverageProfile(path, func(incomingMode string, incoming coverageBlock) {
+			// A reader error must win over merge errors, so keep scanning after a
+			// conflict or mode mismatch without changing the private accumulator.
+			if conflict != nil || (mode != "" && incomingMode != mode) {
+				return
+			}
+			current, exists := blocks[incoming.location]
+			if exists && current.statements != incoming.statements {
+				conflict = fmt.Errorf("coverage block %s has statement count %d, want %d", incoming.location, incoming.statements, current.statements)
+				return
+			}
+			if !exists {
+				blocks[incoming.location] = incoming
+				return
+			}
+			switch incomingMode {
+			case "set":
+				if incoming.count > current.count {
+					current.count = incoming.count
+				}
+			case "count", "atomic":
+				current.count += incoming.count
+			}
+			blocks[incoming.location] = current
+		})
 		if err != nil {
 			return err
 		}
@@ -72,75 +97,64 @@ func mergeCoverageProfiles(paths []string, output string) error {
 		} else if profileMode != mode {
 			return fmt.Errorf("coverage mode mismatch: %s uses %q, want %q", path, profileMode, mode)
 		}
-		for _, incoming := range profileBlocks {
-			current, exists := blocks[incoming.location]
-			if exists && current.statements != incoming.statements {
-				return fmt.Errorf("coverage block %s has statement count %d, want %d", incoming.location, incoming.statements, current.statements)
-			}
-			if !exists {
-				blocks[incoming.location] = incoming
-				continue
-			}
-			switch mode {
-			case "set":
-				if incoming.count > current.count {
-					current.count = incoming.count
-				}
-			case "count", "atomic":
-				current.count += incoming.count
-			default:
-				return fmt.Errorf("unsupported coverage mode %q", mode)
-			}
-			blocks[incoming.location] = current
+		if conflict != nil {
+			return conflict
 		}
 	}
 	return writeCoverageProfileAtomically(output, mode, blocks)
 }
 
 func readCoverageProfile(path string) (string, []coverageBlock, error) {
+	var blocks []coverageBlock
+	mode, err := scanCoverageProfile(path, func(_ string, block coverageBlock) {
+		blocks = append(blocks, block)
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return mode, blocks, nil
+}
+
+func scanCoverageProfile(path string, visit func(string, coverageBlock)) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("open coverage profile %s: %w", path, err)
+		return "", fmt.Errorf("open coverage profile %s: %w", path, err)
 	}
 	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return "", nil, fmt.Errorf("read coverage profile %s: %w", path, err)
+			return "", fmt.Errorf("read coverage profile %s: %w", path, err)
 		}
-		return "", nil, fmt.Errorf("coverage profile %s is empty", path)
+		return "", fmt.Errorf("coverage profile %s is empty", path)
 	}
 	header := strings.Fields(scanner.Text())
 	if len(header) != 2 || header[0] != "mode:" {
-		return "", nil, fmt.Errorf("coverage profile %s has invalid mode header", path)
+		return "", fmt.Errorf("coverage profile %s has invalid mode header", path)
 	}
 	mode := header[1]
 	if mode != "set" && mode != "count" && mode != "atomic" {
-		return "", nil, fmt.Errorf("unsupported coverage mode %q in %s", mode, path)
+		return "", fmt.Errorf("unsupported coverage mode %q in %s", mode, path)
 	}
-	var blocks []coverageBlock
-	seen := map[string]bool{}
+	// Multi-package -coverpkg output can repeat a source block. Visit every
+	// occurrence so callers preserve counts without retaining duplicate rows.
 	for line := 2; scanner.Scan(); line++ {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) != 3 {
-			return "", nil, fmt.Errorf("invalid coverage profile %s at line %d", path, line)
+			return "", fmt.Errorf("invalid coverage profile %s at line %d", path, line)
 		}
 		statements, statementErr := strconv.Atoi(fields[1])
 		count, countErr := strconv.ParseInt(fields[2], 10, 64)
 		if statementErr != nil || statements < 0 || countErr != nil || count < 0 {
-			return "", nil, fmt.Errorf("invalid coverage profile %s at line %d", path, line)
+			return "", fmt.Errorf("invalid coverage profile %s at line %d", path, line)
 		}
-		if seen[fields[0]] {
-			return "", nil, fmt.Errorf("duplicate coverage block %s in %s", fields[0], path)
-		}
-		seen[fields[0]] = true
-		blocks = append(blocks, coverageBlock{location: fields[0], statements: statements, count: count})
+		visit(mode, coverageBlock{location: fields[0], statements: statements, count: count})
 	}
 	if err := scanner.Err(); err != nil {
-		return "", nil, fmt.Errorf("read coverage profile %s: %w", path, err)
+		return "", fmt.Errorf("read coverage profile %s: %w", path, err)
 	}
-	return mode, blocks, nil
+	return mode, nil
 }
 
 func writeCoverageProfileAtomically(output, mode string, blocks map[string]coverageBlock) error {

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
-	"github.com/sneat-dev/wb/internal/worktreepolicy"
 )
 
 // DefaultRetiredArchiveRepository is the per-organization archive repository
@@ -32,7 +31,7 @@ func ResolveRetiredArchiveTarget(organization string) (RetiredArchiveTarget, err
 	if !validSafeSegment(organization) {
 		return RetiredArchiveTarget{}, fmt.Errorf("invalid retired archive organization %q", organization)
 	}
-	config, found, path, err := configuredUserWorktreesConfig()
+	config, found, _, err := configuredUserWorktreesConfig()
 	if err != nil {
 		return RetiredArchiveTarget{}, err
 	}
@@ -45,14 +44,8 @@ func ResolveRetiredArchiveTarget(organization string) (RetiredArchiveTarget, err
 			repository = *override.ArchiveRepository
 		}
 	}
-	if err := validateRetiredArchiveRepositoryName(repository); err != nil {
-		return RetiredArchiveTarget{}, fmt.Errorf("worktrees config %s retired archive: %w", path, err)
-	}
+	// The native policy loader validates every archive override; the default is a valid basename.
 	return RetiredArchiveTarget{Organization: organization, Repository: organization + "/" + repository}, nil
-}
-
-func validateRetiredArchiveRepositoryName(repository string) error {
-	return worktreepolicy.ValidateRetiredArchiveRepositoryName(repository)
 }
 
 // RetiredArchiveInspection is the minimum authoritative remote observation.

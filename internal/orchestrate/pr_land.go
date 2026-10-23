@@ -9,11 +9,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
+	"github.com/sneat-dev/wb/internal/mechanicalchange"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/landinglane"
-	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -55,17 +59,52 @@ const (
 	// --approved-by was given with no --review-comment/--review-comment-file
 	// text, or an empty one (#604).
 	LandRefusalReviewCommentEmpty = "review-comment-empty"
+	// LandRefusalBranchRetirement marks a merged pull request whose source
+	// branch could not be retired on origin.
+	LandRefusalBranchRetirement = "branch-retirement-failed"
+	// LandRefusalWaiveReasonEmpty reports that --waive-check was passed with an
+	// empty --waive-reason, or --waive-reason without any --waive-check.
+	LandRefusalWaiveReasonEmpty = "waive-reason-empty"
+	// LandRefusalWaivedCheckRequired reports that a check named in --waive-check
+	// is required by the target branch policy.
+	LandRefusalWaivedCheckRequired = "waived-check-required"
+	// LandRefusalWaivedCheckGreen reports that a check named in --waive-check
+	// passed on the target branch tip.
+	LandRefusalWaivedCheckGreen = "waived-check-green-on-target"
+	// LandRefusalWaivedCheckAbsent reports that a check named in --waive-check
+	// was not observed on the target branch tip.
+	LandRefusalWaivedCheckAbsent = "waived-check-absent-on-target"
+	// LandRefusalWaivedCheckMismatch reports that a check named in --waive-check
+	// failed on the target branch tip with a different conclusion.
+	LandRefusalWaivedCheckMismatch = "waived-check-conclusion-mismatch"
+	// LandRefusalWaivedCheckNotFailed reports that a check named in --waive-check
+	// did not fail or cancel on the pull request head.
+	LandRefusalWaivedCheckNotFailed = "waived-check-not-failed"
+	// LandRefusalWaivedCheckTargetUnfenced reports that the target branch has no
+	// server-enforced required checks, so non-required waivers cannot be judged.
+	LandRefusalWaivedCheckTargetUnfenced = "waived-check-target-unfenced"
 )
 
 // LandOutcome is the envelope outcome. It maps onto the exit-code contract:
-// success is 0, findings is 1, refused is 2.
+// success is 0, findings is 1, refused is 2, and landed-incomplete is 3.
 type LandOutcome string
 
 const (
 	LandSuccess  LandOutcome = "success"
 	LandFindings LandOutcome = "findings"
 	LandRefused  LandOutcome = "refused"
+	// LandLandedIncomplete means the merge reached the base branch and was
+	// verified there, but a step after it (canonical sync, branch retirement,
+	// worktree cleanup) did not finish. It is not "not landed": re-running the
+	// resume command finishes the tail (sneat-dev/wb#824).
+	LandLandedIncomplete LandOutcome = "landed-incomplete"
 )
+
+// ExitLandedIncomplete is the exit status of a landing whose merge succeeded
+// but whose follow-up did not finish. It is distinct from 1 ("not landed, see
+// the finding") so a caller never re-lands, re-reviews or reverts work that is
+// already on the base branch.
+const ExitLandedIncomplete = 3
 
 // PullRequestLandOptions identifies one pull request to land.
 type PullRequestLandOptions struct {
@@ -117,7 +156,7 @@ type PullRequestLandOptions struct {
 	// rejecting an otherwise valid long-running landing.
 	Slice             time.Duration
 	CheckPollInterval time.Duration
-	Progress          func(PullRequestWaitProgress)
+	Progress          func(githubchecks.PullRequestWaitProgress)
 	OperationProgress progress.Reporter
 	// Events receives one structured record per invocation, whatever the
 	// outcome. A refusal is the most useful event of all — it is the one that
@@ -145,6 +184,29 @@ type PullRequestLandOptions struct {
 	// where it runs on every push and nobody can decline to re-request it —
 	// not in an approval recorded once against a head that no longer exists.
 	NoAutoMerge bool
+	WaiveChecks []string
+	WaiveReason string
+	// WaiveBaseline names a first-parent ancestor of the target tip to judge
+	// a waived check against when the tip has no terminal run of it.
+	WaiveBaseline string
+	// WaiveAggregates names aggregator checks waived because every failed
+	// input of their workflow job's needs: is itself waived.
+	WaiveAggregates []string
+	// commitParents and aggregateNeeds are test seams for the waiver's
+	// first-parent walk and workflow read; nil uses GitHub.
+	commitParents  func(ctx context.Context, repository, sha string) ([]string, error)
+	aggregateNeeds func(ctx context.Context, repository, headSHA string, check githubchecks.RemoteCheck) (string, []string, error)
+	// readPullRequest is the waiver's merged-by-GitHub re-read seam; nil
+	// reads GitHub.
+	readPullRequest func(ctx context.Context, repository, selector string) (githubchecks.PullRequestView, error)
+	// promotePorts is the promotion-landing seam; nil reads GitHub.
+	promotePorts *promoteLandingPorts
+	// pullRequestsOnto is the seam for "has any pull request targeted the
+	// head branch"; nil reads GitHub.
+	pullRequestsOnto func(ctx context.Context, repository, branch string) (int, error)
+	// sourceCommits are the pull request's commits when this invocation
+	// already read them; the retention decision reads them otherwise.
+	sourceCommits []SourceCommit
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -171,6 +233,20 @@ type PullRequestLandOptions struct {
 	// uses defaultRunner. A unit test sets this to a runnertest.Fake for the
 	// same reason as git above.
 	run runner.Runner
+	// Inspector overrides the check policy and check inspection seam. Nil
+	// uses defaultChecksPolicyInspectorInstance.
+	Inspector ChecksPolicyInspector
+	// Requeue lets a merge-queue landing enqueue a head the queue already
+	// removed. Without it a removal nobody watched is reported instead, so a
+	// resume never re-runs a failing merge group on its own.
+	Requeue bool
+	// releaseLane frees the landing lane once the pull request is queued:
+	// from then on the queue serializes the target. Nil keeps the lane.
+	releaseLane func()
+	// mergeQueue is the target's merge queue, when its active rules require
+	// one. A landing with it set never arms auto-merge, never updates the
+	// branch and never calls a merge endpoint: it enqueues (pr_land_merge_queue.go).
+	mergeQueue *githubchecks.MergeQueuePolicy
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -190,6 +266,13 @@ func (options PullRequestLandOptions) resolveRunner() runner.Runner {
 		return options.run
 	}
 	return defaultRunner
+}
+
+func (options PullRequestLandOptions) resolveInspector() ChecksPolicyInspector {
+	if options.Inspector != nil {
+		return options.Inspector
+	}
+	return defaultChecksPolicyInspectorInstance
 }
 
 // PullRequestLandResult is the receipt, and the JSON envelope.
@@ -251,9 +334,13 @@ type PullRequestLandResult struct {
 	// "no linked issue" finding in Evidence["closes"], never a refusal.
 	Closes []int `json:"closes,omitempty"`
 
-	Checks *PullRequestWaitResult `json:"checks,omitempty"`
+	Checks       *githubchecks.PullRequestWaitResult `json:"checks,omitempty"`
+	WaivedChecks []WaivedCheck                       `json:"waived_checks,omitempty" yaml:"waived_checks,omitempty"`
 
-	BranchDeleted bool   `json:"branch_deleted"`
+	BranchDeleted bool `json:"branch_deleted"`
+	// HeadRetained says why the head branch was kept after landing: a
+	// long-lived integration branch is never retired.
+	HeadRetained  string `json:"head_retained,omitempty"`
 	LandingOnBase bool   `json:"landing_on_base"`
 	CanonicalSync string `json:"canonical_sync,omitempty"`
 	// LocalSync records the outcome of fast-forwarding the local WB worktree
@@ -263,12 +350,15 @@ type PullRequestLandResult struct {
 	// Commits pairs every source commit with the commit that landed it, and
 	// marks the ones kept separate. GitHub's rebase merge rewrites the SHAs, so
 	// after landing this pairing is the only way back to the originals.
-	Commits        []LandedCommit `json:"commits,omitempty"`
-	KeptCommits    []string       `json:"kept_commits,omitempty"`
-	KeepReason     string         `json:"keep_reason,omitempty"`
-	CleanedTasks   []string       `json:"cleaned_tasks,omitempty"`
-	CleanupReports []string       `json:"cleanup_reports,omitempty"`
-	Kept           bool           `json:"kept"`
+	Commits      []LandedCommit `json:"commits,omitempty"`
+	KeptCommits  []string       `json:"kept_commits,omitempty"`
+	KeepReason   string         `json:"keep_reason,omitempty"`
+	CleanedTasks []string       `json:"cleaned_tasks,omitempty"`
+	// ResumeCommand is the exact command that finishes a landing whose merge
+	// succeeded but whose follow-up did not (outcome landed-incomplete).
+	ResumeCommand  string   `json:"resume_command,omitempty"`
+	CleanupReports []string `json:"cleanup_reports,omitempty"`
+	Kept           bool     `json:"kept"`
 
 	// ManualEquivalent is the ordered list of calls a caller would otherwise
 	// have made. SavedToolCalls is that count minus one — the one call they
@@ -285,6 +375,13 @@ type PullRequestLandResult struct {
 	// LaneOwner is the landing-lane record this landing acquired, when the
 	// caller populated Lane. It is nil when no guard ran.
 	LaneOwner *landinglane.Record `json:"lane_owner,omitempty"`
+
+	// MergeQueue is set when the target requires GitHub's merge queue, which
+	// then performed the merge instead of WB.
+	MergeQueue *MergeQueueReceipt `json:"merge_queue,omitempty"`
+	// Promotion is what WB verified when this pull request promotes an
+	// integration branch.
+	Promotion *PromotionReceipt `json:"promotion,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -294,9 +391,31 @@ func (result PullRequestLandResult) ExitCode() int {
 		return 0
 	case LandRefused:
 		return 2
+	case LandLandedIncomplete:
+		return ExitLandedIncomplete
 	default:
 		return 1
 	}
+}
+
+// WaivedCheck records one GitHub check whose failure was waived against target tip.
+type WaivedCheck struct {
+	Name       string `json:"name" yaml:"name"`
+	Conclusion string `json:"conclusion" yaml:"conclusion"`
+	TargetSHA  string `json:"target_sha" yaml:"target_sha"`
+	Reason     string `json:"reason" yaml:"reason"`
+	// BaselineSHA is the commit the failure was matched on: the target tip,
+	// or a first-parent ancestor when the tip had no terminal run.
+	BaselineSHA   string `json:"baseline_sha,omitempty" yaml:"baseline_sha,omitempty"`
+	BaselineIsTip bool   `json:"baseline_is_tip" yaml:"baseline_is_tip"`
+	// Authority is what made the waiver evaluable: the target's
+	// server-enforced required policy, or an explicit --allow-unfenced.
+	Authority string `json:"authority,omitempty" yaml:"authority,omitempty"`
+	// WaivedBy is "aggregation" for a --waive-aggregate, with the inputs
+	// read from Workflow's needs: at the pull request head.
+	WaivedBy string   `json:"waived_by,omitempty" yaml:"waived_by,omitempty"`
+	Inputs   []string `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	Workflow string   `json:"workflow,omitempty" yaml:"workflow,omitempty"`
 }
 
 // perCallTokenOverhead is the estimated prompt-and-response cost of one tool
@@ -312,9 +431,6 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 	ctx = githubobserver.WithRetryTelemetry(ctx, telemetry)
 	defer func() {
 		if telemetry.Count > 0 {
-			if result.Evidence == nil {
-				result.Evidence = map[string]string{}
-			}
 			result.Evidence["github_read_retries"] = fmt.Sprintf("%d (last: %s)", telemetry.Count, telemetry.LastReason)
 		}
 		// A single transient GitHub read failure recovers in-process (see
@@ -336,10 +452,10 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 // Any authoritative GitHub failure, refusal, or validation error is returned
 // unchanged.
 func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions, result PullRequestLandResult) error {
-	if err == nil || !IsTransientGitHubFailure(err) {
+	if err == nil || !githubobserver.IsTransientGitHubFailure(err) {
 		return err
 	}
-	number, numberErr := PullRequestNumber(options.PullRequest)
+	number, numberErr := githubchecks.PullRequestNumber(options.PullRequest)
 	if numberErr != nil {
 		return err
 	}
@@ -348,6 +464,10 @@ func withPullRequestLandResumeGuidance(err error, options PullRequestLandOptions
 	// resume command must carry the posted comment's URL, never the
 	// identity and review text again — copy-running it must not post a
 	// second comment re-approving whatever head is current when it runs.
+	if result.MergeQueue != nil && result.MergeQueue.Enqueued {
+		// --requeue was spent by this attempt's enqueue (pr_land_merge_queue.go).
+		options.Requeue = false
+	}
 	if strings.TrimSpace(result.ReviewCommentURL) != "" {
 		options.ApprovedBy = result.ReviewCommentURL
 		options.ReviewComment = ""
@@ -416,8 +536,23 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 	if options.NoAutoMerge {
 		parts = append(parts, "--no-auto-merge")
 	}
+	if options.Requeue {
+		parts = append(parts, "--requeue")
+	}
 	if options.AllowUnfenced {
 		parts = append(parts, "--allow-unfenced")
+	}
+	for _, waive := range options.WaiveChecks {
+		parts = append(parts, "--waive-check", shellSingleQuote(waive))
+	}
+	for _, aggregate := range options.WaiveAggregates {
+		parts = append(parts, "--waive-aggregate", shellSingleQuote(aggregate))
+	}
+	if strings.TrimSpace(options.WaiveBaseline) != "" {
+		parts = append(parts, "--waive-baseline", shellSingleQuote(options.WaiveBaseline))
+	}
+	if strings.TrimSpace(options.WaiveReason) != "" {
+		parts = append(parts, "--waive-reason", shellSingleQuote(options.WaiveReason))
 	}
 	if len(options.KeepCommits) > 0 {
 		parts = append(parts, "--keep-commits", strings.Join(options.KeepCommits, ","))
@@ -439,8 +574,31 @@ func pullRequestLandResumeCommand(options PullRequestLandOptions, number, timeou
 	return strings.Join(parts, " ")
 }
 
+func pullRequestLandWaiveCommand(options PullRequestLandOptions, number string, waivableChecks []string, targetBranch, targetSHA string) string {
+	opts := options
+	merged := append([]string(nil), opts.WaiveChecks...)
+	for _, wc := range waivableChecks {
+		normalized := githubchecks.NormalizeCheckName(wc)
+		found := false
+		for _, existing := range merged {
+			if githubchecks.NormalizeCheckName(existing) == normalized {
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged = append(merged, normalized)
+		}
+	}
+	opts.WaiveChecks = merged
+	if strings.TrimSpace(opts.WaiveReason) == "" {
+		opts.WaiveReason = fmt.Sprintf("fails on %s tip (%s)", targetBranch, shortMergeRevision(targetSHA))
+	}
+	return pullRequestLandResumeCommand(opts, number, "")
+}
+
 func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullRequestLandResult, error) {
-	number, err := PullRequestNumber(options.PullRequest)
+	number, err := githubchecks.PullRequestNumber(options.PullRequest)
 	if err != nil {
 		return PullRequestLandResult{}, err
 	}
@@ -479,10 +637,32 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		},
 	}
 
+	if options.hasWaivers() && strings.TrimSpace(options.WaiveReason) == "" {
+		return mergeRefusal(result, landRefusal{
+			code:    LandRefusalWaiveReasonEmpty,
+			reason:  "--waive-check requires a non-empty --waive-reason",
+			command: "wb pr land " + options.Repository + "#" + number + " --waive-reason \"<reason>\"",
+		}), nil
+	}
+	if duplicate := DuplicateWaiver(options.WaiveChecks, options.WaiveAggregates); duplicate != "" {
+		return mergeRefusal(result, landRefusal{
+			code:    LandRefusalWaivedCheckDuplicate,
+			reason:  fmt.Sprintf("check %q is named more than once across --waive-check and --waive-aggregate", duplicate),
+			command: "wb pr land " + options.Repository + "#" + number,
+		}), nil
+	}
+	if (strings.TrimSpace(options.WaiveReason) != "" || strings.TrimSpace(options.WaiveBaseline) != "") && !options.hasWaivers() {
+		return mergeRefusal(result, landRefusal{
+			code:    LandRefusalWaiveReasonEmpty,
+			reason:  "--waive-reason was given without any --waive-check",
+			command: "wb pr land " + options.Repository + "#" + number + " --waive-check <name>",
+		}), nil
+	}
+
 	// Re-read the pull request now. A value read at session start is a
 	// snapshot, and everything below is decided against the live one.
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_pull_request", progress.Started, options.Repository+"#"+number, 0, 0)
-	view, err := ReadPullRequest(ctx, options.Repository, number)
+	view, err := githubchecks.ReadPullRequest(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
@@ -517,9 +697,13 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 	if laneRecord.Owner.WBSessionID != "" {
 		result.LaneOwner = &laneRecord
-		defer func() {
-			_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
-		}()
+		var releaseOnce sync.Once
+		options.releaseLane = func() {
+			releaseOnce.Do(func() {
+				_ = releaseLandingLane(options.ProjectsRoot, options.Repository, view.Base.Ref, laneRecord.Owner.WBSessionID)
+			})
+		}
+		defer options.releaseLane()
 	}
 	if view.Merged {
 		// A prior invocation may have issued the exact leased merge write and
@@ -532,6 +716,25 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	if refusal := landPreflightRefusal(view, options.Repository, number); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
+	}
+	// A merge-queue target is read before any flag is acted on: the queue
+	// overrides the merge method and message, and a direct merge would go
+	// around it, so the whole landing below takes the enqueue route instead.
+	queue, err := githubchecks.TargetMergeQueue(ctx, options.Repository, view.Base.Ref)
+	if options.AllowUnfenced && githubchecks.IsPolicyUnavailableByPlan(err) {
+		result.Evidence["merge_queue"] = "unknown: " + err.Error() + "; landing under explicit --allow-unfenced"
+		queue, err = nil, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	if queue != nil {
+		if refusal := mergeQueueOptionConflict(options, *queue, view.Base.Ref, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
+		}
+		options.mergeQueue, options.MergeMethod = queue, queue.MergeMethod
+		result.MergeQueue = newMergeQueueReceipt(*queue)
+		result.Evidence["merge_queue"] = mergeQueueEvidence(*queue, view.Base.Ref)
 	}
 	if len(options.KeepCommits) > 0 && !options.AllowUnfenced && !targetHasRequiredChecks(ctx, options.Repository, view.Base.Ref) {
 		// Rewriting the branch means the checks that were observed no longer
@@ -566,7 +769,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	for _, file := range files {
 		result.ChangedFiles = append(result.ChangedFiles, file.Filename)
 	}
-	verdict := ClassifyMechanical(files)
+	verdict := mechanicalchange.ClassifyMechanical(files)
 	result.Mechanical, result.NonManifest = verdict.Mechanical, verdict.NonManifest
 	result.Evidence["classification"] = "from-diff-content"
 	if !verdict.Mechanical {
@@ -574,6 +777,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
+	// A promotion is reviewed only by an existing comment on it; refuse the
+	// identity form before WB would post one.
+	if refusal := promotionApprovalForm(options, view, number); refusal != nil {
+		return mergeRefusal(result, *refusal), nil
+	}
 	// reviewedHead is the head this landing binds any review to (#586): the
 	// exact head observed before any update-branch cycle runs. A review
 	// supplied for a different head — whether the identity form (posted
@@ -675,7 +883,9 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// building against an unpublished tree must not be landed, and reading it
 	// as a bypass would make the guard optional by accident.
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Started, view.Head.Ref, 0, 0)
-	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep); refusal != nil {
+	// A promotion's head is an integration branch whose worktrees landing
+	// keeps, so only their live links are pre-flighted, never their state.
+	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep || isPromotion(view)); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Completed, view.Head.Ref, 0, 0)
@@ -727,11 +937,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// guards. autoMergeArmed is always false here — arming has not happened
 	// yet — so the refusal never claims an armed state it has not reached.
 	if !result.Mechanical && reviewedHead != "" && reviewedHead != view.Head.SHA {
-		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, false, number); refusal != nil {
+		if refusal := applyPullRequestLandReviewBinding(ctx, options, view, reviewedHead, view.Head.SHA, false, number, &result); refusal != nil {
 			return mergeRefusal(result, *refusal), nil
-		} else if note != "" {
-			result.ReviewBound = boolPtr(false)
-			result.Evidence["review"] = "review-unverified: " + note
 		}
 	}
 
@@ -746,7 +953,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// verbatim and cannot be corrected without rewriting history.
 		subject = fmt.Sprintf("%s (#%d)", view.Title, view.Number)
 	}
-	result.Subject = subject
+	if options.mergeQueue == nil {
+		// The queue writes its own commit message, so a queue landing does
+		// not claim one.
+		result.Subject = subject
+	}
 
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Started, view.Head.Ref, 0, 0)
 	sourceCommits, err := pullRequestCommits(ctx, options.Repository, number)
@@ -754,6 +965,17 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return result, err
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Completed, "commits", len(sourceCommits), len(sourceCommits))
+	// A promotion lands only under its own rules, decided before anything is
+	// armed; the gate also turns off update-branch and auto-merge.
+	if promotion, refusal, promoteErr := promotionLandingGate(ctx, &options, view, number, sourceCommits); promoteErr != nil {
+		return result, promoteErr
+	} else if refusal != nil {
+		return mergeRefusal(result, *refusal), nil
+	} else if promotion != nil {
+		result.Promotion = promotion
+		result.Evidence["promotion"] = fmt.Sprintf("%d reviewed lane(s), head reviewed by %s", len(promotion.Lanes), promotion.Reviewer)
+	}
+	options.sourceCommits = sourceCommits
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
@@ -762,10 +984,17 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// awaitLandablePullRequest for why arming happens first and why this is
 	// a loop rather than one check before one wait.
 	var (
-		waited         PullRequestWaitResult
+		waited         githubchecks.PullRequestWaitResult
 		mergedByGitHub bool
 		updateRefusal  *landRefusal
 	)
+	// The merge-queue tail shares this wait's budget rather than starting a
+	// second one, so one invocation stays inside its --timeout. Only a queue
+	// landing reads the clock here; every other landing keeps its exact reads.
+	var deadline time.Time
+	if options.mergeQueue != nil {
+		deadline = waitDeadline(options)
+	}
 	view, waited, result.AutoMergeArmed, mergedByGitHub, updateRefusal, err = awaitLandablePullRequest(ctx, options, view, number, subject, body, result.Evidence)
 	// Record the exact head this attempt last observed on every path - the
 	// refusal and error returns below included - so a caller reading the
@@ -786,12 +1015,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
 	if mergedByGitHub {
-		waited.Status = PullRequestWaitPassed
+		waited.Status = githubchecks.PullRequestWaitPassed
 		result.Evidence["merged_by"] = "github auto-merge"
 	}
+	if options.hasWaivers() {
+		var stop bool
+		if result, stop, err = applyWaivers(ctx, options, number, view, waited, mergedByGitHub, result); stop || err != nil {
+			return result, err
+		}
+	}
 	switch waited.Status {
-	case PullRequestWaitPassed:
-	case PullRequestWaitPending:
+	case githubchecks.PullRequestWaitPassed:
+	case githubchecks.PullRequestWaitPending:
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksPending
 		result.Reason = waited.Reason + "; run the resume command in the background - it carries a budget above the foreground harness ceiling"
@@ -811,10 +1046,6 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Outcome = LandFindings
 		result.RefusalCode = LandRefusalChecksFailed
 		result.Reason = waited.Reason
-		// #600: point at the failing job directly rather than the PR page,
-		// which names nothing and makes the caller re-derive which check and
-		// which job actually failed.
-		result.SanctionedCommand = checksFailedSanctionedCommand(waited.FailureDetails, options.Repository, number)
 		// Auto-merge stays armed through a red result. CI is the gate: whoever
 		// pushes a fix is responsible for it, the required checks re-run
 		// against what they pushed, and the merge happens only if they pass.
@@ -830,11 +1061,90 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			// checks were not the problem.
 			result.RefusalCode = LandRefusalUnfencedTarget
 			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number + " --allow-unfenced"
-		} else if summary := summarizeCheckFailures(waited.FailureDetails); summary != "" {
-			// #600: name each failing check and its first error line rather
-			// than leaving the caller to hand-roll the same log scraping WB
-			// already did while observing the checks.
-			result.Reason += "; " + summary
+		} else {
+			inspector := options.resolveInspector()
+			required, _, _ := inspector.RequiredChecks(ctx, options.Repository, view.Base.Ref, false)
+			targetSHA, _ := inspector.TargetHead(ctx, options.Repository, view.Base.Ref)
+			var targetChecks []githubchecks.RemoteCheck
+			if targetSHA != "" {
+				targetChecks, _, _ = inspector.CommitChecks(ctx, githubchecks.PullRequestWaitOptions{
+					Repository: options.Repository,
+					Head:       targetSHA,
+				})
+			}
+			targetFenced := len(required) > 0
+
+			var (
+				failedDescriptions []string
+				waivableChecks     []string
+				allFailedWaivable  = targetFenced
+				failedCount        = 0
+			)
+			for _, check := range waited.Checks {
+				if check.Bucket != "fail" && check.Bucket != "cancel" {
+					continue
+				}
+				normalized := githubchecks.NormalizeCheckName(check.Name)
+				isRequired := isCheckRequiredByPolicy(normalized, check.AppID, required)
+				// A waived check is not a reason this landing failed: the
+				// waivers are judged once the non-waived failures are fixed.
+				// A required one stays in the report: no waiver can cover it.
+				if !isRequired && checkNameIn(check.Name, options.waitWaivedChecks()) {
+					continue
+				}
+				failedCount++
+				var targetCheck *githubchecks.RemoteCheck
+				for i := range targetChecks {
+					if githubchecks.NormalizeCheckName(targetChecks[i].Name) == normalized {
+						targetCheck = &targetChecks[i]
+						break
+					}
+				}
+				var desc string
+				if isRequired {
+					desc = fmt.Sprintf("%q (required by %s)", check.Name, view.Base.Ref)
+					allFailedWaivable = false
+				} else if targetCheck == nil {
+					desc = fmt.Sprintf("%q (not required by %s; absent on %s tip %s)", check.Name, view.Base.Ref, view.Base.Ref, shortMergeRevision(targetSHA))
+					allFailedWaivable = false
+				} else if targetCheck.Bucket == "pass" || targetCheck.Bucket == "skipping" {
+					desc = fmt.Sprintf("%q (not required by %s; green on %s tip %s)", check.Name, view.Base.Ref, view.Base.Ref, shortMergeRevision(targetSHA))
+					allFailedWaivable = false
+				} else {
+					headConc := check.Conclusion
+					if headConc == "" {
+						headConc = check.Bucket
+					}
+					targetConc := targetCheck.Conclusion
+					if targetConc == "" {
+						targetConc = targetCheck.Bucket
+					}
+					if headConc == targetConc {
+						desc = fmt.Sprintf("%q (not required by %s; fails on %s tip %s with conclusion %q)", check.Name, view.Base.Ref, view.Base.Ref, shortMergeRevision(targetSHA), headConc)
+						waivableChecks = append(waivableChecks, check.Name)
+					} else {
+						desc = fmt.Sprintf("%q (not required by %s; conclusion %q on head vs %q on %s tip %s)", check.Name, view.Base.Ref, headConc, targetConc, view.Base.Ref, shortMergeRevision(targetSHA))
+						allFailedWaivable = false
+					}
+				}
+				failedDescriptions = append(failedDescriptions, desc)
+			}
+			if failedCount == 0 {
+				allFailedWaivable = false
+			}
+
+			if allFailedWaivable && len(waivableChecks) > 0 {
+				result.SanctionedCommand = pullRequestLandWaiveCommand(options, number, waivableChecks, view.Base.Ref, targetSHA)
+			} else {
+				result.SanctionedCommand = checksFailedSanctionedCommand(waited.FailureDetails, options.Repository, number)
+			}
+
+			if len(failedDescriptions) > 0 {
+				result.Reason = waited.Reason + "; " + strings.Join(failedDescriptions, ", ")
+			}
+			if summary := githubchecks.SummarizeFailures(waited.FailureDetails); summary != "" {
+				result.Reason += "; " + summary
+			}
 		}
 		return withSavings(result), nil
 	}
@@ -857,11 +1167,8 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// auto-merge, performs the merge write below — so refusing here still
 	// prevents it.
 	if !result.Mechanical && !mergedByGitHub && reviewedHead != "" {
-		if refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number); refusal != nil {
+		if refusal := applyPullRequestLandReviewBinding(ctx, options, view, reviewedHead, view.Head.SHA, result.AutoMergeArmed, number, &result); refusal != nil {
 			return mergeRefusal(result, *refusal), nil
-		} else if note != "" {
-			result.ReviewBound = boolPtr(false)
-			result.Evidence["review"] = "review-unverified: " + note
 		}
 	}
 	// mergedByGitHub means GitHub's armed auto-merge already landed the
@@ -871,6 +1178,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// provably covered before letting the receipt claim it is.
 	if !result.Mechanical && mergedByGitHub && reviewedHead != "" {
 		recordMergedByGitHubReviewBinding(ctx, options, view, reviewedHead, &result)
+	}
+
+	if options.mergeQueue != nil {
+		return landThroughMergeQueue(ctx, options, result, view, number, deadline)
 	}
 
 	head := view.Head.SHA
@@ -902,11 +1213,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// is different content in a different order, and merging it on the
 		// strength of a receipt for something else is exactly the substitution
 		// the head-SHA lease exists to prevent. Wait for its own.
-		rewritten := PullRequestWaitOptions{
+		rewritten := githubchecks.PullRequestWaitOptions{
 			Repository:        options.Repository,
 			PullRequest:       number,
 			Target:            view.Base.Ref,
 			AllowUnfenced:     options.AllowUnfenced,
+			WaiveChecks:       options.waitWaivedChecks(),
 			Slice:             remainingWaitBudget(options, waitDeadline(options)),
 			CheckPollInterval: options.CheckPollInterval,
 			Progress:          options.Progress,
@@ -919,10 +1231,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}
 		result.Checks = &reobserved
 		result.AbsorbedPolls += reobserved.StableObservations
-		if reobserved.Status != PullRequestWaitPassed {
+		if reobserved.Status != githubchecks.PullRequestWaitPassed {
 			result.Outcome = LandFindings
 			result.RefusalCode = LandRefusalChecksPending
-			if reobserved.Status == PullRequestWaitFailed {
+			if reobserved.Status == githubchecks.PullRequestWaitFailed {
 				result.RefusalCode = LandRefusalChecksFailed
 			}
 			result.Reason = "the rewritten branch's own checks are not green: " + reobserved.Reason
@@ -947,15 +1259,46 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	return finalizeLandedPullRequest(ctx, options, result, view, head, number)
 }
 
+// resumeCommand is the exact command that finishes the tail of a landing whose
+// merge already succeeded: `wb pr land` on a merged pull request resumes from
+// GitHub's merged state (see landPullRequest) and runs the same canonical sync,
+// branch retirement and cleanup.
+func resumeCommand(options PullRequestLandOptions, number string) string {
+	return pullRequestLandResumeCommand(options, number, "")
+}
+
+// landedIncomplete reports a landing whose merge is verified on the base
+// branch but whose follow-up step failed. The outcome is distinct from
+// findings so the exit status is: the work is landed, only the tail is not.
+func landedIncomplete(options PullRequestLandOptions, result PullRequestLandResult, number, code, reason, remedy string) PullRequestLandResult {
+	result.Outcome = LandLandedIncomplete
+	result.RefusalCode = code
+	result.Reason = "landed on " + result.baseDescription() + " but the follow-up did not finish: " + reason
+	result.SanctionedCommand = remedy
+	result.ResumeCommand = resumeCommand(options, number)
+	return withSavings(result)
+}
+
+// baseDescription names where the merge landed, for messages.
+func (result PullRequestLandResult) baseDescription() string {
+	if result.BaseRef != "" && result.MergeSHA != "" {
+		return result.BaseRef + " (" + shortMergeRevision(result.MergeSHA) + ")"
+	}
+	if result.BaseRef != "" {
+		return result.BaseRef
+	}
+	return "the base branch"
+}
+
 // finalizeLandedPullRequest proves and completes the observable landing
 // effects. It is shared by an ordinary successful merge call and recovery of
 // an exact pull request that a prior invocation merged before losing its
 // response, so the recovery cannot skip canonical sync or cleanup.
-func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, view PullRequestView, remoteHeadSHA, number string) (PullRequestLandResult, error) {
+func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, view githubchecks.PullRequestView, remoteHeadSHA, number string) (PullRequestLandResult, error) {
 	// Assert the observable effect rather than the exit status of the call that
 	// was supposed to produce it.
 	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Started, view.Base.Ref, 0, 0)
-	landed, err := ReadPullRequest(ctx, options.Repository, number)
+	landed, err := githubchecks.ReadPullRequest(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
@@ -998,31 +1341,32 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Started, view.Base.Ref+"@"+shortMergeRevision(landed.MergeCommitSHA), 0, 0)
 	canonical, canonicalErr := worktrees.CanonicalRepositoryPath(options.ProjectsRoot, options.Repository)
 	if canonicalErr != nil {
-		result.Outcome = LandFindings
-		result.RefusalCode = LandRefusalCanonicalSync
-		result.Reason = canonicalErr.Error()
-		result.SanctionedCommand = "wb sync --filter " + options.Repository
-		return withSavings(result), nil
+		return landedIncomplete(options, result, number, LandRefusalCanonicalSync, canonicalErr.Error(), "wb sync --filter "+options.Repository), nil
 	}
 	result.CanonicalSync, err = syncCanonicalMergeTarget(ctx, canonical, view.Base.Ref, landed.MergeCommitSHA, options.Slice, 0, options.CheckoutUpdated)
 	if err != nil {
-		result.Outcome = LandFindings
-		result.RefusalCode = LandRefusalCanonicalSync
-		result.Reason = err.Error()
-		result.SanctionedCommand = "wb sync --filter " + options.Repository
-		return withSavings(result), nil
+		return landedIncomplete(options, result, number, LandRefusalCanonicalSync, err.Error(), "wb sync --filter "+options.Repository), nil
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
+	result.HeadRetained = integrationHeadReason(ctx, options, view, number, result.Promotion)
+	if result.HeadRetained != "" {
+		// An integration branch outlives every promotion: neither the branch
+		// nor the worktrees on it are retired.
+		result.Evidence["head_branch"] = "retained " + view.Head.Ref + ": " + result.HeadRetained
+		return finishLandedPullRequest(ctx, options, result, number)
+	}
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.resolveRunner(), canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
-		return result, deleteErr
+		// The merge is already on the base branch: report that, not a bare
+		// error that reads as "not landed".
+		return landedIncomplete(options, result, number, LandRefusalBranchRetirement, deleteErr.Error(), resumeCommand(options, number)), nil
 	} else {
 		result.BranchDeleted = deleted
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Completed, view.Head.Ref, 0, 0)
 
-	if !options.Keep {
+	if !options.Keep && view.Head.Repo != nil && strings.EqualFold(view.Head.Repo.FullName, options.Repository) {
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Started, view.Head.Ref, 0, 0)
 		tasks, reports, cleanupErr := cleanupLandedWorktrees(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Head.SHA, view.Base.Ref, landed.MergeCommitSHA)
 		result.CleanedTasks = tasks
@@ -1037,15 +1381,18 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 			// The landing itself succeeded and must be reported as such; a
 			// checkout that could not be retired is a finding, with the verb
 			// that finishes it named.
-			result.Outcome = LandFindings
-			result.RefusalCode = "cleanup-incomplete"
-			result.Reason = cleanupErr.Error()
-			result.SanctionedCommand = "wb worktree gc --apply"
-			return withSavings(result), nil
+			return landedIncomplete(options, result, number, "cleanup-incomplete", cleanupErr.Error(), "wb worktree gc --apply"), nil
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
+	} else if !options.Keep {
+		result.Evidence["cleanup"] = "fork source worktrees retained; target-repository worktrees do not belong to this pull request head"
 	}
 
+	return finishLandedPullRequest(ctx, options, result, number)
+}
+
+// finishLandedPullRequest reports what the landing closes and succeeds.
+func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, number string) (PullRequestLandResult, error) {
 	// #615: report the issues this landing closes, from GitHub's own
 	// closingIssuesReferences — an informational finding, never a refusal,
 	// including when there are none.
@@ -1073,9 +1420,9 @@ func manualPullRequestMergeCommand(repository, number, method string) string {
 // 3, minor 8). So this only ever returns a gh invocation, built from a
 // GitHub Actions run/job URL when the first failing check's Link parses as
 // one, else the previous PR-page fallback.
-func checksFailedSanctionedCommand(details []CIFailureDetail, repository, number string) string {
+func checksFailedSanctionedCommand(details []githubchecks.CIFailureDetail, repository, number string) string {
 	if len(details) > 0 {
-		if runID, jobID, ok := githubActionsRunAndJob(details[0].JobURL); ok {
+		if runID, jobID, ok := githubchecks.ActionsRunAndJob(details[0].JobURL); ok {
 			return "gh run view " + runID + " --job " + jobID + " --repo " + repository + " --log-failed"
 		}
 	}
@@ -1124,7 +1471,7 @@ func pullRequestLandWaitSlice(remaining time.Duration) (time.Duration, error) {
 	if remaining <= 0 {
 		return 0, fmt.Errorf("pull request landing timeout must be positive")
 	}
-	return min(remaining, MaxForegroundCheckWaitSlice), nil
+	return min(remaining, githubchecks.MaxForegroundCheckWaitSlice), nil
 }
 
 // waitForPullRequestLandChecks keeps one CLI call alive for its requested
@@ -1132,31 +1479,30 @@ func pullRequestLandWaitSlice(remaining time.Duration) (time.Duration, error) {
 // the harness-safe ceiling. Each slice reuses the same repository, PR, target,
 // and exact head; any drift is therefore still refused by the underlying
 // observer.
-func waitForPullRequestLandChecks(ctx context.Context, options PullRequestWaitOptions) (PullRequestWaitResult, error) {
-	return waitForPullRequestLandChecksWith(ctx, options, WaitForPullRequestChecks)
+func waitForPullRequestLandChecks(ctx context.Context, options githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+	return waitForPullRequestLandChecksWith(ctx, options, githubchecks.WaitForPullRequestChecks)
 }
 
 func waitForPullRequestLandChecksWith(
 	ctx context.Context,
-	options PullRequestWaitOptions,
-	wait func(context.Context, PullRequestWaitOptions) (PullRequestWaitResult, error),
-) (PullRequestWaitResult, error) {
+	options githubchecks.PullRequestWaitOptions,
+	wait func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error),
+) (githubchecks.PullRequestWaitResult, error) {
 	if options.Slice <= 0 {
-		return PullRequestWaitResult{}, fmt.Errorf("pull request landing timeout must be positive")
+		return githubchecks.PullRequestWaitResult{}, fmt.Errorf("pull request landing timeout must be positive")
 	}
-	var waited PullRequestWaitResult
+	var waited githubchecks.PullRequestWaitResult
 	for remaining := options.Slice; remaining > 0; {
-		slice, err := pullRequestLandWaitSlice(remaining)
-		if err != nil {
-			return PullRequestWaitResult{}, err
-		}
+		// The loop guarantees a positive budget, the helper's only precondition.
+		slice, _ := pullRequestLandWaitSlice(remaining)
 		current := options
 		current.Slice = slice
 		if current.CheckPollInterval >= slice {
-			return PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the total foreground timeout")
+			return githubchecks.PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the total foreground timeout")
 		}
+		var err error
 		waited, err = wait(ctx, current)
-		if err != nil || waited.Status != PullRequestWaitPending {
+		if err != nil || waited.Status != githubchecks.PullRequestWaitPending {
 			return waited, err
 		}
 		remaining -= slice
@@ -1192,7 +1538,7 @@ func mergeRefusal(result PullRequestLandResult, refusal landRefusal) PullRequest
 	return withSavings(result)
 }
 
-func landPreflightRefusal(view PullRequestView, repository, number string) *landRefusal {
+func landPreflightRefusal(view githubchecks.PullRequestView, repository, number string) *landRefusal {
 	switch {
 	case view.Merged:
 		return &landRefusal{
@@ -1228,7 +1574,7 @@ func landPreflightRefusal(view PullRequestView, repository, number string) *land
 	return nil
 }
 
-func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]ChangedFile, error) {
+func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]mechanicalchange.ChangedFile, error) {
 	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   "repos/" + repository + "/pulls/" + url.PathEscape(number) + "/files?per_page=100",
@@ -1237,9 +1583,9 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 		return nil, fmt.Errorf("read changed files for %s#%s: %w", repository, number, err)
 	}
 	seen := map[string]bool{}
-	files := make([]ChangedFile, 0, 16)
+	files := make([]mechanicalchange.ChangedFile, 0, 16)
 	for _, response := range responses {
-		var page []ChangedFile
+		var page []mechanicalchange.ChangedFile
 		if err := json.Unmarshal(response.Body, &page); err != nil {
 			return nil, fmt.Errorf("decode changed files for %s#%s: %w", repository, number, err)
 		}
@@ -1337,7 +1683,7 @@ func commitIsOnBranch(ctx context.Context, repository, commit, branch string) (b
 // repository's to delete — and treats an already-absent ref as success,
 // because GitHub's own "automatically delete head branches" setting may have
 // removed it first.
-func deleteRemoteBranch(ctx context.Context, run runner.Runner, canonical, repository string, view, landed PullRequestView, expectedHeadSHA string) (bool, error) {
+func deleteRemoteBranch(ctx context.Context, run runner.Runner, canonical, repository string, view, landed githubchecks.PullRequestView, expectedHeadSHA string) (bool, error) {
 	if view.Head.Repo == nil || !strings.EqualFold(view.Head.Repo.FullName, repository) {
 		return false, nil
 	}
@@ -1392,23 +1738,25 @@ func branchAlreadyGone(stdout, stderr []byte) bool {
 // receipt. That proof may supersede an earlier manifest base in memory without
 // rewriting the append-only creation record.
 func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headRef, headSHA, base, landingSHA string) ([]string, []string, error) {
-	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
-		ProjectsRoot: projectsRoot,
-		Base:         base,
-		Filter:       repository,
+	listed, err := worktrees.ListSourceWithDiagnostics(ctx, worktrees.SourceListOptions{
+		ProjectsRoot: projectsRoot, Repository: repository, Branch: headRef, HeadSHA: headSHA,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(listed.Diagnostics) > 0 {
+		return nil, nil, fmt.Errorf("source worktree cleanup inventory is incomplete at %s: %s", listed.Diagnostics[0].Path, listed.Diagnostics[0].Message)
+	}
 	tasks := make([]string, 0, 1)
 	seen := map[string]bool{}
 	proofsByTask := map[string][]worktrees.MergeReceiptCleanupProof{}
+	repositoriesByTask := map[string]string{}
+	// The exact-source query has already corroborated every result's
+	// repository and branch against its authoritative Git registration/claim.
 	for _, entry := range listed.Results {
-		if entry.Repository != repository || entry.Branch != headRef {
-			continue
-		}
+		repositoriesByTask[entry.Task] = entry.Repository
 		proofsByTask[entry.Task] = append(proofsByTask[entry.Task], worktrees.MergeReceiptCleanupProof{
-			Repository: repository, Target: base, SourceTask: entry.Task,
+			Repository: entry.Repository, Target: base, SourceTask: entry.Task,
 			SourceWorktree: entry.WorktreeDir, SourceBranch: headRef, SourceSHA: headSHA,
 			CandidateSHA: headSHA, LandingSHA: landingSHA,
 		})
@@ -1423,7 +1771,7 @@ func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headR
 		outcome, cleanupErr := worktrees.Cleanup(ctx, worktrees.CleanupOptions{
 			ProjectsRoot:       projectsRoot,
 			Tasks:              []string{task},
-			ExactRepository:    repository,
+			ExactRepository:    repositoriesByTask[task],
 			Base:               base,
 			AbsorbedBy:         landingSHA,
 			MergeReceiptProofs: proofsByTask[task],
@@ -1509,19 +1857,14 @@ func approximateTokens(tokens int) string {
 	return fmt.Sprintf("%.1fk", float64(tokens)/1000)
 }
 
-func limitStrings(values []string, limit int) []string {
-	if len(values) <= limit {
-		return values
-	}
-	trimmed := append([]string(nil), values[:limit]...)
-	return append(trimmed, fmt.Sprintf("and %d more", len(values)-limit))
-}
-
 // SourceCommit is one commit of the pull request's branch.
 type SourceCommit struct {
 	SHA     string `json:"sha"`
 	Subject string `json:"subject"`
 	Body    string `json:"body,omitempty"`
+	// Parents are read for a promotion's first-parent walk; they stay out of
+	// receipts.
+	Parents []string `json:"-"`
 }
 
 type commitListEntry struct {
@@ -1529,6 +1872,9 @@ type commitListEntry struct {
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
 }
 
 // pullRequestCommits lists the branch's commits in order.
@@ -1548,11 +1894,15 @@ func pullRequestCommits(ctx context.Context, repository, number string) ([]Sourc
 		}
 		for _, entry := range page {
 			subject, body, _ := strings.Cut(strings.TrimSpace(entry.Commit.Message), "\n")
-			commits = append(commits, SourceCommit{
+			commit := SourceCommit{
 				SHA:     entry.SHA,
 				Subject: strings.TrimSpace(subject),
 				Body:    strings.TrimSpace(body),
-			})
+			}
+			for _, parent := range entry.Parents {
+				commit.Parents = append(commit.Parents, parent.SHA)
+			}
+			commits = append(commits, commit)
 		}
 	}
 	return commits, nil
@@ -1575,7 +1925,7 @@ func pullRequestCommits(ctx context.Context, repository, number string) ([]Sourc
 // repository is authoritative for a same-repository pull request and is what a
 // reader needs to find it again; a fork's head names the fork, so the caller
 // supplies the base repository through the view it read.
-func repositoryOf(view PullRequestView) string {
+func repositoryOf(view githubchecks.PullRequestView) string {
 	if view.Base.Repo != nil && strings.TrimSpace(view.Base.Repo.FullName) != "" {
 		return view.Base.Repo.FullName
 	}
@@ -1585,7 +1935,7 @@ func repositoryOf(view PullRequestView) string {
 	return ""
 }
 
-func aggregatedCommitMessage(view PullRequestView, commits []SourceCommit, approvedBy, reason string) string {
+func aggregatedCommitMessage(view githubchecks.PullRequestView, commits []SourceCommit, approvedBy, reason string) string {
 	var builder strings.Builder
 	if summary := pullRequestBodySummary(view.Body); summary != "" {
 		builder.WriteString(summary)
@@ -1662,8 +2012,112 @@ func isCommitTrailer(line string) bool {
 // branch-protection and ruleset sources the waiter uses, so the answer is the
 // one the merge will actually be judged by.
 func targetHasRequiredChecks(ctx context.Context, repository, target string) bool {
-	checks, _, reason := targetBranchRequiredChecks(ctx, repository, target, false)
+	checks, _, reason := githubchecks.RequiredChecks(ctx, repository, target, false)
 	return reason == "" && len(checks) > 0
+}
+
+func verifyWaivedChecks(
+	ctx context.Context,
+	options PullRequestLandOptions,
+	number string,
+	target string,
+	headSHA string,
+	headChecks []githubchecks.RemoteCheck,
+) ([]WaivedCheck, *landRefusal, error) {
+	inspector := options.resolveInspector()
+	required, _, reqReason := inspector.RequiredChecks(ctx, options.Repository, target, false)
+	authority := waiverAuthorityServerPolicy
+	if reqReason != "" || len(required) == 0 {
+		// REQ waiver-on-unfenced-target: an explicit --allow-unfenced makes an
+		// authoritatively empty policy judgeable; an unreadable one never is.
+		if reqReason != "" || !options.AllowUnfenced {
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckTargetUnfenced,
+				reason:  fmt.Sprintf("target branch %s has no server-enforced required status checks; check waivers cannot be evaluated", target),
+				command: "wb pr land " + options.Repository + "#" + number + " --allow-unfenced",
+			}, nil
+		}
+		authority = waiverAuthorityAllowUnfenced
+	}
+
+	targetSHA, targetShaReason := inspector.TargetHead(ctx, options.Repository, target)
+	if targetShaReason != "" {
+		return nil, nil, fmt.Errorf("read target head for %s: %s", target, targetShaReason)
+	}
+	targetChecks, _, targetChecksReason := inspector.CommitChecks(ctx, githubchecks.PullRequestWaitOptions{
+		Repository: options.Repository,
+		Head:       targetSHA,
+	})
+	if targetChecksReason != "" {
+		return nil, nil, fmt.Errorf("read target checks for %s (%s): %s", target, targetSHA, targetChecksReason)
+	}
+	history := &waiverHistory{
+		ctx: ctx, options: options, number: number, target: target,
+		tipSHA: targetSHA, tipChecks: targetChecks,
+		checks: map[string][]githubchecks.RemoteCheck{},
+	}
+
+	waived := make([]WaivedCheck, 0, len(options.WaiveChecks)+len(options.WaiveAggregates))
+	for _, waiveName := range options.WaiveChecks {
+		normalized := githubchecks.NormalizeCheckName(waiveName)
+		// 1. Must have failed or been cancelled on PR head
+		headCheck := findCheck(headChecks, normalized)
+		if headCheck == nil || (headCheck.Bucket != "fail" && headCheck.Bucket != "cancel") {
+			status := "absent"
+			if headCheck != nil {
+				status = checkConclusion(headCheck)
+			}
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckNotFailed,
+				reason:  fmt.Sprintf("waived check %q did not fail or cancel on pull request head (status: %s)", waiveName, status),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+
+		// 2. Target server-enforced policy must not require it
+		if isCheckRequiredByPolicy(normalized, headCheck.AppID, required) {
+			return nil, &landRefusal{
+				code:    LandRefusalWaivedCheckRequired,
+				reason:  fmt.Sprintf("waived check %q is required by target branch %s policy (target SHA %s)", waiveName, target, shortMergeRevision(targetSHA)),
+				command: "wb pr land " + options.Repository + "#" + number,
+			}, nil
+		}
+
+		// 3. Must fail the same way on the target tip, or - only when the tip
+		// has no terminal run - on a bounded first-parent baseline.
+		headConclusion := checkConclusion(headCheck)
+		baselineSHA, refusal, err := history.judge(waiveName, headConclusion)
+		if err != nil {
+			return nil, nil, err
+		}
+		if refusal != nil {
+			return nil, refusal, nil
+		}
+
+		waived = append(waived, WaivedCheck{
+			Name:          githubchecks.NormalizeCheckName(headCheck.Name),
+			Conclusion:    headConclusion,
+			TargetSHA:     targetSHA,
+			Reason:        options.WaiveReason,
+			BaselineSHA:   baselineSHA,
+			BaselineIsTip: baselineSHA == targetSHA,
+			Authority:     authority,
+		})
+	}
+	waived, refusal := judgeAggregates(ctx, options, history, headSHA, headChecks, required, waived, authority)
+	if refusal != nil {
+		return nil, refusal, nil
+	}
+	return waived, nil, nil
+}
+
+func isCheckRequiredByPolicy(normalizedName string, appID int64, required []githubchecks.RequiredRemoteCheck) bool {
+	for _, req := range required {
+		if githubchecks.NormalizeCheckName(req.Name) == normalizedName && (req.IntegrationID == 0 || appID == 0 || appID == req.IntegrationID) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendLandEvent records one invocation. It never fails the landing: an event
@@ -1713,68 +2167,4 @@ func appendLandEvent(options PullRequestLandOptions, result PullRequestLandResul
 		DurationMS:  time.Since(started).Milliseconds(),
 		Evidence:    evidence,
 	})
-}
-
-// preflightLandingCleanup refuses a landing whose tidy-up would fail, before
-// the merge makes the landing irreversible.
-//
-// linksOnly is set when the caller passed --keep: the dirty-worktree check is
-// about retiring a checkout and does not apply, while the live-link check is
-// about what is being landed and always does.
-func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view PullRequestView, number string, linksOnly bool) *landRefusal {
-	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
-		ProjectsRoot: options.ProjectsRoot,
-		Base:         view.Base.Ref,
-		Filter:       options.Repository,
-	})
-	if err != nil {
-		// The inventory is unreadable, which is not the same as clean. Refuse
-		// rather than merge into an unknown tidy-up.
-		return &landRefusal{
-			code:    "cleanup-unverifiable",
-			reason:  "the worktree inventory could not be read, so this landing's cleanup cannot be pre-flighted: " + err.Error(),
-			command: "wb pr land " + options.Repository + "#" + number + " --keep",
-		}
-	}
-	for _, entry := range listed.Results {
-		if entry.Repository != options.Repository || entry.Branch != view.Head.Ref {
-			continue
-		}
-		if !entry.Clean && !linksOnly {
-			return &landRefusal{
-				code: "cleanup-blocked-dirty",
-				reason: "the worktree for task " + entry.Task + " has uncommitted changes, so landing now would " +
-					"merge the work and then be unable to retire the checkout that produced it",
-				command: "wb worktree end " + entry.Task + ", or land with --keep",
-			}
-		}
-		if refusal := refuseLinkedWorktree(options.ProjectsRoot, entry); refusal != nil {
-			return refusal
-		}
-	}
-	return nil
-}
-
-// refuseLinkedWorktree refuses a checkout that still holds a live local
-// dependency link, through the one implementation WB has of that question.
-//
-// It consults both signals — recorded stream links and a `go.work` nobody
-// recorded — because either alone misses the other, and it reuses
-// locallink.HasLiveLink rather than asking half the question a second way.
-func refuseLinkedWorktree(projectsRoot string, entry worktrees.ListResult) *landRefusal {
-	store, err := streams.Open(projectsRoot)
-	if err != nil {
-		// No stream state at all is the ordinary case outside a stream, but a
-		// `go.work` can still exist, so the check continues with no store.
-		store = nil
-	}
-	links, err := locallink.HasLiveLink(store, entry.WorktreeDir)
-	if err != nil || len(links) == 0 {
-		return nil
-	}
-	return &landRefusal{
-		code:    "cleanup-blocked-live-link",
-		reason:  locallink.RefusalMessage(entry.WorktreeDir, links),
-		command: "wb deps propagate local --undo, or land with --keep",
-	}
 }

@@ -79,7 +79,7 @@ and safe canonical fast-forward.
 ### Task 4: Compose, resume, clean, and revert
 
 **Id:** task-4
-**Verifies:** mechanical-worktree-merge#ac:combined-command-walks-the-whole-journey, mechanical-worktree-merge#ac:unpublished-candidate-rebases-over-target-drift, mechanical-worktree-merge#ac:retry-resumes-without-duplicate-effects, mechanical-worktree-merge#ac:landed-failure-has-a-forward-revert-path, mechanical-worktree-merge#ac:landed-target-ci-failure-accepts-an-audited-forward-repair, mechanical-worktree-merge#ac:cleanup-is-explicit-and-receipt-gated
+**Verifies:** mechanical-worktree-merge#ac:combined-command-walks-the-whole-journey, mechanical-worktree-merge#ac:unpublished-candidate-rebases-over-target-drift, mechanical-worktree-merge#ac:retry-resumes-without-duplicate-effects, mechanical-worktree-merge#ac:landed-failure-has-a-forward-revert-path, mechanical-worktree-merge#ac:landed-target-ci-failure-accepts-an-audited-forward-repair, mechanical-worktree-merge#ac:cleanup-is-explicit-and-receipt-gated, mechanical-worktree-merge#ac:already-merged-source-head-retires-cleanly
 **Depends-On:** 3
 **Status:** complete
 

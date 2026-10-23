@@ -25,12 +25,76 @@ type ExecGit struct {
 	Timeout time.Duration
 }
 
-func (git ExecGit) run(ctx context.Context, dir string, args ...string) (string, error) {
-	return runBounded(ctx, git.Timeout, dir, "git", args...)
+// gitCommands keeps one bounded native command boundary across Git verification.
+// Public ExecGit retains its Timeout-only shape.
+type gitCommands struct {
+	command func(context.Context, string, string, ...string) (string, error)
+}
+
+func (git ExecGit) commands() gitCommands {
+	return gitCommands{command: func(ctx context.Context, dir, input string, args ...string) (string, error) {
+		return runBoundedWithInput(ctx, git.Timeout, dir, input, "git", args...)
+	}}
+}
+
+func (git ExecGit) CurrentBranch(ctx context.Context, dir string) (string, error) {
+	return git.commands().CurrentBranch(ctx, dir)
+}
+
+func (git ExecGit) DefaultBranch(ctx context.Context, dir string) (string, error) {
+	return git.commands().DefaultBranch(ctx, dir)
+}
+
+func (git ExecGit) Fetch(ctx context.Context, dir string) error {
+	return git.commands().Fetch(ctx, dir)
+}
+
+func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, error) {
+	return git.commands().PushBranch(ctx, dir, branch)
+}
+
+func (git ExecGit) RemoteHead(ctx context.Context, dir, branch string) (string, bool, error) {
+	return git.commands().RemoteHead(ctx, dir, branch)
+}
+
+func (git ExecGit) LocalHead(ctx context.Context, dir string) (string, error) {
+	return git.commands().LocalHead(ctx, dir)
+}
+
+func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (string, bool, error) {
+	return git.commands().LocalBranchHead(ctx, dir, branch)
+}
+
+func (git ExecGit) IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	return git.commands().IsAncestor(ctx, dir, ancestor, descendant)
+}
+
+func (git ExecGit) CommitsNotIn(ctx context.Context, dir, branch, base string) ([]Commit, error) {
+	return git.commands().CommitsNotIn(ctx, dir, branch, base)
+}
+
+func (git ExecGit) DirtyPaths(ctx context.Context, dir string) ([]string, error) {
+	return git.commands().DirtyPaths(ctx, dir)
+}
+
+func (git ExecGit) Tags(ctx context.Context, dir, pattern string) ([]string, error) {
+	return git.commands().Tags(ctx, dir, pattern)
+}
+
+func (git ExecGit) LogSubjects(ctx context.Context, dir, from, to string) ([]string, error) {
+	return git.commands().LogSubjects(ctx, dir, from, to)
+}
+
+func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error {
+	return git.commands().DeleteRemoteBranch(ctx, dir, branch, expectedSHA)
+}
+
+func (git gitCommands) run(ctx context.Context, dir string, args ...string) (string, error) {
+	return git.command(ctx, dir, "", args...)
 }
 
 // CurrentBranch implements Git.
-func (git ExecGit) CurrentBranch(ctx context.Context, dir string) (string, error) {
+func (git gitCommands) CurrentBranch(ctx context.Context, dir string) (string, error) {
 	out, err := git.run(ctx, dir, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("read current branch in %s: %w", dir, err)
@@ -39,7 +103,7 @@ func (git ExecGit) CurrentBranch(ctx context.Context, dir string) (string, error
 }
 
 // DefaultBranch implements Git using only local state.
-func (git ExecGit) DefaultBranch(ctx context.Context, dir string) (string, error) {
+func (git gitCommands) DefaultBranch(ctx context.Context, dir string) (string, error) {
 	if out, err := git.run(ctx, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if name := strings.TrimPrefix(strings.TrimSpace(out), "origin/"); name != "" {
 			return name, nil
@@ -54,7 +118,7 @@ func (git ExecGit) DefaultBranch(ctx context.Context, dir string) (string, error
 }
 
 // Fetch implements Git.
-func (git ExecGit) Fetch(ctx context.Context, dir string) error {
+func (git gitCommands) Fetch(ctx context.Context, dir string) error {
 	_, err := git.run(ctx, dir, "fetch", "--quiet", "origin")
 	return err
 }
@@ -64,7 +128,7 @@ func (git ExecGit) Fetch(ctx context.Context, dir string) error {
 // `push-verifies-the-ref-it-pushed`: the push exit code is not evidence the
 // intended commit landed, so the local and remote SHAs are compared after the
 // push and a divergence is an error.
-func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, error) {
+func (git gitCommands) PushBranch(ctx context.Context, dir, branch string) (string, error) {
 	if err := git.Fetch(ctx, dir); err != nil {
 		return "", fmt.Errorf("re-read origin before publishing %s: %w", branch, err)
 	}
@@ -72,10 +136,7 @@ func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, 
 	if err != nil {
 		return "", err
 	}
-	remote, present, err := git.RemoteHead(ctx, dir, branch)
-	if err != nil {
-		return "", err
-	}
+	remote, present, _ := git.RemoteHead(ctx, dir, branch)
 	if present {
 		if remote == local {
 			return remote, nil
@@ -108,10 +169,7 @@ func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, 
 	if _, err := git.run(ctx, dir, "fetch", "--quiet", "origin", branch); err != nil {
 		return "", fmt.Errorf("re-read origin/%s after pushing: %w", branch, err)
 	}
-	remote, ok, err := git.RemoteHead(ctx, dir, branch)
-	if err != nil {
-		return "", err
-	}
+	remote, ok, _ := git.RemoteHead(ctx, dir, branch)
 	if !ok {
 		return "", fmt.Errorf("pushed %s but origin/%s does not resolve; the push did not land", branch, branch)
 	}
@@ -121,7 +179,7 @@ func (git ExecGit) PushBranch(ctx context.Context, dir, branch string) (string, 
 	return remote, nil
 }
 
-func (git ExecGit) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+func (git gitCommands) isAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
 	_, err := git.run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
 	if err == nil {
 		return true, nil
@@ -133,7 +191,7 @@ func (git ExecGit) isAncestor(ctx context.Context, dir, ancestor, descendant str
 	return false, fmt.Errorf("compare commits %s and %s: %w", ancestor, descendant, err)
 }
 
-func (git ExecGit) fastForwardBranch(ctx context.Context, dir, branch, remote string) error {
+func (git gitCommands) fastForwardBranch(ctx context.Context, dir, branch, remote string) error {
 	current, err := git.CurrentBranch(ctx, dir)
 	if err != nil {
 		return err
@@ -162,7 +220,7 @@ func (git ExecGit) fastForwardBranch(ctx context.Context, dir, branch, remote st
 }
 
 // RemoteHead implements Git.
-func (git ExecGit) RemoteHead(ctx context.Context, dir, branch string) (string, bool, error) {
+func (git gitCommands) RemoteHead(ctx context.Context, dir, branch string) (string, bool, error) {
 	out, err := git.run(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch)
 	if err != nil {
 		return "", false, nil
@@ -175,7 +233,7 @@ func (git ExecGit) RemoteHead(ctx context.Context, dir, branch string) (string, 
 }
 
 // LocalHead implements Git.
-func (git ExecGit) LocalHead(ctx context.Context, dir string) (string, error) {
+func (git gitCommands) LocalHead(ctx context.Context, dir string) (string, error) {
 	out, err := git.run(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("read HEAD in %s: %w", dir, err)
@@ -186,7 +244,7 @@ func (git ExecGit) LocalHead(ctx context.Context, dir string) (string, error) {
 // LocalBranchHead implements Git without falling back to a remote-tracking
 // ref. A recovered stream member has no worktree to inspect, but its canonical
 // clone can still hold an unpushed stream branch.
-func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (string, bool, error) {
+func (git gitCommands) LocalBranchHead(ctx context.Context, dir, branch string) (string, bool, error) {
 	out, err := git.run(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -202,7 +260,7 @@ func (git ExecGit) LocalBranchHead(ctx context.Context, dir, branch string) (str
 // IsAncestor implements Git without treating patch-equivalence as commit
 // identity. A squash-merged stream PR has immutable GitHub identities, so
 // only a local head on that PR's ancestry can prove it has no later work.
-func (git ExecGit) IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+func (git gitCommands) IsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
 	return git.isAncestor(ctx, dir, ancestor, descendant)
 }
 
@@ -217,7 +275,7 @@ func (git ExecGit) IsAncestor(ctx context.Context, dir, ancestor, descendant str
 // Subject text is carried as a label only. Keying on it would cluster two
 // unrelated commits that happen to share a message, and would fail to cluster
 // one change re-applied with an edited message.
-func (git ExecGit) CommitsNotIn(ctx context.Context, dir, branch, base string) ([]Commit, error) {
+func (git gitCommands) CommitsNotIn(ctx context.Context, dir, branch, base string) ([]Commit, error) {
 	out, err := git.run(ctx, dir, "cherry", base, branch)
 	if err != nil {
 		return nil, fmt.Errorf("compare %s against %s in %s: %w", branch, base, dir, err)
@@ -256,7 +314,7 @@ func (git ExecGit) CommitsNotIn(ctx context.Context, dir, branch, base string) (
 // ancestry, so a backlog of N commits costs one child process instead of N.
 // The SHA is printed alongside the subject because `--no-walk` does not
 // guarantee the input order.
-func (git ExecGit) commitSubjects(ctx context.Context, dir string, shas []string) (map[string]string, error) {
+func (git gitCommands) commitSubjects(ctx context.Context, dir string, shas []string) (map[string]string, error) {
 	if len(shas) == 0 {
 		return map[string]string{}, nil
 	}
@@ -288,7 +346,7 @@ func (git ExecGit) commitSubjects(ctx context.Context, dir string, shas []string
 // to give a patch id (an empty commit) is simply absent from the map, and
 // Commit.Identity falls back to its SHA rather than treating two unknowns as
 // equal.
-func (git ExecGit) patchIDs(ctx context.Context, dir, base, branch string) (map[string]string, error) {
+func (git gitCommands) patchIDs(ctx context.Context, dir, base, branch string) (map[string]string, error) {
 	patch, err := git.run(ctx, dir, "log", "--patch", "--no-color", "--no-merges", "--format=commit %H", base+".."+branch)
 	if err != nil {
 		return nil, fmt.Errorf("read the patch range %s..%s in %s: %w", base, branch, dir, err)
@@ -312,7 +370,7 @@ func (git ExecGit) patchIDs(ctx context.Context, dir, base, branch string) (map[
 }
 
 // DirtyPaths implements Git.
-func (git ExecGit) DirtyPaths(ctx context.Context, dir string) ([]string, error) {
+func (git gitCommands) DirtyPaths(ctx context.Context, dir string) ([]string, error) {
 	out, err := git.run(ctx, dir, "status", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("read status in %s: %w", dir, err)
@@ -332,7 +390,7 @@ func (git ExecGit) DirtyPaths(ctx context.Context, dir string) ([]string, error)
 // Tags implements Git. `--sort=-v:refname` puts the newest version first
 // under Git's own version ordering, which understands the `backend/v1.2.3`
 // module-tag spelling as well as a bare `v1.2.3`.
-func (git ExecGit) Tags(ctx context.Context, dir, pattern string) ([]string, error) {
+func (git gitCommands) Tags(ctx context.Context, dir, pattern string) ([]string, error) {
 	args := []string{"tag", "--sort=-v:refname"}
 	if strings.TrimSpace(pattern) != "" {
 		args = append(args, "--list", pattern)
@@ -351,7 +409,7 @@ func (git ExecGit) Tags(ctx context.Context, dir, pattern string) ([]string, err
 }
 
 // LogSubjects implements Git.
-func (git ExecGit) LogSubjects(ctx context.Context, dir, from, to string) ([]string, error) {
+func (git gitCommands) LogSubjects(ctx context.Context, dir, from, to string) ([]string, error) {
 	revisions := to
 	if strings.TrimSpace(from) != "" {
 		revisions = from + ".." + to
@@ -371,7 +429,7 @@ func (git ExecGit) LogSubjects(ctx context.Context, dir, from, to string) ([]str
 
 // DeleteRemoteBranch implements Git and asserts the effect: after the push
 // that deletes the ref, origin must no longer resolve it.
-func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error {
+func (git gitCommands) DeleteRemoteBranch(ctx context.Context, dir, branch, expectedSHA string) error {
 	if strings.TrimSpace(expectedSHA) == "" {
 		return fmt.Errorf("refusing to delete origin/%s without an expected remote SHA", branch)
 	}
@@ -398,9 +456,7 @@ func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expected
 	if _, err := git.run(ctx, dir, "fetch", "--quiet", "--prune", "origin"); err != nil {
 		return fmt.Errorf("re-read origin after deleting %s: %w", branch, err)
 	}
-	if _, present, err := git.RemoteHead(ctx, dir, branch); err != nil {
-		return err
-	} else if present {
+	if _, present, _ := git.RemoteHead(ctx, dir, branch); present {
 		return fmt.Errorf("pushed a deletion of %s but origin/%s still resolves", branch, branch)
 	}
 	return nil
@@ -412,7 +468,7 @@ func (git ExecGit) DeleteRemoteBranch(ctx context.Context, dir, branch, expected
 // multiple configured URLs. An idempotent retry is safe only when every
 // resolved destination authoritatively reports the ref absent; any read or
 // destination-resolution failure remains unknown and therefore fails closed.
-func (git ExecGit) remoteHeadsOnOriginPushDestinations(ctx context.Context, dir, branch string) ([]string, error) {
+func (git gitCommands) remoteHeadsOnOriginPushDestinations(ctx context.Context, dir, branch string) ([]string, error) {
 	resolved, err := git.run(ctx, dir, "remote", "get-url", "--push", "--all", "origin")
 	if err != nil {
 		return nil, fmt.Errorf("resolve origin push destinations: %w", err)
@@ -632,8 +688,8 @@ func (hub ExecGitHub) DefaultBranchStatus(ctx context.Context, dir, branch strin
 	return raw[0].Conclusion, nil
 }
 
-func (git ExecGit) runWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
-	return runBoundedWithInput(ctx, git.Timeout, dir, input, "git", args...)
+func (git gitCommands) runWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
+	return git.command(ctx, dir, input, args...)
 }
 
 func runBounded(ctx context.Context, timeout time.Duration, dir, name string, args ...string) (string, error) {

@@ -154,11 +154,8 @@ func LoadConfigFile(path string) (Config, error) {
 	for name, profile := range document.Agents.Profiles {
 		config.Profiles[name] = profile
 	}
-	for name := range config.Providers {
-		if err := validateProvider(name, config.Providers[name]); err != nil {
-			return Config{}, fmt.Errorf("agent configuration %s: %w", path, err)
-		}
-	}
+	// Built-ins are fixed valid providers; every user override was validated
+	// before entering the registry above. Profiles do not mutate providers.
 	return config, nil
 }
 

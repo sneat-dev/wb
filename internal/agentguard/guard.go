@@ -77,12 +77,20 @@ type Options struct {
 // It never returns an error and never panics: a recovered panic is an allow,
 // because a guard that runs before every tool call of every agent must not be
 // able to take the machine down with it.
-func Inspect(call ToolCall, options Options) (decision Decision) {
+func Inspect(call ToolCall, options Options) Decision {
+	return inspectSafely(func() Decision { return inspect(call, options) })
+}
+
+func inspectSafely(run func() Decision) (decision Decision) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			decision = Decision{}
 		}
 	}()
+	return run()
+}
+
+func inspect(call ToolCall, options Options) Decision {
 	if options.ProjectsRoot == "" {
 		return Decision{}
 	}
@@ -132,6 +140,10 @@ func Inspect(call ToolCall, options Options) (decision Decision) {
 // Anything else falls back to the pre-PR refusal, unchanged: there is no
 // `sh -c` wrapping anywhere any more (wb#645 review Blockers 1, 4, Major 1).
 func inspectBashCall(call ToolCall, input toolInput, options Options) Decision {
+	return inspectBashCallWithInspector(call, input, options, inspectBash)
+}
+
+func inspectBashCallWithInspector(call ToolCall, input toolInput, options Options, inspectCommand func(string, string, string) *finding) Decision {
 	command := input.Command
 
 	if result := inspectBashDenyOnly(command, call.CWD, options.ProjectsRoot); result != nil {
@@ -140,7 +152,7 @@ func inspectBashCall(call ToolCall, input toolInput, options Options) Decision {
 
 	rewritten := command
 	changed := false
-	if result := inspectBash(command, call.CWD, options.ProjectsRoot); result != nil {
+	if result := inspectCommand(command, call.CWD, options.ProjectsRoot); result != nil {
 		if len(result.GovernedCommand) == 0 {
 			return Decision{Deny: true, Reason: refusal(*result)}
 		}
@@ -333,10 +345,8 @@ func WriteDecision(out io.Writer, decision Decision, toolInput json.RawMessage) 
 	default:
 		return false, nil
 	}
-	encoded, err := json.Marshal(hookResponse{HookSpecificOutput: output})
-	if err != nil {
-		return false, err
-	}
+	// The response contains strings and valid JSON emitted by mergeUpdatedCommand.
+	encoded, _ := json.Marshal(hookResponse{HookSpecificOutput: output})
 	if _, err := out.Write(append(encoded, '\n')); err != nil {
 		return false, err
 	}
@@ -355,11 +365,13 @@ func mergeUpdatedCommand(original json.RawMessage, command string) json.RawMessa
 	if len(original) > 0 {
 		_ = json.Unmarshal(original, &fields)
 	}
-	fields["command"] = command
-	if encoded, err := json.Marshal(fields); err == nil {
-		return encoded
+	if fields == nil {
+		fields = map[string]any{}
 	}
-	encoded, _ := json.Marshal(map[string]string{"command": command})
+	fields["command"] = command
+	// JSON decoding supplies only finite numbers, strings, booleans, nil,
+	// arrays and objects; the replacement command is another string.
+	encoded, _ := json.Marshal(fields)
 	return encoded
 }
 

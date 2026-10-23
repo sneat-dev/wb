@@ -40,9 +40,7 @@ func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 	if got := mergeReceiptCleanupTargetOverride(ctx, []MergeReceiptCleanupProof{proof}, entry); got != "main" {
 		t.Fatalf("target override = %q", got)
 	}
-	if err := applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{proof}, &entry); err != nil {
-		t.Fatal(err)
-	}
+	applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{proof}, &entry)
 	if !entry.IntegratedAtOrigin || !entry.AbsorbedAtOrigin || entry.AbsorbedBySHA != landing || entry.mergeReceiptCandidateSHA != candidate {
 		t.Fatalf("valid proof did not grant exact absorption: %+v", entry)
 	}
@@ -68,9 +66,7 @@ func TestCleanupReceiptProofRequiresExactSourceAndLandingHistory(t *testing.T) {
 			if rejection := mergeReceiptCleanupProofRejection(ctx, p, e); !strings.Contains(rejection, test.want) {
 				t.Fatalf("rejection = %q, want %q", rejection, test.want)
 			}
-			if err := applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{p}, &e); err != nil {
-				t.Fatal(err)
-			}
+			applyMergeReceiptCleanupProof(ctx, []MergeReceiptCleanupProof{p}, &e)
 			if !strings.Contains(e.AbsorbedByRejection, test.want) {
 				t.Fatalf("proof rejection not reported: %+v", e)
 			}
@@ -260,7 +256,7 @@ func TestWorkLogPromptSnapshotRejectsMissingChangedAndUnstableSources(t *testing
 	if err := snapshotOriginalPrompt(&options); err != nil {
 		t.Fatal(err)
 	}
-	if options.OriginalPrompt != path || string(options.originalPromptContents) != "  exact originating request\n" {
+	if options.OriginalPrompt != path || string(options.snapshot.Contents) != "  exact originating request\n" {
 		t.Fatalf("prompt snapshot changed exact bytes or source: %+v", options)
 	}
 	if err := os.WriteFile(path, []byte("changed later"), 0o600); err != nil {
@@ -269,7 +265,7 @@ func TestWorkLogPromptSnapshotRejectsMissingChangedAndUnstableSources(t *testing
 	if err := snapshotOriginalPrompt(&options); err != nil {
 		t.Fatalf("immutable prepared snapshot reread changed file: %v", err)
 	}
-	options.originalPromptDigest = "wrong"
+	options.snapshot.Digest = "wrong"
 	if err := snapshotOriginalPrompt(&options); err == nil || !strings.Contains(err.Error(), "internally inconsistent") {
 		t.Fatalf("corrupted prepared digest accepted: %v", err)
 	}
@@ -303,7 +299,7 @@ func TestWorkLogPromptSnapshotRejectsMissingChangedAndUnstableSources(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stdin.OriginalPrompt != originalPromptStdinMarker || string(stdin.originalPromptContents) != "exact stdin\n" {
+	if stdin.OriginalPrompt != originalPromptStdinMarker || string(stdin.snapshot.Contents) != "exact stdin\n" {
 		t.Fatalf("stdin bytes/source changed: %+v", stdin)
 	}
 	if err := snapshotOriginalPrompt(&stdin); err != nil {
@@ -334,7 +330,7 @@ func TestWorkLogClaimExtensionUsesExactArchivedPrompt(t *testing.T) {
 	}
 	digest := sha256.Sum256(request)
 	if extended.EffortID != "task" || extended.RunID != "run" || extended.TaskSummary != claim.TaskSummary ||
-		string(extended.originalPromptContents) != string(request) || extended.originalPromptDigest != hex.EncodeToString(digest[:]) {
+		string(extended.snapshot.Contents) != string(request) || extended.snapshot.Digest != hex.EncodeToString(digest[:]) {
 		t.Fatalf("extension did not reuse immutable run identity and prompt: %+v", extended)
 	}
 	if _, err := workLogOptionsForClaimExtension(home, WorkLogOptions{Model: "different"}, claim); err == nil || !strings.Contains(err.Error(), "different model") {

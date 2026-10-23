@@ -25,10 +25,8 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 	switch step.Kind {
 	case "import.replace":
 		for _, spec := range file.Imports {
-			importPath, err := strconv.Unquote(spec.Path.Value)
-			if err != nil {
-				return nil, false, fmt.Errorf("unquote import: %w", err)
-			}
+			// Successful ParseFile has already validated each import string literal.
+			importPath, _ := strconv.Unquote(spec.Path.Value)
 			if importPath == step.From {
 				spec.Path.Value = strconv.Quote(step.To)
 				changed = true
@@ -254,7 +252,7 @@ func ensureGoImport(file *ast.File, fset *token.FileSet, importPath, preferred s
 		if name == currentName {
 			return name, false
 		}
-		renameGoImport(file, fset, spec, currentName, name)
+		renameGoImport(file, fset, spec, value, currentName, name)
 		return name, true
 	}
 	if preferred == "" {
@@ -287,11 +285,7 @@ func ensureGoImport(file *ast.File, fset *token.FileSet, importPath, preferred s
 // renameGoImport renames only selectors bound to spec's imported package. A
 // source file may also have a local variable named record; changing every
 // textual "record." occurrence would be incorrect.
-func renameGoImport(file *ast.File, fset *token.FileSet, spec *ast.ImportSpec, oldName, newName string) {
-	importPath, err := strconv.Unquote(spec.Path.Value)
-	if err != nil {
-		return
-	}
+func renameGoImport(file *ast.File, fset *token.FileSet, spec *ast.ImportSpec, importPath, oldName, newName string) {
 	info := goTypeInfo(fset, file)
 	ast.Inspect(file, func(node ast.Node) bool {
 		selector, ok := node.(*ast.SelectorExpr)

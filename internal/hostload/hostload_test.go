@@ -72,38 +72,6 @@ func TestCheckUnsupportedPlatformFailsOpen(t *testing.T) {
 	}
 }
 
-func TestFloorDefaultsToNumCPUWithoutConfig(t *testing.T) {
-	clearAdmissionEnv(t)
-	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
-	got := Floor(missing)
-	if got < 1 {
-		t.Fatalf("Floor(missing config) = %v, want >= 1", got)
-	}
-}
-
-// TestFloorDefaultIsDoubleNumCPU pins the exact default: a 4-core developer
-// Mac refuses new CPU-heavy work above a load average of 8, not 4 — the
-// original floor was too easily tripped by ordinary background load.
-func TestFloorDefaultIsDoubleNumCPU(t *testing.T) {
-	clearAdmissionEnv(t)
-	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
-	want := 2 * float64(runtime.NumCPU())
-	if got := Floor(missing); got != want {
-		t.Fatalf("Floor(missing config) = %v, want 2*NumCPU = %v", got, want)
-	}
-}
-
-func TestFloorReadsConfiguredLoadFloor(t *testing.T) {
-	clearAdmissionEnv(t)
-	path := filepath.Join(t.TempDir(), "wb.yaml")
-	if err := os.WriteFile(path, []byte("admission:\n  load_floor: 2.5\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := Floor(path); got != 2.5 {
-		t.Fatalf("Floor(configured) = %v, want 2.5", got)
-	}
-}
-
 // TestFloorTreatsExplicitZeroConfiguredValueAsDisabled matches the design:
 // wb.yaml's admission.load_floor: 0 disables the check entirely, exactly
 // like WB_ADMISSION_LOAD_FLOOR=0.
@@ -122,19 +90,6 @@ func TestFloorTreatsExplicitZeroConfiguredValueAsDisabled(t *testing.T) {
 	}
 	if err := Check(func() (float64, error) { return 999.0, nil }, floor, false); err != nil {
 		t.Fatalf("Check with a disabled (0) floor = %v, want nil (always admits)", err)
-	}
-}
-
-func TestFloorPreservesUnrelatedConfiguration(t *testing.T) {
-	clearAdmissionEnv(t)
-	path := filepath.Join(t.TempDir(), "wb.yaml")
-	original := "parallel: 3\nrecipes:\n  demo:\n    type: command\n    command: echo hi\n"
-	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got := Floor(path)
-	if got < 1 {
-		t.Fatalf("Floor(unrelated config) = %v, want the NumCPU default", got)
 	}
 }
 
@@ -271,5 +226,50 @@ func TestConsumersNeverEchoesArgv(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "pid=4242") || !strings.Contains(got[0], "comm=malicious") {
 		t.Fatalf("Consumers(argv-shaped stub) = %q, want pid=4242 and comm=malicious only", got[0])
+	}
+}
+
+func TestFloorDefaultsToNumCPUWithoutConfig(t *testing.T) {
+	clearAdmissionEnv(t)
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	got := Floor(missing)
+	if got < 1 {
+		t.Fatalf("Floor(missing config) = %v, want >= 1", got)
+	}
+}
+
+// TestFloorDefaultIsDoubleNumCPU pins the exact default: a 4-core developer
+// Mac refuses new CPU-heavy work above a load average of 8, not 4 — the
+// original floor was too easily tripped by ordinary background load.
+func TestFloorDefaultIsDoubleNumCPU(t *testing.T) {
+	clearAdmissionEnv(t)
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	want := 2 * float64(runtime.NumCPU())
+	if got := Floor(missing); got != want {
+		t.Fatalf("Floor(missing config) = %v, want 2*NumCPU = %v", got, want)
+	}
+}
+
+func TestFloorReadsConfiguredLoadFloor(t *testing.T) {
+	clearAdmissionEnv(t)
+	path := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(path, []byte("admission:\n  load_floor: 2.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := Floor(path); got != 2.5 {
+		t.Fatalf("Floor(configured) = %v, want 2.5", got)
+	}
+}
+
+func TestFloorPreservesUnrelatedConfiguration(t *testing.T) {
+	clearAdmissionEnv(t)
+	path := filepath.Join(t.TempDir(), "wb.yaml")
+	original := "parallel: 3\nrecipes:\n  demo:\n    type: command\n    command: echo hi\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := Floor(path)
+	if got < 1 {
+		t.Fatalf("Floor(unrelated config) = %v, want the NumCPU default", got)
 	}
 }

@@ -52,7 +52,7 @@ func TestRemovedTerminalEvidenceRejectsCorruptFilesWithoutCheckout(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			home, _, expectation, claimID := wtLogCovRemovedTerminalHome(t)
 			tc.edit(t, home, claimID)
-			if base, err := validateRemovedTerminalWorkLog(home, expectation); err == nil || !strings.Contains(err.Error(), tc.want) || base != "" {
+			if base, err := terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), tc.want) || base != "" {
 				t.Fatalf("corrupt terminal evidence returned base %q, error %v; want %q", base, err, tc.want)
 			}
 		})

@@ -1,0 +1,121 @@
+:host {
+  display: block;
+}
+
+.gallery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-bottom: var(--space-6);
+}
+
+.intro p,
+.note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.card {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.section {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+}
+
+.sub {
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  align-items: center;
+  min-height: 2rem;
+  border-top: 1px solid var(--border);
+  padding: var(--space-1) 0;
+}
+
+.row:first-of-type {
+  margin-top: var(--space-2);
+}
+
+.row-label {
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+
+.row-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.grid.spaced {
+  margin-top: var(--space-4);
+}
+
+.panel {
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+
+.panel .sub:first-child {
+  margin-top: 0;
+}
+
+.panel.narrow {
+  max-width: 24rem;
+}
+
+.slot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-sm);
+}
+
+@media (max-width: 64rem) {
+  .grid,
+  .grid.two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 40rem) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .card {
+    padding: var(--space-3);
+  }
+}

@@ -101,6 +101,22 @@ and keep the check opt-in so no hook depends on the network. Extend the guard's
 detached-`HEAD` refusal to state the orphaning consequence rather than only the
 policy.
 
+### Task 6: Judge the default branch when a recorded base cannot answer
+
+**Id:** task-6
+**Verifies:** worktree-lifecycle#ac:landed-integration-branch-tasks-are-retired
+**Depends-On:** task-2
+**Status:** complete
+
+Make an operator-supplied `--base` the exact target, and otherwise judge a
+head against the freshly fetched default branch when its recorded base is gone
+from origin or has itself landed there, by plain Git ancestry only. Keep a
+task with an absent recorded base visible to every lifecycle verb instead of
+reporting it as a malformed candidate, verify `--absorbed-by` against the
+target actually judged, name the compared ref and SHA in every refusal and the
+proving target in every plan, and retire stacked tasks before the tasks they
+are stacked on within one run.
+
 ## Open Questions
 
 None at this time.

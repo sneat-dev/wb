@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+
 	"github.com/sneat-dev/wb/internal/progress"
 )
 
@@ -38,11 +41,11 @@ var updateBranchSettlePoll = 3 * time.Second
 // every other read in this package uses, so a transient failure stays
 // resumable instead of ending the landing.
 func candidateIsBehindTarget(ctx context.Context, repository, target, head string) (bool, string) {
-	targetSHA, reason := targetHead(ctx, repository, target)
+	targetSHA, reason := githubchecks.TargetHead(ctx, repository, target)
 	if reason != "" {
 		return false, reason
 	}
-	contains, reason := candidateContainsTarget(ctx, repository, targetSHA, head)
+	contains, reason := githubchecks.ContainsTarget(ctx, repository, targetSHA, head)
 	if reason != "" {
 		return false, reason
 	}
@@ -64,33 +67,30 @@ func updatePullRequestBranch(ctx context.Context, repository, number, expectedHe
 	response := githubExecute(ctx, "", "api", "--method", "PUT", endpoint,
 		"-f", "expected_head_sha="+expectedHead)
 	if response.ExitCode != 0 {
-		message := strings.TrimSpace(string(response.Stderr))
-		if message == "" {
-			message = strings.TrimSpace(string(response.Stdout))
-		}
+		message := githubobserver.CommandDiagnostic(response)
 		return "", fmt.Sprintf("update pull request branch: %s", message)
 	}
-	return waitForUpdatedHead(ctx, repository, number, expectedHead, reporter)
+	return waitForUpdatedHead(ctx, repository, number, expectedHead, reporter, time.Now, time.After)
 }
 
 // waitForUpdatedHead polls until the pull request reports a head other than the
 // one that was updated. GitHub accepts the update asynchronously, so reading
 // the head immediately would return the commit that is about to be replaced.
-func waitForUpdatedHead(ctx context.Context, repository, number, previousHead string, reporter progress.Reporter) (string, string) {
-	deadline := time.Now().Add(updateBranchSettleTimeout)
+func waitForUpdatedHead(ctx context.Context, repository, number, previousHead string, reporter progress.Reporter, now func() time.Time, after func(time.Duration) <-chan time.Time) (string, string) {
+	deadline := now().Add(updateBranchSettleTimeout)
 	for {
-		view, err := ReadPullRequest(ctx, repository, number)
+		view, err := githubchecks.ReadPullRequest(ctx, repository, number)
 		if err == nil && !strings.EqualFold(view.Head.SHA, previousHead) && strings.TrimSpace(view.Head.SHA) != "" {
 			return view.Head.SHA, ""
 		}
-		if time.Now().After(deadline) {
+		if now().After(deadline) {
 			return "", fmt.Sprintf("updated head for %s#%s did not appear within %s", repository, number, updateBranchSettleTimeout)
 		}
 		reportPullRequestLandProgress(reporter, "update_branch", progress.Waiting, "waiting for the updated head", 0, 0)
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err().Error()
-		case <-time.After(updateBranchSettlePoll):
+		case <-after(updateBranchSettlePoll):
 		}
 	}
 }
@@ -114,7 +114,7 @@ func updateBranchConflict(reason string) bool {
 func waitDeadline(options PullRequestLandOptions) time.Time {
 	budget := options.Slice
 	if budget <= 0 {
-		budget = MaxForegroundCheckWaitSlice
+		budget = githubchecks.MaxForegroundCheckWaitSlice
 	}
 	return landOptionsNow(options)().Add(budget)
 }

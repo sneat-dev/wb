@@ -33,6 +33,23 @@ func TestNoPackageLevelFlagBoundGlobalsReappear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkFlagBoundGlobals(t, dir)
+	cliRoot := filepath.Join(dir, "..", "..", "internal", "cli")
+	if err := filepath.WalkDir(cliRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			t.Run(filepath.Base(path), func(t *testing.T) { checkFlagBoundGlobals(t, path) })
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func checkFlagBoundGlobals(t *testing.T, dir string) {
+	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)

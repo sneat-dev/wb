@@ -529,41 +529,6 @@ func originAddressFromRaw(raw string, parse func(string) (gitremote.Remote, erro
 	return repopath.Address{Host: host, Org: owner, Repo: name}, nil
 }
 
-// OriginSlug returns owner/repository from path's origin remote.
-func OriginSlug(ctx context.Context, path string) (string, error) {
-	command := exec.CommandContext(ctx, "git", "-C", path, "remote", "get-url", "origin")
-	command.Env = console.Env()
-	output, err := command.Output()
-	if err != nil {
-		return "", err
-	}
-	remote := strings.TrimSuffix(strings.TrimSpace(string(output)), ".git")
-	remote = strings.TrimSuffix(remote, "/")
-	if marker := strings.LastIndex(remote, "github.com:"); marker >= 0 {
-		remote = remote[marker+len("github.com:"):]
-	} else if marker := strings.LastIndex(remote, "github.com/"); marker >= 0 {
-		remote = remote[marker+len("github.com/"):]
-	} else {
-		parts := strings.Split(remote, "/")
-		if len(parts) < 2 {
-			return "", fmt.Errorf("cannot derive owner/repository from origin %q", remote)
-		}
-		remote = strings.Join(parts[len(parts)-2:], "/")
-	}
-	if _, _, ok := splitSlug(remote); !ok {
-		return "", fmt.Errorf("origin remote does not identify owner/repository: %q", remote)
-	}
-	return remote, nil
-}
-
-func splitSlug(slug string) (owner, name string, ok bool) {
-	owner, name, found := strings.Cut(strings.Trim(slug, "/"), "/")
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
-		return "", "", false
-	}
-	return owner, name, true
-}
-
 // Counts returns summary fields useful for fleet rollups without retaining findings.
 func Counts(ctx context.Context, projectsRoot string) (Summary, error) {
 	report, err := Audit(ctx, projectsRoot)

@@ -1,0 +1,47 @@
+<div class="picker">
+  <label class="label" [attr.for]="id + '-input'">Repository</label>
+  <input
+    [id]="id + '-input'"
+    class="input"
+    type="text"
+    role="combobox"
+    autocomplete="off"
+    spellcheck="false"
+    placeholder="Filter: words, sneat-*/*-go, -excluded"
+    aria-autocomplete="list"
+    aria-haspopup="listbox"
+    [attr.aria-expanded]="open()"
+    [attr.aria-controls]="id + '-list'"
+    [attr.aria-activedescendant]="activeId()"
+    [value]="text()"
+    (input)="edit($any($event.target).value)"
+    (keydown)="press($event)"
+    (focus)="focused.set(true)"
+    (blur)="focused.set(false)"
+  />
+  @if (open()) {
+    <ul class="list" role="listbox" [id]="id + '-list'" aria-label="Repositories that match">
+      @for (name of shown(); track name; let index = $index) {
+        <li role="option" class="option" [id]="id + '-option-' + index" [class.active]="index === active()" [attr.aria-selected]="index === active()" tabindex="-1" (mousedown)="$event.preventDefault()" (click)="choose(name)" (keydown.enter)="choose(name)">{{ name }}</li>
+      }
+      @if (matches().length > shown().length) {
+        <li class="more" role="presentation">{{ matches().length - shown().length }} more: narrow the filter</li>
+      }
+    </ul>
+  }
+  @if (matches().length > 1 && text() !== '') {
+    <div class="foot"><button type="button" class="add-all" (click)="addAll()">Add all {{ matches().length }} matches</button></div>
+  } @else if (text() !== '' && matches().length === 0) {
+    <div class="foot"><span class="quiet" role="status">No repository matches.</span></div>
+  }
+  <ul class="chosen" aria-label="Chosen repositories">
+    @for (name of chosen(); track name) {
+      <li class="chip">
+        <span class="chip-name">{{ name }}</span>
+        <button type="button" class="chip-remove" [attr.aria-label]="'Remove ' + name" (click)="removed.emit(name)">&times;</button>
+      </li>
+    } @empty {
+      <li class="quiet">None chosen yet</li>
+    }
+  </ul>
+</div>

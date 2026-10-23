@@ -459,7 +459,7 @@ func TestSomething(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(matches) != 1 {
-		t.Fatalf("matches = %+v, want the file still scanned (only \"e2e\" alone is e2e-only)", matches)
+		t.Fatalf("matches = %+v, want the file still scanned (the linux tag does not require e2e)", matches)
 	}
 }
 
@@ -611,6 +611,34 @@ func TestSomething(t *testing.T) {
 	}
 	if len(matches) != 1 || matches[0].Pattern != UnitTierPatternGitHelper || matches[0].Detail != "testenv.ConfigureGitAutoMaintenanceOff" {
 		t.Fatalf("matches = %+v", matches)
+	}
+}
+
+func TestFindUnitTierMatchesRetirementLeafGitHelpers(t *testing.T) {
+	t.Parallel()
+	root := unitTierFixtureModule(t)
+	writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), `package pkg
+
+import retireleaf "github.com/sneat-dev/wb/internal/worktreeretire"
+
+func TestSomething(t *testing.T) {
+	retireleaf.GitBytes(nil, "repo", "show", "missing")
+	retireleaf.GitObjectSHA(nil, "repo", "missing")
+	retireleaf.GitObjectSHA(nil, "repo", "other")
+}
+`)
+	matches, err := FindUnitTierMatches(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 3 {
+		t.Fatalf("matches = %+v, want all three direct Git-object calls", matches)
+	}
+	want := []string{"retireleaf.GitBytes", "retireleaf.GitObjectSHA", "retireleaf.GitObjectSHA"}
+	for i, match := range matches {
+		if match.Pattern != UnitTierPatternGitHelper || match.Detail != want[i] {
+			t.Fatalf("match %d = %+v, want Git helper %q", i, match, want[i])
+		}
 	}
 }
 
@@ -773,5 +801,35 @@ func TestCallArgIsOSArgsZeroRejectsNonIntIndexLiteral(t *testing.T) {
 	}}}
 	if callArgIsOSArgsZero(call, 0) {
 		t.Fatal("want false when the index literal is not an INT token")
+	}
+}
+
+func TestUnitTierBuildConstraintsPreserveDefaultTierEnforcement(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		constraint string
+		scanned    bool
+	}{
+		{"e2e && !windows", false},
+		{"linux && e2e", false},
+		{"(e2e && linux) || (e2e && darwin)", false},
+		{"e2e || linux", true},
+		{"linux || e2e", true},
+		{"linux && amd64", true},
+		{"!e2e", true},
+		{"!(linux && e2e)", true},
+	} {
+		t.Run(tc.constraint, func(t *testing.T) {
+			t.Parallel()
+			root := unitTierFixtureModule(t)
+			writeQualityFile(t, filepath.Join(root, "pkg", "thing_test.go"), "//go:build "+tc.constraint+"\n\npackage pkg\nimport \"os/exec\"\nfunc TestSomething(t *testing.T) { exec.Command(\"git\", \"status\") }\n")
+			matches, err := FindUnitTierMatches(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(matches) == 1) != tc.scanned || len(matches) > 1 {
+				t.Fatalf("matches=%+v scanned=%t", matches, tc.scanned)
+			}
+		})
 	}
 }

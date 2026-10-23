@@ -24,10 +24,17 @@ const DefaultMaxPages = 100
 // Every page goes through the ordinary observer, so each is conditionally
 // requested, cached, and throttle-aware exactly like a single-page read.
 func GetPages(ctx context.Context, request GetRequest, maxPages int) ([]Response, error) {
+	if reader := readerOf(ctx); reader.Get != nil {
+		return getPages(ctx, request, maxPages, reader.Get)
+	}
 	return Default().GetPages(ctx, request, maxPages)
 }
 
 func (o *Observer) GetPages(ctx context.Context, request GetRequest, maxPages int) ([]Response, error) {
+	return getPages(ctx, request, maxPages, o.Get)
+}
+
+func getPages(ctx context.Context, request GetRequest, maxPages int, get func(context.Context, GetRequest) (Response, error)) ([]Response, error) {
 	if maxPages <= 0 {
 		maxPages = DefaultMaxPages
 	}
@@ -50,7 +57,7 @@ func (o *Observer) GetPages(ctx context.Context, request GetRequest, maxPages in
 			// same page and defeat the loop guard above.
 			pageRequest.Query = nil
 		}
-		response, err := o.Get(ctx, pageRequest)
+		response, err := get(ctx, pageRequest)
 		if err != nil {
 			return nil, err
 		}

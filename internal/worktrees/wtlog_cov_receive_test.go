@@ -43,7 +43,7 @@ func TestWtLogCovValidateSessionReceiveSpec(t *testing.T) {
 	}
 	// Path derivation admits an intentionally absent store/fence.
 	spec.AuthorityStore = ""
-	if err := validateSessionReceiveSpec(context.Background(), spec); err != nil {
+	if _, err := admitSessionReceiveSpec(context.Background(), spec); err != nil {
 		t.Fatalf("valid spec rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*SessionReceiveSpec){
@@ -62,7 +62,7 @@ func TestWtLogCovValidateSessionReceiveSpec(t *testing.T) {
 	} {
 		mutated := spec
 		mutate(&mutated)
-		if err := validateSessionReceiveSpec(context.Background(), mutated); err == nil {
+		if _, err := admitSessionReceiveSpec(context.Background(), mutated); err == nil {
 			t.Errorf("invalid session receive spec %q was accepted", name)
 		}
 	}

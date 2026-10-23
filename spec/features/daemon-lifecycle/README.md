@@ -301,6 +301,24 @@ A refusal for a daemon that is confirmed alive, merely on a different
 `--listen` than requested, MUST say so plainly and MUST NOT be phrased as
 uncertainty about whether it is running at all.
 
+#### REQ: start-never-silently-replaces-another-roots-launchd-service
+
+On macOS, `wb daemon start` and every other entry that starts the daemon
+(`wb daemon restart`, `wb cockpit`, `wb dashboard --local`, and the
+automatic start behind the peer and operation commands) MUST, before it
+writes the launchd plist, runs `launchctl bootout`, or records any lifecycle
+state, read the plist already registered under wb's one fixed job label and
+compare the projects root it serves (after cleaning both paths and resolving
+symlinks; a plist with no `--projects-root` serves the default root) with the
+projects root being started. When they differ, or the plist cannot be read as
+a launchd property list, the start MUST be refused with nothing changed, and
+the refusal MUST name the other projects root and its listen address (or the
+unreadable file's path) and the explicit override. Only `--replace-other-root`
+on `wb daemon start` or `wb daemon restart` lets a start for a different
+projects root proceed; callers without that flag refuse with a message
+telling the operator to run `wb daemon start --replace-other-root` first. A
+start for the same projects root, or with no plist registered, is unchanged.
+
 #### REQ: double-owner-state-is-detected
 
 `wb daemon status` MUST attempt to detect the double-owner state in which a
@@ -473,6 +491,28 @@ Scenario: The daemon is confirmed alive on a different `--listen`
 Given a lifecycle record naming a supervisor and a live, healthy process bound to a different `--listen` than requested
 When `wb daemon start` runs with the new `--listen`
 Then the refusal says the daemon is alive on the other address, rather than phrasing it as uncertainty about whether it is running at all
+
+### AC: another-roots-launchd-service-is-not-silently-replaced (verifies REQ:start-never-silently-replaces-another-roots-launchd-service)
+
+Scenario: A start for a different projects root is refused without the explicit flag
+Given a launchd plist registered under wb's fixed job label that serves projects root A on some listen address
+When the daemon is started for projects root B without `--replace-other-root`
+Then it refuses naming root A, that listen address and `--replace-other-root`, and the plist, the launchd service and the lifecycle state are left exactly as they were
+
+Scenario: The explicit flag allows the replacement
+Given the same plist serving projects root A
+When `wb daemon start --replace-other-root` runs for projects root B
+Then the start proceeds and replaces the service as it does today
+
+Scenario: An unreadable plist is not overwritten
+Given a plist at the launch agent path that cannot be read as a launchd property list
+When the daemon is started without `--replace-other-root`
+Then it refuses naming that file and changes nothing
+
+Scenario: The same projects root, however spelled, is not refused
+Given a plist serving a projects root, or no plist at all
+When the daemon is started for that same projects root, including through a symlinked spelling of it
+Then the start proceeds as before
 
 ### AC: a-double-owner-is-flagged-when-observable (verifies REQ:double-owner-state-is-detected)
 

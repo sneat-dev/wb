@@ -38,7 +38,8 @@ const EnvHomeRetired = "WB_HOME"
 const EnvMigrationCompat = "WB_HOME_MIGRATION_COMPAT"
 
 // IgnoredHomeEnvDiagnostic reports the retired WB_HOME variable to a human. It
-// returns "" when WB_HOME is unset, empty or blank, and otherwise a one-line
+// returns "" when WB_HOME is unset, empty or blank, or names the state
+// directory the selected root uses anyway, and otherwise a one-line
 // message naming the variable, the value it ignored, and the state directory
 // the selected root actually uses. projectsRoot is the root the invocation
 // selected — the --projects-root flag value — or "" to fall back to
@@ -56,6 +57,12 @@ func IgnoredHomeEnvDiagnostic(projectsRoot string) (string, error) {
 	home, err := Root(projectsRoot)
 	if err != nil {
 		return "", err
+	}
+	// A value that names the directory WB uses anyway changes nothing, so
+	// there is nothing to warn about. Compare resolved paths so a symlinked
+	// or unclean spelling of the same directory counts as equal.
+	if resolved, resolveErr := resolveAbs(value); resolveErr == nil && resolved == home {
+		return "", nil
 	}
 	return fmt.Sprintf("%s=%s is ignored: %s no longer selects WB's state directory; using %s",
 		EnvHomeRetired, value, EnvHomeRetired, home), nil
@@ -280,12 +287,16 @@ func hasWorktrees(home string) bool {
 // os.TempDir returns) unresolved precisely when the directory is about to be
 // created for the first time.
 func resolveAbs(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
+	return resolveAbsWith(path, filepath.Abs, filepath.EvalSymlinks)
+}
+
+func resolveAbsWith(path string, abs func(string) (string, error), eval func(string) (string, error)) (string, error) {
+	absolute, err := abs(path)
 	if err != nil {
 		return "", err
 	}
 	absolute = filepath.Clean(absolute)
-	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+	if resolved, err := eval(absolute); err == nil {
 		return resolved, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -296,7 +307,7 @@ func resolveAbs(path string) (string, error) {
 		// to strip. Treat the root itself as already resolved.
 		return absolute, nil
 	}
-	resolvedParent, err := resolveAbs(parent)
+	resolvedParent, err := resolveAbsWith(parent, abs, eval)
 	if err != nil {
 		return "", err
 	}

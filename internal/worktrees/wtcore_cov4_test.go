@@ -211,11 +211,11 @@ func TestWTCoreCovWorkLogOptionHelpers(t *testing.T) {
 	if options.OriginalPrompt != originalPromptStdinMarker {
 		t.Fatalf("marker = %q", options.OriginalPrompt)
 	}
-	if string(options.originalPromptContents) != string(content) || options.originalPromptDigest == "" {
+	if string(options.snapshot.Contents) != string(content) || options.snapshot.Digest == "" {
 		t.Fatalf("captured prompt = %#v", options)
 	}
 	content[0] = 'X'
-	if options.originalPromptContents[0] != 'd' {
+	if options.snapshot.Contents[0] != 'd' {
 		t.Fatal("captured prompt aliases the caller's buffer")
 	}
 

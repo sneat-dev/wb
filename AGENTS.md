@@ -30,8 +30,11 @@ generated_at: "…"
 - **`writable: true` (`kind: worktree`)** — this is an isolated linked
   worktree. Work here. Edit, commit, and push from this path.
 - **`writable: false` (`kind: canonical`)** — this is the shared canonical
-  clone that every worktree in the fleet is cut from. It must stay clean and
-  stay on its base branch. Read it, `git fetch` it, `git merge --ff-only` it —
+  clone that every worktree in the fleet is cut from. It must stay clean; which
+  branch it has checked out is not policed (another agent or a person may
+  have their own branch there, and landing, cleanup and worktree creation do
+  not depend on it, so never switch it back to the base branch just to make
+  one of them work). Read it, `git fetch` it, `git merge --ff-only` it —
   and write nothing. To do work, run the command the file names:
 
   ```sh
@@ -81,23 +84,31 @@ fleet-process, and governance work to `sneat-co/backstage`. Do not use this
 public WB repository as a fleet tracker or mirror upstream issues.
 
 - Build: `go build ./...`  ·  Test: `go test ./...`  ·  Lint: `golangci-lint run`
-- Coverage is a per-package ratchet, not one repository-wide total
-  (spec/plans/coverage-to-100/README.md task-3): for packages the PR changes,
-  the package's uncovered statement count must never rise against the
-  baseline go-ci's coverage job publishes on every push to main, and any
-  statement a PR adds or changes against its merge base must be covered
-  unless git marks the line moved and unmodified (`git diff --merge-base
-  origin/<base> -U0 --color-moved=plain`). A package the PR does not change
-  only warns on a count rise (founder decision 2026-09-23) — it never fails
-  the PR; that keeps the gate from flaking on coverage drift in unrelated
-  legacy packages. `wb coverage --changed --target <base>` enforces this and
-  names the exact `file:line` of every newly uncovered statement, changed-
-  package failures and unrelated-package warnings both. The `--minimum=87`
-  backstop in `.github/workflows/go-ci.yml` and
-  `.github/workflows/nightly-coverage.yml` stays alongside it, raised only,
-  in both files together, and the nightly job still measures every package
-  with no changed-package exemption. Do not reduce approved scope to satisfy
-  either gate — say so instead.
+- Coverage keeps the changed-statement and changed-package ratchets
+  (spec/plans/coverage-to-100/README.md, approved 2026-10-02 scope update).
+  CI invokes `wb coverage --changed --affected-packages --target <base>`:
+  changed statements require 100% coverage, and a changed package's uncovered
+  statement count must never rise. The same measured selected profile must also
+  have zero uncovered positive statement blocks. A current, revision-bound
+  no-work ratchet result is reported as no measured scope, never as global100%.
+  Unchanged packages only warn on a rise.
+  As a stopgap, `.wb/coverage-ratchet.yaml` (read from the head checkout)
+  lets a listed package exceed its baseline by a few timing-dependent
+  statements, only inside the functions the entry names and only on lines the
+  change did not add, modify or move; each use prints a `WARNING`. The policy
+  is pinned by a test. Remove an entry once its branches are deterministic;
+  never widen one to fit.
+  Base and head measure the same logical changed-package and reverse-dependent
+  selection, including test imports and all production/test embedding consumers.
+  Shared inputs and differing default/native package membership select the
+  full module. Selected runs measure their own baseline, ignore full-module
+  artifacts, reject a global minimum, and never publish repository totals.
+  Main may reuse an exact trusted PR receipt. Daily nightly coverage and manual
+  nightly dispatch measure all packages with `--minimum=100`, require a valid
+  nonempty profile with zero uncovered positive statement blocks using exact
+  integer counts, and publish full-module baseline/summary artifacts on success.
+  Failed runs retain raw profiles and diagnostics; rounded percentages cannot pass. Do not
+  reduce approved scope to satisfy either ratchet or the nightly floor.
 - Every public command leaf needs a matching row in `ai/capabilities.json` and
   a line in `docs/cli-flag-matrix.md`; `cmd/wb/skills_test.go` enforces both.
 - Persistent flags a command ignores are rejected, not silently accepted. Add

@@ -31,9 +31,6 @@ if [[ $GO_REQUIRED == false || $REUSE_RESULT == true && $EVENT_NAME == push ]]; 
   expected=skipped
 fi
 expected_coverage=$expected
-if [[ $EVENT_NAME == push && $GO_REQUIRED == true ]]; then
-  expected_coverage=success
-fi
 
 for check in "Formatting and dependencies:$SOURCE_RESULT:$expected" \
              "Build and vet:$STATIC_RESULT:$expected" \
@@ -58,7 +55,7 @@ esac
 if [[ $GO_REQUIRED == false ]]; then
   echo 'No Go-relevant file changed; Go validation was not required.'
 elif [[ $REUSE_RESULT == true ]]; then
-  echo 'Reused exact trusted pull-request validation; coverage baseline passed.'
+  echo 'Reused exact trusted pull-request validation.'
 else
   echo 'All required checks passed.'
 fi

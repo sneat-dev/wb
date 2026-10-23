@@ -10,37 +10,17 @@ import (
 
 	"github.com/sneat-dev/wb/internal/retiredcandidateack"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 // retiredPrepareCandidateReceipt is the smallest immutable prepare/conflict
 // receipt shape this recovery accepts. A receipt that was ever published,
 // landed, or recorded an actual candidate SHA must use its existing lifecycle
 // path instead.
-type retiredPrepareCandidateReceipt struct {
-	ReceiptPath           string                       `json:"receipt_path"`
-	ID                    string                       `json:"id"`
-	Phase                 string                       `json:"phase"`
-	Status                string                       `json:"status"`
-	Lane                  string                       `json:"lane"`
-	Repository            string                       `json:"repository"`
-	Target                string                       `json:"target"`
-	TargetSHA             string                       `json:"target_sha"`
-	LandingSHA            string                       `json:"landing_sha"`
-	PullRequest           string                       `json:"pull_request"`
-	PublishedCandidateSHA string                       `json:"published_candidate_sha"`
-	Candidate             retiredcandidateack.Source   `json:"candidate"`
-	Sources               []retiredcandidateack.Source `json:"sources"`
-}
+type retiredPrepareCandidateReceipt worktreeproof.RetiredPrepareCandidateReceipt
 
 func (receipt retiredPrepareCandidateReceipt) identity() retiredcandidateack.ReceiptIdentity {
-	candidate := receipt.Candidate
-	candidate.SHA = receipt.TargetSHA
-	return retiredcandidateack.ReceiptIdentity{
-		Path: receipt.ReceiptPath, ID: receipt.ID, Phase: receipt.Phase,
-		Status: receipt.Status, Lane: receipt.Lane, Repository: receipt.Repository,
-		Target: receipt.Target, TargetSHA: receipt.TargetSHA, Candidate: candidate,
-		Sources: receipt.Sources,
-	}
+	return worktreeproof.RetiredPrepareCandidateReceipt(receipt).Identity()
 }
 
 func (receipt retiredPrepareCandidateReceipt) validLegacyEmptyCandidate(path string) bool {
@@ -68,39 +48,25 @@ func findRetiredPrepareCandidateAcknowledgement(
 	if home == "" || defaultBranch == "" || defaultSHA == "" {
 		return nil, nil
 	}
-	entries, err := os.ReadDir(filepath.Join(home, "reports", "worktree-merge"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read worktree-merge reports: %w", err)
-	}
 	cleanWorktree := filepath.Clean(worktreeDir)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.Contains(entry.Name(), ".ack.json") {
-			continue
-		}
-		receiptPath := filepath.Join(home, "reports", "worktree-merge", entry.Name())
-		bytes, readErr := os.ReadFile(receiptPath)
-		if readErr != nil {
-			continue
-		}
+	var proof *retiredPrepareCandidateCleanupProof
+	err := forEachWorktreeMergeReceipt(home, func(receiptPath string, bytes []byte) bool {
 		var receipt retiredPrepareCandidateReceipt
 		if json.Unmarshal(bytes, &receipt) != nil || !receipt.validLegacyEmptyCandidate(receiptPath) {
-			continue
+			return false
 		}
 		identity := receipt.identity()
 		if identity.Candidate.Task != task || filepath.Clean(identity.Candidate.Worktree) != cleanWorktree ||
 			identity.Candidate.Branch != branch || identity.Candidate.SHA != head {
-			continue
+			return false
 		}
 		status, statusErr := git(ctx, worktreeDir, "status", "--porcelain")
 		if statusErr != nil || strings.TrimSpace(status) != "" {
-			return nil, nil
+			return true
 		}
 		ack, loadErr := retiredcandidateack.Load(retiredcandidateack.Path(receiptPath), identity)
 		if loadErr != nil || ack.DefaultBranch != defaultBranch {
-			return nil, nil
+			return true
 		}
 		// A later force-push or default-branch replacement cannot reuse a stale
 		// acknowledgement: preserve both the acknowledged fetched object and
@@ -108,15 +74,22 @@ func findRetiredPrepareCandidateAcknowledgement(
 		ackContained, ackErr := isAncestor(ctx, canonicalDir, ack.DefaultSHA, defaultSHA)
 		candidateContained, candidateErr := isAncestor(ctx, canonicalDir, head, defaultSHA)
 		if ackErr != nil || candidateErr != nil || !ackContained || !candidateContained {
-			return nil, nil
+			return true
 		}
 		published, publishErr := remoteBranchHead(ctx, canonicalDir, branch)
 		if publishErr != nil || published != "" {
+			return true
+		}
+		proof = &retiredPrepareCandidateCleanupProof{AcknowledgementPath: retiredcandidateack.Path(receiptPath)}
+		return true
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return &retiredPrepareCandidateCleanupProof{AcknowledgementPath: retiredcandidateack.Path(receiptPath)}, nil
+		return nil, fmt.Errorf("read worktree-merge reports: %w", err)
 	}
-	return nil, nil
+	return proof, nil
 }
 
 // hasRetiredPrepareCandidateAcknowledgement is intentionally independent of
@@ -128,32 +101,26 @@ func hasRetiredPrepareCandidateAcknowledgement(projectsRoot, task, worktree, bra
 	if err != nil {
 		return false
 	}
-	entries, err := os.ReadDir(filepath.Join(home, "reports", "worktree-merge"))
+	cleanWorktree := filepath.Clean(worktree)
+	var found bool
+	err = forEachWorktreeMergeReceipt(home, func(path string, bytes []byte) bool {
+		var receipt retiredPrepareCandidateReceipt
+		if json.Unmarshal(bytes, &receipt) != nil || !receipt.validLegacyEmptyCandidate(path) {
+			return false
+		}
+		identity := receipt.identity()
+		if identity.Candidate.Task != task || filepath.Clean(identity.Candidate.Worktree) != cleanWorktree ||
+			identity.Candidate.Branch != branch || identity.Candidate.SHA != head {
+			return false
+		}
+		_, loadErr := retiredcandidateack.Load(retiredcandidateack.Path(path), identity)
+		found = loadErr == nil
+		return true
+	})
 	if err != nil {
 		return false
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.Contains(entry.Name(), ".ack.json") {
-			continue
-		}
-		path := filepath.Join(home, "reports", "worktree-merge", entry.Name())
-		bytes, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var receipt retiredPrepareCandidateReceipt
-		if json.Unmarshal(bytes, &receipt) != nil || !receipt.validLegacyEmptyCandidate(path) {
-			continue
-		}
-		identity := receipt.identity()
-		if identity.Candidate.Task != task || filepath.Clean(identity.Candidate.Worktree) != filepath.Clean(worktree) ||
-			identity.Candidate.Branch != branch || identity.Candidate.SHA != head {
-			continue
-		}
-		_, err = retiredcandidateack.Load(retiredcandidateack.Path(path), identity)
-		return err == nil
-	}
-	return false
+	return found
 }
 
 func candidateBranchHead(ctx context.Context, worktree string) string {

@@ -27,7 +27,11 @@ const DefaultBranchEnv = "WB_DEFAULT_BRANCH"
 // unresolved PR-status case. CI remains the real gate for a publication push
 // either way.
 func ClassifyPendingPush(stdin io.Reader, repoRoot string) (Classification, error) {
-	if console.IsTerminal(stdin) {
+	return classifyPendingPushWithTerminal(stdin, repoRoot, console.IsTerminal)
+}
+
+func classifyPendingPushWithTerminal(stdin io.Reader, repoRoot string, isTerminal func(any) bool) (Classification, error) {
+	if isTerminal(stdin) {
 		return Classification{
 			Tier:   TierLint,
 			Reason: "no pushed-ref list available (interactive invocation, not a real git push); running the fast lane — CI is the real gate",

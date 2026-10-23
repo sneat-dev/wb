@@ -72,6 +72,10 @@ func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
 // depending on goroutine scheduling -- see
 // TestAdmitFallsBackToOpeningTheAdmitLockAfterACompetingCreate.
 func (store TargetStore) admit(raw []byte, inj *filewrite.Injector) (TargetAdmission, error) {
+	return store.admitWithOperations(raw, inj, unix.Mkdirat, unix.Openat, unix.Flock)
+}
+
+func (store TargetStore) admitWithOperations(raw []byte, inj *filewrite.Injector, mkdirAt func(int, string, uint32) error, openAt func(int, string, int, uint32) (int, error), flock func(int, int) error) (TargetAdmission, error) {
 	envelope, err := DecodeEnvelope(raw)
 	if err != nil {
 		return TargetAdmission{}, err
@@ -97,7 +101,7 @@ func (store TargetStore) admit(raw []byte, inj *filewrite.Injector) (TargetAdmis
 	}
 	rootDir := os.NewFile(uintptr(rootFD), "wb-park-resume-admit-root")
 	defer func() { _ = rootDir.Close() }()
-	if err := unix.Fchmod(rootFD, 0o700); err != nil {
+	if err := filewrite.Chmod(rootFD, 0o700, rootDir.Name(), inj); err != nil {
 		return TargetAdmission{}, err
 	}
 	admitName := ".admit-" + envelope.Request.ResumeID + ".lock"
@@ -107,54 +111,54 @@ func (store TargetStore) admit(raw []byte, inj *filewrite.Injector) (TargetAdmis
 	}
 	admit := os.NewFile(uintptr(admitFD), "wb-park-resume-admit-lock")
 	defer func() { _ = admit.Close() }()
-	if err := unix.Flock(int(admit.Fd()), unix.LOCK_EX); err != nil {
+	if err := flock(int(admit.Fd()), unix.LOCK_EX); err != nil {
 		return TargetAdmission{}, err
 	}
 	defer func() { _ = unix.Flock(int(admit.Fd()), unix.LOCK_UN) }()
 	created := false
-	if err := unix.Mkdirat(rootFD, envelope.Request.ResumeID, 0o700); err != nil {
+	if err := mkdirAt(rootFD, envelope.Request.ResumeID, 0o700); err != nil {
 		if !errors.Is(err, unix.EEXIST) {
 			return TargetAdmission{}, fmt.Errorf("create park resume target aggregate: %w", err)
 		}
 	} else {
 		created = true
 	}
-	aggregateFD, err := unix.Openat(rootFD, envelope.Request.ResumeID, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	aggregateFD, err := openAt(rootFD, envelope.Request.ResumeID, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return TargetAdmission{}, fmt.Errorf("open private park resume target aggregate: %w", err)
 	}
 	aggregate := os.NewFile(uintptr(aggregateFD), "wb-park-resume-admit-aggregate")
 	defer func() { _ = aggregate.Close() }()
-	if err := unix.Fchmod(aggregateFD, 0o700); err != nil {
+	if err := filewrite.Chmod(aggregateFD, 0o700, aggregate.Name(), inj); err != nil {
 		return TargetAdmission{}, err
 	}
-	if err := writeExactPrivateAt(aggregate, EnvelopeFileName, raw); err != nil {
+	if err := writeExactPrivateAtInjected(aggregate, EnvelopeFileName, raw, inj); err != nil {
 		return TargetAdmission{}, fmt.Errorf("persist exact park resume envelope: %w", err)
 	}
-	if err := writeExactPrivateAt(aggregate, ContinuationFileName, []byte(envelope.Request.Continuation)); err != nil {
+	if err := writeExactPrivateAtInjected(aggregate, ContinuationFileName, []byte(envelope.Request.Continuation), inj); err != nil {
 		return TargetAdmission{}, fmt.Errorf("persist private park resume continuation: %w", err)
 	}
-	if err := unix.Mkdirat(aggregateFD, targetEventsDirName, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+	if err := mkdirAt(aggregateFD, targetEventsDirName, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 		return TargetAdmission{}, err
 	}
-	eventsFD, err := unix.Openat(aggregateFD, targetEventsDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	eventsFD, err := openAt(aggregateFD, targetEventsDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return TargetAdmission{}, err
 	}
 	events := os.NewFile(uintptr(eventsFD), "wb-park-resume-admit-events")
-	if err := unix.Fchmod(eventsFD, 0o700); err != nil {
+	if err := filewrite.Chmod(eventsFD, 0o700, events.Name(), inj); err != nil {
 		_ = events.Close()
 		return TargetAdmission{}, err
 	}
-	if err := events.Sync(); err != nil {
+	if err := filewrite.SyncDir(events, inj); err != nil {
 		_ = events.Close()
 		return TargetAdmission{}, err
 	}
 	_ = events.Close()
-	if err := aggregate.Sync(); err != nil {
+	if err := filewrite.SyncDir(aggregate, inj); err != nil {
 		return TargetAdmission{}, err
 	}
-	if err := rootDir.Sync(); err != nil {
+	if err := filewrite.SyncDir(rootDir, inj); err != nil {
 		return TargetAdmission{}, err
 	}
 	receipt, err := loadReceiptAt(aggregate)
@@ -170,6 +174,10 @@ func (store TargetStore) admit(raw []byte, inj *filewrite.Injector) (TargetAdmis
 }
 
 func (store TargetStore) Acquire(ctx context.Context, resumeID string, digest sessionmove.Digest) (*TargetLock, error) {
+	return store.acquireWithFlock(ctx, resumeID, digest, unix.Flock)
+}
+
+func (store TargetStore) acquireWithFlock(ctx context.Context, resumeID string, digest sessionmove.Digest, flock func(int, int) error) (*TargetLock, error) {
 	if !strings.HasPrefix(resumeID, "resume-") || !strings.HasPrefix(string(digest), sessionmove.DigestAlgorithmSHA256+":") {
 		return nil, fmt.Errorf("park resume target authority identity is invalid")
 	}
@@ -218,7 +226,7 @@ func (store TargetStore) Acquire(ctx context.Context, resumeID string, digest se
 	}
 	file := os.NewFile(uintptr(lockFD), "wb-park-resume-lock")
 	for {
-		if err := unix.Flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+		if err := flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); err == nil {
 			return &TargetLock{root: root, aggregate: aggregate, envelopeFile: envelopeFile, file: file,
 				rootPath: rootPath, resumeID: resumeID, digest: digest, envelope: envelope}, nil
 		} else if !errors.Is(err, unix.EWOULDBLOCK) {
@@ -228,18 +236,12 @@ func (store TargetStore) Acquire(ctx context.Context, resumeID string, digest se
 			_ = root.Close()
 			return nil, fmt.Errorf("lock park resume execution: %w", err)
 		}
-		timer := time.NewTimer(20 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+		if err := waitResumeFence(ctx); err != nil {
 			_ = file.Close()
 			_ = envelopeFile.Close()
 			_ = aggregate.Close()
 			_ = root.Close()
 			return nil, fmt.Errorf("wait for park resume execution lock: %w", ctx.Err())
-		case <-timer.C:
 		}
 	}
 }
@@ -303,12 +305,16 @@ func (lock *TargetLock) heldForSessionLocked(expectedRoot, aggregateID, digest s
 }
 
 func (lock *TargetLock) RetainSessionDir(expectedRoot, aggregateID, digest string) (*os.File, error) {
+	return lock.retainSessionDir(expectedRoot, aggregateID, digest, unix.Dup)
+}
+
+func (lock *TargetLock) retainSessionDir(expectedRoot, aggregateID, digest string, duplicate func(int) (int, error)) (*os.File, error) {
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	if !lock.heldForSessionLocked(expectedRoot, aggregateID, digest) {
 		return nil, fmt.Errorf("park resume lock does not retain the exact admitted aggregate")
 	}
-	fd, err := unix.Dup(int(lock.aggregate.Fd()))
+	fd, err := duplicate(int(lock.aggregate.Fd()))
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +398,10 @@ func (store TargetStore) EnsureSuccessorContextUnderLock(lock *TargetLock, reque
 }
 
 func (store TargetStore) SaveReceiptUnderLock(lock *TargetLock, request RemoteRequest, digest sessionmove.Digest, receipt Receipt) (Receipt, bool, error) {
+	return store.saveReceiptUnderLockInjected(lock, request, digest, receipt, nil)
+}
+
+func (store TargetStore) saveReceiptUnderLockInjected(lock *TargetLock, request RemoteRequest, digest sessionmove.Digest, receipt Receipt, inj *filewrite.Injector) (Receipt, bool, error) {
 	if lock == nil || !lock.HeldForSession(store.Root, request.ResumeID, string(digest)) {
 		return Receipt{}, false, fmt.Errorf("save receipt requires exact admitted park resume authority")
 	}
@@ -402,7 +412,7 @@ func (store TargetStore) SaveReceiptUnderLock(lock *TargetLock, request RemoteRe
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	created, err := filewrite.CreateExclusiveWriteSync(lock.aggregate, targetReceiptFileName, raw, 0o600, nil)
+	created, err := filewrite.CreateExclusiveWriteSync(lock.aggregate, targetReceiptFileName, raw, 0o600, inj)
 	if err != nil {
 		return Receipt{}, false, err
 	}
@@ -418,6 +428,10 @@ func (store TargetStore) SaveReceiptUnderLock(lock *TargetLock, request RemoteRe
 }
 
 func (store TargetStore) AppendEventUnderLock(lock *TargetLock, request RemoteRequest, digest sessionmove.Digest, phase string, at time.Time) (TargetEvent, error) {
+	return store.appendEventUnderLockInjected(lock, request, digest, phase, at, nil)
+}
+
+func (store TargetStore) appendEventUnderLockInjected(lock *TargetLock, request RemoteRequest, digest sessionmove.Digest, phase string, at time.Time, inj *filewrite.Injector) (TargetEvent, error) {
 	if lock == nil || !lock.HeldForSession(store.Root, request.ResumeID, string(digest)) {
 		return TargetEvent{}, fmt.Errorf("append event requires exact admitted park resume authority")
 	}
@@ -440,9 +454,12 @@ func (store TargetStore) AppendEventUnderLock(lock *TargetLock, request RemoteRe
 		at = time.Now().UTC()
 	}
 	event := TargetEvent{SchemaVersion: 1, Sequence: uint64(len(history) + 1), ResumeID: request.ResumeID, Phase: phase, At: at.UTC()}
-	raw, _ := jsonMarshal(event)
+	raw, err := jsonMarshal(event)
+	if err != nil {
+		return TargetEvent{}, err
+	}
 	name := fmt.Sprintf("%020d.json", event.Sequence)
-	if _, err := filewrite.CreateExclusiveWriteSync(events, name, raw, 0o600, nil); err != nil {
+	if _, err := filewrite.CreateExclusiveWriteSync(events, name, raw, 0o600, inj); err != nil {
 		return TargetEvent{}, err
 	}
 	return event, nil
@@ -473,17 +490,21 @@ func cleanAbsoluteStoreRoot(root string) (string, error) {
 }
 
 func openTargetLock(aggregateFD int) (int, error) {
+	return openTargetLockWithOpen(aggregateFD, unix.Openat)
+}
+
+func openTargetLockWithOpen(aggregateFD int, openAt func(int, string, int, uint32) (int, error)) (int, error) {
 	const flags = unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW
-	fd, err := unix.Openat(aggregateFD, targetLockFileName, flags, 0)
+	fd, err := openAt(aggregateFD, targetLockFileName, flags, 0)
 	if err == nil {
 		return fd, nil
 	}
 	if !errors.Is(err, unix.ENOENT) {
 		return -1, err
 	}
-	fd, err = unix.Openat(aggregateFD, targetLockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+	fd, err = openAt(aggregateFD, targetLockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
 	if errors.Is(err, unix.EEXIST) {
-		return unix.Openat(aggregateFD, targetLockFileName, flags, 0)
+		return openAt(aggregateFD, targetLockFileName, flags, 0)
 	}
 	return fd, err
 }
@@ -495,6 +516,10 @@ func sameFile(first, second *os.File) bool {
 }
 
 func readBoundedRegular(file *os.File, maximum int64) ([]byte, error) {
+	return readBoundedRegularWithRead(file, maximum, io.ReadAll)
+}
+
+func readBoundedRegularWithRead(file *os.File, maximum int64, readAll func(io.Reader) ([]byte, error)) ([]byte, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -502,7 +527,7 @@ func readBoundedRegular(file *os.File, maximum int64) ([]byte, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maximum {
 		return nil, fmt.Errorf("artifact is not one bounded regular file")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	raw, err := readAll(io.LimitReader(file, maximum+1))
 	if err != nil || int64(len(raw)) != info.Size() {
 		return nil, fmt.Errorf("artifact changed while being read")
 	}
@@ -529,11 +554,15 @@ func readRegularAt(directory *os.File, name string, maximum int64) ([]byte, erro
 // the protocol-specific verification (mode, link count, byte-for-byte
 // identity) that is not part of that generic seam.
 func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
-	created, err := filewrite.CreateExclusiveWriteSync(directory, name, raw, 0o600, nil)
+	return writeExactPrivateAtInjected(directory, name, raw, nil)
+}
+
+func writeExactPrivateAtInjected(directory *os.File, name string, raw []byte, inj *filewrite.Injector) error {
+	created, err := filewrite.CreateExclusiveWriteSync(directory, name, raw, 0o600, inj)
 	if err != nil {
 		return err
 	}
-	fd, err := filewrite.OpenReadOnly(int(directory.Fd()), name, nil)
+	fd, err := filewrite.OpenReadOnly(int(directory.Fd()), name, inj)
 	if err != nil {
 		return err
 	}
@@ -548,7 +577,7 @@ func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
 		return fmt.Errorf("immutable private artifact %q conflicts with admitted bytes", name)
 	}
 	if created {
-		return filewrite.SyncDir(directory, nil)
+		return filewrite.SyncDir(directory, inj)
 	}
 	return nil
 }
@@ -556,10 +585,7 @@ func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
 var targetEventName = regexp.MustCompile(`^[0-9]{20}\.json$`)
 
 func listTargetEventsAt(events *os.File, resumeID string) ([]TargetEvent, error) {
-	if _, err := events.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	entries, err := events.ReadDir(-1)
+	entries, err := readDirectoryEntries(events)
 	if err != nil {
 		return nil, err
 	}
@@ -600,4 +626,11 @@ func loadReceiptAt(aggregate *os.File) (*Receipt, error) {
 func jsonMarshal(value any) ([]byte, error) {
 	raw, err := json.MarshalIndent(value, "", "  ")
 	return append(raw, '\n'), err
+}
+
+func readDirectoryEntries(directory *os.File) ([]os.DirEntry, error) {
+	if _, err := directory.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return directory.ReadDir(-1)
 }
