@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -213,29 +212,5 @@ func TestGitHubPromoteAdapter(t *testing.T) {
 		if got := (PromoteResult{Outcome: outcome}).ExitCode(); got != want {
 			t.Errorf("%s exit %d", outcome, got)
 		}
-	}
-}
-
-func TestGitHubIntegrationPromotionMergeMethod(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	adapter := githubIntegration{
-		mergeQueue: func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error) {
-			return &githubchecks.MergeQueuePolicy{MergeMethod: "squash"}, nil
-		},
-		repoMethod: func(context.Context, string) (string, error) { return "merge", nil },
-	}
-	if method, err := adapter.PromotionMergeMethod(ctx, "acme/app", "main"); err != nil || method != "squash" {
-		t.Fatalf("queue method = %q %v", method, err)
-	}
-	adapter.mergeQueue = func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error) { return nil, nil }
-	if method, err := adapter.PromotionMergeMethod(ctx, "acme/app", "main"); err != nil || method != "merge" {
-		t.Fatalf("repository method = %q %v", method, err)
-	}
-	adapter.mergeQueue = func(context.Context, string, string) (*githubchecks.MergeQueuePolicy, error) {
-		return nil, errors.New("403")
-	}
-	if _, err := adapter.PromotionMergeMethod(ctx, "acme/app", "main"); err == nil {
-		t.Fatal("a failed queue read was swallowed")
 	}
 }

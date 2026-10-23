@@ -231,8 +231,8 @@ type IntegrationOptions struct {
 	// CheckTimeout bounds the local checks; 0 is the quality default.
 	CheckTimeout time.Duration
 	// To is the promotion target; empty means the repository's default
-	// branch. When a promotion into it does not land as a merge commit,
-	// `wb integration merge` refreshes the integration branch from it.
+	// branch. `wb integration merge` refreshes the integration branch from it
+	// whenever the branch does not contain it.
 	To     string
 	GitHub IntegrationGitHub
 
@@ -504,10 +504,10 @@ func (options IntegrationOptions) mergedThroughRecord(ctx context.Context, git b
 	return false, nil
 }
 
-// refreshFromTarget resolves and fetches the promotion target and, when a
-// promotion into it does not land as a merge commit (the integration branch
-// then stops being its ancestor), merges the target into the integration
-// branch as a recorded refresh. It returns the target's remote ref, the
+// refreshFromTarget resolves and fetches the promotion target and, when the
+// integration branch does not contain it (the target moved, or a promotion
+// squashed), merges the target into the integration branch as a recorded
+// refresh, so the promotion pull request is never behind its target. It returns the target's remote ref, the
 // target SHA it merged ("" when none was needed), and a finding when the
 // refresh conflicts or the target is not a branch WB accepts.
 func (options IntegrationOptions) refreshFromTarget(ctx context.Context, git batchGit) (string, string, func(IntegrationResult) IntegrationResult, error) {
@@ -528,10 +528,6 @@ func (options IntegrationOptions) refreshFromTarget(ctx context.Context, git bat
 	if _, err := git.out(ctx, "fetch", "--quiet", "origin", "+refs/heads/"+to+":"+ref); err != nil {
 		return "", "", nil, err
 	}
-	method, err := github.PromotionMergeMethod(ctx, options.Repository, to)
-	if err != nil || method == "merge" {
-		return ref, "", nil, err
-	}
 	if contained, err := git.test(ctx, "merge-base", "--is-ancestor", ref, "HEAD"); err != nil || contained {
 		return ref, "", nil, err
 	}
@@ -548,8 +544,8 @@ func (options IntegrationOptions) refreshFromTarget(ctx context.Context, git bat
 		}
 		return ref, tip, func(result IntegrationResult) IntegrationResult {
 			return result.finding(BatchRefusalConflict,
-				fmt.Sprintf("refreshing from %s (%s merges promotions with %s) conflicts in %s; resolve them in %s, run git commit --no-edit, and rerun",
-					to, to, method, strings.ReplaceAll(conflicts, "\n", ", "), options.Worktree), options.rerunCommand())
+				fmt.Sprintf("refreshing from %s conflicts in %s; resolve them in %s, run git commit --no-edit, and rerun",
+					to, strings.ReplaceAll(conflicts, "\n", ", "), options.Worktree), options.rerunCommand())
 		}, nil
 	}
 	return ref, tip, nil, nil

@@ -64,10 +64,10 @@ const integrationLong = `Merge reviewed lane commits into an integration branch,
 After the merges, "wb integration merge" runs the repository's local-check
 recipe (.wb/quality.yaml; --checks lint,test,build,spec selects, default
 lint,test,build) on the result and pushes it to origin/<integration> without
-force only when every check passed. When a promotion into --to (default the
-repository's default branch) would not land as a merge commit, it first merges
---to into the integration branch as a recorded refresh (Wb-Refresh), so the
-next promotion starts from the target. No CI runs on that push, and the
+force only when every check passed. When the integration branch does not
+contain --to (default the repository's default branch), it first merges --to
+as a recorded refresh (Wb-Refresh), so the promotion is never behind its
+target. No CI runs on that push, and the
 integration branch needs no ruleset: full CI runs on the one integration pull
 request into main. A rerun with nothing new runs no check.
 
@@ -232,7 +232,7 @@ func newIntegrationVerb(runtime shared.Runtime, use, short, long string, batch b
 		command.Flags().StringVar(&target, "target", "", "integration branch the lanes merge into (required)")
 	} else {
 		command.Flags().StringVar(&checks, "checks", "", "local checks to run before pushing: lint,test,build,spec (default lint,test,build)")
-		command.Flags().StringVar(&to, "to", "", "promotion target to refresh from when promotions into it squash (default: the repository's default branch)")
+		command.Flags().StringVar(&to, "to", "", "promotion target to refresh from when the integration branch lacks it (default: the repository's default branch)")
 	}
 	command.Flags().StringVar(&worktree, "worktree", "", "integration worktree (default: the current directory)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

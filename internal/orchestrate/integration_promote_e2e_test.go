@@ -305,18 +305,13 @@ func TestE2EPromotionAdaptersReportFailedCalls(t *testing.T) {
 	}
 }
 
-func TestE2EIntegrationMergeRefreshesFromATargetThatSquashesPromotions(t *testing.T) {
+func TestE2EIntegrationMergeRefreshesFromAMovedTarget(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t)
 	pin, _ := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
 	fixture.pushLanes(pin)
-	// Under a merge-commit policy an advanced main is left alone.
 	tip := fixture.advance("main", "m.go", "package a\n")
-	if result := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, fixture.options())); result.Refreshed != "" || result.Pushed {
-		t.Fatalf("merge policy refreshed: %+v", result)
-	}
-	fixture.gh.method = "squash"
 	result := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, fixture.options()))
 	if result.Refreshed != tip || !result.Pushed {
 		t.Fatalf("result = %+v", result)
@@ -340,7 +335,6 @@ func TestE2EIntegrationRefreshConflictStopsAndARerunPushes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fixture := newIntegrationFixture(t)
-	fixture.gh.method = "squash"
 	pin, _ := fixture.lane(fixture.base, "a.go", "package a\n\nconst A = 2\n", "reviewer")
 	fixture.pushLanes(pin)
 	fixture.advance("main", "a.go", "package a\n\nconst A = 9\n")
@@ -381,7 +375,6 @@ func TestE2EIntegrationRefreshFailuresAreReportedNotSwallowed(t *testing.T) {
 	ctx := context.Background()
 	setups := map[string]func(*integrationFixture){
 		"automatic refresh": func(f *integrationFixture) {
-			f.gh.method = "squash"
 			f.advance("main", "m.go", "package a\n")
 		},
 		"hand-made refresh": func(f *integrationFixture) {

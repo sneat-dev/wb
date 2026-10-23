@@ -49,7 +49,10 @@ func (world *promoteWorld) ports() *promoteLandingPorts {
 			return IssueComment{Body: world.review, PullRequest: world.reviewPR}, world.commentErr
 		},
 		review: &fakeCommitComments{comments: map[int64]CommitComment{9: {CommitID: world.laneCommit, Body: world.laneBody}}},
-		contains: func(context.Context, string, string, string) (bool, string) {
+		contains: func(_ context.Context, _, ancestor, _ string) (bool, string) {
+			if ancestor == "main" && world.containsErr == "" {
+				return true, "" // the promotion contains its target
+			}
 			return world.contained, world.containsErr
 		},
 		operator: func() ReviewerIdentity {
@@ -212,7 +215,7 @@ func TestPromotionGateTreatsTargetHistoryAsARefresh(t *testing.T) {
 	ports := world.ports()
 	ports.contains = func(context.Context, string, string, string) (bool, string) {
 		calls++
-		if calls > 1 {
+		if calls > 2 { // after the target and walk-end checks
 			return false, "502"
 		}
 		return true, ""
@@ -255,5 +258,21 @@ func TestPromotionApprovalFormIsCheckedBeforeAnyCommentIsPosted(t *testing.T) {
 	options.ApprovedBy = "opus@codex@reviewer"
 	if refusal := promotionApprovalForm(options, view, "7"); refusal != nil {
 		t.Fatal("an ordinary pull request's identity form was refused")
+	}
+}
+
+func TestPromotionGateRefusesAPromotionBehindItsTarget(t *testing.T) {
+	t.Parallel()
+	world := newPromoteWorld()
+	ports := world.ports()
+	ports.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) { return ancestor != "main", "" }
+	options := PullRequestLandOptions{Repository: "acme/app", ApprovedBy: promoteApproval, promotePorts: ports}
+	_, refusal, err := promotionLandingGate(context.Background(), &options, promotionView(), "7", promotionCommits(world))
+	if err != nil || refusal == nil || refusal.code != LandRefusalBatchBehindTarget || !strings.Contains(refusal.command, "wb integration merge acme/app 'public-demo' --to 'main'") {
+		t.Fatalf("refusal = %+v err = %v", refusal, err)
+	}
+	ports.contains = func(context.Context, string, string, string) (bool, string) { return false, "502" }
+	if _, _, err := promotionLandingGate(context.Background(), &options, promotionView(), "7", promotionCommits(world)); err == nil {
+		t.Fatal("a failed ancestry read was swallowed")
 	}
 }

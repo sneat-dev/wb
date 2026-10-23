@@ -23,6 +23,9 @@ const (
 	// LandRefusalBatchDeltaSelfReview: the promotion review's identity is
 	// incomplete, the operator's, or one that made a lane merge.
 	LandRefusalBatchDeltaSelfReview = "batch-delta-self-review"
+	// LandRefusalBatchBehindTarget: the promotion does not contain its
+	// target; WB refreshes it with a recorded merge, never update-branch.
+	LandRefusalBatchBehindTarget = "batch-behind-target"
 	// LandRefusalBatchBlockInvalid: a pull request carries lane merges but
 	// not the promotion marker, or its history is too long to verify.
 	LandRefusalBatchBlockInvalid = "batch-block-invalid"
@@ -140,6 +143,14 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 		options.MergeMethod = method
 	}
 	delta := promotionDeltaCommand(options.Repository, view)
+	// Never updated server-side, a promotion behind its target is refreshed
+	// by WB with a recorded merge instead.
+	if current, reason := ports.contains(ctx, options.Repository, view.Base.Ref, view.Head.SHA); reason != "" {
+		return nil, nil, fmt.Errorf("check the promotion contains %s: %s", view.Base.Ref, reason)
+	} else if !current {
+		return nil, promoteRefusal(LandRefusalBatchBehindTarget, "the promotion does not contain "+view.Base.Ref+"; refresh it with a recorded merge, then promote again",
+			"wb integration merge "+options.Repository+" "+shellSingleQuote(view.Head.Ref)+" --to "+shellSingleQuote(view.Base.Ref)), nil
+	}
 	reviewer, refusal := promotionReview(ctx, *options, ports, view, number, delta)
 	if refusal != nil {
 		return nil, refusal, nil

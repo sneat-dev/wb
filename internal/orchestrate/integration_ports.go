@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/runner"
 )
 
@@ -26,10 +25,6 @@ type commitCommentReader interface {
 type IntegrationGitHub interface {
 	commitCommentReader
 	DefaultBranch(ctx context.Context, repository string) (string, error)
-	// PromotionMergeMethod is how a promotion into target will land: the
-	// merge queue's method when target has one, else the repository's
-	// preferred enabled method (a merge commit when allowed).
-	PromotionMergeMethod(ctx context.Context, repository, target string) (string, error)
 }
 
 // integrationGHCall runs one `gh` invocation and returns its stdout.
@@ -41,11 +36,7 @@ func integrationGH(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 // githubIntegration is the production IntegrationGitHub over `gh api`.
-type githubIntegration struct {
-	gh         integrationGHCall
-	mergeQueue func(ctx context.Context, repository, target string) (*githubchecks.MergeQueuePolicy, error)
-	repoMethod func(ctx context.Context, repository string) (string, error)
-}
+type githubIntegration struct{ gh integrationGHCall }
 
 // DefaultIntegrationGitHub returns the production adapter.
 func DefaultIntegrationGitHub() IntegrationGitHub {
@@ -53,18 +44,7 @@ func DefaultIntegrationGitHub() IntegrationGitHub {
 }
 
 func newGitHubIntegration() githubIntegration {
-	return githubIntegration{gh: integrationGH, mergeQueue: githubchecks.TargetMergeQueue, repoMethod: repositoryPullRequestMergeMethod}
-}
-
-func (adapter githubIntegration) PromotionMergeMethod(ctx context.Context, repository, target string) (string, error) {
-	queue, err := adapter.mergeQueue(ctx, repository, target)
-	if err != nil {
-		return "", fmt.Errorf("read the merge queue of %s: %w", target, err)
-	}
-	if queue != nil {
-		return queue.MergeMethod, nil
-	}
-	return adapter.repoMethod(ctx, repository)
+	return githubIntegration{gh: integrationGH}
 }
 
 func (adapter githubIntegration) CommitComment(ctx context.Context, repository string, id int64) (CommitComment, error) {
