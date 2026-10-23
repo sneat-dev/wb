@@ -199,6 +199,8 @@ type PullRequestLandOptions struct {
 	// readPullRequest is the waiver's merged-by-GitHub re-read seam; nil
 	// reads GitHub.
 	readPullRequest func(ctx context.Context, repository, selector string) (githubchecks.PullRequestView, error)
+	// batchPorts is the batch-landing seam; nil reads and writes GitHub.
+	batchPorts *batchLandingPorts
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest in internal/orchestrate). Left
 	// zero, no guard runs — existing direct callers are unaffected.
@@ -368,6 +370,11 @@ type PullRequestLandResult struct {
 	// MergeQueue is set when the target requires GitHub's merge queue, which
 	// then performed the merge instead of WB.
 	MergeQueue *MergeQueueReceipt `json:"merge_queue,omitempty"`
+
+	// Batch is the verified batch state when this pull request is a WB
+	// batch; BatchSources records what landing it did to each source.
+	Batch        *BatchState          `json:"batch,omitempty"`
+	BatchSources []BatchSourceOutcome `json:"batch_sources,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -429,7 +436,11 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (resul
 		// nothing ever goes wrong.
 		appendLandEvent(options, result, started, err)
 	}()
-	return landPullRequest(ctx, options)
+	result, err = landPullRequest(ctx, options)
+	if err == nil && result.Batch != nil && result.LandingOnBase {
+		result.BatchSources = reconcileBatchSources(ctx, options.resolveBatchPorts(), options.Repository, *result.Batch, result.URL)
+	}
+	return result, err
 }
 
 // withPullRequestLandResumeGuidance appends the exact resumable `wb pr land`
@@ -714,6 +725,16 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		options.mergeQueue, options.MergeMethod = queue, queue.MergeMethod
 		result.MergeQueue = newMergeQueueReceipt(*queue)
 		result.Evidence["merge_queue"] = mergeQueueEvidence(*queue, view.Base.Ref)
+	}
+	// A batch pull request lands only under the batch rules; the gate also
+	// narrows options to a merge commit without update-branch.
+	if batch, refusal, batchErr := batchLandingGate(ctx, &options, view, number); batchErr != nil {
+		return result, batchErr
+	} else if refusal != nil {
+		return mergeRefusal(result, *refusal), nil
+	} else if batch != nil {
+		result.Batch = batch
+		result.Evidence["batch"] = batch.Branch
 	}
 	if len(options.KeepCommits) > 0 && !options.AllowUnfenced && !targetHasRequiredChecks(ctx, options.Repository, view.Base.Ref) {
 		// Rewriting the branch means the checks that were observed no longer
