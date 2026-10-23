@@ -12,345 +12,305 @@ status: Draft
 
 ## Summary
 
-Merge several independently reviewed PRs, pinned at their reviewed heads, into one batch branch with merge commits, open one PR, show the reviewer only the integration delta, and attribute any batch CI failure.
+Merge independently reviewed lane commits, pinned at their reviewed SHAs, into a long-lived integration branch locally with merge commits, check the result locally, push it, and promote the integration branch to its target through one fully checked pull request whose reviewer reads only the integration delta.
 
 ## Problem
 
 Lanes that target one integration branch each pay a CI run and a fence
 refresh per landing; with backlogged runners this serializes the effort.
 The founder's remedy for datatug/datatug-apps `public-demo` (2026-10) —
-merge the approved lane heads exactly as reviewed, with merge commits, into
-one batch branch and land one PR (#520) — had to be done by hand: WB's merge
-machinery takes only local worktrees, rebases on drift, and nothing showed
-the reviewer only the conflict resolutions or attributed a failure to a lane.
+merge the approved lane heads exactly as reviewed, with merge commits — had
+to be done by hand: WB's merge machinery takes only local worktrees, rebases
+on drift, and nothing showed the reviewer only the conflict resolutions.
+
+The process this Feature serves (founder, 2026-10-23: "I want fast efficient
+process with full CI checks on PR to main and local check on merge to local
+integration branches"):
+
+1. a lane pushes its branch and opens no pull request;
+2. a reviewer posts `Reviewed-Head: <sha>` for the lane SHA, as a commit
+   comment on that SHA;
+3. the operator merges that exact SHA into the integration branch locally
+   (one merge commit), runs the repository's local checks, and pushes — no
+   CI runs on that push, and the integration branch carries no ruleset;
+4. one integration → target pull request runs full CI, gets a fresh review
+   of its exact head, and lands under the repository's merge policy (through
+   the target's merge queue when it has one).
 
 ## Behavior
 
 ### Command surface
 
 ```text
-wb pr batch create <owner/repo> --target <branch> <pr@sha=review-url>...
-wb pr batch add    <batch> [<pr@sha=review-url>...]
-wb pr batch resume <batch>
-wb pr batch delta  <batch> [--format text|json]
-wb pr batch status <batch> [--format text|json]
-wb pr land <batch-pr>          # unchanged verb; batch rules apply (REQ batch-landing)
+wb pr batch add        <owner/repo> --target <integration> <branch@sha=review-url>...
+wb pr batch delta      <owner/repo> --target <integration> [--to <branch>] [--overlap]
+wb integration merge   <owner/repo> <integration> [<branch@sha=review-url>...] [--checks <list>]
+wb integration promote <owner/repo> <integration> [--to <branch>]
+wb pr land <promote-pr> --approved-by <delta-review-url>   # REQ promote-landing
 ```
 
-`<batch>` is the batch branch name (`public-demo-batch-1`) or its PR. A pin
-is `<number>@<sha>=<review-comment-url>` (no `#`, which starts a shell
-comment; a quoted leading `#` is accepted); the review is named explicitly,
-never discovered. Every command WB prints quotes its pins.
+Every verb runs in a checkout of the repository (`--worktree`, default the
+current directory) and takes `--format text|json`. A pin is
+`<branch>@<sha>=<review-url>`, where the review URL is a commit comment
+(`https://github.com/<owner>/<repo>/commit/<sha>#commitcomment-<id>`); the
+review is named explicitly, never discovered. `--to` defaults to the
+repository's default branch. Every command WB prints quotes its pins.
 
 ### What is reused, and what is not
 
-Reused: the merge-prepare integration-worktree creation and per-repository
-merger lane lock; private-state receipt persistence; review binding
-(`namedReviewedHead`, `parseReviewedHeadLine`, `ReviewDigest`,
-`ParseReviewerIdentity`); `wb pr create`'s push and PR open/adopt;
-`wb pr land`'s wait, waivers ([PR Land Waivers](../pr-land-waivers/README.md))
-and merge; `reconcileAbsorbedSourcePullRequests` for source PRs after
-landing. NOT reused: merge-prepare's source merge step (no `--no-ff`, aborts
-on conflict), its drift `git rebase --rebase-merges`, and its squash/rebase
-merge-method fallback. Batch code MUST NOT call them.
+Reused: WB worktree creation (the operator runs `wb worktree create` for the
+integration worktree); review binding (`parseReviewedHeadLine`,
+`ReviewDigest`, `ParseReviewerIdentity`); the repository's local-check recipe
+(`quality.RepositoryRunOptions` and `quality.VerifyWithOptions`, as `wb
+worktree merge` validates a candidate); `wb pr land`'s wait, merge queue,
+waivers ([PR Land Waivers](../pr-land-waivers/README.md)) and merge. NOT
+reused: merge-prepare's source merge step (no `--no-ff`, aborts on
+conflict), its drift `git rebase --rebase-merges`, and its squash/rebase
+merge-method fallback. Batch code MUST NOT call them. Nothing here requires a
+server-enforced check, ruleset or pull request on the integration branch.
 
 ### REQ: batch-source-pins
 
-Before any Git or GitHub mutation, every pin MUST be verified, and all
-failures reported together (exit `2`, `Outcome: refused`) with nothing
-created:
+Before any Git mutation, every pin MUST be verified, and all failures
+reported together (exit `2`, `Outcome: refused`) with nothing changed:
 
-1. the PR is open, not draft, and its base is `--target`
-   (`batch-source-wrong-base`, `batch-source-not-open`);
-2. its current head equals the pin; a short pin must be a unique prefix of
-   it (`batch-source-head-moved`);
-3. the pinned head is not already contained in the target
-   (`batch-source-already-landed`), nor in the batch or in another pin of the
-   same invocation (`batch-source-already-included`), so every pin gets a
-   merge commit of its own;
-4. the review URL is a comment on that PR whose `Reviewed-Head:` line equals
-   the pinned head (`batch-source-unreviewed`);
-5. the comment's declared reviewer identity has no `unknown` part and its
+1. the pinned SHA is a full or uniquely abbreviated commit reachable from
+   `origin/<branch>` (`batch-source-not-on-branch`);
+2. the review URL is a commit comment on exactly that SHA whose
+   `Reviewed-Head:` line equals it (`batch-source-unreviewed`);
+3. the comment's declared reviewer identity has no `unknown` part and its
    session differs from the session of the lane's Work Log claim for that
    branch when the claim is readable, and from the operator's own session
    (`batch-source-self-review`).
 
-The receipt records, per source, the comment id, `ReviewDigest` of its body,
-and the identity with `identity: declared` — WB does not claim to prove it.
-The batch also records the session of every WB invocation that mutated it
-(`built_by`).
+A pin already contained in the integration worktree's HEAD is skipped and
+reported `already merged`, so a rerun is idempotent.
 
 ### REQ: batch-construction
 
-WB MUST create a WB-managed integration worktree on a new branch
-`<target>-batch-<n>` (next `n` free on origin) from the fetched target tip,
-then for each source in order: `git fetch origin <pinned-sha>` (the commit
-itself, never `refs/pull/<n>/head`), and `git merge --no-ff --no-edit -m
-"Merge #<n> (<short-sha>) into <batch-branch>" <pinned-sha>` with WB's fixed
-merge options (`-c merge.renames=true -c merge.conflictStyle=merge -c
-rerere.enabled=false`), recorded in the receipt. Every pinned head becomes the
-second parent of exactly one batch merge commit. WB MUST never rebase,
-squash, amend or force-push a batch branch, nor touch a source branch.
+`wb pr batch add` MUST run in a clean checkout whose HEAD contains
+`origin/<integration>` (otherwise `batch-worktree-invalid`, printing `wb
+worktree create <task> <repo> --base <integration>`). For each pin in order,
+having fetched `origin/<branch>` and proved the pinned SHA is on it, `git merge --no-ff
+--no-edit` with WB's fixed merge options (`-c merge.renames=true -c
+merge.conflictStyle=merge -c rerere.enabled=false`) and the message
+`Merge <branch> (<short-sha>) into <integration>` carrying the trailers
+`Wb-Lane: <branch>@<full-sha>`, `Wb-Review: <url>`, `Wb-Review-Digest:
+<digest>`, `Wb-Reviewer: <identity>` and `Wb-Merged-By: <operator identity>`.
+Every pinned SHA becomes the second parent of exactly one merge commit. WB
+MUST never rebase, squash, amend or force-push, nor touch a lane branch. The
+merge commits are the batch's only state: there is no batch pull request,
+body block or private cache.
 
-### REQ: batch-refuses-non-merge-targets
+### REQ: batch-conflict-stop-rerun
 
-`create`, `add` and landing MUST refuse `batch-merge-commits-disabled` when
-the repository disallows merge commits, and `batch-target-merge-queue` when
-the target requires a merge queue. Landing a batch PR MUST refuse an explicit
-`--merge-method squash|rebase` (`batch-merge-method`).
+On a conflicting merge WB MUST leave the merge in progress, print the paths
+and the worktree, and exit `1` with `batch-conflict`. The operator resolves
+and runs `git commit --no-edit`, which keeps the trailers, then reruns the
+same command: merged pins are skipped and the rest continue. A pin is skipped
+only when it is on `origin/<integration>` or a local merge whose `Wb-Lane`
+trailer names that merge's own second parent contains it; otherwise (a
+resolution committed without the trailers) the rerun refuses
+`batch-unrecorded-merge`. A rerun while a merge is still in progress refuses
+`batch-worktree-invalid`.
 
-### REQ: batch-conflict-stop-resume
+### REQ: integration-merge-local-check-push
 
-On a conflicting source merge WB MUST leave the merge in progress, record the
-source as `conflicted` with its paths, print the paths and worktree, and exit
-`1` with `batch-conflict`. `wb pr batch resume` MUST continue only when the
-worktree is clean and HEAD is a merge commit whose parents are exactly
-`[previous batch head, pinned head]`; it records `resolved` and continues.
-Otherwise it refuses `batch-resolution-invalid`.
-
-### REQ: batch-state-on-origin
-
-The batch's authoritative state MUST live on origin, so any machine can
-continue it: the batch branch itself, plus a fenced YAML block in the batch
-PR body (between `<!-- wb-batch:begin -->` and `<!-- wb-batch:end -->`)
-holding repository, target, base SHA, merge options, and per source: PR,
-pinned head, review comment id and digest, declared reviewer, merge commit,
-state. WB's private-state receipt is an append-only cache: each mutation
-writes a new revision, never rewriting an old one; a missing or stale cache
-is rebuilt from origin. Because anyone with write access can edit the body
-block or push to the branch, nothing in them is trusted as given: REQ
-batch-merge-provenance re-verifies it before delta and landing. A push
-rejected as non-fast-forward (another machine moved the batch) is refused
-`batch-moved`; WB rebuilds its state from origin and the operator reruns —
-it never force-pushes. Pushing the batch branch and opening its one PR
-(merge method `merge`) happens after the last source merges; every later
-mutation regenerates the PR body. A rerun of a completed step creates no
-second PR and no duplicate merge.
-
-### REQ: batch-add-and-refresh
-
-`wb pr batch add` MUST verify new pins (REQ batch-source-pins), then, when the
-target advanced past the batch's recorded base, first merge the target tip
-into the batch as its own `Merge <target> (<short-sha>) into <batch>`
-commit (conflicts handled as in REQ batch-conflict-stop-resume), then merge
-the new sources, push without force, and regenerate the body. Adding to a
-merged or closed batch refuses `batch-closed`. `wb pr batch add <batch>` with
-no pins performs only the target refresh.
+`wb integration merge` MUST perform `wb pr batch add` for any pins given,
+then run the repository's local-check recipe (default every configured
+check; `--checks lint,test,build,spec` selects) on the resulting HEAD, and
+push exactly the checked commit to `refs/heads/<integration>` without force
+only when the checks passed, so agents never hand-roll the check. A failed
+check stops with `integration-check-failed` (exit `1`) and the report, and
+pushes nothing; a recipe that ran no check at all refuses
+`integration-check-skipped` and pushes nothing. A rerun that has nothing new
+to push runs no check. A non-fast-forward rejection refuses `integration-moved`;
+the operator reruns in a fresh worktree, and merged pins are skipped there.
 
 ### REQ: batch-merge-provenance
 
-Before printing a delta and before landing, WB MUST first require the
-recorded `base` to be an ancestor of `origin/<target>` (else refuse
-`batch-base-invalid`), then verify every merge commit on `git rev-list --first-parent <base>..<head>`. Its second parent
-must be either (a) a pin recorded in the body block whose review comment,
-re-read from GitHub by id, still has the recorded `ReviewDigest` and a
-`Reviewed-Head:` equal to that pin, or (b) an ancestor of `origin/<target>`
-(a target refresh). Any other merge commit — one WB did not make, or a pin
-whose review comment changed or vanished — is `unrecorded`: delta prints its
-full diff against its first parent (`kind: unrecorded`), and landing refuses
-`batch-unrecorded-merge` naming the commit.
+Before printing a delta, opening a promotion and landing it, WB MUST verify
+every commit on `git rev-list --first-parent origin/<to>..<integration
+head>`. A merge commit's second parent must be either (a) the `Wb-Lane` SHA
+of its own trailers, whose `Wb-Review` comment, re-read by id from the
+repository named on the command line, is still on that SHA with the recorded
+`Wb-Review-Digest` and a `Reviewed-Head:` equal to it, and declares a
+complete identity different from `Wb-Merged-By`, or (b) an ancestor of
+`origin/<to>` (a target refresh). Any other merge commit is `unrecorded`:
+delta prints its full diff against its first parent (`kind: unrecorded`), and
+promotion and landing refuse `batch-unrecorded-merge` naming the commit.
+Non-merge commits are fixes and appear in the delta.
 
 ### REQ: batch-delta
 
-`wb pr batch delta` MUST print only the integration delta, computed from
-origin's batch branch:
+`wb pr batch delta` MUST print only the integration delta of the integration
+branch against `--to`:
 
-1. for every merge commit on `git rev-list --first-parent <base>..<head>`:
-   the diff from `git merge-tree --write-tree` of its two parents, run with
-   the receipt's merge options, to the committed tree — emitted only when
-   non-empty (`kind: resolution`);
-2. the diff of every commit in `git rev-list --first-parent --no-merges
-   <base>..<head>` (`kind: fix`).
+1. for every merge commit on that first-parent walk: the diff from `git
+   merge-tree --write-tree` of its two parents, run with the fixed merge
+   options, to the committed tree — emitted only when non-empty (`kind:
+   resolution`);
+2. the diff of every non-merge commit on the walk (`kind: fix`).
 
-Content brought in unchanged from a pinned head or the target never appears.
-An empty delta prints `integration delta: empty` and exits `0`. `--format
-json` lists each part with commit, kind and paths.
+Content brought in unchanged from a pinned SHA or the target never appears.
+An empty delta prints `integration delta: empty` and exits `0`; it still
+needs the promotion review of REQ promote-landing, because semantic
+conflicts produce no textual one (decided 2026-10-23). `--overlap` adds, for
+every file two or more lanes changed, each such lane's own diff of those
+files (`kind: overlap`). `--format json` lists each part with commit, kind
+and paths.
 
-### REQ: batch-landing
+### REQ: integration-promote
 
-`wb pr land` MUST recognise a batch PR by its body block (REQ
-batch-state-on-origin) and, before arming auto-merge:
+`wb integration promote` MUST pass REQ batch-merge-provenance, then open, or
+refresh the body of, the one pull request from `<integration>` to `--to`.
+The body lists every recorded lane merge (branch, SHA, review) on the walk,
+carries the marker `<!-- wb-integration-promote -->`, and names the `wb pr
+batch delta` and `wb pr land` commands to run next. A rerun with nothing new
+changes nothing.
 
-1. require `--approved-by <comment-url>` whose `Reviewed-Head:` is a batch
-   head H such that every first-parent commit from H to the current head is a
-   target-refresh merge whose delta part is empty; otherwise refuse
-   `batch-delta-unreviewed` naming `wb pr batch delta <batch>`. The review's
-   declared identity must have no `unknown` part and a session different from
-   the operator's and from every `built_by` session
-   (`batch-delta-self-review`);
+### REQ: promote-landing
+
+`wb pr land` MUST treat a pull request as a promotion when its body carries
+the marker, and then, before merging or enqueueing:
+
+1. require `--approved-by <comment-url>` naming a comment on that pull
+   request whose `Reviewed-Head:` is its current head (`batch-delta-unreviewed`
+   naming `wb pr batch delta`); the review's declared identity must have no
+   `unknown` part and a session different from the operator's and from every
+   `Wb-Merged-By` session on the walk (`batch-delta-self-review`);
 2. pass REQ batch-merge-provenance;
-3. not use server-side update-branch: a batch behind its target refuses
-   `batch-behind-target` naming `wb pr batch add <batch>`;
-4. land with merge method `merge` under REQ batch-refuses-non-merge-targets.
+3. land under the repository's own merge policy for its target (the merge
+   queue's method when the target has one, otherwise `wb pr land`'s usual
+   method selection), with full CI on the target, never updating the branch
+   server-side and never arming auto-merge, so what lands is the reviewed
+   head (inside the queue's merge-group commit under a merge queue). When that policy squashes, the integration branch is
+   refreshed from the target (a target-refresh merge) or recreated before
+   the next promotion.
 
-After landing, `reconcileAbsorbedSourcePullRequests` comments on and closes
-every source PR GitHub did not already mark merged, as it does for
-merge-prepare batches (a source whose head advanced after its pin stays open
-with a comment, as that reconciler already decides), and the receipt records
-each source PR's final state.
-
-### REQ: batch-failure-attribution
-
-`wb pr batch status` MUST list, for each failed check on the batch head, one
-class: `pre-existing` (it failed on the batch base SHA), `source #<n>` (it
-failed on that source's pinned head and passed on the base), `integration`
-(passed on the base and on every source's pinned head), or `unattributed`
-(a needed run is absent or not terminal). When several sources fail the
-check on their pinned heads and it passed on the base, the class lists all of
-them (`source #2, #5`). It reads only existing runs — one
-check read per distinct SHA, cached for the invocation — and starts no CI.
-The batch PR body carries the same table when a batch PR has failed checks
-and the body is regenerated.
+A pull request without the marker any of whose commits carries a `Wb-Lane`
+trailer refuses `batch-block-invalid` (naming `wb integration promote`, which
+restores the body) instead of landing under the ordinary rules.
 
 ## Acceptance Criteria
 
-### AC: bad-pins-refused-together-nothing-created
+### AC: bad-pins-refused-together-nothing-changed
 
 **Requirements:** integration-branch-batches#req:batch-source-pins
 
-**Given** four PRs into `public-demo`: one whose head moved past its pin, one
-whose review comment names an older head, one draft, one whose review
-identity is `unknown@unknown@unknown`
-**When** `wb pr batch create` names all four
-**Then** it exits `2` listing `batch-source-head-moved`,
-`batch-source-unreviewed`, `batch-source-not-open` and
-`batch-source-self-review`, and no branch, worktree, receipt or PR exists;
-**and** a pin that is an ancestor of another pin in the same invocation
-refuses `batch-source-already-included`.
+**Given** three pins: one SHA not on its branch, one whose commit comment
+names another SHA, and one whose comment is on another commit
+**When** `wb pr batch add` runs
+**Then** it exits `2` listing all three refusals and the worktree is
+unchanged.
 
 ### AC: lane-author-review-is-self-review
 
 **Requirements:** integration-branch-batches#req:batch-source-pins
 
-**Given** a source whose lane claim was made by session S and whose review
+**Given** a lane whose Work Log claim was made by session S and whose review
 comment declares session S
-**When** `wb pr batch create` runs
+**When** `wb pr batch add` runs
 **Then** it refuses `batch-source-self-review`.
 
-### AC: clean-batch-one-pr-empty-delta
+### AC: clean-merge-checked-and-pushed
 
-**Requirements:** integration-branch-batches#req:batch-construction, integration-branch-batches#req:batch-state-on-origin, integration-branch-batches#req:batch-delta
+**Requirements:** integration-branch-batches#req:batch-construction, integration-branch-batches#req:integration-merge-local-check-push, integration-branch-batches#req:batch-delta
 
-**Given** two reviewed conflict-free PRs
-**When** `wb pr batch create` runs twice
-**Then** origin has one `public-demo-batch-1` whose two first-parent merge
-commits have the pinned heads as second parents, one PR into `public-demo`
-whose body block lists both, no force-push occurred, the second run changed
-nothing, and `wb pr batch delta` prints `integration delta: empty`.
+**Given** two reviewed conflict-free lanes
+**When** `wb integration merge` runs twice
+**Then** origin's integration branch gained two first-parent merge commits
+whose second parents are the pinned SHAs and whose trailers name each lane
+and review, the local checks ran once, no force-push occurred, the second run
+changed nothing, and `wb pr batch delta` prints `integration delta: empty`.
 
-### AC: delta-ignores-source-commits-and-shows-resolution
+### AC: failed-local-check-pushes-nothing
 
-**Requirements:** integration-branch-batches#req:batch-conflict-stop-resume, integration-branch-batches#req:batch-delta
+**Requirements:** integration-branch-batches#req:integration-merge-local-check-push
 
-**Given** three sources where the second conflicts with the first in `a.go`
-and each source has its own non-merge commits
-**When** `create` stops with `batch-conflict` listing `a.go`, the conflict is
-resolved and committed, and `resume` runs
-**Then** the third source merges, the second is `resolved`, and `delta` shows
-only the resolution hunk in `a.go` — none of the sources' own commits;
-**and** a resume after a commit whose parents are not `[batch head, pin]`
-refuses `batch-resolution-invalid`.
+**Given** a lane whose merge fails the local test check
+**When** `wb integration merge` runs
+**Then** it stops with `integration-check-failed` and origin is unchanged.
+
+### AC: conflict-stops-and-rerun-continues
+
+**Requirements:** integration-branch-batches#req:batch-conflict-stop-rerun, integration-branch-batches#req:batch-delta
+
+**Given** three lanes where the second conflicts with the first in `a.go`
+**When** `add` stops with `batch-conflict` listing `a.go`, the conflict is
+resolved and committed with `git commit --no-edit`, and the command reruns
+**Then** the first is skipped as already merged, the third merges, and
+`delta` shows only the resolution hunk in `a.go`.
+
+### AC: rerun-refuses-a-resolution-without-trailers
+
+**Requirements:** integration-branch-batches#req:batch-conflict-stop-rerun
+
+**Given** a conflicted lane merge left in progress
+**When** the command reruns before the resolution is committed, and again
+after it was committed with `git commit -m resolve` (dropping the trailers)
+**Then** the first rerun refuses `batch-worktree-invalid` and the second
+refuses `batch-unrecorded-merge`; nothing is pushed.
+
+### AC: moved-integration-branch-is-never-overwritten
+
+**Requirements:** integration-branch-batches#req:integration-merge-local-check-push
+
+**Given** origin's integration branch moves while the local checks run
+**When** `wb integration merge` pushes
+**Then** it refuses `integration-moved` and origin keeps the other commit.
+
+### AC: a-recipe-that-ran-nothing-pushes-nothing
+
+**Requirements:** integration-branch-batches#req:integration-merge-local-check-push
+
+**Given** a repository whose local-check recipe runs no check
+**When** `wb integration merge` runs with a new lane
+**Then** it refuses `integration-check-skipped` and origin is unchanged.
 
 ### AC: fix-commit-appears-in-delta
 
 **Requirements:** integration-branch-batches#req:batch-delta
 
-**Given** a clean batch to which the operator adds one non-merge fix commit
+**Given** an integration branch with one non-merge fix commit
 **When** `delta` runs
 **Then** it shows exactly that commit as `kind: fix`.
-
-### AC: add-refreshes-target-then-merges
-
-**Requirements:** integration-branch-batches#req:batch-add-and-refresh
-
-**Given** an open batch and a target that advanced by one commit
-**When** `wb pr batch add <batch> '<n>@<sha>=<url>'` runs
-**Then** the branch gains a target-refresh merge then a source merge, as a
-fast-forward of its previous head, the same PR's body lists the new source,
-and adding to a merged batch refuses `batch-closed`.
-
-### AC: batch-land-binds-review-and-refuses-update-branch
-
-**Requirements:** integration-branch-batches#req:batch-landing
-
-**Given** a batch PR
-**When** `wb pr land` runs (a) with no `--approved-by`, (b) with a review of
-the current head while the batch is behind the target, (c) with a review of
-head H followed only by an empty-delta target refresh
-**Then** (a) refuses `batch-delta-unreviewed` before auto-merge is armed,
-(b) refuses `batch-behind-target` naming `wb pr batch add`, (c) lands with a
-merge commit and every source PR ends merged, closed with a comment, or —
-when its head advanced after the pin — open with a comment.
-
-### AC: non-merge-targets-refused
-
-**Requirements:** integration-branch-batches#req:batch-refuses-non-merge-targets
-
-**Given** a repository that disallows merge commits, and separately a target
-with a merge queue
-**When** `wb pr batch create` runs
-**Then** it refuses `batch-merge-commits-disabled` or
-`batch-target-merge-queue`; and `wb pr land <batch-pr> --merge-method squash`
-refuses `batch-merge-method`.
 
 ### AC: hand-pushed-merge-is-unrecorded
 
 **Requirements:** integration-branch-batches#req:batch-merge-provenance
 
-**Given** a batch to which someone pushed a clean `git merge <unreviewed-sha>`,
-and separately a batch whose body block names a pin whose review comment was
-edited after the batch was built
-**When** `wb pr batch delta` and `wb pr land` run
+**Given** an integration branch to which someone pushed a clean `git merge
+<unreviewed-sha>`, and separately a lane merge whose review comment was
+edited after the merge
+**When** `wb pr batch delta`, `wb integration promote` and `wb pr land` run
 **Then** delta prints each such merge in full as `kind: unrecorded`, and
-landing refuses `batch-unrecorded-merge` naming the commit;
-**and given** the body block's `base` was edited to that hand-pushed merge
-(not an ancestor of `origin/<target>`), delta and landing refuse
-`batch-base-invalid`.
+promotion and landing refuse `batch-unrecorded-merge` naming the commit.
 
-### AC: refresh-only-add-and-refresh-conflict
+### AC: promote-opens-one-pr
 
-**Requirements:** integration-branch-batches#req:batch-add-and-refresh, integration-branch-batches#req:batch-conflict-stop-resume
+**Requirements:** integration-branch-batches#req:integration-promote
 
-**Given** an open batch whose target advanced with a change conflicting with
-the batch in `b.go`
-**When** `wb pr batch add <batch>` runs with no pins
-**Then** it stops with `batch-conflict` listing `b.go`; after a committed
-resolution `wb pr batch resume` records the refresh as `resolved`, and delta
-shows only that resolution.
+**Given** an integration branch with two recorded lane merges
+**When** `wb integration promote` runs twice
+**Then** one pull request into `main` exists whose body lists both lanes,
+and the second run changed nothing.
 
-### AC: concurrent-add-never-force-pushes
+### AC: promote-land-binds-review-and-merge-method
 
-**Requirements:** integration-branch-batches#req:batch-state-on-origin
+**Requirements:** integration-branch-batches#req:promote-landing
 
-**Given** two clones adding to the same batch at once
-**When** the second push is rejected as non-fast-forward
-**Then** that clone refuses `batch-moved`, origin keeps the first clone's
-head, and a rerun on the second clone rebuilds from origin and succeeds.
-
-### AC: batch-continues-on-another-machine
-
-**Requirements:** integration-branch-batches#req:batch-state-on-origin
-
-**Given** a batch created on one clone
-**When** `wb pr batch add` runs on a second clone with no local receipt
-**Then** it rebuilds the state from origin and adds the source.
-
-### AC: failures-attributed-without-new-ci
-
-**Requirements:** integration-branch-batches#req:batch-failure-attribution
-
-**Given** a batch head where `test` failed (passed on base, failed on source
-#2's pin), `lint` failed (failed on base), `e2e` failed (passed everywhere
-else), and `build` failed with no run on source #1's pin
-**When** `wb pr batch status` runs
-**Then** it reports `test: source #2`, `lint: pre-existing`, `e2e:
-integration`, `build: unattributed`, and dispatches no workflow; when `test`
-also failed on source #3's pin, it reports `test: source #2, #3`.
+**Given** a promotion pull request
+**When** `wb pr land` runs (a) with no `--approved-by`, (b) with a review by
+a session named in a `Wb-Merged-By` trailer, (c) after its marker was
+deleted, (d) with an independent review of the current head
+**Then** (a) refuses `batch-delta-unreviewed`, (b) refuses
+`batch-delta-self-review`, (c) refuses `batch-block-invalid`, and (d) lands
+it under the repository's merge policy, without arming auto-merge.
 
 ## Open Questions
 
-- Should an empty integration delta land without a batch review, on WB's
-  mechanical proof alone? Until decided, REQ batch-landing requires one.
+None at this time.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

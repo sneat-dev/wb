@@ -8,7 +8,7 @@ status: Specifying
 **Status:** Specifying
 **Date:** 2026-10-22
 **Owner:** alex
-**Promotes To:** pr-land-waivers, integration-branch-batches, integration-branch-registry
+**Promotes To:** pr-land-waivers, integration-branch-batches
 **Supersedes:** —
 **Related Ideas:** extends:mechanical-worktree-merge, extends:efficient-agent-pipeline, extends:ci-validation-reuse
 
@@ -94,7 +94,7 @@ attribution follow in later small PRs.
 
 ## Not Doing (and Why)
 
-- Merge queue integration — GitHub's queue rewrites heads; a batch exists to keep reviewed heads exact.
+- A merge queue on the integration branch — a squash or rebase queue rewrites heads; the promotion pull request uses the target's queue only when its method is `merge`.
 - Cross-repository batches — one batch is one repository and one integration branch; multi-repository work stays a stream.
 - Waiving a required check under any flag — a required check is the target's own contract; WB never overrides it.
 - Automatic conflict resolution — WB stops and lists files; a person or agent resolves and commits, and the reviewer reads that resolution.
@@ -110,11 +110,21 @@ attribution follow in later small PRs.
 
 ## SpecScore Integration
 
-- **New Features this would create:** pr-land-waivers, integration-branch-batches, integration-branch-registry
+- **New Features this would create:** pr-land-waivers, integration-branch-batches (the integration-branch-registry Feature was withdrawn on 2026-10-23: integration branches carry no ruleset, so there is no gate to register)
 - **Existing Features affected:** mechanical-worktree-merge (new pinned pull-request source kind), worktree-lifecycle (landing target recorded at creation)
 - **Dependencies:** none
 
+## Process change (2026-10-23)
+
+The founder simplified the process: "I want fast efficient process with full
+CI checks on PR to main and local check on merge to local integration
+branches." Lanes push branches with no pull request, reviews are commit
+comments on the lane SHA, the operator merges and checks locally and pushes
+the integration branch, and one integration → main pull request runs full CI
+through the merge queue. The integration-branch-batches Feature was rewritten
+to match; the registry Feature was withdrawn.
+
 ## Open Questions
 
-- Should an empty integration delta (no conflicts, no fix commits) land
-  without a batch Reviewed-Head, on WB's mechanical proof alone?
+None at this time. An empty integration delta still needs the promotion
+review (decided 2026-10-23).

@@ -7112,6 +7112,71 @@
       "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; an unknown target or a usage mistake (invalid --format, --all with names) exits wb's exitUsage (2, rejected before any work started); every other failure, including the two remaining kinds cli-install adds, maps to wb's exitFindings (1). Every message carries an exact \"install: \" prefix, never \"self-update: \"/\"upgrade: \"."
     },
     {
+      "id": "wb.integration.merge",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb integration merge",
+              "flags": [
+                "--checks",
+                "--format",
+                "--worktree"
+              ],
+              "modes": [
+                "Merges reviewed lane pins as wb pr batch add does, then runs the repository's local-check recipe",
+                "Pushes to origin/<integration> without force only when every local check passed; a moved branch is refused, never overwritten",
+                "Needs no ruleset or CI on the integration branch; a rerun with nothing new runs no check"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb integration merge --help",
+              "contains": [
+                "check locally, push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb integration merge <owner/repository> <integration> <branch@sha=review-url>..."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_e2e_test.go",
+              "name": "TestE2EIntegrationMergeChecksAndPushesReviewedLanes",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; reviews are commit comments on the lane SHA. Promotion to main (wb integration promote) and the integration delta ship in a follow-up."
+    },
+    {
       "id": "wb.land",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md",
@@ -7957,6 +8022,71 @@
         }
       },
       "notes": "See wb.peers.block for the shared name/ID resolution and the laptop-local upstream path."
+    },
+    {
+      "id": "wb.pr.batch.add",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr batch add",
+              "flags": [
+                "--format",
+                "--target",
+                "--worktree"
+              ],
+              "modes": [
+                "Verifies every <branch>@<sha>=<commit-comment-url> pin before any Git mutation and reports every refusal together",
+                "Merges each pinned SHA with its own --no-ff merge commit carrying Wb-Lane, Wb-Review, Wb-Review-Digest, Wb-Reviewer and Wb-Merged-By trailers, never rebasing, squashing or pushing",
+                "Stops on a conflict with the files listed; a rerun after git commit --no-edit skips merged pins"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr batch add --help",
+              "contains": [
+                "Merge reviewed lane commits into an integration branch locally"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb pr batch add <owner/repository> --target <integration> <branch@sha=review-url>..."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_e2e_test.go",
+              "name": "TestE2EBatchConflictStopsAndARerunContinues",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; reviews are commit comments on the lane SHA. Promotion to main (wb integration promote) and the integration delta ship in a follow-up."
     },
     {
       "id": "wb.pr.create",

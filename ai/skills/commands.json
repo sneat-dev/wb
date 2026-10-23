@@ -54,6 +54,9 @@
     "install": [
       "wb-install"
     ],
+    "integration": [
+      "wb-merge"
+    ],
     "land": [
       "wb",
       "wb-worktrees",
